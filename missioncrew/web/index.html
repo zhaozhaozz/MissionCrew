@@ -218,8 +218,9 @@
     <div id="settings-view" class="page">
       <div class="section">
         <h2>运行时(本机 Agent CLI 工具,全局共享)
-          <button class="ghost" style="margin-left:8px" onclick="detectBackends()">重新检测</button></h2>
-        <p class="muted">这里只做工具的检测与启停;成本、能力、档位等偏好在各项目的角色配置里定义(选工具 → 自动带出模型 → 配偏好)。</p>
+          <button class="ghost" style="margin-left:8px" onclick="detectBackends()">重新检测</button>
+          <button class="ghost" id="btn-check-updates" onclick="checkUpdates()">检查更新</button></h2>
+        <p class="muted">这里只做工具的检测、启停与更新;成本、能力、档位等偏好在各项目的角色配置里定义(选工具 → 自动带出模型 → 配偏好)。</p>
         <table class="mgr" id="backend-table"></table>
       </div>
     </div>
@@ -783,6 +784,29 @@ async function deleteChannel(id) {
 async function renderGlobalSettings() {
   await ensureTraits();
   await renderBackendTable();
+  // 能查到最新版就直接展示:首次进入自动静默查询,不用等用户点按钮
+  if (!Object.keys(updateHints).length) checkUpdates(true);
+}
+
+let updateHints = {};   // 检查更新的结果:{id: {latest, update_available, installed}}
+let updatingIds = new Set();
+
+function updateCell(t) {
+  if (!t.registered || !t.installed) return `<span class="muted">—</span>`;
+  const hint = updateHints[t.id];
+  if (updatingIds.has(t.id)) return `<span class="muted">更新中…</span>`;
+  const btn = label =>
+    `<button class="ghost" onclick="runUpdate('${esc(t.id)}')">${label}</button>`;
+  if (hint && hint.update_available)
+    return `<span class="pill" style="color:var(--warn);border-color:var(--warn)">
+        可更新 → ${esc(hint.latest)}</span> ${t.updatable ? btn("更新") : ""}`;
+  if (hint && hint.latest && !hint.update_available)   // 能查到最新版就展示出来
+    return hint.installed
+      ? `<span class="muted">已是最新 (${esc(hint.latest)})</span>`
+      : `<span class="muted" title="已装版本未知,无法比对">最新版 ${esc(hint.latest)}</span>`;
+  if (t.updatable)   // 没有可靠的最新版来源(如 kimi/trae),仍提供手动更新
+    return btn("更新");
+  return `<span class="muted" title="安装方式未知或由宿主程序托管">不支持自动更新</span>`;
 }
 
 async function renderBackendTable() {
@@ -803,10 +827,44 @@ async function renderBackendTable() {
       <td>${status}</td>
       <td class="muted">${esc(t.path || "—")}</td>
       <td>${(t.models || []).map(m => `<span class="pill">${esc(m)}</span>`).join("") || `<span class="muted">—</span>`}</td>
+      <td>${updateCell(t)}</td>
       <td>${toggle}</td></tr>`;
   }).join("");
   document.getElementById("backend-table").innerHTML =
-    `<tr><th>工具</th><th>状态</th><th>路径</th><th>可用模型</th><th></th></tr>` + rows;
+    `<tr><th>工具</th><th>状态</th><th>路径</th><th>可用模型</th><th>更新</th><th></th></tr>` + rows;
+}
+
+async function checkUpdates(silent = false) {
+  const btn = document.getElementById("btn-check-updates");
+  btn.disabled = true; btn.textContent = "检查中…";
+  try {
+    const results = await api("POST", "/api/backends/check_updates");
+    updateHints = Object.fromEntries(results.map(r => [r.id, r]));
+    await renderBackendTable();
+    if (!silent && !results.some(r => r.update_available))
+      alert("所有可检查的工具都已是最新版本。");
+  } finally {
+    btn.disabled = false; btn.textContent = "检查更新";
+  }
+}
+
+async function runUpdate(id) {
+  const hint = updateHints[id];
+  const target = hint && hint.latest ? `到 ${hint.latest}` : "到最新版本";
+  if (!confirm(`更新 ${id} ${target}?更新期间该工具的执行可能失败。`)) return;
+  updatingIds.add(id);
+  await renderBackendTable();
+  try {
+    const r = await api("POST", `/api/backends/${encodeURIComponent(id)}/update`);
+    alert(r.ok
+      ? `更新完成:${r.old_version || "?"} → ${r.version || "?"}`
+      : `更新失败:\n${r.log || "(无输出)"}`);
+    delete updateHints[id];   // 版本已变,旧提示作废
+  } finally {
+    updatingIds.delete(id);
+    await loadOverview();
+    await renderBackendTable();
+  }
 }
 
 async function toggleBackend(id, enabled) {

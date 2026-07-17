@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
@@ -253,6 +255,7 @@ def create_app() -> FastAPI:
                 "version": (b.version if b else "") or "",
                 "path": (b.binary_path if b and b.binary_path else item["path"]),
                 "models": [m.get("name") or "(默认)" for m in (b.models if b else [])],
+                "updatable": bool(b and adapters.update_plan(b)),
             })
         # 注册表里的非内置工具(mock/自定义)也列出来
         for b in registered.values():
@@ -261,8 +264,48 @@ def create_app() -> FastAPI:
                 "installed": True, "path": b.binary_path, "version": b.version,
                 "registered": True, "enabled": b.enabled,
                 "models": [m.get("name") or "(默认)" for m in b.models],
+                "updatable": bool(adapters.update_plan(b)),
             })
         return rows
+
+    @app.post("/api/backends/check_updates")
+    def check_updates():
+        """并行查询各工具的最新发布版本,与已装版本比对(仅注册且已安装的工具)。"""
+        backends = [b for b in store.list_backends()
+                    if b.adapter in adapters.UPDATE_SPECS and b.binary_path]
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            latest = dict(zip(
+                (b.id for b in backends),
+                pool.map(lambda b: adapters.fetch_latest_version(b.adapter), backends),
+            ))
+        results = []
+        for b in backends:
+            lv = latest.get(b.id, "")
+            results.append({
+                "id": b.id, "installed": b.version, "latest": lv,
+                "update_available": adapters.is_newer(lv, b.version),
+                "updatable": adapters.update_plan(b) is not None,
+            })
+        return results
+
+    @app.post("/api/backends/{backend_id}/update")
+    def do_update(backend_id: str):
+        """执行工具更新(自更新命令或 npm),完成后重新探测版本入库。"""
+        b = store.get_backend(backend_id)
+        if b is None:
+            raise HTTPException(404, "后端不存在")
+        ok, log = adapters.run_update(b)
+        old_version = b.version
+        binary = Path(b.binary_path).name if b.binary_path else b.adapter
+        new_path = shutil.which(binary)
+        if new_path:   # 更新后刷新版本与路径(原生更新器可能切换版本目录)
+            b.binary_path = new_path
+            b.version = adapters._cli_version(binary)
+            store.put_backend(b)
+        store.audit("human", "backend_update", detail=(
+            f"backend={backend_id} ok={ok} {old_version} -> {b.version}"))
+        return {"ok": ok, "old_version": old_version, "version": b.version,
+                "log": log[-1500:]}
 
     @app.post("/api/backends/detect")
     def detect():

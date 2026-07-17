@@ -4,7 +4,7 @@
 读取;聊天协作的回复取自适配器输出。
 
 本地 Agent CLI 支持矩阵(参考 Multica 的本地 agent 列表):
-- 打印模式:claude、codex、opencode、copilot、cursor-agent、codebuddy、pi
+- 打印模式:claude、codex、grok、opencode、copilot、cursor-agent、codebuddy、pi
   (命令行直接传 prompt,{prompt}/{model} 占位符渲染)
 - ACP stdio 协议:kimi、kiro、qoder、trae(CLI 作为 JSON-RPC 服务挂在
   stdio 上,见 acp.py;Backend.command 可覆盖默认的 serve 命令)
@@ -29,6 +29,8 @@ DEFAULT_COMMANDS = {
     "claude_code": ["claude", "-p", "{prompt}", "--model", "{model}",
                     "--permission-mode", "acceptEdits"],
     "codex": ["codex", "exec", "--sandbox", "workspace-write", "-m", "{model}", "{prompt}"],
+    "grok_build": ["grok", "-p", "{prompt}", "--model", "{model}",
+                   "--always-approve", "--no-auto-update"],
     "opencode": ["opencode", "run", "--model", "{model}", "{prompt}"],
     "copilot": ["copilot", "-p", "{prompt}", "--model", "{model}", "--allow-all-tools"],
     "cursor": ["cursor-agent", "-p", "{prompt}", "--model", "{model}"],
@@ -51,6 +53,8 @@ _CLAUDE_CAPS = ["coding", "reasoning", "review", "security", "multimodal",
 KNOWN_CLIS = [
     ("claude", "claude_code", _CLAUDE_CAPS, "standard", 5.0),
     ("codex", "codex", ["coding", "reasoning", "review", "security"], "standard", 5.0),
+    ("grok", "grok_build", ["coding", "reasoning", "review", "web_search", "sub_agents"],
+     "standard", 5.0),
     ("opencode", "opencode", ["coding", "reasoning"], "standard", 4.0),
     ("copilot", "copilot", ["coding"], "economy", 2.0),
     ("cursor-agent", "cursor", ["coding", "reasoning"], "standard", 4.0),
@@ -75,7 +79,95 @@ KNOWN_MODELS: dict[str, list[dict]] = {
 }
 
 
+# 各工具的更新规格:
+#   self_update — 工具自带的更新子命令(优先使用,自更新器了解自己的安装方式);
+#   npm         — npm 包名,用于查询最新版本;仅当二进制确实由 npm 管理时才允许
+#                 `npm install -g` 更新(copilot 常由 VS Code 扩展托管,不能乱动)。
+# kimi 的 PyPI 同名包与其独立安装版版本序列对不上(疑似不同产品),
+# 因此 kimi/trae 只提供自更新按钮,不做最新版比对。
+UPDATE_SPECS: dict[str, dict] = {
+    "claude_code": {"npm": "@anthropic-ai/claude-code", "self_update": ["claude", "update"]},
+    "codex":       {"npm": "@openai/codex"},
+    "grok_build":  {"self_update": ["grok", "update"]},
+    "opencode":    {"npm": "opencode-ai", "self_update": ["opencode", "upgrade"]},
+    "copilot":     {"npm": "@github/copilot"},
+    "cursor":      {"self_update": ["cursor-agent", "update"]},
+    "codebuddy":   {"npm": "@tencent-ai/codebuddy-code"},
+    "kimi":        {"self_update": ["kimi", "upgrade"]},
+    "trae":        {"self_update": ["traecli", "update"]},
+}
+
 _VERSION_RE = re.compile(r"v?\d+\.\d+[\.\d]*")
+
+
+def version_tuple(v: str) -> tuple:
+    """'0.144.5' -> (0, 144, 5),用于版本比较;非数字段忽略。"""
+    return tuple(int(x) for x in re.findall(r"\d+", v)[:4])
+
+
+def is_newer(latest: str, installed: str) -> bool:
+    if not latest or not installed:
+        return False
+    return version_tuple(latest) > version_tuple(installed)
+
+
+def fetch_latest_version(adapter: str, timeout: int = 8) -> str:
+    """查询工具的最新发布版本(目前支持 npm registry);查不到返回空。"""
+    import urllib.parse
+    import urllib.request
+    pkg = (UPDATE_SPECS.get(adapter) or {}).get("npm")
+    if not pkg:
+        return ""
+    url = f"https://registry.npmjs.org/{urllib.parse.quote(pkg, safe='')}/latest"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return str(json.loads(resp.read()).get("version", ""))
+    except (OSError, ValueError):
+        return ""
+
+
+def _npm_managed(binary_path: str) -> bool:
+    """二进制是否由 npm 全局安装管理(realpath 落在 node_modules 下)。"""
+    if not binary_path:
+        return False
+    try:
+        rp = str(Path(binary_path).resolve())
+    except OSError:
+        rp = binary_path
+    return "/node_modules/" in rp
+
+
+def update_plan(backend: Backend):
+    """解析该工具的更新方式:("npm", cmd) / ("self", cmd) / None(不支持)。
+
+    npm 托管的安装优先走 npm——检查(registry 版本)与更新走同一渠道,
+    避免自更新器把新版本装到别处、npm 里的旧副本继续占着 PATH;
+    非 npm 安装(原生安装器/独立脚本)用工具自带的更新命令。
+    """
+    spec = UPDATE_SPECS.get(backend.adapter) or {}
+    pkg = spec.get("npm")
+    if pkg and _npm_managed(backend.binary_path):
+        return ("npm", ["npm", "install", "-g", f"{pkg}@latest"])
+    if spec.get("self_update"):
+        return ("self", list(spec["self_update"]))
+    return None
+
+
+def run_update(backend: Backend, timeout: int = 600) -> tuple[bool, str]:
+    """执行更新,返回 (成功, 输出尾部)。更新命令是固定白名单,不含用户输入。"""
+    plan = update_plan(backend)
+    if plan is None:
+        return False, "该工具不支持自动更新(安装方式未知或由宿主程序托管)"
+    _, cmd = plan
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              timeout=timeout, stdin=subprocess.DEVNULL)
+    except FileNotFoundError:
+        return False, f"更新命令不存在: {cmd[0]}"
+    except subprocess.TimeoutExpired:
+        return False, f"更新超时({timeout}s)"
+    out = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    return proc.returncode == 0, out[-2000:]
 
 
 def _cli_version(binary: str) -> str:
@@ -99,7 +191,7 @@ def detect_report(with_version: bool = True) -> list[dict]:
         path = shutil.which(binary) or ""
         report.append({
             "binary": binary, "adapter": adapter,
-            "id": "claude" if adapter == "claude_code" else adapter,
+            "id": {"claude_code": "claude", "grok_build": "grok"}.get(adapter, adapter),
             "installed": bool(path), "path": path,
             "version": _cli_version(binary) if path and with_version else "",
         })
