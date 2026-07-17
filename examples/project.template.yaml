@@ -1,0 +1,36 @@
+# 项目定义模板:mc project add --file examples/project.template.yaml
+# 项目是领域知识的载体:同一个后端装配不同项目的准则,就能做不同领域的工作。
+
+id: myproj
+name: 我的项目
+description: 一句话说明项目是什么
+repos:
+  - ~/code/myproj
+
+# 项目准则:目标、范围、业务边界、关键概念
+charter: |
+  这个项目做什么、不做什么、核心领域概念有哪些。
+
+# 开发准则:架构原则、代码要求、变更约束、兼容性要求
+dev_guidelines: |
+  技术栈、分层约定、API 兼容性要求、禁止事项。
+
+# 装配进执行上下文的 skill(名称或路径)
+skills:
+  - myproj-local-ci
+
+# 可申请的受控资源 id(资源本体和密钥在平台侧登记,不进 Prompt)
+resources: []
+
+# 验证准则:匹配任务特征 -> 强制的证据 / 门禁 / 能力
+rules:
+  - match: { task_type: bug }
+    require_evidence: [reproduction, regression_test]
+    note: Bug 必须先复现,并提供修复前失败、修复后通过的回归证据
+  - match: { labels: [ui] }
+    require_evidence: [browser_test, screenshot]
+    require_capabilities: [multimodal]
+    note: 前端界面变化必须完成浏览器流程测试和视觉验证
+  - match: { risk: high }
+    require_gates: [human_approval]
+    note: 高风险变更必须人工审批

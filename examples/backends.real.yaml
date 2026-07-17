@@ -1,0 +1,25 @@
+# 真实后端配置示例:mc backend add --file examples/backends.real.yaml
+# 后端 = 本机的 Agent CLI 工具,一个工具一条记录;模型阶梯挂在 models 下,
+# 路由按 工具×模型 展开执行单元(低成本优先,失败升级档位)。
+# 领域理解不来自这里——它由项目准则和角色定位在装配时注入。
+# 通常直接用 `mc backend detect` 自动检测即可,本文件用于手工定制。
+
+- id: claude
+  name: Claude Code (本地)
+  adapter: claude_code
+  tier: standard          # 默认档位(models 为空时生效)
+  cost_per_run: 5
+  capabilities: [coding, reasoning, review, security, multimodal, web_search, sub_agents]
+  models:                 # 模型名留空 = CLI 默认模型
+    - { name: haiku, tier: economy, cost: 1 }
+    - { name: "",    tier: standard, cost: 5 }
+    - { name: opus,  tier: expert,  cost: 20 }
+
+- id: codex
+  name: Codex (本地)
+  adapter: codex
+  tier: standard
+  cost_per_run: 5
+  capabilities: [coding, reasoning, review, security]
+  # 审查场景建议只读沙箱,可覆盖默认命令模板:
+  # command: [codex, exec, --sandbox, read-only, -m, "{model}", "{prompt}"]

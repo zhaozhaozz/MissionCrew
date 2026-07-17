@@ -1,0 +1,778 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MissionCrew</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #fff; --text: #1c2330; --muted: #6b7485;
+    --line: #e3e6ec; --accent: #3564d7; --ok: #2e9e5b; --warn: #c98a1b; --bad: #c94b3c;
+    --me: #eef3ff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #14171c; --card: #1e232b; --text: #e7eaf0; --muted: #98a1b3;
+            --line: #2c333e; --accent: #6f95ec; --ok: #4cbd7c; --warn: #dfa63f;
+            --bad: #e0705f; --me: #232d40; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; font: 14px/1.6 system-ui, "PingFang SC", "Microsoft YaHei", sans-serif;
+         background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+  header { padding: 10px 22px; border-bottom: 1px solid var(--line);
+           display: flex; align-items: center; gap: 18px; flex: none; }
+  header h1 { font-size: 16px; margin: 0; }
+  header .hint { color: var(--muted); font-size: 12px; margin-left: auto; }
+
+  /* ---- 布局:持久左侧栏(承载全部导航)+ 视图区 ---- */
+  #app { flex: 1; display: flex; min-height: 0; }
+  #sidebar { width: 220px; flex: none; border-right: 1px solid var(--line);
+             padding: 12px 14px; display: flex; flex-direction: column; min-height: 0; }
+  #side-scroll { flex: 1; overflow-y: auto; min-height: 0; }
+  #side-bottom { flex: none; border-top: 1px solid var(--line);
+                 margin-top: 10px; padding-top: 10px; }
+  #proj-row { display: flex; gap: 6px; margin-bottom: 12px; flex: none; }
+  #proj-sel { flex: 1; min-width: 0; background: var(--card); color: var(--text);
+              border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font: inherit; }
+  .proj-btn { flex: none; width: 32px; background: var(--card); color: var(--muted);
+              border: 1px solid var(--line); border-radius: 8px; font-size: 15px;
+              cursor: pointer; line-height: 1; }
+  .proj-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .proj-btn.active { border-color: var(--accent); color: var(--accent); }
+  #proj-add { color: var(--accent); font-size: 17px; }
+  .side-nav { padding: 6px 10px; border-radius: 8px; cursor: pointer;
+              color: var(--muted); margin: 10px 0 2px; }
+  .side-nav:hover { background: var(--card); }
+  .side-nav.active { background: var(--card); color: var(--text); font-weight: 600;
+                     border: 1px solid var(--line); }
+  #side-bottom .side-nav { margin: 0; }
+  #sidebar h2 { font-size: 12px; color: var(--muted); text-transform: uppercase;
+                letter-spacing: .06em; margin: 12px 0 6px; }
+  .chan { padding: 6px 10px; border-radius: 8px; cursor: pointer; color: var(--muted); }
+  .chan.active { background: var(--card); color: var(--text); font-weight: 600;
+                 border: 1px solid var(--line); }
+  .role-chip { display: flex; gap: 8px; align-items: center; padding: 4px 6px;
+               border-radius: 6px; cursor: pointer; }
+  .role-chip:hover { background: var(--card); }
+  .role-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+  .role-chip small { color: var(--muted); }
+  #views { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+
+  /* ---- 聊天 ---- */
+  #chat-view { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  #msgs { flex: 1; overflow-y: auto; padding: 18px 24px; }
+  .msg { margin-bottom: 14px; max-width: 860px; }
+  .msg .head { font-size: 12.5px; margin-bottom: 2px; }
+  .msg .author { font-weight: 700; }
+  .msg .time, .msg .via { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 11.5px; }
+  .msg .body { background: var(--card); border: 1px solid var(--line);
+               border-radius: 10px; padding: 8px 12px; white-space: pre-wrap;
+               word-break: break-word; }
+  .msg.human .body { background: var(--me); }
+  .msg.platform .body { background: transparent; border-style: dashed;
+                        color: var(--muted); font-size: 13px; }
+  .mention { color: var(--accent); font-weight: 600; }
+  .running { color: var(--muted); font-size: 13px; padding: 4px 24px; }
+  .running .dot { display: inline-block; animation: blink 1.2s infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+
+  #composer { flex: none; border-top: 1px solid var(--line); padding: 10px 24px 14px; }
+  #role-bar { margin-bottom: 6px; }
+  #role-bar button { background: var(--card); border: 1px solid var(--line); color: var(--text);
+                     border-radius: 999px; padding: 2px 10px; margin-right: 6px;
+                     font-size: 12.5px; cursor: pointer; }
+  #input-row { display: flex; gap: 10px; }
+  textarea { flex: 1; resize: none; background: var(--card); color: var(--text);
+             border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px;
+             font: inherit; height: 64px; }
+  textarea:focus { outline: 1px solid var(--accent); }
+  .send { background: var(--accent); color: #fff; border: 0; border-radius: 10px;
+          padding: 0 22px; font-size: 14px; cursor: pointer; }
+
+  /* ---- 看板 ---- */
+  #board-view { flex: 1; overflow-y: auto; display: none; }
+  main.board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; padding: 18px 22px; }
+  @media (max-width: 1000px) { main.board { grid-template-columns: repeat(2, 1fr); } }
+  .col h2 { font-size: 13px; color: var(--muted); margin: 2px 0 10px;
+            text-transform: uppercase; letter-spacing: .06em; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+          padding: 10px 12px; margin-bottom: 10px; cursor: pointer; }
+  .card:hover { border-color: var(--accent); }
+  .card .title { font-weight: 600; }
+  .card .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .badge { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11.5px;
+           border: 1px solid var(--line); color: var(--muted); margin-right: 4px; }
+  .badge.hi { color: var(--bad); border-color: var(--bad); }
+  dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card);
+           color: var(--text); max-width: 760px; width: 92vw; padding: 0; }
+  dialog::backdrop { background: rgba(0,0,0,.45); }
+  .dlg-head { padding: 14px 18px; border-bottom: 1px solid var(--line);
+              display: flex; justify-content: space-between; align-items: center; }
+  .dlg-body { padding: 14px 18px; max-height: 70vh; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin: 6px 0 16px; }
+  th, td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  .st-passed { color: var(--ok); } .st-failed { color: var(--bad); }
+  .st-awaiting_approval { color: var(--warn); } .st-pending { color: var(--muted); }
+  button.action { background: var(--accent); color: #fff; border: 0; border-radius: 8px;
+                  padding: 6px 14px; cursor: pointer; font-size: 13px; }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line);
+                 border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+  .actions { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+  h3 { font-size: 13px; margin: 14px 0 4px; color: var(--muted); }
+  .empty { color: var(--muted); font-size: 13px; }
+
+  /* ---- 项目设置 / 全局设置 ---- */
+  .page { flex: 1; display: none; overflow-y: auto; padding: 18px 26px; }
+  .form { max-width: 720px; }
+  .form label { display: block; font-size: 12.5px; color: var(--muted); margin: 12px 0 4px; }
+  .form input[type=text], .form input[type=number], .form select, .form textarea {
+    width: 100%; background: var(--card); color: var(--text); font: inherit;
+    border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .form textarea { resize: vertical; }
+  .form .row { display: flex; gap: 12px; }
+  .form .row > div { flex: 1; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px;
+          cursor: pointer; font-size: 12.5px; color: var(--muted); user-select: none; }
+  .chip.on { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .form-actions { margin-top: 18px; display: flex; gap: 10px; }
+  .danger { background: transparent; color: var(--bad); border: 1px solid var(--bad);
+            border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px; }
+  .section { margin-bottom: 34px; }
+  .section > h2 { font-size: 14px; margin: 0 0 10px; }
+  table.mgr th { white-space: nowrap; }
+  .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px;
+          padding: 0 8px; font-size: 11.5px; color: var(--muted); margin: 1px 3px 1px 0; }
+  .switch { cursor: pointer; }
+  .muted { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MissionCrew</h1>
+  <span class="hint">@角色 布置工作;Agent 也会互相 @ 协作,全部对话可见</span>
+</header>
+
+<div id="app">
+  <aside id="sidebar">
+    <div id="proj-row">
+      <select id="proj-sel" onchange="setProject(this.value)"></select>
+      <button class="proj-btn" id="proj-cfg" onclick="switchTab('proj')" title="项目设置">⚙</button>
+      <button class="proj-btn" id="proj-add" onclick="openNewProject()" title="新建项目">＋</button>
+    </div>
+    <div id="side-scroll">
+      <h2>频道</h2>
+      <div id="chan-list"></div>
+      <div class="side-nav" id="nav-board" onclick="switchTab('board')">▦ 任务看板</div>
+      <h2>角色</h2>
+      <div id="role-list"></div>
+    </div>
+    <div id="side-bottom">
+      <div class="side-nav" id="nav-settings" onclick="switchTab('settings')">⚙ 全局设置</div>
+    </div>
+  </aside>
+
+  <div id="views">
+    <div id="chat-view">
+      <div id="msgs"></div>
+      <div id="running-bar"></div>
+      <div id="composer">
+        <div id="role-bar"></div>
+        <div id="input-row">
+          <textarea id="input" placeholder="给角色布置工作,例如:@dev 修复购物车金额错误,完成后请 @reviewer 评审   (Enter 发送,Shift+Enter 换行)"></textarea>
+          <button class="send" onclick="send()">发送</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="board-view"><main class="board" id="board"></main></div>
+
+    <div id="proj-view" class="page">
+      <div class="section">
+        <h2>项目信息 <span class="muted" id="proj-label"></span></h2>
+        <p class="muted">项目是第一层级:角色、频道、任务、准则都归属当前项目,项目之间互不相干。</p>
+        <div class="form" id="proj-form"></div>
+      </div>
+      <div class="section">
+        <h2>角色 <span class="muted" id="role-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="editRole(null)">+ 新建角色</button></h2>
+        <p class="muted">角色定位(人格)是"选人"的专长画像,供人类或 @lead 调度时挑人,不是任务描述;任务简报由调度方结合项目章程在 @ 消息里撰写,定位文本平台不会改写。</p>
+        <table class="mgr" id="role-table"></table>
+        <div class="form" id="role-form" style="display:none"></div>
+      </div>
+      <div class="section">
+        <h2>频道 <span class="muted" id="chan-proj-label"></span></h2>
+        <table class="mgr" id="chan-table"></table>
+        <div class="form" style="max-width:720px">
+          <div class="row">
+            <div><label>频道名</label><input type="text" id="nc-id" placeholder="例如 backend-repo"></div>
+            <div><label>工作目录(可选,默认平台内置;填真实仓库路径可直接在仓库上协作)</label>
+              <input type="text" id="nc-workdir" placeholder="~/code/myrepo"></div>
+          </div>
+          <div class="form-actions"><button class="action" onclick="createChannel()">在当前项目创建频道</button></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-view" class="page">
+      <div class="section">
+        <h2>运行时(本机 Agent CLI 工具,全局共享)
+          <button class="ghost" style="margin-left:8px" onclick="detectBackends()">重新检测</button></h2>
+        <p class="muted">这里只做工具的检测与启停;成本、能力、档位等偏好在各项目的角色配置里定义(选工具 → 自动带出模型 → 配偏好)。</p>
+        <table class="mgr" id="backend-table"></table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg-head"><strong id="dlg-title"></strong>
+    <button class="ghost" onclick="dlg.close()">关闭</button></div>
+  <div class="dlg-body" id="dlg-body"></div>
+  <div class="actions" id="dlg-actions"></div>
+</dialog>
+
+<dialog id="pdlg">
+  <div class="dlg-head"><strong>新建项目</strong>
+    <button class="ghost" onclick="pdlg.close()">取消</button></div>
+  <div class="dlg-body form">
+    <label>项目 id(创建后不可改)</label><input type="text" id="np-id" placeholder="例如 webshop">
+    <label>名称</label><input type="text" id="np-name" placeholder="例如 WebShop 电商站">
+    <label>一句话描述</label><input type="text" id="np-desc">
+    <p class="muted">创建后自动获得一套默认角色和 general 频道;章程、准则、验证规则到「项目设置」页补充。</p>
+  </div>
+  <div class="actions"><button class="action" onclick="createProject()">创建项目</button></div>
+</dialog>
+
+<script>
+const dlg = document.getElementById("dlg");
+const pdlg = document.getElementById("pdlg");
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let overview = { projects: [], tasks: [], roles: [], channels: [], backends: [] };
+let currentProject = localStorage.getItem("mc.project") || null;
+let currentTab = "chat";
+let currentChan = null;
+let lastMsgId = 0;
+let roleColor = {};
+
+// 项目是第一层级:聊天、看板、角色、频道都只看当前项目
+const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);
+const projChannels = () => overview.channels.filter(c => c.project_id === currentProject);
+const projTasks = () => overview.tasks.filter(t => t.project_id === currentProject);
+
+function setProject(id) {
+  currentProject = id;
+  localStorage.setItem("mc.project", id);
+  currentChan = null; lastMsgId = 0;
+  document.getElementById("msgs").innerHTML = "";
+  roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
+  renderSidebar(); renderBoard();
+  if (currentTab === "proj") renderProjSettings();
+  const chans = projChannels();
+  if (chans.length) selectChannel(chans[0].id, false);
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.getElementById("chat-view").style.display = tab === "chat" ? "flex" : "none";
+  document.getElementById("board-view").style.display = tab === "board" ? "block" : "none";
+  document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
+  document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
+  // 导航都在侧栏:看板/全局设置是导航项,项目设置是选择器旁的 ⚙,聊天由频道列表进入
+  document.getElementById("nav-board").classList.toggle("active", tab === "board");
+  document.getElementById("nav-settings").classList.toggle("active", tab === "settings");
+  document.getElementById("proj-cfg").classList.toggle("active", tab === "proj");
+  renderSidebar();
+  if (tab === "proj") renderProjSettings();
+  if (tab === "settings") renderGlobalSettings();
+}
+
+async function loadOverview() {
+  overview = await (await fetch("/api/overview")).json();
+  const sel = document.getElementById("proj-sel");
+  if (!overview.projects.length) {
+    sel.innerHTML = `<option>(无项目)</option>`;
+    currentProject = null;
+    renderSidebar(); renderBoard();
+    return;
+  }
+  if (!overview.projects.some(p => p.id === currentProject))
+    currentProject = overview.projects[0].id;
+  sel.innerHTML = overview.projects.map(p =>
+    `<option value="${esc(p.id)}" ${p.id === currentProject ? "selected" : ""}>${esc(p.name || p.id)}</option>`).join("");
+  roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
+  renderSidebar(); renderBoard();
+  const chans = projChannels();
+  if ((!currentChan || !chans.some(c => c.id === currentChan)) && chans.length)
+    selectChannel(chans[0].id, false);
+}
+
+function renderSidebar() {
+  document.getElementById("chan-list").innerHTML = projChannels().map(c =>
+    `<div class="chan ${c.id === currentChan && currentTab === "chat" ? "active" : ""}"
+          onclick="selectChannel('${c.id}')"># ${esc(c.name || c.id)}</div>`).join("")
+    || `<div class="empty">本项目暂无频道</div>`;
+  document.getElementById("role-list").innerHTML = projRoles().map(r =>
+    `<div class="role-chip" onclick="insertMention('${r.id}')" title="${esc(r.description)}">
+       <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>
+       <span>@${esc(r.id)}</span><small>${esc(r.name)}</small></div>`).join("");
+  document.getElementById("role-bar").innerHTML = projRoles().map(r =>
+    `<button onclick="insertMention('${r.id}')">@${esc(r.id)} ${esc(r.name)}</button>`).join("");
+}
+
+function insertMention(id) {
+  if (currentTab !== "chat") switchTab("chat");
+  const box = document.getElementById("input");
+  box.value = (box.value ? box.value.replace(/\s*$/, " ") : "") + `@${id} `;
+  box.focus();
+}
+
+function selectChannel(id, jump = true) {
+  currentChan = id; lastMsgId = 0;
+  document.getElementById("msgs").innerHTML = "";
+  if (jump && currentTab !== "chat") switchTab("chat");
+  renderSidebar(); pollMessages();
+}
+
+function fmtBody(text) {
+  let html = esc(text);
+  html = html.replace(/@([\w-]+)/g, (m, id) =>
+    roleColor[id] ? `<span class="mention" style="color:${roleColor[id]}">@${id}</span>` : m);
+  return html;
+}
+
+function appendMessages(list) {
+  const pane = document.getElementById("msgs");
+  const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
+  for (const m of list) {
+    const div = document.createElement("div");
+    div.className = `msg ${m.author_type}`;
+    const color = m.author_type === "agent" ? (roleColor[m.author] || "var(--text)") : "var(--text)";
+    const name = m.author_type === "agent" ? "@" + m.author
+               : m.author_type === "platform" ? "系统" : m.author;
+    const via = m.author_type === "agent" ? `<span class="via">agent</span>` : "";
+    const time = new Date(m.created_at * 1000).toLocaleTimeString();
+    div.innerHTML = `<div class="head"><span class="author" style="color:${color}">${esc(name)}</span>
+      ${via}<span class="time">${time}</span></div>
+      <div class="body">${fmtBody(m.content)}</div>`;
+    pane.appendChild(div);
+    lastMsgId = Math.max(lastMsgId, m.id);
+  }
+  if (list.length && nearBottom) pane.scrollTop = pane.scrollHeight;
+}
+
+async function pollMessages() {
+  if (!currentChan) return;
+  try {
+    const r = await fetch(`/api/chat/${currentChan}/messages?after_id=${lastMsgId}`);
+    if (!r.ok) return;
+    const d = await r.json();
+    appendMessages(d.messages);
+    document.getElementById("running-bar").innerHTML = d.active_runs.map(run =>
+      `<div class="running"><span class="dot">●</span> @${esc(run.role_id)} 正在工作
+       ${run.backend_id ? "(后端 " + esc(run.backend_id) + ")" : "(排队中)"}…</div>`).join("");
+  } catch (e) { /* 服务重启间隙,忽略 */ }
+}
+
+async function send() {
+  const box = document.getElementById("input");
+  const content = box.value.trim();
+  if (!content || !currentChan) return;
+  box.value = "";
+  await fetch(`/api/chat/${currentChan}/messages`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ author: "human", content }),
+  });
+  await pollMessages();
+}
+
+document.getElementById("input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+});
+
+/* ---------------- 看板 ---------------- */
+const COLS = [
+  { title: "进行中 / 待推进", match: t => t.status === "open" },
+  { title: "等待审批", match: t => t.status === "awaiting_approval" },
+  { title: "阻塞 / 失败", match: t => ["blocked", "failed"].includes(t.status) },
+  { title: "已完成", match: t => t.status === "done" },
+];
+
+function renderBoard() {
+  document.getElementById("board").innerHTML = COLS.map(col => {
+    const items = projTasks().filter(col.match);
+    const cards = items.map(t => {
+      const stage = t.stages[t.stage_index]?.name ?? "—";
+      return `<div class="card" onclick="openTask('${t.id}')">
+        <div class="title">${esc(t.title)}</div>
+        <div class="meta">${t.id} · 阶段 ${esc(stage)}</div>
+        <div class="meta">
+          <span class="badge">${esc(t.task_type)}</span>
+          <span class="badge ${t.risk === "high" ? "hi" : ""}">风险 ${esc(t.risk)}</span>
+          ${t.labels.map(l => `<span class="badge">${esc(l)}</span>`).join("")}
+        </div></div>`;
+    }).join("") || `<div class="empty">暂无任务</div>`;
+    return `<section class="col"><h2>${col.title} (${items.length})</h2>${cards}</section>`;
+  }).join("");
+}
+
+async function openTask(id) {
+  const d = await (await fetch(`/api/tasks/${id}`)).json();
+  const t = d.task;
+  document.getElementById("dlg-title").textContent = `${t.id} · ${t.title}`;
+  const stages = t.stages.map((s, i) => `<tr>
+      <td>${i === t.stage_index ? "▶" : ""}</td><td>${esc(s.name)}</td><td>${esc(s.kind)}</td>
+      <td class="st-${s.status}">${esc(s.status)}</td>
+      <td>${esc(s.backend_id ?? "")}</td><td>${s.attempts || ""}</td>
+      <td>${[s.independent ? "独立" : "", s.human_gate ? "人工审批" : ""].filter(Boolean).join(" · ")}</td>
+    </tr>`).join("");
+  const evidence = d.evidence.map(e => `<tr><td>${esc(e.type)}</td><td>${esc(e.stage)}</td>
+      <td>${esc(e.path)}</td><td>${esc(e.summary)}</td></tr>`).join("");
+  const runs = d.runs.map(r2 => `<tr><td>${r2.success ? "✓" : "✗"}</td><td>${esc(r2.stage)}</td>
+      <td>${esc(r2.backend_id)}</td><td>${esc(r2.tier)}</td><td>${r2.cost}</td>
+      <td>${esc(r2.summary)}</td></tr>`).join("");
+  const audit = d.audit.slice(0, 30).map(a => `<tr>
+      <td>${new Date(a.ts * 1000).toLocaleTimeString()}</td><td>${esc(a.actor)}</td>
+      <td>${esc(a.action)}</td><td>${esc(a.detail)}</td></tr>`).join("");
+  document.getElementById("dlg-body").innerHTML = `
+    <h3>阶段计划</h3><table><tr><th></th><th>阶段</th><th>类型</th><th>状态</th>
+      <th>执行者</th><th>重试</th><th>门禁</th></tr>${stages}</table>
+    <h3>证据 (${d.evidence.length})</h3>
+    <table><tr><th>类型</th><th>阶段</th><th>路径</th><th>摘要</th></tr>
+      ${evidence || "<tr><td colspan=4 class=empty>暂无</td></tr>"}</table>
+    <h3>执行记录</h3><table><tr><th></th><th>阶段</th><th>后端</th><th>档位</th><th>成本</th><th>摘要</th></tr>
+      ${runs || "<tr><td colspan=6 class=empty>暂无</td></tr>"}</table>
+    <h3>审计</h3><table><tr><th>时间</th><th>主体</th><th>动作</th><th>详情</th></tr>${audit}</table>`;
+  const actions = [];
+  if (!["done", "failed"].includes(t.status))
+    actions.push(`<button class="action" onclick="advanceTask('${t.id}')">推进</button>`);
+  if (t.status === "awaiting_approval") {
+    actions.push(`<button class="action" onclick="approveTask('${t.id}', 'approved')">批准</button>`);
+    actions.push(`<button class="ghost" onclick="approveTask('${t.id}', 'rejected')">拒绝</button>`);
+  }
+  document.getElementById("dlg-actions").innerHTML = actions.join("");
+  dlg.showModal();
+}
+
+async function advanceTask(id) {
+  await fetch(`/api/tasks/${id}/advance`, { method: "POST" });
+  await loadOverview(); await openTask(id);
+}
+async function approveTask(id, decision) {
+  const approver = prompt("审批人:", "human");
+  if (!approver) return;
+  await fetch(`/api/tasks/${id}/approve`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ approver, decision }),
+  });
+  await loadOverview(); await openTask(id);
+}
+
+/* ---------------- 通用请求 ---------------- */
+async function api(method, url, body) {
+  const r = await fetch(url, {
+    method, headers: { "Content-Type": "application/json" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    alert(err.detail || `请求失败 (${r.status})`);
+    throw new Error("api");
+  }
+  return r.json();
+}
+
+let traitMeta = { traits: {}, tiers: [] };
+async function ensureTraits() {
+  if (!Object.keys(traitMeta.traits).length)
+    traitMeta = await (await fetch("/api/traits")).json();
+}
+
+/* ---------------- 新建项目(侧栏 + 号) ---------------- */
+function openNewProject() {
+  document.getElementById("np-id").value = "";
+  document.getElementById("np-name").value = "";
+  document.getElementById("np-desc").value = "";
+  pdlg.showModal();
+}
+
+async function createProject() {
+  const id = document.getElementById("np-id").value.trim();
+  if (!id) { alert("项目 id 不能为空"); return; }
+  await api("POST", "/api/projects", {
+    id,
+    name: document.getElementById("np-name").value.trim() || id,
+    description: document.getElementById("np-desc").value.trim(),
+  });
+  pdlg.close();
+  await loadOverview();
+  setProject(id);
+  switchTab("proj");   // 引导补充章程与准则
+}
+
+/* ---------------- 项目设置(当前项目:信息 / 角色 / 频道) ---------------- */
+function rulesToYaml(rules) {
+  return (rules || []).map(r => {
+    const lines = [`- match: ${JSON.stringify(r.match)}`];
+    if (r.require_evidence?.length) lines.push(`  require_evidence: ${JSON.stringify(r.require_evidence)}`);
+    if (r.require_gates?.length) lines.push(`  require_gates: ${JSON.stringify(r.require_gates)}`);
+    if (r.require_capabilities?.length) lines.push(`  require_capabilities: ${JSON.stringify(r.require_capabilities)}`);
+    if (r.note) lines.push(`  note: ${JSON.stringify(r.note)}`);
+    return lines.join("\n");
+  }).join("\n");
+}
+
+async function renderProjSettings() {
+  await ensureTraits();
+  const label = `— 项目「${esc(currentProject || "无")}」`;
+  document.getElementById("proj-label").textContent = label;
+  document.getElementById("role-proj-label").textContent = label;
+  document.getElementById("chan-proj-label").textContent = label;
+  const p = overview.projects.find(x => x.id === currentProject);
+  const form = document.getElementById("proj-form");
+  if (!p) { form.innerHTML = `<div class="empty">暂无项目,点击侧栏 ＋ 新建。</div>`; return; }
+  form.innerHTML = `
+    <div class="row">
+      <div><label>项目 id</label><input type="text" value="${esc(p.id)}" disabled></div>
+      <div><label>名称</label><input type="text" id="pf-name" value="${esc(p.name)}"></div>
+    </div>
+    <label>一句话描述</label><input type="text" id="pf-desc" value="${esc(p.description)}">
+    <label>代码仓路径(每行一个)</label>
+    <textarea id="pf-repos" rows="2">${esc(p.repos.join("\n"))}</textarea>
+    <label>项目准则(目标、范围、业务边界)</label>
+    <textarea id="pf-charter" rows="4">${esc(p.charter)}</textarea>
+    <label>开发准则(架构原则、代码要求、变更约束)</label>
+    <textarea id="pf-dev" rows="4">${esc(p.dev_guidelines)}</textarea>
+    <label>Skills(每行一个)</label>
+    <textarea id="pf-skills" rows="2">${esc(p.skills.join("\n"))}</textarea>
+    <label>验证准则(YAML 列表:match / require_evidence / require_gates / require_capabilities / note)</label>
+    <textarea id="pf-rules" rows="8" spellcheck="false">${esc(rulesToYaml(p.rules))}</textarea>
+    <div class="form-actions">
+      <button class="action" onclick="saveProject()">保存项目信息</button>
+      <button class="danger" onclick="deleteProject('${esc(p.id)}')">删除项目</button>
+    </div>`;
+  renderRoleTable(); renderChanTable();
+}
+
+async function saveProject() {
+  const lines = id2 => document.getElementById(id2).value.split("\n").map(s => s.trim()).filter(Boolean);
+  const body = {
+    id: currentProject,
+    name: document.getElementById("pf-name").value.trim(),
+    description: document.getElementById("pf-desc").value.trim(),
+    repos: lines("pf-repos"), skills: lines("pf-skills"),
+    charter: document.getElementById("pf-charter").value,
+    dev_guidelines: document.getElementById("pf-dev").value,
+    rules_yaml: document.getElementById("pf-rules").value,
+  };
+  await api("POST", "/api/projects", body);
+  await loadOverview(); renderProjSettings();
+}
+
+async function deleteProject(id) {
+  if (!confirm(`删除项目「${id}」及其全部角色与频道?(消息与任务记录保留)`)) return;
+  await api("DELETE", `/api/projects/${id}`);
+  await loadOverview();
+  renderProjSettings();
+}
+
+/* ---- 角色(当前项目) ---- */
+function traitPills(role) {
+  return (role.traits || []).map(t =>
+    `<span class="pill">${esc(traitMeta.traits[t]?.label || t)}</span>`).join("");
+}
+
+function renderRoleTable() {
+  const rows = projRoles().map(r => {
+    const exec = r.pinned_backend
+      ? `固定: ${esc(r.pinned_backend)}${r.pinned_model ? " / " + esc(r.pinned_model) : ""}`
+      : `自动路由${r.min_tier || r.max_tier ? ` (${esc(r.min_tier || "")}~${esc(r.max_tier || "")})` : ""}`;
+    return `<tr>
+      <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
+          <b>@${esc(r.id)}</b> ${esc(r.name)}</td>
+      <td>${traitPills(r)}</td>
+      <td>${(r.required_capabilities || []).map(c => `<span class="pill">${esc(c)}</span>`).join("")}</td>
+      <td class="muted">${exec}</td>
+      <td><button class="ghost" onclick="editRole('${r.id}')">编辑</button></td></tr>`;
+  }).join("");
+  document.getElementById("role-table").innerHTML =
+    `<tr><th>角色</th><th>偏好</th><th>能力要求</th><th>执行方式</th><th></th></tr>` + rows;
+}
+
+function editRole(id) {
+  const r = projRoles().find(x => x.id === id) || {
+    id: "", name: "", description: "", required_capabilities: [], traits: [],
+    pinned_backend: null, pinned_model: null, min_tier: null, max_tier: null, color: "#3564d7" };
+  const traitChips = Object.entries(traitMeta.traits).map(([k, v]) =>
+    `<span class="chip ${r.traits.includes(k) ? "on" : ""}" data-trait="${k}"
+       onclick="this.classList.toggle('on')">${esc(v.label)}</span>`).join("");
+  const tierOpts = sel => `<option value="">(不限)</option>` + traitMeta.tiers.map(t =>
+    `<option value="${t}" ${sel === t ? "selected" : ""}>${t}</option>`).join("");
+  const backendOpts = `<option value="">(自动路由)</option>` + overview.backends.map(b =>
+    `<option value="${esc(b.id)}" ${r.pinned_backend === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("");
+  window._editingRoleModel = r.pinned_model;   // 供模型下拉初始化选中
+  const form = document.getElementById("role-form");
+  form.style.display = "block";
+  form.innerHTML = `
+    <h3>${id ? "编辑角色 @" + esc(id) : "新建角色"}</h3>
+    <div class="row">
+      <div><label>角色 id(@ 提及名)</label><input type="text" id="rf-id" value="${esc(r.id)}" ${id ? "disabled" : ""}></div>
+      <div><label>显示名</label><input type="text" id="rf-name" value="${esc(r.name)}"></div>
+      <div><label>标识色</label><input type="text" id="rf-color" value="${esc(r.color)}"></div>
+    </div>
+    <label>角色定位/人格(专长画像,供调度选人;自由文本,平台原样装配、不改写;任务由 @ 消息提供)</label>
+    <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
+    <label>偏好(影响路由档位与能力要求,并展示给其他角色)</label>
+    <div class="chips" id="rf-traits">${traitChips}</div>
+    <label>额外能力要求(逗号分隔,如 coding, reasoning)</label>
+    <input type="text" id="rf-caps" value="${esc((r.required_capabilities || []).join(", "))}">
+    <div class="row">
+      <div><label>固定工具(选了即跳过路由)</label>
+        <select id="rf-backend" onchange="refreshModelOptions()">${backendOpts}</select></div>
+      <div><label>固定模型(来自所选工具的模型阶梯)</label>
+        <select id="rf-model"></select></div>
+      <div><label>最低档位</label><select id="rf-min">${tierOpts(r.min_tier)}</select></div>
+      <div><label>最高档位</label><select id="rf-max">${tierOpts(r.max_tier)}</select></div>
+    </div>
+    <div class="form-actions">
+      <button class="action" onclick="saveRole()">保存</button>
+      <button class="ghost" onclick="document.getElementById('role-form').style.display='none'">取消</button>
+      ${id ? `<button class="danger" onclick="deleteRole('${id}')">删除角色</button>` : ""}
+    </div>`;
+  refreshModelOptions();
+  form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+// 选定工具后,模型下拉自动带出该工具的模型阶梯(Multica 式:先选工具,再选模型)
+function refreshModelOptions() {
+  const bid = document.getElementById("rf-backend").value;
+  const sel = document.getElementById("rf-model");
+  const cur = window._editingRoleModel;
+  if (!bid) {
+    sel.innerHTML = `<option value="">(自动路由,无需选模型)</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  const b = overview.backends.find(x => x.id === bid);
+  const models = (b?.models || []);
+  let opts = `<option value="">(CLI 默认)</option>` + models.filter(m => m.name).map(m =>
+    `<option value="${esc(m.name)}" ${cur === m.name ? "selected" : ""}>` +
+    `${esc(m.name)}(${esc(m.tier)} · ${m.cost})</option>`).join("");
+  if (cur && !models.some(m => m.name === cur))
+    opts += `<option value="${esc(cur)}" selected>${esc(cur)}(自定义)</option>`;
+  sel.innerHTML = opts;
+}
+
+async function saveRole() {
+  const traits = [...document.querySelectorAll("#rf-traits .chip.on")].map(c => c.dataset.trait);
+  const body = {
+    id: document.getElementById("rf-id").value.trim(),
+    project_id: currentProject,
+    name: document.getElementById("rf-name").value.trim(),
+    color: document.getElementById("rf-color").value.trim(),
+    description: document.getElementById("rf-desc").value,
+    traits,
+    required_capabilities: document.getElementById("rf-caps").value
+      .split(",").map(s => s.trim()).filter(Boolean),
+    pinned_backend: document.getElementById("rf-backend").value || null,
+    pinned_model: document.getElementById("rf-model").value.trim() || null,
+    min_tier: document.getElementById("rf-min").value || null,
+    max_tier: document.getElementById("rf-max").value || null,
+  };
+  if (!body.id) { alert("角色 id 不能为空"); return; }
+  await api("POST", "/api/roles", body);
+  await loadOverview();
+  document.getElementById("role-form").style.display = "none";
+  renderRoleTable();
+}
+
+async function deleteRole(id) {
+  if (!confirm(`删除项目「${currentProject}」的角色 @${id}?`)) return;
+  await api("DELETE", `/api/roles/${id}?project_id=${encodeURIComponent(currentProject)}`);
+  await loadOverview();
+  document.getElementById("role-form").style.display = "none";
+  renderRoleTable();
+}
+
+/* ---- 频道(当前项目) ---- */
+function renderChanTable() {
+  const rows = projChannels().map(c => `<tr>
+    <td><b># ${esc(c.name || c.id)}</b> <span class="muted">${esc(c.id)}</span></td>
+    <td class="muted">${esc(c.workdir || "(平台内置工作区)")}</td>
+    <td><button class="danger" onclick="deleteChannel('${c.id}')">删除</button></td>
+  </tr>`).join("");
+  document.getElementById("chan-table").innerHTML =
+    `<tr><th>频道</th><th>工作目录</th><th></th></tr>` + rows;
+}
+
+async function createChannel() {
+  const id = document.getElementById("nc-id").value.trim();
+  if (!id) { alert("频道名不能为空"); return; }
+  if (!currentProject) { alert("请先创建/选择项目"); return; }
+  await api("POST", "/api/chat/channels", {
+    id, name: id,
+    project_id: currentProject,
+    workdir: document.getElementById("nc-workdir").value.trim() || null,
+  });
+  document.getElementById("nc-id").value = "";
+  document.getElementById("nc-workdir").value = "";
+  await loadOverview(); renderChanTable(); renderSidebar();
+}
+
+async function deleteChannel(id) {
+  if (!confirm(`删除频道 #${id}?(消息记录保留在数据库)`)) return;
+  await api("DELETE", `/api/chat/channels/${id}`);
+  if (currentChan === id) currentChan = null;
+  await loadOverview(); renderChanTable(); renderSidebar();
+}
+
+/* ---------------- 全局设置:运行时(仿 Multica Runtime 页) ----------------
+   只列支持的工具 + 安装状态/版本/路径 + 启停;成本/能力/档位在角色层配置 */
+async function renderGlobalSettings() {
+  await ensureTraits();
+  await renderBackendTable();
+}
+
+async function renderBackendTable() {
+  const tools = await (await fetch("/api/backends/tools")).json();
+  const rows = tools.map(t => {
+    const status = !t.installed
+      ? `<span class="muted">未安装</span>`
+      : t.registered
+        ? `<span style="color:var(--ok)">✓ 已安装</span>` +
+          (t.version ? ` <span class="pill">${esc(t.version)}</span>` : "")
+        : `<span style="color:var(--warn)">已安装,未注册</span>`;
+    const toggle = t.registered
+      ? `<span class="switch" onclick="toggleBackend('${esc(t.id)}', ${!t.enabled})"
+           style="color:${t.enabled ? "var(--ok)" : "var(--bad)"}">${t.enabled ? "✓ 启用" : "✗ 停用"}</span>`
+      : "";
+    return `<tr>
+      <td><b>${esc(t.binary)}</b><br><span class="muted">${esc(t.adapter)}</span></td>
+      <td>${status}</td>
+      <td class="muted">${esc(t.path || "—")}</td>
+      <td>${(t.models || []).map(m => `<span class="pill">${esc(m)}</span>`).join("") || `<span class="muted">—</span>`}</td>
+      <td>${toggle}</td></tr>`;
+  }).join("");
+  document.getElementById("backend-table").innerHTML =
+    `<tr><th>工具</th><th>状态</th><th>路径</th><th>可用模型</th><th></th></tr>` + rows;
+}
+
+async function toggleBackend(id, enabled) {
+  await api("POST", "/api/backends", { id, enabled });
+  await loadOverview(); renderBackendTable();
+}
+
+async function detectBackends() {
+  const d = await api("POST", "/api/backends/detect");
+  alert(`检测到: ${d.found.join(", ") || "无"}\n新注册: ${d.added.join(", ") || "无"}\n已刷新: ${d.updated.join(", ") || "无"}`);
+  await loadOverview(); renderBackendTable();
+}
+
+loadOverview();
+setInterval(pollMessages, 2000);
+setInterval(loadOverview, 8000);
+</script>
+</body>
+</html>

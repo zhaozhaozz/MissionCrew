@@ -1,0 +1,27 @@
+[project]
+name = "missioncrew"
+version = "0.4.0"
+description = "策略驱动的多 Agent 研发任务执行平台:动态装配执行实例,证据驱动门禁"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "typer>=0.12",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+mc = "missioncrew.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["missioncrew"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
