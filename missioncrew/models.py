@@ -215,6 +215,15 @@ TRAITS: dict[str, dict] = {
     "docs":       {"label": "适合文档"},
 }
 
+# 旧版中这些偏好会隐式追加路由能力。仅在读取旧角色 JSON 时
+# 还原为显式能力,避免升级后名册丢失原有的专长信息。
+_LEGACY_TRAIT_CAPABILITIES = {
+    "multimodal": ["multimodal"],
+    "web": ["web_search"],
+    "review": ["review"],
+    "security": ["security", "review"],
+}
+
 
 @dataclass
 class Role:
@@ -244,9 +253,16 @@ class Role:
     def from_dict(cls, d: dict) -> "Role":
         d = dict(d)
         # v0.4 兼容迁移:旧角色的可选 pinned_* 与路由约束转成固定组合和描述能力。
+        legacy = any(k in d for k in (
+            "pinned_backend", "pinned_model", "required_capabilities", "min_tier", "max_tier"
+        ))
         d.setdefault("runtime_id", d.pop("pinned_backend", None) or "")
         d.setdefault("model", d.pop("pinned_model", None) or "")
-        d.setdefault("capabilities", d.pop("required_capabilities", []))
+        legacy_caps = set(d.pop("required_capabilities", []))
+        if legacy and "capabilities" not in d:
+            for trait in d.get("traits", []):
+                legacy_caps.update(_LEGACY_TRAIT_CAPABILITIES.get(trait, []))
+            d["capabilities"] = sorted(legacy_caps)
         d.pop("min_tier", None)
         d.pop("max_tier", None)
         return cls(**d)

@@ -91,14 +91,14 @@ def test_role_api_rejects_unknown_trait_and_bad_id(client):
 def test_legacy_auto_routed_role_is_migrated_once(seeded):
     seeded._put("roles", "webshop:legacy", {
         "id": "legacy", "project_id": "webshop", "name": "旧角色",
-        "required_capabilities": ["review"], "traits": ["review"],
+        "required_capabilities": [], "traits": ["security"],
         "pinned_backend": None, "pinned_model": None,
         "min_tier": "standard", "max_tier": "expert",
     })
     assert seed_mod.ensure_role_bindings(seeded) == 1
     role = seeded.get_role("webshop", "legacy")
     assert role.runtime_id == "rev-1" and role.model == "pro"
-    assert role.capabilities == ["review"]
+    assert role.capabilities == ["review", "security"]
     assert "pinned_backend" not in role.to_dict() and "min_tier" not in role.to_dict()
 
 
