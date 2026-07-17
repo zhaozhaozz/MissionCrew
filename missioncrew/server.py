@@ -344,4 +344,12 @@ def create_app() -> FastAPI:
         return {"messages": [r.message for r in reports],
                 "task": t.to_dict() if t else None}
 
+    # 干净 URL 支持:必须注册在所有 API 路由之后(Starlette 按注册顺序匹配),
+    # 非 API 路径一律返回页面,由前端路由还原视图
+    @app.get("/{full_path:path}", response_class=HTMLResponse)
+    def spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(404, "接口不存在")
+        return (WEB_DIR / "index.html").read_text()
+
     return app

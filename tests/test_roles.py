@@ -174,6 +174,14 @@ def test_detect_report_lists_all_supported_tools():
             assert i["path"]
 
 
+def test_spa_fallback_serves_page_for_clean_urls(client):
+    """干净 URL:非 API 路径返回页面,由前端路由还原;API 未知路径仍 404。"""
+    r = client.get("/default/settings")
+    assert r.status_code == 200 and "MissionCrew" in r.text
+    assert client.get("/webshop/chat/general").status_code == 200
+    assert client.get("/api/nonexistent").status_code == 404
+
+
 def test_tools_endpoint_merges_registration_state(client):
     rows = client.get("/api/backends/tools").json()
     by_id = {r["id"]: r for r in rows}
