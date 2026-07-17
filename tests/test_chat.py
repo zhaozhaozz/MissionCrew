@@ -52,11 +52,11 @@ def test_multiple_mentions_run_in_parallel(chat, seeded):
     assert agents == {"dev", "expert"}
 
 
-def test_expert_role_routes_to_expert_tier(chat, seeded):
+def test_expert_role_uses_fixed_expert_runtime(chat, seeded):
     chat.post("general", "human", "@expert 分析一下这个架构问题。")
     chat.wait_idle()
     runs = seeded._query("SELECT * FROM chat_runs WHERE role_id='expert'")
-    assert runs and runs[0]["backend_id"] == "exp-1"  # min_tier=expert 只有 exp-1
+    assert runs and runs[0]["backend_id"] == "exp-1"  # 默认专家角色已固定到 expert runtime
 
 
 def test_depth_limit_stops_cascade(chat, seeded):

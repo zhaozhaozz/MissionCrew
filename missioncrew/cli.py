@@ -31,7 +31,9 @@ app.add_typer(role_app, name="role")
 
 
 def _store() -> Store:
-    return Store(db_path())
+    store = Store(db_path())
+    seed_mod.ensure_role_bindings(store)
+    return store
 
 
 def _engine() -> Engine:
@@ -207,6 +209,7 @@ def backend_detect(register: bool = typer.Option(True, help="检测到后立即�
                     existing.models = b.models
                 store.put_backend(existing)
         seed_mod.ensure_default_project(store)  # 平台至少要有一个项目
+        seed_mod.ensure_role_bindings(store)
         typer.echo("工具已注册/刷新;默认项目(含角色与 general 频道)就绪。mc serve 打开页面。")
 
 
@@ -286,11 +289,11 @@ def chat_channels(create: Optional[str] = typer.Option(None, help="创建频道�
 @role_app.command("list")
 def role_list(project: Optional[str] = typer.Option(None, "-p", "--project")):
     for r in _store().list_roles(project):
-        pin = (f" 固定={r.pinned_backend}" + (f"/{r.pinned_model}" if r.pinned_model else "")
-               ) if r.pinned_backend else ""
+        model = r.model or "(CLI 默认)"
+        fixed = f" runtime={r.runtime_id or '(未配置)'}/{model}"
         traits = f" 偏好=[{','.join(r.trait_labels())}]" if r.traits else ""
-        caps = f" 能力=[{','.join(r.required_capabilities)}]" if r.required_capabilities else ""
-        typer.echo(f"[{r.project_id}] @{r.id:<10} {r.name:<6}{traits}{caps}{pin}  {r.description}")
+        caps = f" 能力=[{','.join(r.capabilities)}]" if r.capabilities else ""
+        typer.echo(f"[{r.project_id}] @{r.id:<10} {r.name:<6}{traits}{caps}{fixed}  {r.description}")
 
 
 @role_app.command("add")
@@ -306,6 +309,12 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
         r = Role(**d)
         if not r.project_id or store.get_project(r.project_id) is None:
             raise typer.BadParameter(f"@{r.id} 缺少有效的 project_id(角色按项目隔离)")
+        backend = store.get_backend(r.runtime_id)
+        if backend is None:
+            raise typer.BadParameter(f"@{r.id} 缺少有效的 runtime_id")
+        known_models = {str(m.get("name", "")) for m in backend.models}
+        if known_models and r.model not in known_models:
+            raise typer.BadParameter(f"@{r.id} 的模型不属于 runtime {r.runtime_id}")
         store.put_role(r)
         typer.echo(f"角色已保存: [{r.project_id}] @{r.id}")
 

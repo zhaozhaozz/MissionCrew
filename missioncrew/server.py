@@ -60,14 +60,12 @@ class ChannelCreate(BaseModel):
 class RoleInput(BaseModel):
     id: str
     project_id: str
+    runtime_id: str
+    model: str
     name: str = ""
     description: str = ""
-    required_capabilities: list[str] = []
+    capabilities: list[str] = []
     traits: list[str] = []
-    pinned_backend: Optional[str] = None
-    pinned_model: Optional[str] = None
-    min_tier: Optional[str] = None
-    max_tier: Optional[str] = None
     color: str = ""
 
 
@@ -98,6 +96,7 @@ class BackendInput(BaseModel):
 def create_app() -> FastAPI:
     app = FastAPI(title="MissionCrew", version="0.2.0")
     store = Store(db_path())
+    seed_mod.ensure_role_bindings(store)
     engine = Engine(store)
     chat = ChatEngine(store)
 
@@ -171,8 +170,12 @@ def create_app() -> FastAPI:
         bad = [t for t in body.traits if t not in TRAITS]
         if bad:
             raise HTTPException(400, f"未知偏好标签: {bad}")
-        if body.pinned_backend and store.get_backend(body.pinned_backend) is None:
-            raise HTTPException(400, f"固定后端不存在: {body.pinned_backend}")
+        backend = store.get_backend(body.runtime_id)
+        if backend is None:
+            raise HTTPException(400, f"固定 runtime 不存在: {body.runtime_id}")
+        known_models = {str(m.get("name", "")) for m in backend.models}
+        if known_models and body.model not in known_models:
+            raise HTTPException(400, f"模型 {body.model or '(CLI 默认)'} 不属于 runtime {body.runtime_id}")
         role = Role(**body.model_dump())
         store.put_role(role)
         store.audit("human", "role_saved", detail=f"project={role.project_id} role={role.id}")
@@ -200,6 +203,8 @@ def create_app() -> FastAPI:
         data = body.model_dump()
         data.pop("rules_yaml")
         is_new = store.get_project(body.id) is None
+        if is_new and not seed_mod.has_enabled_runtime(store):
+            raise HTTPException(400, "请先检测并启用至少一个 runtime,再创建项目角色")
         project = Project(**data, rules=rules)
         store.put_project(project)
         if is_new:  # 新项目自动获得自己的默认角色和 general 频道
@@ -231,6 +236,12 @@ def create_app() -> FastAPI:
                 except (TypeError, ValueError):
                     raise HTTPException(400, f"模型 {m.get('name') or '(默认)'} 的成本必须是数字")
                 m["name"] = str(m.get("name", ""))
+            model_names = {m["name"] for m in body.models}
+            invalid_roles = [r for r in store.list_roles()
+                             if r.runtime_id == b.id and model_names and r.model not in model_names]
+            if invalid_roles:
+                names = ", ".join(f"{r.project_id}/@{r.id}" for r in invalid_roles)
+                raise HTTPException(400, f"模型仍被角色使用,请先修改角色: {names}")
         for field in ("name", "model", "tier", "cost_per_run", "security_level",
                       "capabilities", "models", "enabled"):
             v = getattr(body, field)
@@ -248,14 +259,14 @@ def create_app() -> FastAPI:
         project_names = {p.id: p.name for p in store.list_projects()}
         role_users: dict[str, list[dict]] = {}
         for role in store.list_roles():
-            if not role.pinned_backend:
+            if not role.runtime_id:
                 continue
-            role_users.setdefault(role.pinned_backend, []).append({
+            role_users.setdefault(role.runtime_id, []).append({
                 "id": role.id,
                 "name": role.name,
                 "project_id": role.project_id,
                 "project_name": project_names.get(role.project_id, role.project_id),
-                "model": role.pinned_model or "",
+                "model": role.model,
             })
         for users in role_users.values():
             users.sort(key=lambda r: (r["project_name"], r["id"]))
@@ -344,6 +355,7 @@ def create_app() -> FastAPI:
                 store.put_backend(existing)
                 updated.append(b.id)
         seed_mod.ensure_default_project(store)
+        seed_mod.ensure_role_bindings(store)
         return {"found": [i["id"] for i in report if i["installed"]],
                 "added": added, "updated": updated}
 
@@ -351,6 +363,10 @@ def create_app() -> FastAPI:
     def delete_backend(backend_id: str):
         if store.get_backend(backend_id) is None:
             raise HTTPException(404, "后端不存在")
+        users = [r for r in store.list_roles() if r.runtime_id == backend_id]
+        if users:
+            names = ", ".join(f"{r.project_id}/@{r.id}" for r in users)
+            raise HTTPException(409, f"runtime 仍被角色使用,请先修改角色: {names}")
         store.delete_backend(backend_id)
         store.audit("human", "backend_deleted", detail=f"backend={backend_id}")
         return {"ok": True}

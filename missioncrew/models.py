@@ -200,17 +200,17 @@ class Task:
         return cls(**d)
 
 
-# 角色偏好标签:只影响路由(档位窗口/能力要求)与名册展示,
-# 不改写角色的人格提示词(description 始终是自由文本)
+# 角色偏好标签:描述角色的工作风格并展示在名册中;
+# runtime/model 已固定,偏好不再参与执行时路由。
 TRAITS: dict[str, dict] = {
-    "fast":       {"label": "快速",     "max_tier": "standard"},
-    "low-cost":   {"label": "低成本",   "max_tier": "standard"},
-    "quality":    {"label": "高质量",   "min_tier": "standard"},
-    "deep":       {"label": "深度攻坚", "min_tier": "expert"},
-    "multimodal": {"label": "多模态",   "require": ["multimodal"]},
-    "web":        {"label": "联网检索", "require": ["web_search"]},
-    "review":     {"label": "代码评审", "require": ["review"]},
-    "security":   {"label": "安全审查", "require": ["security", "review"]},
+    "fast":       {"label": "快速"},
+    "low-cost":   {"label": "低成本"},
+    "quality":    {"label": "高质量"},
+    "deep":       {"label": "深度攻坚"},
+    "multimodal": {"label": "多模态"},
+    "web":        {"label": "联网检索"},
+    "review":     {"label": "代码评审"},
+    "security":   {"label": "安全审查"},
     "testing":    {"label": "适合测试"},
     "docs":       {"label": "适合文档"},
 }
@@ -218,41 +218,21 @@ TRAITS: dict[str, dict] = {
 
 @dataclass
 class Role:
-    """聊天中可 @ 的角色 = 人格 + 领域上下文 + 结构化配置。
+    """聊天中可 @ 的角色 = 固定执行组合 + 定位 + 能力 + 偏好。
 
-    人格(description)是自由文本,平台原样装配进 Prompt,不拼接任何约束;
-    结构化配置分两种执行方式:
-    - 自动路由:required_capabilities / traits / min_tier / max_tier 约束路由;
-    - 固定组合:pinned_backend(+ pinned_model)直接指定 Agent 与模型。
+    runtime_id/model 始终指向固定执行组合;description/capabilities/traits
+    用于协作方理解和选择角色,不参与执行时路由。
     """
 
     id: str                       # @ 提及名,如 dev、reviewer(项目内唯一)
     project_id: str = ""          # 所属项目:角色按项目隔离,不跨项目共享
     name: str = ""                # 显示名
     description: str = ""         # 人格与领域上下文(自由文本,不锁定)
-    required_capabilities: list[str] = field(default_factory=list)
-    traits: list[str] = field(default_factory=list)   # 偏好标签,见 TRAITS
-    pinned_backend: Optional[str] = None   # 固定后端(跳过路由)
-    pinned_model: Optional[str] = None     # 固定模型(配合 pinned_backend)
-    min_tier: Optional[str] = None         # 最低档位(如攻坚角色直接用 expert)
-    max_tier: Optional[str] = None         # 最高档位(成本上限)
+    runtime_id: str = ""             # 固定 runtime(后端注册表 id)
+    model: str = ""                  # 固定模型;"" 表示显式使用 CLI 默认模型
+    capabilities: list[str] = field(default_factory=list)  # 角色能力标签
+    traits: list[str] = field(default_factory=list)        # 工作偏好,见 TRAITS
     color: str = ""                        # 看板/聊天中的标识色
-
-    def effective_constraints(self) -> tuple[list[str], Optional[str], Optional[str]]:
-        """显式约束 + 偏好标签推导 => (能力要求, 最低档位, 最高档位)。"""
-        caps = set(self.required_capabilities)
-        mins = [self.min_tier] if self.min_tier in TIER_ORDER else []
-        maxs = [self.max_tier] if self.max_tier in TIER_ORDER else []
-        for t in self.traits:
-            spec = TRAITS.get(t, {})
-            caps |= set(spec.get("require", []))
-            if spec.get("min_tier"):
-                mins.append(spec["min_tier"])
-            if spec.get("max_tier"):
-                maxs.append(spec["max_tier"])
-        min_tier = max(mins, key=TIER_ORDER.index) if mins else None
-        max_tier = min(maxs, key=TIER_ORDER.index) if maxs else None
-        return sorted(caps), min_tier, max_tier
 
     def trait_labels(self) -> list[str]:
         return [TRAITS[t]["label"] for t in self.traits if t in TRAITS]
@@ -262,6 +242,13 @@ class Role:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Role":
+        d = dict(d)
+        # v0.4 兼容迁移:旧角色的可选 pinned_* 与路由约束转成固定组合和描述能力。
+        d.setdefault("runtime_id", d.pop("pinned_backend", None) or "")
+        d.setdefault("model", d.pop("pinned_model", None) or "")
+        d.setdefault("capabilities", d.pop("required_capabilities", []))
+        d.pop("min_tier", None)
+        d.pop("max_tier", None)
         return cls(**d)
 
 

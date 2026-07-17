@@ -5,7 +5,7 @@ adapter 改为 claude_code / codex 并配置模型。
 """
 from __future__ import annotations
 
-from .models import Backend, Channel, Project, Resource, Role, Rule
+from .models import TIER_ORDER, Backend, Channel, Project, Resource, Role, Rule
 from .store import Store
 
 DEMO_BACKENDS = [
@@ -63,43 +63,86 @@ DEMO_RESOURCES = [
 ]
 
 
+_DEFAULT_ROLE_TIERS = {
+    "lead": "standard", "dev": "standard", "reviewer": "standard",
+    "expert": "expert", "vision": "standard", "secure": "standard",
+    "tester": "economy", "scribe": "economy",
+}
+
+
+def _choose_role_unit(store: Store, role: Role) -> Backend | None:
+    """为默认/旧角色一次性选择执行单元;选择结果会持久化,运行时不再路由。"""
+    units = [u for b in store.list_backends() if b.enabled for u in b.units()]
+    if not units:
+        return None
+    need = set(role.capabilities)
+    compatible = [u for u in units if need <= set(u.capabilities)]
+    pool = compatible or units
+    target = TIER_ORDER.index(_DEFAULT_ROLE_TIERS.get(role.id, "standard"))
+
+    def score(unit: Backend) -> tuple:
+        tier = TIER_ORDER.index(unit.tier)
+        return (len(need - set(unit.capabilities)), abs(tier - target),
+                tier < target, len(set(unit.capabilities) - need),
+                unit.cost_per_run, unit.id, unit.model)
+
+    return min(pool, key=score)
+
+
+def _bind_role(store: Store, role: Role) -> bool:
+    unit = _choose_role_unit(store, role)
+    if unit is None:
+        return False
+    role.runtime_id = unit.id
+    role.model = unit.model
+    return True
+
+
+def has_enabled_runtime(store: Store) -> bool:
+    return any(b.enabled for b in store.list_backends())
+
+
 # 默认角色模板:人格(description)是"选人用的专长画像",供调度方(人类或
 # @lead)挑选协作对象;任务简报由调度方结合项目章程撰写,人格不承担任务描述。
-# 角色按项目隔离,每个项目创建时从模板生成自己的一套。
-def default_roles(project_id: str) -> list[Role]:
-    return [
+# 每个角色在创建时按能力与目标档位一次性绑定 runtime/model,之后不再自动路由。
+def default_roles(store: Store, project_id: str) -> list[Role]:
+    roles = [
         Role(id="lead", project_id=project_id, name="主管", color="#d97706",
              description="调度者,不亲自实现。接到需求先结合项目章程理解目标,必要时拆解;"
                          "对照名册按各角色定位挑选人选,@分派时为每个子任务写清背景、要求、"
                          "验收标准,并要求完成后向你汇报;收到汇报后核对验收标准再汇总结论。",
-             required_capabilities=["reasoning"], traits=["quality"]),
+             capabilities=["reasoning"], traits=["quality"]),
         Role(id="dev", project_id=project_id, name="开发", color="#3564d7",
              description="全栈开发工程师,负责实现需求、修复缺陷。动手前先看清现有代码约定。",
-             required_capabilities=["coding"]),
+             capabilities=["coding"]),
         Role(id="reviewer", project_id=project_id, name="评审", color="#2e9e5b",
              description="独立代码评审员,只审查不改代码:正确性、可维护性、边界条件。",
-             traits=["review"]),
+             capabilities=["review"], traits=["review"]),
         Role(id="expert", project_id=project_id, name="专家", color="#8b5cf6",
              description="资深架构师,处理疑难问题、复杂分析和大型重构方案。",
-             required_capabilities=["coding", "reasoning"], traits=["deep", "quality"]),
+             capabilities=["coding", "reasoning"], traits=["deep", "quality"]),
         Role(id="vision", project_id=project_id, name="视觉验证", color="#c98a1b",
              description="多模态验证员,负责页面截图、浏览器流程测试和视觉回归确认。",
-             traits=["multimodal"]),
+             capabilities=["multimodal"], traits=["multimodal"]),
         Role(id="secure", project_id=project_id, name="安全", color="#c94b3c",
              description="安全工程师,从注入、越权、凭据泄露等角度审查变更与配置。",
-             traits=["security"]),
+             capabilities=["security", "review"], traits=["security"]),
         Role(id="tester", project_id=project_id, name="测试", color="#0e9488",
              description="测试工程师,写用例、跑回归、构造边界输入,报告只讲事实与复现步骤。",
-             required_capabilities=["coding"], traits=["testing", "fast"]),
+             capabilities=["coding"], traits=["testing", "fast"]),
         Role(id="scribe", project_id=project_id, name="文档", color="#64748b",
              description="技术写作者,维护 README、变更说明和使用文档,行文简洁面向读者。",
              traits=["docs", "fast", "low-cost"]),
     ]
+    for role in roles:
+        if not _bind_role(store, role):
+            raise RuntimeError("没有已启用的 runtime,无法创建固定执行角色")
+    return roles
 
 
 def init_project(store: Store, project_id: str) -> None:
     """项目初始化:播种该项目的默认角色与 general 频道(已存在的不覆盖)。"""
-    for role in default_roles(project_id):
+    for role in default_roles(store, project_id):
         if store.get_role(project_id, role.id) is None:
             store.put_role(role)
     if not store.list_channels(project_id):
@@ -116,7 +159,7 @@ def seed(store: Store) -> None:
     for r in DEMO_RESOURCES:
         store.put_resource(r)
     store.put_project(DEMO_PROJECT)
-    for role in default_roles(DEMO_PROJECT.id):
+    for role in default_roles(store, DEMO_PROJECT.id):
         store.put_role(role)
     if store.get_channel(DEFAULT_CHANNEL.id) is None:
         store.put_channel(DEFAULT_CHANNEL)
@@ -125,8 +168,21 @@ def seed(store: Store) -> None:
 
 def ensure_default_project(store: Store) -> None:
     """平台至少要有一个项目(项目是第一层级);没有时创建 default 项目。"""
-    if store.list_projects():
+    if store.list_projects() or not has_enabled_runtime(store):
         return
     store.put_project(Project(id="default", name="默认项目",
                               description="首次使用自动创建,可在项目页改名或新建其他项目"))
     init_project(store, "default")
+
+
+def ensure_role_bindings(store: Store) -> int:
+    """把旧版可选 pinned_* / 自动路由角色一次性迁移为固定 runtime/model。"""
+    bound = 0
+    for role in store.list_roles():
+        if not role.runtime_id or store.get_backend(role.runtime_id) is None:
+            if not _bind_role(store, role):
+                continue
+            bound += 1
+        # 即使已有固定组合也重写一次,清除旧 JSON 字段并落成新模型。
+        store.put_role(role)
+    return bound

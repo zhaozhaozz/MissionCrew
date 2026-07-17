@@ -138,20 +138,21 @@ def test_tools_endpoint_exposes_updatable(client, seeded):
 
 def test_tools_endpoint_exposes_pinned_role_usage(client, seeded):
     seeded.put_role(Role(id="builder", project_id="webshop", name="构建",
-                         pinned_backend="std-1", pinned_model="pro"))
+                         runtime_id="std-1", model="pro"))
     seeded.put_role(Role(id="review-builder", project_id="webshop", name="构建评审",
-                         pinned_backend="std-1"))
+                         runtime_id="std-1", model=""))
 
     by_id = {r["id"]: r for r in client.get("/api/backends/tools").json()}
-    assert by_id["std-1"]["role_count"] == 2
-    assert by_id["std-1"]["role_users"] == [
-        {"id": "builder", "name": "构建", "project_id": "webshop",
-         "project_name": "WebShop 电商站", "model": "pro"},
-        {"id": "review-builder", "name": "构建评审", "project_id": "webshop",
-         "project_name": "WebShop 电商站", "model": ""},
-    ]
-    assert by_id["eco-1"]["role_count"] == 0
-    assert by_id["eco-1"]["role_users"] == []
+    users = by_id["std-1"]["role_users"]
+    assert by_id["std-1"]["role_count"] == len(users)
+    by_role = {r["id"]: r for r in users}
+    assert by_role["builder"] == {
+        "id": "builder", "name": "构建", "project_id": "webshop",
+        "project_name": "WebShop 电商站", "model": "pro",
+    }
+    assert by_role["review-builder"]["model"] == ""
+    assert by_id["trust-1"]["role_count"] == 0
+    assert by_id["trust-1"]["role_users"] == []
 
 
 def test_runtime_status_does_not_expose_registration_state(client):

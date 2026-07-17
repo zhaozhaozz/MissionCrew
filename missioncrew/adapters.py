@@ -201,8 +201,8 @@ def detect_report(with_version: bool = True) -> list[dict]:
 def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
     """按检测报告生成注册项:一个工具一条记录,模型阶梯自动挂在 models 下。
 
-    档位/成本/能力是内部路由属性(自动填充,不在工具页配置);
-    角色层再做偏好、成本、能力、档位的选择。
+    档位/成本/能力是结构化任务的路由属性(自动填充,不在工具页配置);
+    聊天角色在创建时固定 runtime/model,执行时不使用这些属性重新路由。
     """
     by_adapter = {a: (caps, tier, cost) for _, a, caps, tier, cost in KNOWN_CLIS}
     found = []

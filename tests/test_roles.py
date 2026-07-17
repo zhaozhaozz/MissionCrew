@@ -1,53 +1,32 @@
-"""角色配置:偏好推导、固定组合、管理 API。"""
+"""角色配置:固定 runtime/model、定位/能力/偏好与管理 API。"""
 import pytest
 from fastapi.testclient import TestClient
 
+from missioncrew import seed as seed_mod
 from missioncrew.chat import ChatEngine
-from missioncrew.models import Role
+from missioncrew.models import Backend, Role
 from missioncrew.server import create_app
 
 
-# ---- 偏好标签 -> 路由约束 ----
+# ---- 角色元数据 + 固定执行组合 ----
 
-def test_traits_derive_constraints():
-    r = Role(id="x", traits=["deep", "multimodal", "low-cost"])
-    caps, min_tier, max_tier = r.effective_constraints()
-    assert "multimodal" in caps
-    assert min_tier == "expert"      # deep
-    assert max_tier == "standard"    # low-cost
-
-
-def test_explicit_constraints_merge_with_traits():
-    r = Role(id="x", required_capabilities=["coding"], traits=["security"],
-             min_tier="standard")
-    caps, min_tier, _ = r.effective_constraints()
-    assert {"coding", "security", "review"} <= set(caps)
-    assert min_tier == "standard"
+def test_traits_and_capabilities_are_role_metadata():
+    r = Role(id="x", runtime_id="std-1", model="pro",
+             capabilities=["coding", "reasoning"], traits=["deep", "quality"])
+    assert r.capabilities == ["coding", "reasoning"]
+    assert r.trait_labels() == ["深度攻坚", "高质量"]
 
 
-def test_deep_trait_routes_to_expert_backend(seeded):
-    seeded.put_role(Role(id="digger", project_id="webshop", name="攻坚", traits=["deep"]))
-    chat = ChatEngine(seeded, max_workers=2)
-    chat.post("general", "human", "@digger 分析一下。")
-    chat.wait_idle()
-    runs = seeded._query("SELECT * FROM chat_runs WHERE role_id='digger'")
-    assert runs and runs[0]["backend_id"] == "exp-1"
+def test_default_roles_are_bound_once_to_runtime_and_model(seeded):
+    roles = seeded.list_roles("webshop")
+    assert roles and all(r.runtime_id for r in roles)
+    assert seeded.get_role("webshop", "expert").runtime_id == "exp-1"
+    assert seeded.get_role("webshop", "tester").runtime_id == "eco-1"
 
 
-def test_lowcost_trait_never_uses_expert(seeded):
-    seeded.put_role(Role(id="cheap", project_id="webshop", name="省钱", traits=["low-cost"]))
-    chat = ChatEngine(seeded, max_workers=2)
-    chat.post("general", "human", "@cheap 干点活。")
-    chat.wait_idle()
-    runs = seeded._query("SELECT * FROM chat_runs WHERE role_id='cheap'")
-    assert runs and runs[0]["backend_id"] != "exp-1"
-    b = seeded.get_backend(runs[0]["backend_id"])
-    assert b.tier in ("economy", "standard")
-
-
-def test_pinned_backend_and_model(seeded):
-    seeded.put_role(Role(id="fixed", project_id="webshop", name="固定", pinned_backend="std-1",
-                         pinned_model="custom-model"))
+def test_fixed_runtime_and_model(seeded):
+    seeded.put_role(Role(id="fixed", project_id="webshop", name="固定",
+                         runtime_id="std-1", model="custom-model"))
     chat = ChatEngine(seeded, max_workers=2)
     channel = seeded.get_channel("general")
     role = seeded.get_role("webshop", "fixed")
@@ -58,11 +37,20 @@ def test_pinned_backend_and_model(seeded):
     assert "固定组合" in reason
 
 
-def test_pinned_backend_disabled_reports_unavailable(seeded):
+def test_preferences_do_not_reroute_fixed_runtime(seeded):
+    seeded.put_role(Role(id="cheap-expert", project_id="webshop", runtime_id="exp-1",
+                         model="ultra", traits=["fast", "low-cost"]))
+    chat = ChatEngine(seeded, max_workers=2)
+    backend, _ = chat._pick_backend(seeded.get_channel("general"),
+                                    seeded.get_role("webshop", "cheap-expert"))
+    assert backend.id == "exp-1" and backend.model == "ultra"
+
+
+def test_fixed_runtime_disabled_reports_unavailable(seeded):
     b = seeded.get_backend("std-1")
     b.enabled = False
     seeded.put_backend(b)
-    seeded.put_role(Role(id="fixed", project_id="webshop", pinned_backend="std-1"))
+    seeded.put_role(Role(id="fixed", project_id="webshop", runtime_id="std-1", model="pro"))
     chat = ChatEngine(seeded, max_workers=2)
     backend, reason = chat._pick_backend(seeded.get_channel("general"),
                                          seeded.get_role("webshop", "fixed"))
@@ -78,22 +66,40 @@ def client(seeded):
 
 def test_role_crud_api(client):
     body = {"id": "writer", "project_id": "webshop", "name": "写手",
+            "runtime_id": "std-1", "model": "pro", "capabilities": ["coding"],
             "description": "自由文本人格", "traits": ["docs", "fast"], "color": "#123456"}
     assert client.post("/api/roles", json=body).status_code == 200
     roles = {r["id"]: r for r in client.get("/api/roles").json()}
     assert roles["writer"]["traits"] == ["docs", "fast"]
+    assert roles["writer"]["runtime_id"] == "std-1"
+    assert roles["writer"]["model"] == "pro"
     assert roles["writer"]["description"] == "自由文本人格"
     assert client.delete("/api/roles/writer?project_id=webshop").status_code == 200
     assert "writer" not in {r["id"] for r in client.get("/api/roles").json()}
 
 
 def test_role_api_rejects_unknown_trait_and_bad_id(client):
-    p = {"project_id": "webshop"}
+    p = {"project_id": "webshop", "runtime_id": "std-1", "model": "pro"}
     assert client.post("/api/roles", json={"id": "x", "traits": ["nope"], **p}).status_code == 400
     assert client.post("/api/roles", json={"id": "bad name", **p}).status_code == 400
-    assert client.post("/api/roles", json={"id": "y", "pinned_backend": "ghost", **p}).status_code == 400
+    assert client.post("/api/roles", json={"id": "y", **{**p, "runtime_id": "ghost"}}).status_code == 400
+    assert client.post("/api/roles", json={"id": "missing", "project_id": "webshop"}).status_code == 422
     # 角色必须归属已存在的项目
-    assert client.post("/api/roles", json={"id": "z", "project_id": "ghost"}).status_code == 400
+    assert client.post("/api/roles", json={"id": "z", **{**p, "project_id": "ghost"}}).status_code == 400
+
+
+def test_legacy_auto_routed_role_is_migrated_once(seeded):
+    seeded._put("roles", "webshop:legacy", {
+        "id": "legacy", "project_id": "webshop", "name": "旧角色",
+        "required_capabilities": ["review"], "traits": ["review"],
+        "pinned_backend": None, "pinned_model": None,
+        "min_tier": "standard", "max_tier": "expert",
+    })
+    assert seed_mod.ensure_role_bindings(seeded) == 1
+    role = seeded.get_role("webshop", "legacy")
+    assert role.runtime_id == "rev-1" and role.model == "pro"
+    assert role.capabilities == ["review"]
+    assert "pinned_backend" not in role.to_dict() and "min_tier" not in role.to_dict()
 
 
 def test_project_api_with_rules_yaml(client):
@@ -107,12 +113,37 @@ def test_project_api_with_rules_yaml(client):
     assert bad.status_code == 400
 
 
+def test_new_project_requires_an_enabled_runtime(store):
+    empty_client = TestClient(create_app())
+    response = empty_client.post("/api/projects", json={"id": "empty", "name": "Empty"})
+    assert response.status_code == 400
+    assert "runtime" in response.json()["detail"]
+
+
+def test_runtime_and_model_in_use_cannot_be_removed(client, seeded):
+    assert client.delete("/api/backends/std-1").status_code == 409
+
+    seeded.put_backend(Backend(
+        id="ladder", name="ladder", adapter="mock",
+        models=[{"name": "small", "tier": "economy", "cost": 1},
+                {"name": "large", "tier": "expert", "cost": 10}],
+    ))
+    seeded.put_role(Role(id="ladder-user", project_id="webshop",
+                         runtime_id="ladder", model="large"))
+    response = client.post("/api/backends", json={
+        "id": "ladder", "models": [{"name": "small", "tier": "economy", "cost": 1}],
+    })
+    assert response.status_code == 400
+    assert "ladder-user" in response.json()["detail"]
+
+
 # ---- 项目第一层级:隔离与初始化 ----
 
 def test_new_project_seeds_roles_and_channel(client, seeded):
     client.post("/api/projects", json={"id": "alpha", "name": "Alpha"})
     role_ids = {r.id for r in seeded.list_roles("alpha")}
     assert {"lead", "dev", "reviewer"} <= role_ids
+    assert all(r.runtime_id for r in seeded.list_roles("alpha"))
     chans = seeded.list_channels("alpha")
     assert len(chans) == 1 and chans[0].id == "alpha:general"
 
@@ -120,7 +151,8 @@ def test_new_project_seeds_roles_and_channel(client, seeded):
 def test_roles_isolated_between_projects(client, seeded):
     """A 项目的角色在 B 项目的频道里 @ 不到:项目之间互不相干。"""
     client.post("/api/projects", json={"id": "alpha", "name": "Alpha"})
-    seeded.put_role(Role(id="only-a", project_id="alpha", name="A专属"))
+    seeded.put_role(Role(id="only-a", project_id="alpha", name="A专属",
+                         runtime_id="std-1", model="pro"))
     chat = ChatEngine(seeded, max_workers=2)
     # webshop 的 general 频道里 @alpha 的专属角色:不触发
     chat.post("general", "human", "@only-a 在吗?@dev 你也看看。")

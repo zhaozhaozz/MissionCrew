@@ -1,8 +1,8 @@
 """聊天协作引擎。
 
 协作模型:
-- 人类在频道里 @角色 布置工作;角色是"人格 + 领域上下文 + 路由约束",
-  实际执行后端仍由路由器按能力/成本/安全动态选择;
+- 人类在频道里 @角色 布置工作;角色由固定 runtime/model 执行,
+  定位、能力与偏好用于协作方选人,不参与执行时路由;
 - Agent 的回复原样发布到频道,回复中 @其他角色 即发起协作,平台自动级联触发;
 - 所有消息(包括 Agent 之间的)对人类完全可见,全程审计。
 
@@ -17,10 +17,9 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from . import adapters, router
+from . import adapters
 from .config import mc_home
-from .models import (TIER_ORDER, Channel, ExecutionConfig, Project, Role,
-                     Task, TaskStage)
+from .models import Channel, ExecutionConfig, Role
 from .store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -42,6 +41,9 @@ CHAT_PROMPT = """\
 你是角色 @{role_id}({role_name})。
 角色定位(这是你的专长画像,供协作方选人参考;它不是任务,不要据此自行发挥):
 {role_desc}
+角色能力:{role_capabilities}
+角色偏好:{role_traits}
+固定执行组合:{role_runtime}/{role_model}
 {project_section}\
 工作目录就是当前目录,直接在其中读写文件、运行命令完成工作。
 
@@ -186,38 +188,23 @@ class ChatEngine:
         self.post(channel.id, role_id, reply, author_type="agent",
                   reply_to=msg_id, root_id=root_id, depth=depth + 1)
 
-    # ---- 内部:路由与装配 ----
-    def _pick_backend(self, channel: Channel, role: Role):
-        """固定组合(后端+模型)直用;否则按角色约束+偏好复用任务路由器。"""
-        if role.pinned_backend:
-            b = self.store.get_backend(role.pinned_backend)
-            if b is None or not b.enabled:
-                return None, f"角色固定的后端 {role.pinned_backend} 不可用"
-            if role.pinned_model is not None:
-                # 模型在工具阶梯里则带上对应档位/成本;只影响本次执行,不写回注册表
-                spec = next((m for m in b.models if m.get("name") == role.pinned_model), None)
-                if spec:
-                    b = replace(b, model=role.pinned_model, tier=spec.get("tier", b.tier),
-                                cost_per_run=float(spec.get("cost", b.cost_per_run)))
-                else:
-                    b = replace(b, model=role.pinned_model)
-            return b, f"角色固定组合 {b.id}" + (f"+{b.model}" if b.model else "")
-
-        project = None
-        if channel.project_id:
-            project = self.store.get_project(channel.project_id)
-        if project is None:
-            project = Project(id="_chat", name="聊天")
-
-        # 显式约束 + 偏好标签 => 能力要求与档位窗口;
-        # 用 attempts 表达最低档位,复用路由器的窗口逻辑
-        caps, min_tier, max_tier = role.effective_constraints()
-        floor = TIER_ORDER.index(min_tier) if min_tier in TIER_ORDER else 0
-        task = Task(id="_chat", project_id=project.id, title="chat",
-                    task_type="chat", max_tier=max_tier)
-        stage = TaskStage(name="chat", required_capabilities=caps, attempts=floor)
-        decision = router.route(self.store, task, stage, project)
-        return decision.backend, decision.reason
+    # ---- 内部:固定执行组合与上下文装配 ----
+    def _pick_backend(self, _channel: Channel, role: Role):
+        """解析角色唯一的固定 runtime/model;聊天角色不再自动路由。"""
+        if not role.runtime_id:
+            return None, "角色未配置固定 runtime/model"
+        b = self.store.get_backend(role.runtime_id)
+        if b is None or not b.enabled:
+            return None, f"角色固定的 runtime {role.runtime_id} 不可用"
+        # 模型在工具阶梯里则带上对应档位/成本;只影响本次执行,不写回注册表。
+        spec = next((m for m in b.models if m.get("name", "") == role.model), None)
+        if spec:
+            b = replace(b, model=role.model, tier=spec.get("tier", b.tier),
+                        cost_per_run=float(spec.get("cost", b.cost_per_run)))
+        else:
+            b = replace(b, model=role.model)
+        model = b.model or "(CLI 默认)"
+        return b, f"角色固定组合 {b.id}+{model}"
 
     def _assemble(self, channel: Channel, role: Role, backend, msg_id: int) -> ExecutionConfig:
         workdir = Path(channel.workdir) if channel.workdir \
@@ -243,7 +230,7 @@ class ChatEngine:
         # 名册带偏好标签与人格定位:人格的用途正是让调度方判断该找谁;
         # 只列本项目的角色,项目之间互不可见
         def _tag(r):
-            labels = "/".join(r.trait_labels())
+            labels = "/".join([*r.capabilities, *r.trait_labels()])
             head = f"@{r.id}({r.name}" + (f"|{labels}" if labels else "") + ")"
             desc = " ".join((r.description or "").split())
             return f"  - {head}: {desc}" if desc else f"  - {head}"
@@ -251,6 +238,10 @@ class ChatEngine:
                            if r.id != role.id)
         prompt = CHAT_PROMPT.format(
             role_id=role.id, role_name=role.name, role_desc=role.description,
+            role_capabilities=", ".join(role.capabilities) or "无特别标注",
+            role_traits=", ".join(role.trait_labels()) or "无特别标注",
+            role_runtime=role.runtime_id,
+            role_model=role.model or "(CLI 默认)",
             project_section=project_section,
             history="\n".join(history_lines) or "(无)",
             trigger=trigger, roster=roster or "(无其他角色)",

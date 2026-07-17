@@ -650,33 +650,34 @@ function traitPills(role) {
 
 function renderRoleTable() {
   const rows = projRoles().map(r => {
-    const exec = r.pinned_backend
-      ? `固定: ${esc(r.pinned_backend)}${r.pinned_model ? " / " + esc(r.pinned_model) : ""}`
-      : `自动路由${r.min_tier || r.max_tier ? ` (${esc(r.min_tier || "")}~${esc(r.max_tier || "")})` : ""}`;
+    const exec = r.runtime_id
+      ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}`
+      : `<span style="color:var(--bad)">未配置</span>`;
     return `<tr>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
           <b>@${esc(r.id)}</b> ${esc(r.name)}</td>
       <td>${traitPills(r)}</td>
-      <td>${(r.required_capabilities || []).map(c => `<span class="pill">${esc(c)}</span>`).join("")}</td>
+      <td>${(r.capabilities || []).map(c => `<span class="pill">${esc(c)}</span>`).join("")}</td>
       <td class="muted">${exec}</td>
       <td><button class="ghost" onclick="editRole('${r.id}')">编辑</button></td></tr>`;
   }).join("");
   document.getElementById("role-table").innerHTML =
-    `<tr><th>角色</th><th>偏好</th><th>能力要求</th><th>执行方式</th><th></th></tr>` + rows;
+    `<tr><th>角色</th><th>偏好</th><th>能力</th><th>固定 Runtime / 模型</th><th></th></tr>` + rows;
 }
 
 function editRole(id) {
+  const fallbackRuntime = overview.backends.find(b => b.enabled) || overview.backends[0];
   const r = projRoles().find(x => x.id === id) || {
-    id: "", name: "", description: "", required_capabilities: [], traits: [],
-    pinned_backend: null, pinned_model: null, min_tier: null, max_tier: null, color: "#3564d7" };
+    id: "", name: "", description: "", capabilities: [], traits: [],
+    runtime_id: fallbackRuntime?.id || "", model: null, color: "#3564d7" };
   const traitChips = Object.entries(traitMeta.traits).map(([k, v]) =>
     `<span class="chip ${r.traits.includes(k) ? "on" : ""}" data-trait="${k}"
        onclick="this.classList.toggle('on')">${esc(v.label)}</span>`).join("");
-  const tierOpts = sel => `<option value="">(不限)</option>` + traitMeta.tiers.map(t =>
-    `<option value="${t}" ${sel === t ? "selected" : ""}>${t}</option>`).join("");
-  const backendOpts = `<option value="">(自动路由)</option>` + overview.backends.map(b =>
-    `<option value="${esc(b.id)}" ${r.pinned_backend === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("");
-  window._editingRoleModel = r.pinned_model;   // 供模型下拉初始化选中
+  const backendOpts = overview.backends.length
+    ? overview.backends.map(b =>
+      `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("")
+    : `<option value="">(没有可用 runtime)</option>`;
+  window._editingRoleModel = r.model;   // 供模型下拉初始化选中
   const form = document.getElementById("role-form");
   form.style.display = "block";
   form.innerHTML = `
@@ -686,20 +687,18 @@ function editRole(id) {
       <div><label>显示名</label><input type="text" id="rf-name" value="${esc(r.name)}"></div>
       <div><label>标识色</label><input type="text" id="rf-color" value="${esc(r.color)}"></div>
     </div>
+    <div class="row">
+      <div><label>固定 Runtime(必选)</label>
+        <select id="rf-backend" onchange="window._editingRoleModel=null;refreshModelOptions()">${backendOpts}</select></div>
+      <div><label>固定模型(必选;CLI 默认也是明确选项)</label>
+        <select id="rf-model"></select></div>
+    </div>
     <label>角色定位/人格(专长画像,供调度选人;自由文本,平台原样装配、不改写;任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
-    <label>偏好(影响路由档位与能力要求,并展示给其他角色)</label>
+    <label>角色能力(逗号分隔,如 coding, reasoning;用于名册与协作选人)</label>
+    <input type="text" id="rf-caps" value="${esc((r.capabilities || []).join(", "))}">
+    <label>角色偏好(工作风格与专长标签,用于名册与协作选人)</label>
     <div class="chips" id="rf-traits">${traitChips}</div>
-    <label>额外能力要求(逗号分隔,如 coding, reasoning)</label>
-    <input type="text" id="rf-caps" value="${esc((r.required_capabilities || []).join(", "))}">
-    <div class="row">
-      <div><label>固定工具(选了即跳过路由)</label>
-        <select id="rf-backend" onchange="refreshModelOptions()">${backendOpts}</select></div>
-      <div><label>固定模型(来自所选工具的模型阶梯)</label>
-        <select id="rf-model"></select></div>
-      <div><label>最低档位</label><select id="rf-min">${tierOpts(r.min_tier)}</select></div>
-      <div><label>最高档位</label><select id="rf-max">${tierOpts(r.max_tier)}</select></div>
-    </div>
     <div class="form-actions">
       <button class="action" onclick="saveRole()">保存</button>
       <button class="ghost" onclick="document.getElementById('role-form').style.display='none'">取消</button>
@@ -709,23 +708,27 @@ function editRole(id) {
   form.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
-// 选定工具后,模型下拉自动带出该工具的模型阶梯(Multica 式:先选工具,再选模型)
+// 每个角色必须先选 runtime,模型下拉再带出该 runtime 的固定模型选项。
 function refreshModelOptions() {
   const bid = document.getElementById("rf-backend").value;
   const sel = document.getElementById("rf-model");
   const cur = window._editingRoleModel;
   if (!bid) {
-    sel.innerHTML = `<option value="">(自动路由,无需选模型)</option>`;
+    sel.innerHTML = `<option value="">(请先选择 runtime)</option>`;
     sel.disabled = true;
     return;
   }
   sel.disabled = false;
   const b = overview.backends.find(x => x.id === bid);
-  const models = (b?.models || []);
-  let opts = `<option value="">(CLI 默认)</option>` + models.filter(m => m.name).map(m =>
-    `<option value="${esc(m.name)}" ${cur === m.name ? "selected" : ""}>` +
-    `${esc(m.name)}(${esc(m.tier)} · ${m.cost})</option>`).join("");
-  if (cur && !models.some(m => m.name === cur))
+  const models = (b?.models || []).length
+    ? b.models : [{name: b?.model || "", tier: b?.tier || "standard", cost: b?.cost_per_run || 0}];
+  let opts = models.map(m => {
+    const name = String(m.name ?? "");
+    const label = name || "(CLI 默认)";
+    return `<option value="${esc(name)}" ${cur === name ? "selected" : ""}>` +
+      `${esc(label)} (${esc(m.tier)} · ${m.cost})</option>`;
+  }).join("");
+  if (cur !== null && cur !== undefined && !models.some(m => String(m.name ?? "") === cur))
     opts += `<option value="${esc(cur)}" selected>${esc(cur)}(自定义)</option>`;
   sel.innerHTML = opts;
 }
@@ -739,14 +742,13 @@ async function saveRole() {
     color: document.getElementById("rf-color").value.trim(),
     description: document.getElementById("rf-desc").value,
     traits,
-    required_capabilities: document.getElementById("rf-caps").value
+    capabilities: document.getElementById("rf-caps").value
       .split(",").map(s => s.trim()).filter(Boolean),
-    pinned_backend: document.getElementById("rf-backend").value || null,
-    pinned_model: document.getElementById("rf-model").value.trim() || null,
-    min_tier: document.getElementById("rf-min").value || null,
-    max_tier: document.getElementById("rf-max").value || null,
+    runtime_id: document.getElementById("rf-backend").value,
+    model: document.getElementById("rf-model").value,
   };
   if (!body.id) { alert("角色 id 不能为空"); return; }
+  if (!body.runtime_id) { alert("必须为角色选择固定 runtime 和模型"); return; }
   await api("POST", "/api/roles", body);
   await loadOverview();
   document.getElementById("role-form").style.display = "none";

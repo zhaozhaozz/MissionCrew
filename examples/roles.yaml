@@ -3,35 +3,44 @@
 #
 # 角色 = 人格提示词(description,自由文本,平台不改写)
 #      + 结构化配置:
+#        - runtime_id / model:每个角色必须固定选择 runtime 与模型;model: "" 表示明确使用 CLI 默认
 #        - traits 偏好标签:fast(快速) low-cost(低成本) quality(高质量)
 #          deep(深度攻坚) multimodal(多模态) web(联网检索) review(代码评审)
 #          security(安全审查) testing(适合测试) docs(适合文档)
-#          偏好只影响路由(档位窗口/能力要求)与角色名册展示
-#        - pinned_backend / pinned_model:固定 Agent 与模型的组合,跳过路由
+#          定位、能力与偏好用于名册和协作选人,不参与执行时路由
 
 - id: frontend
   name: 前端
   color: "#0ea5e9"
+  runtime_id: claude
+  model: ""
   description: 前端工程师,熟悉 React 与本项目的组件规范,改动后自查视觉回归。
-  required_capabilities: [coding]
+  capabilities: [coding, multimodal]
   traits: [multimodal]
 
 - id: dba
   name: 数据库
   color: "#f59e0b"
+  runtime_id: claude
+  model: ""
   description: 数据库工程师,负责 schema 设计、迁移脚本审查和慢查询优化。
-  required_capabilities: [coding]
+  capabilities: [coding]
   traits: [quality]
 
 - id: architect
   name: 架构
   color: "#8b5cf6"
+  runtime_id: claude
+  model: opus
   description: 首席架构师,评审重大设计决策,权衡演进成本与一致性。
-  traits: [deep]               # 永远用最强档位
+  capabilities: [coding, reasoning]
+  traits: [deep]
 
 - id: ci
   name: CI 管家
   color: "#64748b"
+  runtime_id: claude
+  model: haiku
   description: 负责跑测试、修 lint、盯构建;只做机械性工作。
-  pinned_backend: claude-eco   # 固定 Agent 与模型组合,跳过路由
-  pinned_model: haiku
+  capabilities: [coding]
+  traits: [fast, low-cost]
