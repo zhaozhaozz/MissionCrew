@@ -48,19 +48,23 @@ MissionCrew 是一个**多项目管理器**,项目之间互不相干(类似 Mult
 
 全局设置是一个 **运行时页(仿 Multica Runtime)**:只列支持的工具矩阵 + 安装状态/版本/路径 + 启停开关,**不在这里配置档位/成本/能力**——那些属于角色层。`mc backend detect` 自动扫描注册,**一个工具一条记录**;模型阶梯挂在工具下(自动填充),路由按 **工具×模型** 展开执行单元:
 
-| CLI | 适配器 | 模型阶梯(自动填充) |
-|---|---|---|
-| `claude` (Claude Code) | `claude_code` | haiku(经济)/ 默认(标准)/ opus(专家) |
-| `codex` (OpenAI Codex) | `codex` | CLI 默认(标准);`codex exec` 工作区沙箱 |
-| `opencode` | `opencode` | CLI 默认 |
-| `copilot` (GitHub Copilot CLI) | `copilot` | CLI 默认 |
-| `cursor-agent` (Cursor) | `cursor` | CLI 默认 |
-| `codebuddy` | `codebuddy` | CLI 默认 |
-| `pi` | `pi` | CLI 默认 |
+| CLI | 适配器 | 接入方式 | 模型阶梯(自动填充) |
+|---|---|---|---|
+| `claude` (Claude Code) | `claude_code` | 打印模式 | haiku(经济)/ 默认(标准)/ opus(专家) |
+| `codex` (OpenAI Codex) | `codex` | 打印模式(`codex exec` 工作区沙箱) | CLI 默认 |
+| `opencode` | `opencode` | 打印模式 | CLI 默认 |
+| `copilot` (GitHub Copilot CLI) | `copilot` | 打印模式 | CLI 默认 |
+| `cursor-agent` (Cursor) | `cursor` | 打印模式 | CLI 默认 |
+| `codebuddy` | `codebuddy` | 打印模式 | CLI 默认 |
+| `pi` | `pi` | 打印模式 | CLI 默认 |
+| `kimi` (Kimi CLI) | `kimi` | ACP stdio 协议 | CLI 默认 |
+| `kiro-cli` (Kiro) | `kiro` | ACP stdio 协议 | CLI 默认 |
+| `qodercli` (Qoder) | `qoder` | ACP stdio 协议 | CLI 默认 |
+| `traecli` (Trae) | `trae` | ACP stdio 协议 | CLI 默认 |
 
 角色配置(Multica 式):先选工具,模型下拉自动带出该工具的阶梯,再配偏好/能力/档位;不固定工具则由路由器在全部 工具×模型 单元中按 成本→成功率 选择。
 
-Multica 里走 ACP stdio 协议的 CLI(kimi / kiro / qoder / trae 等)可以通过 `Backend.command` 自定义命令接入;命令模板支持 `{prompt}` / `{model}` 占位符。
+两类接入方式的差别:打印模式 CLI 通过命令行直接传 prompt(命令模板支持 `{prompt}` / `{model}` 占位符);ACP 协议 CLI 作为 JSON-RPC 服务挂在 stdio 上(`initialize → session/new → session/prompt`,平台自动应答其权限请求),`Backend.command` 可覆盖默认的 serve 命令。
 
 ## 快速开始
 
@@ -144,12 +148,11 @@ uv run mc audit                       # 全平台审计日志
 ## 当前边界(后续方向)
 
 - 聊天执行按"每条消息一次 CLI 调用"模型,上下文靠最近 20 条对话装配;基于各 CLI 的 session/resume 做连续会话是下一步。
-- ACP 协议 CLI(kimi/kiro/qoder/trae)未内置,需自定义命令接入。
 - 任务工作流的阶段执行是同步的;聊天已是后台并发执行。
 - 真实后端的证据核验只查存在性;内容级核验交给独立 Reviewer 角色。
 
 ## 测试
 
 ```bash
-uv run pytest -q     # 44 项:路由链、工作流门禁、聊天触发/级联/防环、角色偏好/固定组合、调度语义、项目隔离、管理 API
+uv run pytest -q     # 54 项:路由链、工作流门禁、聊天触发/级联/防环、角色偏好/固定组合、调度语义、项目隔离、管理 API
 ```

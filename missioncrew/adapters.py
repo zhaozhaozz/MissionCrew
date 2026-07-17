@@ -4,9 +4,10 @@
 读取;聊天协作的回复取自适配器输出。
 
 本地 Agent CLI 支持矩阵(参考 Multica 的本地 agent 列表):
-- 打印模式直接支持:claude、codex、opencode、copilot、cursor-agent、codebuddy、pi
-- kimi / kiro / qoder / trae 等走 ACP stdio 协议的 CLI,可在 Backend.command
-  中配置自定义命令接入,v1 不内置 ACP 客户端。
+- 打印模式:claude、codex、opencode、copilot、cursor-agent、codebuddy、pi
+  (命令行直接传 prompt,{prompt}/{model} 占位符渲染)
+- ACP stdio 协议:kimi、kiro、qoder、trae(CLI 作为 JSON-RPC 服务挂在
+  stdio 上,见 acp.py;Backend.command 可覆盖默认的 serve 命令)
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from . import acp
 from .assembler import MANIFEST
 from .models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 
@@ -34,6 +36,15 @@ DEFAULT_COMMANDS = {
     "pi": ["pi", "-p", "{prompt}", "--model", "{model}"],
 }
 
+# ACP 协议工具的 serve 命令(来自 Multica 各后端的实际调用参数);
+# Backend.command 可整体覆盖(ACP 命令没有 {prompt} 占位符,prompt 走协议)
+ACP_SERVE_COMMANDS = {
+    "kimi": ["kimi", "acp"],
+    "kiro": ["kiro-cli", "acp", "--trust-all-tools"],
+    "qoder": ["qodercli", "--yolo", "--acp"],
+    "trae": ["traecli", "acp", "serve", "--yolo"],
+}
+
 # 本地 CLI 检测表:binary -> (adapter, 默认能力, 默认档位, 成本估算)
 _CLAUDE_CAPS = ["coding", "reasoning", "review", "security", "multimodal",
                 "web_search", "sub_agents"]
@@ -45,6 +56,11 @@ KNOWN_CLIS = [
     ("cursor-agent", "cursor", ["coding", "reasoning"], "standard", 4.0),
     ("codebuddy", "codebuddy", ["coding"], "economy", 2.0),
     ("pi", "pi", ["coding", "reasoning"], "standard", 4.0),
+    # ACP stdio 协议工具
+    ("kimi", "kimi", ["coding", "reasoning"], "standard", 4.0),
+    ("kiro-cli", "kiro", ["coding", "reasoning"], "standard", 4.0),
+    ("qodercli", "qoder", ["coding", "reasoning"], "standard", 4.0),
+    ("traecli", "trae", ["coding", "reasoning"], "standard", 4.0),
 ]
 
 
@@ -188,6 +204,27 @@ class MockAdapter:
         return RunResult(True, reply[:120], output=reply)
 
 
+class AcpAdapter:
+    """ACP stdio 协议适配器:CLI 作为 JSON-RPC 服务运行,prompt 走协议传递。"""
+
+    def __init__(self, adapter_name: str):
+        self.adapter_name = adapter_name
+
+    def run(self, cfg: ExecutionConfig) -> RunResult:
+        cmd = cfg.backend.command or ACP_SERVE_COMMANDS.get(self.adapter_name)
+        if not cmd:
+            return RunResult(False, f"适配器 {self.adapter_name} 未配置 ACP serve 命令")
+        ok, text = acp.run_prompt(
+            cmd, cfg.prompt, cfg.workdir, {**os.environ, **cfg.env},
+            model=cfg.backend.model, timeout=cfg.timeout,
+        )
+        try:
+            Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(text)
+        except OSError:
+            pass
+        return RunResult(ok, text[-300:], output=text[-4000:])
+
+
 class CliAdapter:
     """通用 CLI 适配器:按命令模板在工作目录内启动真实本地 Agent。"""
 
@@ -221,6 +258,8 @@ class CliAdapter:
 def get_adapter(name: str):
     if name == "mock":
         return MockAdapter()
+    if name in ACP_SERVE_COMMANDS:
+        return AcpAdapter(name)
     return CliAdapter(name)
 
 
