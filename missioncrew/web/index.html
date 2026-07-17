@@ -255,6 +255,7 @@ let currentTab = "chat";
 let currentChan = null;
 let lastMsgId = 0;
 let roleColor = {};
+let routeRestored = false;   // 首次加载按 URL 还原视图后才允许写 hash
 
 // 项目是第一层级:聊天、看板、角色、频道都只看当前项目
 const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);
@@ -272,7 +273,9 @@ function parseHash() {
 }
 
 function updateHash() {
-  if (!currentProject) return;
+  // 首次路由还原完成前不写 URL:否则加载期的默认频道选择会先把
+  // 原始 hash(如 #/default/settings)覆写成 chat,刷新就回不去了
+  if (!routeRestored || !currentProject) return;
   let h = `#/${encodeURIComponent(currentProject)}/${currentTab}`;
   if (currentTab === "chat" && currentChan) h += `/${encodeURIComponent(currentChan)}`;
   if (location.hash !== h) location.hash = h;   // 产生历史记录,支持前进/后退
@@ -319,8 +322,6 @@ function switchTab(tab) {
   if (tab === "settings") renderGlobalSettings();
   updateHash();
 }
-
-let routeRestored = false;   // 首次加载时按 URL 还原视图,只做一次
 
 async function loadOverview() {
   overview = await (await fetch("/api/overview")).json();
