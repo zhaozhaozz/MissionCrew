@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from missioncrew import adapters
-from missioncrew.models import Backend
+from missioncrew.models import Backend, Role
 from missioncrew.server import create_app
 
 
@@ -134,3 +134,27 @@ def test_tools_endpoint_exposes_updatable(client, seeded):
     by_id = {r["id"]: r for r in rows}
     assert by_id["kimi"]["updatable"] is True      # 自更新命令
     assert by_id["eco-1"]["updatable"] is False    # mock 无更新规格
+
+
+def test_tools_endpoint_exposes_pinned_role_usage(client, seeded):
+    seeded.put_role(Role(id="builder", project_id="webshop", name="构建",
+                         pinned_backend="std-1", pinned_model="pro"))
+    seeded.put_role(Role(id="review-builder", project_id="webshop", name="构建评审",
+                         pinned_backend="std-1"))
+
+    by_id = {r["id"]: r for r in client.get("/api/backends/tools").json()}
+    assert by_id["std-1"]["role_count"] == 2
+    assert by_id["std-1"]["role_users"] == [
+        {"id": "builder", "name": "构建", "project_id": "webshop",
+         "project_name": "WebShop 电商站", "model": "pro"},
+        {"id": "review-builder", "name": "构建评审", "project_id": "webshop",
+         "project_name": "WebShop 电商站", "model": ""},
+    ]
+    assert by_id["eco-1"]["role_count"] == 0
+    assert by_id["eco-1"]["role_users"] == []
+
+
+def test_runtime_status_does_not_expose_registration_state(client):
+    html = client.get("/").text
+    assert "已安装,未注册" not in html
+    assert "使用角色" in html

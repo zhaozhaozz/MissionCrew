@@ -146,6 +146,20 @@
           padding: 0 8px; font-size: 11.5px; color: var(--muted); margin: 1px 3px 1px 0; }
   .switch { cursor: pointer; }
   .muted { color: var(--muted); font-size: 12px; }
+  .runtime-role-usage { position: relative; display: inline-block; }
+  .role-count-btn { min-width: 30px; padding: 1px 9px; border: 1px solid var(--line);
+                    border-radius: 999px; background: var(--card); color: var(--accent);
+                    cursor: pointer; font: inherit; font-weight: 600; }
+  .role-count-btn:hover { border-color: var(--accent); }
+  .runtime-role-popover { position: absolute; z-index: 20; top: calc(100% + 6px); right: 0;
+                          min-width: 250px; max-width: 340px; padding: 8px 10px;
+                          background: var(--card); border: 1px solid var(--line);
+                          border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.18); }
+  .runtime-role-popover[hidden] { display: none; }
+  .runtime-role-popover-title { color: var(--muted); font-size: 11.5px; margin-bottom: 4px; }
+  .runtime-role-item { padding: 5px 0; }
+  .runtime-role-item + .runtime-role-item { border-top: 1px solid var(--line); }
+  .runtime-role-meta { color: var(--muted); font-size: 11.5px; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -791,6 +805,49 @@ async function renderGlobalSettings() {
 let updateHints = {};   // 检查更新的结果:{id: {latest, update_available, installed}}
 let updatingIds = new Set();
 
+function closeRuntimeRolePopovers() {
+  document.querySelectorAll(".runtime-role-popover").forEach(pop => { pop.hidden = true; });
+  document.querySelectorAll(".role-count-btn").forEach(btn => btn.setAttribute("aria-expanded", "false"));
+}
+
+function toggleRuntimeRolePopover(event, rowIndex) {
+  event.stopPropagation();
+  const pop = document.getElementById(`runtime-role-popover-${rowIndex}`);
+  const btn = event.currentTarget;
+  const shouldOpen = pop.hidden;
+  closeRuntimeRolePopovers();
+  if (shouldOpen) {
+    pop.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+  }
+}
+
+function roleUsageCell(t, rowIndex) {
+  const roles = t.role_users || [];
+  if (!roles.length) return `<span class="muted">0</span>`;
+  const items = roles.map(r => {
+    const project = r.project_name || r.project_id || "未归属项目";
+    const model = r.model ? ` · 模型 ${esc(r.model)}` : "";
+    return `<div class="runtime-role-item">
+      <div><b>@${esc(r.id)}</b>${r.name ? ` · ${esc(r.name)}` : ""}</div>
+      <div class="runtime-role-meta">${esc(project)}${model}</div>
+    </div>`;
+  }).join("");
+  return `<span class="runtime-role-usage">
+    <button type="button" class="role-count-btn" aria-expanded="false"
+      onclick="toggleRuntimeRolePopover(event, ${rowIndex})">${roles.length}</button>
+    <div id="runtime-role-popover-${rowIndex}" class="runtime-role-popover" hidden
+      onclick="event.stopPropagation()">
+      <div class="runtime-role-popover-title">固定使用此运行时的角色</div>${items}
+    </div>
+  </span>`;
+}
+
+document.addEventListener("click", closeRuntimeRolePopovers);
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") closeRuntimeRolePopovers();
+});
+
 function updateCell(t) {
   if (!t.registered || !t.installed) return `<span class="muted">—</span>`;
   const hint = updateHints[t.id];
@@ -811,13 +868,12 @@ function updateCell(t) {
 
 async function renderBackendTable() {
   const tools = await (await fetch("/api/backends/tools")).json();
-  const rows = tools.map(t => {
+  closeRuntimeRolePopovers();
+  const rows = tools.map((t, rowIndex) => {
     const status = !t.installed
       ? `<span class="muted">未安装</span>`
-      : t.registered
-        ? `<span style="color:var(--ok)">✓ 已安装</span>` +
-          (t.version ? ` <span class="pill">${esc(t.version)}</span>` : "")
-        : `<span style="color:var(--warn)">已安装,未注册</span>`;
+      : `<span style="color:var(--ok)">✓ 已安装</span>` +
+        (t.version ? ` <span class="pill">${esc(t.version)}</span>` : "");
     const toggle = t.registered
       ? `<span class="switch" onclick="toggleBackend('${esc(t.id)}', ${!t.enabled})"
            style="color:${t.enabled ? "var(--ok)" : "var(--bad)"}">${t.enabled ? "✓ 启用" : "✗ 停用"}</span>`
@@ -827,11 +883,13 @@ async function renderBackendTable() {
       <td>${status}</td>
       <td class="muted">${esc(t.path || "—")}</td>
       <td>${(t.models || []).map(m => `<span class="pill">${esc(m)}</span>`).join("") || `<span class="muted">—</span>`}</td>
+      <td>${roleUsageCell(t, rowIndex)}</td>
       <td>${updateCell(t)}</td>
       <td>${toggle}</td></tr>`;
   }).join("");
   document.getElementById("backend-table").innerHTML =
-    `<tr><th>工具</th><th>状态</th><th>路径</th><th>可用模型</th><th>更新</th><th></th></tr>` + rows;
+    `<tr><th>工具</th><th>状态</th><th>路径</th><th>可用模型</th>` +
+    `<th title="仅统计固定到此运行时的角色">使用角色</th><th>更新</th><th></th></tr>` + rows;
 }
 
 async function checkUpdates(silent = false) {

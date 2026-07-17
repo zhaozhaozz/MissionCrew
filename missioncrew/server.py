@@ -245,6 +245,25 @@ def create_app() -> FastAPI:
         """支持的工具矩阵 + 安装/注册状态(仿 Multica Runtime 页;不探测版本,快速渲染)。"""
         report = adapters.detect_report(with_version=False)
         registered = {b.id: b for b in store.list_backends()}
+        project_names = {p.id: p.name for p in store.list_projects()}
+        role_users: dict[str, list[dict]] = {}
+        for role in store.list_roles():
+            if not role.pinned_backend:
+                continue
+            role_users.setdefault(role.pinned_backend, []).append({
+                "id": role.id,
+                "name": role.name,
+                "project_id": role.project_id,
+                "project_name": project_names.get(role.project_id, role.project_id),
+                "model": role.pinned_model or "",
+            })
+        for users in role_users.values():
+            users.sort(key=lambda r: (r["project_name"], r["id"]))
+
+        def usage(backend_id: str) -> dict:
+            users = role_users.get(backend_id, [])
+            return {"role_count": len(users), "role_users": users}
+
         rows = []
         for item in report:
             b = registered.pop(item["id"], None)
@@ -256,6 +275,7 @@ def create_app() -> FastAPI:
                 "path": (b.binary_path if b and b.binary_path else item["path"]),
                 "models": [m.get("name") or "(默认)" for m in (b.models if b else [])],
                 "updatable": bool(b and adapters.update_plan(b)),
+                **usage(item["id"]),
             })
         # 注册表里的非内置工具(mock/自定义)也列出来
         for b in registered.values():
@@ -265,6 +285,7 @@ def create_app() -> FastAPI:
                 "registered": True, "enabled": b.enabled,
                 "models": [m.get("name") or "(默认)" for m in b.models],
                 "updatable": bool(adapters.update_plan(b)),
+                **usage(b.id),
             })
         return rows
 
