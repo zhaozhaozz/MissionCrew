@@ -261,6 +261,36 @@ const projRoles = () => overview.roles.filter(r => r.project_id === currentProje
 const projChannels = () => overview.channels.filter(c => c.project_id === currentProject);
 const projTasks = () => overview.tasks.filter(t => t.project_id === currentProject);
 
+/* ---- URL 路由:#/<项目>/<视图>[/<频道>],刷新与前进后退都能还原 ---- */
+const TABS = ["chat", "board", "proj", "settings"];
+
+function parseHash() {
+  const parts = location.hash.replace(/^#\/?/, "").split("/").map(decodeURIComponent);
+  return { project: parts[0] || null,
+           tab: TABS.includes(parts[1]) ? parts[1] : "chat",
+           chan: parts.slice(2).join("/") || null };
+}
+
+function updateHash() {
+  if (!currentProject) return;
+  let h = `#/${encodeURIComponent(currentProject)}/${currentTab}`;
+  if (currentTab === "chat" && currentChan) h += `/${encodeURIComponent(currentChan)}`;
+  if (location.hash !== h) location.hash = h;   // 产生历史记录,支持前进/后退
+}
+
+function applyRoute() {
+  const r = parseHash();
+  if (!r.project) { updateHash(); return; }
+  if (r.project !== currentProject && overview.projects.some(p => p.id === r.project))
+    setProject(r.project);
+  if (r.chan && r.chan !== currentChan && projChannels().some(c => c.id === r.chan))
+    selectChannel(r.chan, false);
+  if (r.tab !== currentTab) switchTab(r.tab);
+  updateHash();   // 规范化(清掉无效项目/频道段)
+}
+
+window.addEventListener("hashchange", applyRoute);
+
 function setProject(id) {
   currentProject = id;
   localStorage.setItem("mc.project", id);
@@ -271,6 +301,7 @@ function setProject(id) {
   if (currentTab === "proj") renderProjSettings();
   const chans = projChannels();
   if (chans.length) selectChannel(chans[0].id, false);
+  updateHash();
 }
 
 function switchTab(tab) {
@@ -286,7 +317,10 @@ function switchTab(tab) {
   renderSidebar();
   if (tab === "proj") renderProjSettings();
   if (tab === "settings") renderGlobalSettings();
+  updateHash();
 }
+
+let routeRestored = false;   // 首次加载时按 URL 还原视图,只做一次
 
 async function loadOverview() {
   overview = await (await fetch("/api/overview")).json();
@@ -297,6 +331,10 @@ async function loadOverview() {
     renderSidebar(); renderBoard();
     return;
   }
+  // 项目优先级:URL hash > localStorage > 第一个项目
+  const want = parseHash();
+  if (want.project && overview.projects.some(p => p.id === want.project))
+    currentProject = want.project;
   if (!overview.projects.some(p => p.id === currentProject))
     currentProject = overview.projects[0].id;
   sel.innerHTML = overview.projects.map(p =>
@@ -306,6 +344,10 @@ async function loadOverview() {
   const chans = projChannels();
   if ((!currentChan || !chans.some(c => c.id === currentChan)) && chans.length)
     selectChannel(chans[0].id, false);
+  if (!routeRestored) {         // 刷新后还原到 URL 指定的视图/频道
+    routeRestored = true;
+    applyRoute();
+  }
 }
 
 function renderSidebar() {
@@ -333,6 +375,7 @@ function selectChannel(id, jump = true) {
   document.getElementById("msgs").innerHTML = "";
   if (jump && currentTab !== "chat") switchTab("chat");
   renderSidebar(); pollMessages();
+  updateHash();
 }
 
 function fmtBody(text) {
