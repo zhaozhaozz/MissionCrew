@@ -14,7 +14,8 @@ from . import seed as seed_mod
 from .chat import ChatEngine
 from .config import db_path, mc_home
 from .engine import Engine
-from .models import Backend, Channel, Project, Role, Rule, Task
+from .documents import library_for
+from .models import Backend, Channel, Project, Role, Task
 from .store import Store
 
 app = typer.Typer(help="MissionCrew:策略驱动的多 Agent 研发任务执行平台(纯本地)")
@@ -143,9 +144,19 @@ def audit(task_id: Optional[str] = typer.Argument(None), limit: int = 50):
 def project_add(file: Path = typer.Option(..., help="项目定义 YAML 文件")):
     """从 YAML 导入/更新项目(含验证准则)。"""
     data = yaml.safe_load(file.read_text())
-    data["rules"] = [Rule(**r) for r in data.get("rules", [])]
-    p = Project(**data)
-    _store().put_project(p)
+    p = Project.from_dict(data)
+    store = _store()
+    is_new = store.get_project(p.id) is None
+    if is_new and not seed_mod.has_enabled_runtime(store):
+        raise typer.BadParameter("请先检测并启用至少一个 runtime,再创建项目角色")
+    if not is_new and store.get_role(p.id, p.orchestrator_role_id) is None:
+        raise typer.BadParameter(f"主控角色不属于当前项目: @{p.orchestrator_role_id}")
+    if is_new and p.orchestrator_role_id != "lead":
+        raise typer.BadParameter("新项目请先创建角色，再修改主控角色")
+    store.put_project(p)
+    if is_new:
+        seed_mod.init_project(store, p.id)
+        library_for(p.id)
     typer.echo(f"项目已保存: {p.id}")
 
 

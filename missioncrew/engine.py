@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import adapters, assembler, resources, router, workflow
+from .documents import library_for
 from .models import Task, TaskStage, new_id
 from .store import Store
 
@@ -115,7 +116,10 @@ class Engine:
         self.store.audit("platform", "stage_dispatch", task.id,
                          f"stage={stage.name} backend={backend.id} {decision.reason}")
 
+        library = library_for(project.id)
+        library.commit_changes("platform", "Capture external document changes before task run")
         result = adapters.get_adapter(backend.adapter).run(cfg)
+        library.commit_changes(f"task:{task.id}", f"Documents updated in stage {stage.name}")
 
         # 记账:配额扣减(工具级,重取注册表记录,避免模型副本覆盖工具条目)
         stored = self.store.get_backend(backend.id)

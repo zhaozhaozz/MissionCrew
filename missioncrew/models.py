@@ -19,6 +19,13 @@ TIER_ORDER = ["economy", "standard", "expert"]
 CAP_REVIEW = "review"
 CAP_MULTIMODAL = "multimodal"
 
+# 自定义面板组件保持通用数据模型，前端可以按 type 选择不同呈现方式；
+# 未知类型仍可按 JSON/Markdown 展示，避免面板能力被固定模板限制。
+BOARD_WIDGET_TYPES = {
+    "markdown", "requirements", "test_records", "log_analysis",
+    "task_query", "metrics", "table",
+}
+
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{_secrets.token_hex(3)}"
@@ -94,8 +101,60 @@ class Rule:
 
 
 @dataclass
+class GuidelineDocument:
+    """一篇项目准则文档，可引用项目文档库中的补充文件。"""
+
+    id: str
+    title: str = ""
+    content: str = ""
+    file_refs: list[str] = field(default_factory=list)
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, value: dict | str) -> "GuidelineDocument":
+        if isinstance(value, str):
+            return cls(id=value, title=value)
+        return cls(**value)
+
+
+@dataclass
+class ProjectSkill:
+    """项目 Skill：完整说明、文件引用和 Runtime 适用范围。"""
+
+    id: str
+    name: str = ""
+    description: str = ""
+    instructions: str = ""
+    file_refs: list[str] = field(default_factory=list)
+    # 均为空表示注入所有 Runtime；否则 backend id 或 adapter 任一命中才注入。
+    runtime_ids: list[str] = field(default_factory=list)
+    adapters: list[str] = field(default_factory=list)
+    runtime_instructions: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+
+    def applies_to(self, backend: "Backend") -> bool:
+        return self.enabled and (
+            (not self.runtime_ids and not self.adapters)
+            or backend.id in self.runtime_ids
+            or backend.adapter in self.adapters
+        )
+
+    def instructions_for(self, backend: "Backend") -> str:
+        override = (self.runtime_instructions.get(backend.id)
+                    or self.runtime_instructions.get(backend.adapter)
+                    or self.runtime_instructions.get("default"))
+        return "\n\n".join(x for x in (self.instructions, override) if x)
+
+    @classmethod
+    def from_dict(cls, value: dict | str) -> "ProjectSkill":
+        if isinstance(value, str):
+            return cls(id=value, name=value)
+        return cls(**value)
+
+
+@dataclass
 class Project:
-    """项目中心条目:领域知识的主要载体,不为项目永久绑定 Agent。"""
+    """项目中心条目:领域知识的主要载体，并显式指定唯一主控角色。"""
 
     id: str
     name: str
@@ -103,7 +162,9 @@ class Project:
     repos: list[str] = field(default_factory=list)
     charter: str = ""            # 项目准则:目标、范围、业务边界
     dev_guidelines: str = ""     # 开发准则:架构原则、代码要求、变更约束
-    skills: list[str] = field(default_factory=list)   # 装配进上下文的 skill 名称/路径
+    orchestrator_role_id: str = "lead"  # 负责整个项目和其他角色调度的唯一角色
+    guidelines: list[GuidelineDocument] = field(default_factory=list)
+    skills: list[ProjectSkill] = field(default_factory=list)
     resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
     rules: list[Rule] = field(default_factory=list)     # 验证准则
@@ -115,6 +176,10 @@ class Project:
     def from_dict(cls, d: dict) -> "Project":
         d = dict(d)
         d["rules"] = [Rule(**r) for r in d.get("rules", [])]
+        d["guidelines"] = [GuidelineDocument.from_dict(v)
+                           for v in d.get("guidelines", [])]
+        d["skills"] = [ProjectSkill.from_dict(v) for v in d.get("skills", [])]
+        d.setdefault("orchestrator_role_id", "lead")
         return cls(**d)
 
 
@@ -276,6 +341,8 @@ class Channel:
     name: str = ""
     project_id: Optional[str] = None   # 所属项目,装配其准则、使用其角色
     workdir: Optional[str] = None      # 执行工作目录,默认 MC_HOME/channels/<id>
+    purpose: str = ""                 # 本频道负责的任务/讨论边界
+    created_by_role_id: str = ""      # 为空表示人类/平台创建
     created_at: float = field(default_factory=now)
 
     def to_dict(self) -> dict:
@@ -283,6 +350,43 @@ class Channel:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Channel":
+        return cls(**d)
+
+
+@dataclass
+class BoardWidget:
+    """自定义面板中的一个可自由布置组件。"""
+
+    id: str
+    type: str = "markdown"
+    title: str = ""
+    x: int = 0
+    y: int = 0
+    width: int = 6
+    height: int = 4
+    content: dict = field(default_factory=dict)
+
+
+@dataclass
+class Board:
+    """项目自定义面板；layout 同时保存位置、尺寸和组件内容。"""
+
+    id: str
+    project_id: str
+    name: str = ""
+    description: str = ""
+    layout: list[BoardWidget] = field(default_factory=list)
+    created_by_role_id: str = ""
+    created_at: float = field(default_factory=now)
+    updated_at: float = field(default_factory=now)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Board":
+        d = dict(d)
+        d["layout"] = [BoardWidget(**item) for item in d.get("layout", [])]
         return cls(**d)
 
 

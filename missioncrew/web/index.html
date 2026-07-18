@@ -103,6 +103,14 @@
   .badge { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11.5px;
            border: 1px solid var(--line); color: var(--muted); margin-right: 4px; }
   .badge.hi { color: var(--bad); border-color: var(--bad); }
+  .custom-grid { display: grid; grid-template-columns: repeat(12, minmax(0, 1fr));
+                 grid-auto-rows: 52px; gap: 10px; margin-top: 16px; }
+  .widget { background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+            padding: 10px 12px; overflow: auto; white-space: pre-wrap; }
+  .widget h3 { margin: 0 0 7px; color: var(--text); }
+  .widget .widget-type { color: var(--muted); font-size: 11px; float: right; }
+  .board-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .board-toolbar select { min-width: 220px; }
   dialog { border: 1px solid var(--line); border-radius: 12px; background: var(--card);
            color: var(--text); max-width: 760px; width: 92vw; padding: 0; }
   dialog::backdrop { background: rgba(0,0,0,.45); }
@@ -179,6 +187,7 @@
       <h2>频道</h2>
       <div id="chan-list"></div>
       <div class="side-nav" id="nav-board" onclick="switchTab('board')">▦ 任务看板</div>
+      <div class="side-nav" id="nav-custom" onclick="switchTab('custom')">▦ 自定义面板</div>
       <h2>角色</h2>
       <div id="role-list"></div>
     </div>
@@ -202,6 +211,22 @@
 
     <div id="board-view"><main class="board" id="board"></main></div>
 
+    <div id="custom-view" class="page">
+      <div class="section">
+        <h2>自定义面板</h2>
+        <p class="muted">主控角色可创建并编辑任意网格面板；组件内容使用通用 JSON，可表达需求、测试记录、日志分析或其他项目视图。</p>
+        <div class="board-toolbar">
+          <select id="custom-board-select" onchange="selectCustomBoard(this.value)"></select>
+          <button class="ghost" onclick="newCustomBoard('requirements')">+ 需求面板</button>
+          <button class="ghost" onclick="newCustomBoard('test_records')">+ 测试面板</button>
+          <button class="ghost" onclick="newCustomBoard('log_analysis')">+ 日志面板</button>
+          <button class="ghost" onclick="newCustomBoard('markdown')">+ 空白面板</button>
+        </div>
+        <div class="form" id="custom-board-form" style="display:none"></div>
+        <div class="custom-grid" id="custom-board-preview"></div>
+      </div>
+    </div>
+
     <div id="proj-view" class="page">
       <div class="section">
         <h2>项目信息 <span class="muted" id="proj-label"></span></h2>
@@ -224,7 +249,24 @@
             <div><label>工作目录(可选,默认平台内置;填真实仓库路径可直接在仓库上协作)</label>
               <input type="text" id="nc-workdir" placeholder="~/code/myrepo"></div>
           </div>
+          <label>频道用途/任务边界</label><input type="text" id="nc-purpose" placeholder="例如：结算模块需求澄清与实现讨论">
           <div class="form-actions"><button class="action" onclick="createChannel()">在当前项目创建频道</button></div>
+        </div>
+      </div>
+      <div class="section">
+        <h2>版本化文档库</h2>
+        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本，也可在这里编辑和查看历史。</p>
+        <div class="muted" id="docs-root"></div>
+        <table class="mgr" id="docs-table"></table>
+        <div class="form">
+          <label>文档相对路径</label><input type="text" id="doc-path" placeholder="例如 specs/checkout.md">
+          <label>内容</label><textarea id="doc-content" rows="10"></textarea>
+          <div class="form-actions">
+            <button class="action" onclick="saveDocument()">保存新版本</button>
+            <button class="ghost" onclick="showDocumentHistory()">查看历史</button>
+            <button class="danger" onclick="deleteDocument()">删除文档</button>
+          </div>
+          <div id="doc-history"></div>
         </div>
       </div>
     </div>
@@ -264,7 +306,7 @@
 const dlg = document.getElementById("dlg");
 const pdlg = document.getElementById("pdlg");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-let overview = { projects: [], tasks: [], roles: [], channels: [], backends: [] };
+let overview = { projects: [], tasks: [], roles: [], channels: [], backends: [], boards: [] };
 let currentProject = localStorage.getItem("mc.project") || null;
 let currentTab = "chat";
 let currentChan = null;
@@ -276,10 +318,11 @@ let routeRestored = false;   // 首次加载按 URL 还原视图后才允许写 
 const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);
 const projChannels = () => overview.channels.filter(c => c.project_id === currentProject);
 const projTasks = () => overview.tasks.filter(t => t.project_id === currentProject);
+const projBoards = () => (overview.boards || []).filter(b => b.project_id === currentProject);
 
 /* ---- URL 路由:/<项目>/<视图>[/<频道>](History API,干净 URL),
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
-const TABS = ["chat", "board", "proj", "settings"];
+const TABS = ["chat", "board", "custom", "proj", "settings"];
 
 function parsePath() {
   // 兼容旧的 hash 链接(/#/default/settings):路径为根时读 hash
@@ -319,9 +362,10 @@ function setProject(id) {
   currentProject = id;
   localStorage.setItem("mc.project", id);
   currentChan = null; lastMsgId = 0;
+  currentCustomBoard = null; customBoardEditing = false;
   document.getElementById("msgs").innerHTML = "";
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
-  renderSidebar(); renderBoard();
+  renderSidebar(); renderBoard(); renderCustomBoards();
   if (currentTab === "proj") renderProjSettings();
   const chans = projChannels();
   if (chans.length) selectChannel(chans[0].id, false);
@@ -332,14 +376,17 @@ function switchTab(tab) {
   currentTab = tab;
   document.getElementById("chat-view").style.display = tab === "chat" ? "flex" : "none";
   document.getElementById("board-view").style.display = tab === "board" ? "block" : "none";
+  document.getElementById("custom-view").style.display = tab === "custom" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
   document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
   // 导航都在侧栏:看板/全局设置是导航项,项目设置是选择器旁的 ⚙,聊天由频道列表进入
   document.getElementById("nav-board").classList.toggle("active", tab === "board");
+  document.getElementById("nav-custom").classList.toggle("active", tab === "custom");
   document.getElementById("nav-settings").classList.toggle("active", tab === "settings");
   document.getElementById("proj-cfg").classList.toggle("active", tab === "proj");
   renderSidebar();
   if (tab === "proj") renderProjSettings();
+  if (tab === "custom") renderCustomBoards(true);
   if (tab === "settings") renderGlobalSettings();
   syncUrl();
 }
@@ -350,7 +397,7 @@ async function loadOverview() {
   if (!overview.projects.length) {
     sel.innerHTML = `<option>(无项目)</option>`;
     currentProject = null;
-    renderSidebar(); renderBoard();
+    renderSidebar(); renderBoard(); renderCustomBoards();
     return;
   }
   // 项目优先级:URL hash > localStorage > 第一个项目
@@ -362,7 +409,7 @@ async function loadOverview() {
   sel.innerHTML = overview.projects.map(p =>
     `<option value="${esc(p.id)}" ${p.id === currentProject ? "selected" : ""}>${esc(p.name || p.id)}</option>`).join("");
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
-  renderSidebar(); renderBoard();
+  renderSidebar(); renderBoard(); renderCustomBoards();
   const chans = projChannels();
   if ((!currentChan || !chans.some(c => c.id === currentChan)) && chans.length)
     selectChannel(chans[0].id, false);
@@ -534,6 +581,119 @@ async function approveTask(id, decision) {
   await loadOverview(); await openTask(id);
 }
 
+/* ---------------- 自定义面板 ---------------- */
+let currentCustomBoard = null;
+let customBoardEditing = false;
+
+function boardTemplate(type) {
+  const samples = {
+    requirements: { columns: ["需求", "状态", "负责人", "验收结果"], rows: [] },
+    test_records: { columns: ["用例", "环境", "结果", "证据"], rows: [] },
+    log_analysis: { query: "", time_range: "24h", findings: [] },
+    markdown: { markdown: "在这里记录面板内容。" },
+  };
+  return [{ id: "main", type, title: {
+    requirements: "需求与实现情况", test_records: "测试记录",
+    log_analysis: "应用日志分析", markdown: "项目面板",
+  }[type], x: 0, y: 0, width: 12, height: 6, content: samples[type] }];
+}
+
+function renderCustomBoards(force = false) {
+  if (customBoardEditing && !force) return;
+  const boards = projBoards();
+  if (currentCustomBoard && !boards.some(b => b.id === currentCustomBoard))
+    currentCustomBoard = null;
+  if (!currentCustomBoard && boards.length) currentCustomBoard = boards[0].id;
+  const sel = document.getElementById("custom-board-select");
+  if (!sel) return;
+  sel.innerHTML = boards.length ? boards.map(b =>
+    `<option value="${esc(b.id)}" ${b.id === currentCustomBoard ? "selected" : ""}>${esc(b.name || b.id)}</option>`
+  ).join("") : `<option value="">(暂无自定义面板)</option>`;
+  renderCustomBoardEditor();
+}
+
+function selectCustomBoard(id) {
+  customBoardEditing = false;
+  currentCustomBoard = id || null;
+  renderCustomBoardEditor();
+}
+
+function newCustomBoard(type) {
+  if (!currentProject) return;
+  const id = prompt("面板 id（字母、数字、下划线或连字符）:", type.replace("_", "-"));
+  if (!id) return;
+  customBoardEditing = false;
+  currentCustomBoard = `new:${id}`;
+  window._newBoardDraft = { id, name: boardTemplate(type)[0].title,
+    description: "", layout: boardTemplate(type) };
+  renderCustomBoardEditor();
+}
+
+function renderCustomBoardEditor() {
+  const form = document.getElementById("custom-board-form");
+  const preview = document.getElementById("custom-board-preview");
+  if (!form || !preview) return;
+  const board = String(currentCustomBoard || "").startsWith("new:")
+    ? window._newBoardDraft : projBoards().find(b => b.id === currentCustomBoard);
+  if (!board) {
+    form.style.display = "none";
+    preview.innerHTML = `<div class="empty" style="grid-column:1/-1">请选择模板创建第一个面板。</div>`;
+    return;
+  }
+  form.style.display = "block";
+  form.innerHTML = `
+    <div class="row">
+      <div><label>面板 id</label><input id="cb-id" value="${esc(board.id.includes(":") ? board.id.split(":").slice(1).join(":") : board.id)}" ${board.id.includes(":") ? "disabled" : ""}></div>
+      <div><label>名称</label><input id="cb-name" oninput="customBoardEditing=true" value="${esc(board.name)}"></div>
+    </div>
+    <label>用途说明</label><input id="cb-desc" oninput="customBoardEditing=true" value="${esc(board.description || "")}">
+    <label>动态布局 JSON（12 列网格；每项含 id/type/title/x/y/width/height/content）</label>
+    <textarea id="cb-layout" rows="14" spellcheck="false" oninput="previewBoardDraft()">${esc(JSON.stringify(board.layout || [], null, 2))}</textarea>
+    <div class="form-actions"><button class="action" onclick="saveCustomBoard()">保存面板</button>
+      ${board.id.includes(":") ? `<button class="danger" onclick="deleteCustomBoard()">删除面板</button>` : ""}</div>`;
+  renderBoardWidgets(board.layout || []);
+}
+
+function previewBoardDraft() {
+  customBoardEditing = true;
+  try { renderBoardWidgets(JSON.parse(document.getElementById("cb-layout").value)); }
+  catch (_) { document.getElementById("custom-board-preview").innerHTML = `<div class="empty">布局 JSON 尚未完成。</div>`; }
+}
+
+function renderBoardWidgets(layout) {
+  document.getElementById("custom-board-preview").innerHTML = layout.map(w => {
+    const raw = w.type === "markdown" && w.content?.markdown
+      ? w.content.markdown : JSON.stringify(w.content || {}, null, 2);
+    return `<section class="widget" style="grid-column:${Number(w.x || 0) + 1}/span ${Number(w.width || 6)};grid-row:${Number(w.y || 0) + 1}/span ${Number(w.height || 4)}">
+      <span class="widget-type">${esc(w.type)}</span><h3>${esc(w.title || w.id)}</h3>${esc(raw)}</section>`;
+  }).join("") || `<div class="empty" style="grid-column:1/-1">面板中还没有组件。</div>`;
+}
+
+async function saveCustomBoard() {
+  let layout;
+  try { layout = JSON.parse(document.getElementById("cb-layout").value); }
+  catch (_) { alert("布局必须是合法 JSON"); return; }
+  const id = document.getElementById("cb-id").value.trim();
+  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
+    id, name: document.getElementById("cb-name").value.trim(),
+    description: document.getElementById("cb-desc").value, layout,
+  });
+  currentCustomBoard = `${currentProject}:${id}`;
+  customBoardEditing = false;
+  window._newBoardDraft = null;
+  await loadOverview(); renderCustomBoards();
+}
+
+async function deleteCustomBoard() {
+  const board = projBoards().find(b => b.id === currentCustomBoard);
+  if (!board || !confirm(`删除面板「${board.name}」?`)) return;
+  const shortId = board.id.replace(`${currentProject}:`, "");
+  await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/boards/${encodeURIComponent(shortId)}`);
+  currentCustomBoard = null;
+  customBoardEditing = false;
+  await loadOverview(); renderCustomBoards();
+}
+
 /* ---------------- 通用请求 ---------------- */
 async function api(method, url, body) {
   const r = await fetch(url, {
@@ -597,36 +757,50 @@ async function renderProjSettings() {
   const p = overview.projects.find(x => x.id === currentProject);
   const form = document.getElementById("proj-form");
   if (!p) { form.innerHTML = `<div class="empty">暂无项目,点击侧栏 ＋ 新建。</div>`; return; }
+  const orchestratorOptions = projRoles().map(r =>
+    `<option value="${esc(r.id)}" ${r.id === p.orchestrator_role_id ? "selected" : ""}>@${esc(r.id)} — ${esc(r.name)} · ${esc(r.runtime_id)}/${esc(r.model || "CLI 默认")}</option>`
+  ).join("");
   form.innerHTML = `
     <div class="row">
       <div><label>项目 id</label><input type="text" value="${esc(p.id)}" disabled></div>
       <div><label>名称</label><input type="text" id="pf-name" value="${esc(p.name)}"></div>
     </div>
     <label>一句话描述</label><input type="text" id="pf-desc" value="${esc(p.description)}">
+    <label>项目主控角色（唯一；其固定 Runtime / 模型负责项目与其他角色调度）</label>
+    <select id="pf-orchestrator">${orchestratorOptions}</select>
     <label>代码仓路径(每行一个)</label>
     <textarea id="pf-repos" rows="2">${esc(p.repos.join("\n"))}</textarea>
     <label>项目准则(目标、范围、业务边界)</label>
     <textarea id="pf-charter" rows="4">${esc(p.charter)}</textarea>
     <label>开发准则(架构原则、代码要求、变更约束)</label>
     <textarea id="pf-dev" rows="4">${esc(p.dev_guidelines)}</textarea>
-    <label>Skills(每行一个)</label>
-    <textarea id="pf-skills" rows="2">${esc(p.skills.join("\n"))}</textarea>
+    <label>完整准则文档(JSON；每篇含 id/title/content/file_refs/enabled)</label>
+    <textarea id="pf-guidelines" rows="10" spellcheck="false">${esc(JSON.stringify(p.guidelines || [], null, 2))}</textarea>
+    <label>项目 Skills(JSON；含 instructions/file_refs/runtime_ids/adapters/runtime_instructions，可按 Runtime 注入)</label>
+    <textarea id="pf-skills" rows="12" spellcheck="false">${esc(JSON.stringify(p.skills || [], null, 2))}</textarea>
     <label>验证准则(YAML 列表:match / require_evidence / require_gates / require_capabilities / note)</label>
     <textarea id="pf-rules" rows="8" spellcheck="false">${esc(rulesToYaml(p.rules))}</textarea>
     <div class="form-actions">
       <button class="action" onclick="saveProject()">保存项目信息</button>
       <button class="danger" onclick="deleteProject('${esc(p.id)}')">删除项目</button>
     </div>`;
-  renderRoleTable(); renderChanTable();
+  renderRoleTable(); renderChanTable(); renderDocuments();
 }
 
 async function saveProject() {
   const lines = id2 => document.getElementById(id2).value.split("\n").map(s => s.trim()).filter(Boolean);
+  let guidelines, skills;
+  try {
+    guidelines = JSON.parse(document.getElementById("pf-guidelines").value || "[]");
+    skills = JSON.parse(document.getElementById("pf-skills").value || "[]");
+    if (!Array.isArray(guidelines) || !Array.isArray(skills)) throw new Error();
+  } catch (_) { alert("准则文档和 Skills 必须是 JSON 数组"); return; }
   const body = {
     id: currentProject,
     name: document.getElementById("pf-name").value.trim(),
     description: document.getElementById("pf-desc").value.trim(),
-    repos: lines("pf-repos"), skills: lines("pf-skills"),
+    repos: lines("pf-repos"), guidelines, skills,
+    orchestrator_role_id: document.getElementById("pf-orchestrator").value,
     charter: document.getElementById("pf-charter").value,
     dev_guidelines: document.getElementById("pf-dev").value,
     rules_yaml: document.getElementById("pf-rules").value,
@@ -636,10 +810,64 @@ async function saveProject() {
 }
 
 async function deleteProject(id) {
-  if (!confirm(`删除项目「${id}」及其全部角色与频道?(消息与任务记录保留)`)) return;
+  if (!confirm(`删除项目「${id}」及其全部角色、频道与面板?消息、任务记录和归档后的文档历史会保留。`)) return;
   await api("DELETE", `/api/projects/${id}`);
   await loadOverview();
   renderProjSettings();
+}
+
+/* ---- 版本化文档库 ---- */
+async function renderDocuments() {
+  if (!currentProject || currentTab !== "proj") return;
+  const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
+  document.getElementById("docs-root").textContent = `Runtime 目录：${d.root}`;
+  document.getElementById("docs-table").innerHTML =
+    `<tr><th>文件</th><th>大小</th><th>修改时间</th><th></th></tr>` +
+    (d.files.map(f => `<tr><td>${esc(f.path)}</td><td>${f.size} B</td>
+      <td>${new Date(f.modified_at * 1000).toLocaleString()}</td><td>
+      <button class="ghost" data-path="${esc(f.path)}" onclick="openDocument(this.dataset.path)">编辑</button></td></tr>`).join("")
+      || `<tr><td colspan="4" class="empty">文档库为空</td></tr>`);
+}
+
+async function openDocument(path) {
+  const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}`);
+  document.getElementById("doc-path").value = path;
+  document.getElementById("doc-content").value = d.content;
+  document.getElementById("doc-history").innerHTML = "";
+}
+
+async function saveDocument() {
+  const path = document.getElementById("doc-path").value.trim();
+  if (!path) { alert("文档路径不能为空"); return; }
+  await api("PUT", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}`, {
+    content: document.getElementById("doc-content").value,
+    message: `Update ${path} from project document editor`,
+  });
+  await renderDocuments(); await showDocumentHistory();
+}
+
+async function deleteDocument() {
+  const path = document.getElementById("doc-path").value.trim();
+  if (!path || !confirm(`删除文档「${path}」?历史版本仍可查阅。`)) return;
+  await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}`);
+  document.getElementById("doc-content").value = "";
+  await renderDocuments(); await showDocumentHistory();
+}
+
+async function showDocumentHistory() {
+  const path = document.getElementById("doc-path").value.trim();
+  if (!path) return;
+  const rows = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents/history?path=${encodeURIComponent(path)}`);
+  document.getElementById("doc-history").innerHTML = `<h3>版本历史</h3><table>
+    <tr><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>` +
+    rows.map(v => `<tr><td>${esc(v.revision.slice(0, 10))}</td><td>${new Date(v.created_at * 1000).toLocaleString()}</td>
+      <td>${esc(v.actor)}</td><td>${esc(v.message)}</td><td><button class="ghost" data-rev="${esc(v.revision)}" onclick="readDocumentVersion(this.dataset.rev)">查看</button></td></tr>`).join("") + `</table>`;
+}
+
+async function readDocumentVersion(revision) {
+  const path = document.getElementById("doc-path").value.trim();
+  const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}?revision=${encodeURIComponent(revision)}`);
+  document.getElementById("doc-content").value = d.content;
 }
 
 /* ---- 角色(当前项目) ---- */
@@ -649,13 +877,14 @@ function traitPills(role) {
 }
 
 function renderRoleTable() {
+  const project = overview.projects.find(p => p.id === currentProject);
   const rows = projRoles().map(r => {
     const exec = r.runtime_id
       ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}`
       : `<span style="color:var(--bad)">未配置</span>`;
     return `<tr>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
-          <b>@${esc(r.id)}</b> ${esc(r.name)}</td>
+          <b>@${esc(r.id)}</b> ${esc(r.name)} ${r.id === project?.orchestrator_role_id ? `<span class="pill">主控</span>` : ""}</td>
       <td>${traitPills(r)}</td>
       <td>${(r.capabilities || []).map(c => `<span class="pill">${esc(c)}</span>`).join("")}</td>
       <td class="muted">${exec}</td>
@@ -767,11 +996,13 @@ async function deleteRole(id) {
 function renderChanTable() {
   const rows = projChannels().map(c => `<tr>
     <td><b># ${esc(c.name || c.id)}</b> <span class="muted">${esc(c.id)}</span></td>
+    <td>${esc(c.purpose || "(未说明)")}</td>
     <td class="muted">${esc(c.workdir || "(平台内置工作区)")}</td>
+    <td class="muted">${esc(c.created_by_role_id ? "@" + c.created_by_role_id : "human/platform")}</td>
     <td><button class="danger" onclick="deleteChannel('${c.id}')">删除</button></td>
   </tr>`).join("");
   document.getElementById("chan-table").innerHTML =
-    `<tr><th>频道</th><th>工作目录</th><th></th></tr>` + rows;
+    `<tr><th>频道</th><th>用途</th><th>工作目录</th><th>创建者</th><th></th></tr>` + rows;
 }
 
 async function createChannel() {
@@ -782,9 +1013,11 @@ async function createChannel() {
     id, name: id,
     project_id: currentProject,
     workdir: document.getElementById("nc-workdir").value.trim() || null,
+    purpose: document.getElementById("nc-purpose").value.trim(),
   });
   document.getElementById("nc-id").value = "";
   document.getElementById("nc-workdir").value = "";
+  document.getElementById("nc-purpose").value = "";
   await loadOverview(); renderChanTable(); renderSidebar();
 }
 

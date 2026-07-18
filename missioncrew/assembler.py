@@ -9,7 +9,9 @@ import json
 from pathlib import Path
 
 from .config import workspaces_dir
+from .documents import library_for
 from .models import Backend, ExecutionConfig, Project, Task, TaskStage
+from .project_context import render_project_context
 
 # 证据契约:所有后端(真实或 Mock)统一通过工作区 manifest 提交证据
 MANIFEST = "evidence/manifest.json"
@@ -21,12 +23,8 @@ PROMPT_TEMPLATE = """\
 
 {description}
 
-# 项目背景({project_name})
-{charter}
+{project_context}
 
-# 开发准则
-{dev_guidelines}
-{skills_section}
 # 当前阶段: {stage_name}
 {goal}
 
@@ -59,9 +57,7 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
              env: dict, resource_notes: list[str], trace: list[str]) -> ExecutionConfig:
     ws = workspace_for(task.id)
 
-    skills_section = ""
-    if project.skills:
-        skills_section = "\n# 可用 Skills\n" + "\n".join(f"- {s}" for s in project.skills) + "\n"
+    library = library_for(project.id)
     resources_section = ""
     if resource_notes:
         resources_section = "\n# 受控资源(平台已授权,任务结束自动回收)\n" + "\n".join(resource_notes) + "\n"
@@ -72,10 +68,7 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         risk=task.risk,
         labels=", ".join(task.labels) or "无",
         description=task.description or "(无补充描述)",
-        project_name=project.name,
-        charter=project.charter or "(未配置)",
-        dev_guidelines=project.dev_guidelines or "(未配置)",
-        skills_section=skills_section,
+        project_context=render_project_context(project, backend, library),
         stage_name=stage.name,
         goal=stage.goal,
         manifest=MANIFEST,
@@ -88,6 +81,6 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         backend=backend,
         prompt=prompt,
         workdir=str(ws),
-        env=env,
+        env={**env, "MISSIONCREW_DOCUMENTS_DIR": str(library.root)},
         routing_trace=trace,
     )

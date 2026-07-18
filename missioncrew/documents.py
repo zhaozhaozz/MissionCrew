@@ -1,0 +1,174 @@
+"""项目文档库：普通目录作为工作树，独立 Git 仓库保存完整版本历史。"""
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import threading
+import time
+from pathlib import Path, PurePosixPath
+
+from .config import projects_dir
+
+_PROJECT_ID_RE = re.compile(r"[\w-]+")
+_REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")
+_LOCKS: dict[str, threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _project_lock(project_id: str) -> threading.RLock:
+    with _LOCKS_GUARD:
+        return _LOCKS.setdefault(project_id, threading.RLock())
+
+
+def safe_relative_path(value: str) -> str:
+    """校验 API/Prompt 中的文档引用，禁止绝对路径和目录逃逸。"""
+    raw = value.replace("\\", "/").strip()
+    path = PurePosixPath(raw)
+    if (not raw or raw.endswith("/") or path.is_absolute()
+            or any(part in ("", ".", "..") for part in path.parts)):
+        raise ValueError("文档路径必须是文档库内的相对路径")
+    if path.parts[0] == ".git" or "\x00" in raw:
+        raise ValueError("文档路径不合法")
+    return path.as_posix()
+
+
+class DocumentLibrary:
+    """一个项目的版本化文档库。
+
+    `root` 不包含 `.git`，因此交给任意 Runtime 时就是普通目录；Git 元数据
+    保存在同级 `document-history.git`，Runtime 无法误改历史。
+    """
+
+    def __init__(self, project_id: str):
+        if not _PROJECT_ID_RE.fullmatch(project_id):
+            raise ValueError("项目 id 只能包含字母、数字、下划线、连字符")
+        project_root = projects_dir() / project_id
+        self.root = project_root / "documents"
+        self.repo = project_root / "document-history.git"
+        self._lock = _project_lock(project_id)
+        with self._lock:
+            self.root.mkdir(parents=True, exist_ok=True)
+            if not self.repo.exists():
+                project_root.mkdir(parents=True, exist_ok=True)
+                subprocess.run(
+                    ["git", "init", "--bare", "--quiet", str(self.repo)],
+                    check=True, capture_output=True, text=True,
+                )
+                self.commit_changes("platform", "Initialize project document library", allow_empty=True)
+
+    def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+        cmd = ["git", f"--git-dir={self.repo}", f"--work-tree={self.root}", *args]
+        with self._lock:
+            return subprocess.run(cmd, check=check, capture_output=True, text=True)
+
+    def _path(self, relative: str) -> tuple[str, Path]:
+        rel = safe_relative_path(relative)
+        candidate = self.root / rel
+        root = self.root.resolve()
+        resolved_parent = candidate.parent.resolve()
+        if not resolved_parent.is_relative_to(root):
+            raise ValueError("文档路径不能离开文档库")
+        if candidate.is_symlink() or (candidate.exists() and not candidate.resolve().is_relative_to(root)):
+            raise ValueError("文档路径不能通过符号链接离开文档库")
+        return rel, candidate
+
+    def list_files(self) -> list[dict]:
+        files = []
+        for path in sorted(self.root.rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            stat = path.stat()
+            files.append({
+                "path": path.relative_to(self.root).as_posix(),
+                "size": stat.st_size,
+                "modified_at": stat.st_mtime,
+            })
+        return files
+
+    def read(self, relative: str, revision: str | None = None) -> str:
+        rel, path = self._path(relative)
+        if revision:
+            if not _REVISION_RE.fullmatch(revision):
+                raise ValueError("版本号不合法")
+            proc = self._git("show", f"{revision}:{rel}", check=False)
+            if proc.returncode:
+                raise FileNotFoundError(f"版本 {revision} 中不存在文档 {rel}")
+            return proc.stdout
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"文档不存在: {rel}")
+        return path.read_text(encoding="utf-8")
+
+    def write(self, relative: str, content: str, actor: str = "human",
+              message: str = "") -> str:
+        with self._lock:
+            rel, path = self._path(relative)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+            return self.commit_changes(actor, message or f"Update {rel}")
+
+    def delete(self, relative: str, actor: str = "human") -> str:
+        with self._lock:
+            rel, path = self._path(relative)
+            if not path.is_file() or path.is_symlink():
+                raise FileNotFoundError(f"文档不存在: {rel}")
+            path.unlink()
+            return self.commit_changes(actor, f"Delete {rel}")
+
+    def commit_changes(self, actor: str, message: str, allow_empty: bool = False) -> str:
+        """把普通目录中的直接写入快照成一个版本；无变化时返回空字符串。"""
+        with self._lock:
+            self._git("add", "--all")
+            if not allow_empty and self._git("diff", "--cached", "--quiet", check=False).returncode == 0:
+                return ""
+            clean_actor = " ".join(actor.split())[:80] or "platform"
+            clean_message = " ".join(message.split())[:200] or "Update project documents"
+            env = {
+                **os.environ,
+                "GIT_AUTHOR_NAME": clean_actor,
+                "GIT_AUTHOR_EMAIL": "missioncrew@local",
+                "GIT_COMMITTER_NAME": clean_actor,
+                "GIT_COMMITTER_EMAIL": "missioncrew@local",
+            }
+            cmd = ["git", f"--git-dir={self.repo}", f"--work-tree={self.root}",
+                   "commit", "--quiet", "--allow-empty", "-m", clean_message]
+            subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
+            return self._git("rev-parse", "HEAD").stdout.strip()
+
+    def history(self, relative: str | None = None, limit: int = 100) -> list[dict]:
+        args = ["log", f"--max-count={max(1, min(limit, 500))}",
+                "--format=%H%x1f%at%x1f%an%x1f%s"]
+        if relative:
+            rel, _ = self._path(relative)
+            args.extend(["--follow", "--", rel])
+        proc = self._git(*args, check=False)
+        if proc.returncode:
+            return []
+        result = []
+        for line in proc.stdout.splitlines():
+            parts = line.split("\x1f", 3)
+            if len(parts) == 4:
+                result.append({
+                    "revision": parts[0], "created_at": float(parts[1]),
+                    "actor": parts[2], "message": parts[3],
+                })
+        return result
+
+
+def library_for(project_id: str) -> DocumentLibrary:
+    return DocumentLibrary(project_id)
+
+
+def archive_library(project_id: str) -> str:
+    """删除项目时把文档及其历史移出活动目录，避免重建同名项目读到旧资料。"""
+    if not _PROJECT_ID_RE.fullmatch(project_id):
+        raise ValueError("项目 id 只能包含字母、数字、下划线、连字符")
+    with _project_lock(project_id):
+        source = projects_dir() / project_id
+        if not source.exists():
+            return ""
+        archive_root = projects_dir() / ".archive"
+        archive_root.mkdir(parents=True, exist_ok=True)
+        target = archive_root / f"{project_id}-{int(time.time() * 1000)}"
+        source.rename(target)
+        return str(target)

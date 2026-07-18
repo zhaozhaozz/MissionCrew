@@ -19,8 +19,10 @@ from . import adapters
 from . import seed as seed_mod
 from .chat import ChatEngine
 from .config import db_path
+from .documents import archive_library, library_for, safe_relative_path
 from .engine import Engine
-from .models import TIER_ORDER, TRAITS, Channel, Project, Role, Rule
+from .models import (BOARD_WIDGET_TYPES, TIER_ORDER, TRAITS, Board, BoardWidget, Channel,
+                     GuidelineDocument, Project, ProjectSkill, Role, Rule)
 from .store import Store
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -55,6 +57,8 @@ class ChannelCreate(BaseModel):
     name: str = ""
     project_id: Optional[str] = None
     workdir: Optional[str] = None
+    purpose: str = ""
+    actor_role_id: Optional[str] = None
 
 
 class RoleInput(BaseModel):
@@ -69,6 +73,28 @@ class RoleInput(BaseModel):
     color: str = ""
 
 
+class GuidelineInput(BaseModel):
+    id: str
+    title: str = ""
+    content: str = ""
+    file_refs: list[str] = []
+    enabled: bool = True
+    actor_role_id: Optional[str] = None
+
+
+class SkillInput(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    instructions: str = ""
+    file_refs: list[str] = []
+    runtime_ids: list[str] = []
+    adapters: list[str] = []
+    runtime_instructions: dict[str, str] = {}
+    enabled: bool = True
+    actor_role_id: Optional[str] = None
+
+
 class ProjectInput(BaseModel):
     id: str
     name: str = ""
@@ -76,9 +102,26 @@ class ProjectInput(BaseModel):
     repos: list[str] = []
     charter: str = ""
     dev_guidelines: str = ""
-    skills: list[str] = []
-    resources: list[str] = []
-    rules_yaml: str = ""     # 验证准则,YAML 列表,服务端解析校验
+    orchestrator_role_id: Optional[str] = None
+    guidelines: Optional[list[dict]] = None
+    skills: Optional[list[dict | str]] = None
+    resources: Optional[list[str]] = None
+    required_env: Optional[str] = None
+    rules_yaml: Optional[str] = None  # 验证准则,YAML 列表；None 表示更新时保留
+
+
+class DocumentWrite(BaseModel):
+    content: str
+    actor: str = "human"
+    message: str = ""
+
+
+class BoardInput(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    layout: list[dict] = []
+    actor_role_id: Optional[str] = None
 
 
 class BackendInput(BaseModel):
@@ -100,6 +143,24 @@ def create_app() -> FastAPI:
     engine = Engine(store)
     chat = ChatEngine(store)
 
+    def must_project(project_id: str) -> Project:
+        project = store.get_project(project_id)
+        if project is None:
+            raise HTTPException(404, "项目不存在")
+        return project
+
+    def validate_orchestrator_actor(project: Project, actor_role_id: Optional[str]) -> str:
+        """人类请求无需角色身份；以角色身份调用时只允许项目主控。"""
+        if actor_role_id and actor_role_id != project.orchestrator_role_id:
+            raise HTTPException(403, f"只有项目主控 @{project.orchestrator_role_id} 可以执行此操作")
+        return actor_role_id or "human"
+
+    def namespaced_id(project_id: str, raw_id: str, kind: str) -> str:
+        short_id = raw_id.removeprefix(f"{project_id}:")
+        if not short_id or not MENTION_ID_RE.fullmatch(short_id):
+            raise HTTPException(400, f"{kind} id 只能包含字母、数字、下划线、连字符")
+        return f"{project_id}:{short_id}"
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         return (WEB_DIR / "index.html").read_text()
@@ -112,6 +173,7 @@ def create_app() -> FastAPI:
             "tasks": [t.to_dict() for t in store.list_tasks()],
             "roles": [r.to_dict() for r in store.list_roles()],
             "channels": [c.to_dict() for c in store.list_channels()],
+            "boards": [b.to_dict() for b in store.list_boards()],
         }
 
     # ---------------- 聊天 ----------------
@@ -124,14 +186,17 @@ def create_app() -> FastAPI:
     def create_channel(body: ChannelCreate):
         if not body.project_id or store.get_project(body.project_id) is None:
             raise HTTPException(400, "频道必须归属一个已存在的项目")
+        project = must_project(body.project_id)
+        actor = validate_orchestrator_actor(project, body.actor_role_id)
         # 频道 id 以项目为命名空间,避免多项目下同名冲突
-        cid = body.id if body.id.startswith(f"{body.project_id}:") \
-            else f"{body.project_id}:{body.id}"
+        cid = namespaced_id(body.project_id, body.id, "频道")
         if store.get_channel(cid):
             raise HTTPException(400, "频道已存在")
         c = Channel(id=cid, name=body.name or body.id,
-                    project_id=body.project_id, workdir=body.workdir)
+                    project_id=body.project_id, workdir=body.workdir,
+                    purpose=body.purpose, created_by_role_id=body.actor_role_id or "")
         store.put_channel(c)
+        store.audit(actor, "channel_created", detail=f"project={body.project_id} channel={cid}")
         return c.to_dict()
 
     @app.get("/api/chat/{channel_id}/messages")
@@ -159,7 +224,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/traits")
     def traits():
-        return {"traits": TRAITS, "tiers": TIER_ORDER}
+        return {"traits": TRAITS, "tiers": TIER_ORDER,
+                "board_widget_types": sorted(BOARD_WIDGET_TYPES)}
 
     @app.post("/api/roles")
     def save_role(body: RoleInput):
@@ -185,16 +251,24 @@ def create_app() -> FastAPI:
     def delete_role(role_id: str, project_id: str):
         if store.get_role(project_id, role_id) is None:
             raise HTTPException(404, "角色不存在")
+        project = must_project(project_id)
+        if project.orchestrator_role_id == role_id:
+            raise HTTPException(409, "不能删除项目主控角色；请先为项目选择其他主控")
         store.delete_role(project_id, role_id)
         store.audit("human", "role_deleted", detail=f"project={project_id} role={role_id}")
         return {"ok": True}
 
     @app.post("/api/projects")
     def save_project(body: ProjectInput):
-        if not body.id.strip():
-            raise HTTPException(400, "项目 id 不能为空")
+        if not body.id.strip() or not MENTION_ID_RE.fullmatch(body.id):
+            raise HTTPException(400, "项目 id 只能包含字母、数字、下划线、连字符")
+        existing = store.get_project(body.id)
         try:
-            raw_rules = yaml.safe_load(body.rules_yaml) or [] if body.rules_yaml.strip() else []
+            if body.rules_yaml is None:
+                raw_rules = [r.__dict__ for r in existing.rules] if existing else []
+            else:
+                raw_rules = (yaml.safe_load(body.rules_yaml) or []) \
+                    if body.rules_yaml.strip() else []
             if not isinstance(raw_rules, list):
                 raise ValueError("rules 必须是 YAML 列表")
             rules = [Rule(**r) for r in raw_rules]
@@ -202,13 +276,51 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"验证准则解析失败: {e}")
         data = body.model_dump()
         data.pop("rules_yaml")
-        is_new = store.get_project(body.id) is None
+        is_new = existing is None
         if is_new and not seed_mod.has_enabled_runtime(store):
             raise HTTPException(400, "请先检测并启用至少一个 runtime,再创建项目角色")
-        project = Project(**data, rules=rules)
+        orchestrator = body.orchestrator_role_id or (
+            existing.orchestrator_role_id if existing else "lead")
+        if existing and store.get_role(body.id, orchestrator) is None:
+            raise HTTPException(400, f"主控角色不属于当前项目: @{orchestrator}")
+        if is_new and orchestrator != "lead":
+            raise HTTPException(400, "新项目请先创建角色，再修改主控角色")
+        data["orchestrator_role_id"] = orchestrator
+        data["guidelines"] = (body.guidelines if body.guidelines is not None else
+                              ([g.__dict__ for g in existing.guidelines] if existing else []))
+        data["skills"] = (body.skills if body.skills is not None else
+                          ([s.__dict__ for s in existing.skills] if existing else []))
+        data["resources"] = (body.resources if body.resources is not None else
+                             (existing.resources if existing else []))
+        data["required_env"] = (body.required_env if body.required_env is not None else
+                                (existing.required_env if existing else None))
+        data["rules"] = [r.__dict__ for r in rules]
+        try:
+            project = Project.from_dict(data)
+        except TypeError as exc:
+            raise HTTPException(400, f"项目准则或 Skill 格式不合法: {exc}")
+        for doc in project.guidelines:
+            if not MENTION_ID_RE.fullmatch(doc.id):
+                raise HTTPException(400, f"准则 id 不合法: {doc.id}")
+            try:
+                [safe_relative_path(ref) for ref in doc.file_refs]
+            except ValueError as exc:
+                raise HTTPException(400, f"准则 {doc.id} 的文件引用不合法: {exc}")
+        for skill in project.skills:
+            if not MENTION_ID_RE.fullmatch(skill.id):
+                raise HTTPException(400, f"Skill id 不合法: {skill.id}")
+            unknown = [runtime_id for runtime_id in skill.runtime_ids
+                       if store.get_backend(runtime_id) is None]
+            if unknown:
+                raise HTTPException(400, f"Skill {skill.id} 引用了不存在的 Runtime: {unknown}")
+            try:
+                [safe_relative_path(ref) for ref in skill.file_refs]
+            except ValueError as exc:
+                raise HTTPException(400, f"Skill {skill.id} 的文件引用不合法: {exc}")
         store.put_project(project)
         if is_new:  # 新项目自动获得自己的默认角色和 general 频道
             seed_mod.init_project(store, project.id)
+            library_for(project.id)
         store.audit("human", "project_saved", detail=f"project={project.id} new={is_new}")
         return project.to_dict()
 
@@ -216,8 +328,193 @@ def create_app() -> FastAPI:
     def delete_project(project_id: str):
         if store.get_project(project_id) is None:
             raise HTTPException(404, "项目不存在")
+        archive = archive_library(project_id)
         store.delete_project(project_id)
-        store.audit("human", "project_deleted", detail=f"project={project_id}")
+        store.audit("human", "project_deleted",
+                    detail=f"project={project_id} documents_archive={archive}")
+        return {"ok": True, "documents_archive": archive}
+
+    # ---------------- 项目准则与 Skills ----------------
+
+    @app.get("/api/projects/{project_id}/guidelines")
+    def list_guidelines(project_id: str):
+        return [g.__dict__ for g in must_project(project_id).guidelines]
+
+    @app.post("/api/projects/{project_id}/guidelines")
+    def save_guideline(project_id: str, body: GuidelineInput):
+        project = must_project(project_id)
+        actor = validate_orchestrator_actor(project, body.actor_role_id)
+        if not MENTION_ID_RE.fullmatch(body.id):
+            raise HTTPException(400, "准则 id 只能包含字母、数字、下划线、连字符")
+        try:
+            [safe_relative_path(ref) for ref in body.file_refs]
+        except ValueError as exc:
+            raise HTTPException(400, f"准则文件引用不合法: {exc}")
+        guideline = GuidelineDocument(**body.model_dump(exclude={"actor_role_id"}))
+        project.guidelines = [g for g in project.guidelines if g.id != guideline.id]
+        project.guidelines.append(guideline)
+        store.put_project(project)
+        store.audit(actor, "guideline_saved",
+                    detail=f"project={project_id} guideline={guideline.id}")
+        return guideline.__dict__
+
+    @app.delete("/api/projects/{project_id}/guidelines/{guideline_id}")
+    def delete_guideline(project_id: str, guideline_id: str,
+                         actor_role_id: Optional[str] = None):
+        project = must_project(project_id)
+        actor = validate_orchestrator_actor(project, actor_role_id)
+        before = len(project.guidelines)
+        project.guidelines = [g for g in project.guidelines if g.id != guideline_id]
+        if len(project.guidelines) == before:
+            raise HTTPException(404, "准则不存在")
+        store.put_project(project)
+        store.audit(actor, "guideline_deleted",
+                    detail=f"project={project_id} guideline={guideline_id}")
+        return {"ok": True}
+
+    @app.get("/api/projects/{project_id}/skills")
+    def list_skills(project_id: str):
+        return [s.__dict__ for s in must_project(project_id).skills]
+
+    @app.post("/api/projects/{project_id}/skills")
+    def save_skill(project_id: str, body: SkillInput):
+        project = must_project(project_id)
+        actor = validate_orchestrator_actor(project, body.actor_role_id)
+        if not MENTION_ID_RE.fullmatch(body.id):
+            raise HTTPException(400, "Skill id 只能包含字母、数字、下划线、连字符")
+        unknown = [runtime_id for runtime_id in body.runtime_ids
+                   if store.get_backend(runtime_id) is None]
+        if unknown:
+            raise HTTPException(400, f"Skill 引用了不存在的 Runtime: {unknown}")
+        try:
+            [safe_relative_path(ref) for ref in body.file_refs]
+        except ValueError as exc:
+            raise HTTPException(400, f"Skill 文件引用不合法: {exc}")
+        skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id"}))
+        project.skills = [s for s in project.skills if s.id != skill.id]
+        project.skills.append(skill)
+        store.put_project(project)
+        store.audit(actor, "skill_saved", detail=f"project={project_id} skill={skill.id}")
+        return skill.__dict__
+
+    @app.delete("/api/projects/{project_id}/skills/{skill_id}")
+    def delete_skill(project_id: str, skill_id: str,
+                     actor_role_id: Optional[str] = None):
+        project = must_project(project_id)
+        actor = validate_orchestrator_actor(project, actor_role_id)
+        before = len(project.skills)
+        project.skills = [s for s in project.skills if s.id != skill_id]
+        if len(project.skills) == before:
+            raise HTTPException(404, "Skill 不存在")
+        store.put_project(project)
+        store.audit(actor, "skill_deleted", detail=f"project={project_id} skill={skill_id}")
+        return {"ok": True}
+
+    # ---------------- 版本化文档库 ----------------
+
+    @app.get("/api/projects/{project_id}/documents")
+    def list_documents(project_id: str):
+        must_project(project_id)
+        library = library_for(project_id)
+        return {"root": str(library.root), "files": library.list_files(),
+                "history": library.history(limit=20)}
+
+    @app.get("/api/projects/{project_id}/documents/history")
+    def document_history(project_id: str, path: Optional[str] = None, limit: int = 100):
+        must_project(project_id)
+        try:
+            return library_for(project_id).history(path, limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.get("/api/projects/{project_id}/documents/file/{file_path:path}")
+    def read_document(project_id: str, file_path: str, revision: Optional[str] = None):
+        must_project(project_id)
+        try:
+            content = library_for(project_id).read(file_path, revision)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        return {"path": file_path, "revision": revision, "content": content}
+
+    @app.put("/api/projects/{project_id}/documents/file/{file_path:path}")
+    def write_document(project_id: str, file_path: str, body: DocumentWrite):
+        must_project(project_id)
+        try:
+            revision = library_for(project_id).write(
+                file_path, body.content, body.actor, body.message)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        store.audit(body.actor, "document_saved",
+                    detail=f"project={project_id} path={file_path} revision={revision}")
+        return {"path": file_path, "revision": revision}
+
+    @app.delete("/api/projects/{project_id}/documents/file/{file_path:path}")
+    def delete_document(project_id: str, file_path: str, actor: str = "human"):
+        must_project(project_id)
+        try:
+            revision = library_for(project_id).delete(file_path, actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        store.audit(actor, "document_deleted",
+                    detail=f"project={project_id} path={file_path} revision={revision}")
+        return {"ok": True, "revision": revision}
+
+    # ---------------- 自定义面板 ----------------
+
+    @app.get("/api/projects/{project_id}/boards")
+    def list_boards(project_id: str):
+        must_project(project_id)
+        return [board.to_dict() for board in store.list_boards(project_id)]
+
+    @app.post("/api/projects/{project_id}/boards")
+    def save_board(project_id: str, body: BoardInput):
+        project = must_project(project_id)
+        actor = validate_orchestrator_actor(project, body.actor_role_id)
+        board_id = namespaced_id(project_id, body.id, "面板")
+        widgets = []
+        seen = set()
+        try:
+            for raw in body.layout:
+                widget = BoardWidget(**raw)
+                if not MENTION_ID_RE.fullmatch(widget.id) or widget.id in seen:
+                    raise ValueError("组件 id 必须合法且不能重复")
+                if widget.x < 0 or widget.y < 0 or not 1 <= widget.width <= 12 \
+                        or not 1 <= widget.height <= 100:
+                    raise ValueError("组件位置必须非负，宽度为 1..12，高度为 1..100")
+                if not widget.type.strip():
+                    raise ValueError("组件 type 不能为空")
+                seen.add(widget.id)
+                widgets.append(widget)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, f"面板布局不合法: {exc}")
+        board = store.get_board(board_id) or Board(
+            id=board_id, project_id=project_id,
+            created_by_role_id=body.actor_role_id or "",
+        )
+        if board.project_id != project_id:
+            raise HTTPException(400, "面板不属于当前项目")
+        board.name = body.name or board.name or body.id
+        board.description = body.description
+        board.layout = widgets
+        store.put_board(board)
+        store.audit(actor, "board_saved", detail=f"project={project_id} board={board_id}")
+        return board.to_dict()
+
+    @app.delete("/api/projects/{project_id}/boards/{board_id}")
+    def delete_board(project_id: str, board_id: str,
+                     actor_role_id: Optional[str] = None):
+        project = must_project(project_id)
+        actor = validate_orchestrator_actor(project, actor_role_id)
+        full_id = namespaced_id(project_id, board_id, "面板")
+        board = store.get_board(full_id)
+        if board is None or board.project_id != project_id:
+            raise HTTPException(404, "面板不存在")
+        store.delete_board(full_id)
+        store.audit(actor, "board_deleted", detail=f"project={project_id} board={full_id}")
         return {"ok": True}
 
     @app.post("/api/backends")

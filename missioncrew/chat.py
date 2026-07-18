@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import threading
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -19,7 +20,9 @@ from typing import Optional
 
 from . import adapters
 from .config import mc_home
-from .models import Channel, ExecutionConfig, Role
+from .documents import library_for
+from .models import Board, BoardWidget, Channel, ExecutionConfig, Role
+from .project_context import render_project_context
 from .store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -28,6 +31,8 @@ MAX_DEPTH = 4          # 级联深度:人类消息为 0,Agent 回复逐层 +1
 MAX_CHAIN_RUNS = 10    # 单条协作链(同一条人类消息引发)的执行总数上限
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
 CHAT_TIMEOUT = 900     # 单次聊天执行超时(秒)
+ACTION_RE = re.compile(r"<missioncrew-action>(.*?)</missioncrew-action>", re.S)
+CONTROL_ID_RE = re.compile(r"[\w-]+")
 
 # 转交语义:@ 前若紧跟顺序词("完成后请 @reviewer"),说明是让前序角色
 # 完成后转交,不立即触发;前序角色回复中 @ 到时才真正执行
@@ -44,7 +49,10 @@ CHAT_PROMPT = """\
 角色能力:{role_capabilities}
 角色偏好:{role_traits}
 固定执行组合:{role_runtime}/{role_model}
-{project_section}\
+当前频道:#{channel_name}
+频道用途/讨论边界:{channel_purpose}
+{project_section}
+{orchestrator_section}\
 工作目录就是当前目录,直接在其中读写文件、运行命令完成工作。
 
 # 最近对话
@@ -62,6 +70,18 @@ CHAT_PROMPT = """\
 - 角色名册(各自定位供选人参考):
 {roster}
 - 不需要协作就不要 @ 任何角色;不要 @ 你自己;不要编造不存在的角色。
+"""
+
+ORCHESTRATOR_SECTION = """\
+# 项目主控权限
+你是本项目唯一主控，负责理解项目目标、拆解工作并调度其他角色。需要新建任务频道
+或创建/更新自定义面板时，可在回复中加入一个或多个控制动作（动作会被平台执行并从
+公开回复中移除）：
+<missioncrew-action>{"action":"create_channel","id":"channel-id","name":"名称","purpose":"任务边界"}</missioncrew-action>
+<missioncrew-action>{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}</missioncrew-action>
+<missioncrew-action>{"action":"update_board","id":"board-id","name":"新名称","layout":[]}</missioncrew-action>
+面板 layout 的每项包含 id、type、title、x、y、width、height、content；type 可使用
+markdown、requirements、test_records、log_analysis、task_query、metrics、table。
 """
 
 
@@ -164,7 +184,10 @@ class ChatEngine:
                                 f"backend={backend.id} depth={depth} {trace}")
 
         cfg = self._assemble(channel, role, backend, msg_id)
+        library = library_for(channel.project_id or "")
+        library.commit_changes("platform", "Capture external document changes before chat run")
         result = adapters.get_adapter(backend.adapter).run(cfg)
+        library.commit_changes(f"role:{role.id}", f"Documents updated from channel {channel.name}")
 
         # 配额扣减在工具级记账:重取注册表记录,避免模型副本覆盖工具条目
         stored = self.store.get_backend(backend.id)
@@ -183,6 +206,9 @@ class ChatEngine:
             return
 
         reply = (result.output or result.summary or "(无输出)").strip()
+        project = self.store.get_project(channel.project_id or "")
+        if project and role.id == project.orchestrator_role_id:
+            reply = self._apply_orchestrator_actions(project.id, role.id, reply)
         self.store.update_chat_run(run_id, "done", backend_id=backend.id)
         # Agent 回复作为该角色的消息发布;其中的 @ 会继续级联(深度 +1)
         self.post(channel.id, role_id, reply, author_type="agent",
@@ -212,11 +238,16 @@ class ChatEngine:
         workdir.mkdir(parents=True, exist_ok=True)
 
         project_section = ""
+        orchestrator_section = ""
+        env = {}
         if channel.project_id:
             project = self.store.get_project(channel.project_id)
             if project:
-                project_section = (f"频道绑定项目「{project.name}」。项目准则: "
-                                   f"{project.charter}\n开发准则: {project.dev_guidelines}\n")
+                library = library_for(project.id)
+                project_section = render_project_context(project, backend, library)
+                env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
+                if role.id == project.orchestrator_role_id:
+                    orchestrator_section = ORCHESTRATOR_SECTION
 
         history_lines = []
         trigger = ""
@@ -242,11 +273,82 @@ class ChatEngine:
             role_traits=", ".join(role.trait_labels()) or "无特别标注",
             role_runtime=role.runtime_id,
             role_model=role.model or "(CLI 默认)",
+            channel_name=channel.name or channel.id,
+            channel_purpose=channel.purpose or "(未说明)",
             project_section=project_section,
+            orchestrator_section=orchestrator_section,
             history="\n".join(history_lines) or "(无)",
             trigger=trigger, roster=roster or "(无其他角色)",
         )
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
-            prompt=prompt, workdir=str(workdir), timeout=CHAT_TIMEOUT,
+            prompt=prompt, workdir=str(workdir), env=env, timeout=CHAT_TIMEOUT,
         )
+
+    def _apply_orchestrator_actions(self, project_id: str, role_id: str,
+                                    reply: str) -> str:
+        """执行主控回复中的受限平台动作；其他角色的相同文本只会作为普通回复。"""
+        reports = []
+        for match in ACTION_RE.finditer(reply):
+            try:
+                action = json.loads(match.group(1))
+                kind = action.get("action")
+                raw_id = str(action.get("id", "")).strip()
+                if not CONTROL_ID_RE.fullmatch(raw_id):
+                    raise ValueError("id 只能包含字母、数字、下划线、连字符")
+                item_id = f"{project_id}:{raw_id}"
+                if kind == "create_channel":
+                    if self.store.get_channel(item_id):
+                        raise ValueError("频道已存在")
+                    channel = Channel(
+                        id=item_id, name=str(action.get("name") or raw_id),
+                        project_id=project_id, purpose=str(action.get("purpose", "")),
+                        created_by_role_id=role_id,
+                    )
+                    self.store.put_channel(channel)
+                    reports.append(f"已创建频道 #{channel.name}")
+                    self.store.audit(role_id, "channel_created",
+                                     detail=f"project={project_id} channel={item_id}")
+                elif kind in ("create_board", "update_board"):
+                    board = self.store.get_board(item_id)
+                    if kind == "create_board" and board:
+                        raise ValueError("面板已存在")
+                    if kind == "update_board" and (not board or board.project_id != project_id):
+                        raise ValueError("面板不存在")
+                    layout = self._validate_board_layout(action.get("layout", []))
+                    board = board or Board(id=item_id, project_id=project_id,
+                                           created_by_role_id=role_id)
+                    board.name = str(action.get("name", board.name or raw_id))
+                    board.description = str(action.get("description", board.description))
+                    board.layout = layout
+                    self.store.put_board(board)
+                    reports.append(f"已{'创建' if kind == 'create_board' else '更新'}面板 {board.name}")
+                    self.store.audit(role_id, kind,
+                                     detail=f"project={project_id} board={item_id}")
+                else:
+                    raise ValueError(f"不支持的动作: {kind}")
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                reports.append(f"控制动作未执行：{exc}")
+        cleaned = ACTION_RE.sub("", reply).strip()
+        if reports:
+            cleaned = "\n\n".join(x for x in (cleaned, "平台操作：" + "；".join(reports)) if x)
+        return cleaned or "(主控动作已处理)"
+
+    @staticmethod
+    def _validate_board_layout(raw_layout) -> list[BoardWidget]:
+        if not isinstance(raw_layout, list):
+            raise ValueError("面板 layout 必须是列表")
+        widgets = []
+        seen = set()
+        for raw in raw_layout:
+            widget = BoardWidget(**raw)
+            if not CONTROL_ID_RE.fullmatch(widget.id) or widget.id in seen:
+                raise ValueError("组件 id 必须合法且不能重复")
+            if (widget.x < 0 or widget.y < 0 or not 1 <= widget.width <= 12
+                    or not 1 <= widget.height <= 100):
+                raise ValueError("组件位置必须非负，宽度为 1..12，高度为 1..100")
+            if not widget.type.strip():
+                raise ValueError("组件 type 不能为空")
+            seen.add(widget.id)
+            widgets.append(widget)
+        return widgets

@@ -5,7 +5,8 @@ adapter 改为 claude_code / codex 并配置模型。
 """
 from __future__ import annotations
 
-from .models import TIER_ORDER, Backend, Channel, Project, Resource, Role, Rule
+from .models import (TIER_ORDER, Backend, Channel, Project, ProjectSkill,
+                     Resource, Role, Rule)
 from .store import Store
 
 DEMO_BACKENDS = [
@@ -36,7 +37,8 @@ DEMO_PROJECT = Project(
             "任何改动不得破坏下单主链路。",
     dev_guidelines="后端 Python/FastAPI,前端 React。公共 API 保持向后兼容;"
                    "数据库变更必须走迁移脚本;错误必须显式处理,禁止裸 except。",
-    skills=["webshop-local-ci", "webshop-db-migration"],
+    skills=[ProjectSkill(id="webshop-local-ci", name="WebShop 本地 CI"),
+            ProjectSkill(id="webshop-db-migration", name="WebShop 数据库迁移")],
     resources=["test-db"],
     rules=[
         Rule(match={"task_type": "bug"},

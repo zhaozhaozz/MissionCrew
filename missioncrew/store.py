@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .models import Backend, Channel, Project, Resource, Role, Task
+from .models import Backend, Board, Channel, Project, Resource, Role, Task
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS stats (
 );
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS roles    (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS boards   (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL, author TEXT NOT NULL, author_type TEXT NOT NULL,
@@ -120,11 +121,13 @@ class Store:
     def delete_channel(self, id: str) -> None: self._delete("channels", id)
 
     def delete_project(self, id: str) -> None:
-        """删除项目并级联其角色与频道(消息记录保留,便于审计追溯)。"""
+        """删除项目并级联其角色、频道与面板(消息记录保留,便于审计追溯)。"""
         for r in self.list_roles(id):
             self.delete_role(id, r.id)
         for c in self.list_channels(id):
             self.delete_channel(c.id)
+        for board in self.list_boards(id):
+            self.delete_board(board.id)
         self._delete("projects", id)
 
     # ---- Projects / Backends / Resources / Tasks ----
@@ -267,6 +270,24 @@ class Store:
         if project_id is not None:
             rs = [r for r in rs if r.project_id == project_id]
         return sorted(rs, key=lambda r: (r.project_id, r.id))
+
+    # ---- 自定义面板 ----
+    def put_board(self, board: Board) -> None:
+        board.updated_at = time.time()
+        self._put("boards", board.id, board.to_dict())
+
+    def get_board(self, id: str) -> Optional[Board]:
+        d = self._get("boards", id)
+        return Board.from_dict(d) if d else None
+
+    def list_boards(self, project_id: Optional[str] = None) -> list[Board]:
+        boards = [Board.from_dict(d) for d in self._list("boards")]
+        if project_id is not None:
+            boards = [b for b in boards if b.project_id == project_id]
+        return sorted(boards, key=lambda b: (b.project_id, b.created_at))
+
+    def delete_board(self, id: str) -> None:
+        self._delete("boards", id)
 
     # ---- 聊天:消息 ----
     def add_message(self, channel: str, author: str, author_type: str, content: str,

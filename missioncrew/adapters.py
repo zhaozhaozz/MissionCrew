@@ -27,8 +27,9 @@ from .models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 # model 为空时 {model} 及其前面的 --model/-m 标志会被移除。
 DEFAULT_COMMANDS = {
     "claude_code": ["claude", "-p", "{prompt}", "--model", "{model}",
-                    "--permission-mode", "acceptEdits"],
-    "codex": ["codex", "exec", "--sandbox", "workspace-write", "-m", "{model}", "{prompt}"],
+                    "--permission-mode", "acceptEdits", "--add-dir", "{documents_dir}"],
+    "codex": ["codex", "exec", "--sandbox", "workspace-write", "--add-dir",
+              "{documents_dir}", "-m", "{model}", "{prompt}"],
     "grok_build": ["grok", "-p", "{prompt}", "--model", "{model}",
                    "--always-approve", "--no-auto-update"],
     "opencode": ["opencode", "run", "--model", "{model}", "{prompt}"],
@@ -219,8 +220,9 @@ def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
     return found
 
 
-def render_command(template: list[str], prompt: str, model: str) -> list[str]:
-    """渲染命令模板;model 为空时移除 {model} 与其紧邻的 --model/-m 标志。"""
+def render_command(template: list[str], prompt: str, model: str,
+                   documents_dir: str = "") -> list[str]:
+    """渲染命令模板；空模型/文档目录会连同紧邻的参数标志一起移除。"""
     cmd: list[str] = []
     for tok in template:
         if "{model}" in tok:
@@ -229,6 +231,12 @@ def render_command(template: list[str], prompt: str, model: str) -> list[str]:
                     cmd.pop()
                 continue
             tok = tok.replace("{model}", model)
+        if "{documents_dir}" in tok:
+            if not documents_dir:
+                if cmd and cmd[-1] == "--add-dir":
+                    cmd.pop()
+                continue
+            tok = tok.replace("{documents_dir}", documents_dir)
         cmd.append(tok.replace("{prompt}", prompt))
     return cmd
 
@@ -328,7 +336,10 @@ class CliAdapter:
         if not template:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置命令模板"
                                     f"(ACP 类 CLI 请在 Backend.command 中配置)")
-        cmd = render_command(template, cfg.prompt, cfg.backend.model)
+        cmd = render_command(
+            template, cfg.prompt, cfg.backend.model,
+            cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""),
+        )
         try:
             proc = subprocess.run(
                 cmd, cwd=cfg.workdir, env={**os.environ, **cfg.env},
