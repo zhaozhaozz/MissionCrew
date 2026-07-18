@@ -270,6 +270,20 @@
         </div>
       </div>
       <div class="section">
+        <h2>准则文档 <span class="muted" id="guide-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="editGuideline(null)">+ 新建准则文档</button></h2>
+        <p class="muted">项目准则以完整文档管理:每篇有标题、正文章节和文档库文件引用,启用的篇目会按顺序注入所有角色的执行上下文(开发规范、测试规范、部署说明等各成一篇)。</p>
+        <table class="mgr" id="guide-table"></table>
+        <div class="form" id="guide-form" style="display:none"></div>
+      </div>
+      <div class="section">
+        <h2>项目 Skills <span class="muted" id="skill-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="editSkill(null)">+ 新建 Skill</button></h2>
+        <p class="muted">Skill = 完整说明 + 文档库文件引用 + Runtime 适用范围;执行时按角色的 Runtime 注入,可用"按 Runtime 覆盖说明"给不同工具写不同指令(key 用 runtime id、adapter 名或 default)。</p>
+        <table class="mgr" id="skill-table"></table>
+        <div class="form" id="skill-form" style="display:none"></div>
+      </div>
+      <div class="section">
         <h2>版本化文档库</h2>
         <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本，也可在这里编辑和查看历史。</p>
         <div class="muted" id="docs-root"></div>
@@ -910,34 +924,207 @@ async function renderProjSettings() {
     <textarea id="pf-repos" rows="2">${esc(p.repos.join("\n"))}</textarea>
     <label>项目准则(目标、范围、业务边界)</label>
     <textarea id="pf-charter" rows="4">${esc(p.charter)}</textarea>
-    <label>开发准则(架构原则、代码要求、变更约束)</label>
+    <label>开发准则(架构原则、代码要求、变更约束;完整规范建议写成下方"准则文档")</label>
     <textarea id="pf-dev" rows="4">${esc(p.dev_guidelines)}</textarea>
-    <label>完整准则文档(JSON；每篇含 id/title/content/file_refs/enabled)</label>
-    <textarea id="pf-guidelines" rows="10" spellcheck="false">${esc(JSON.stringify(p.guidelines || [], null, 2))}</textarea>
-    <label>项目 Skills(JSON；含 instructions/file_refs/runtime_ids/adapters/runtime_instructions，可按 Runtime 注入)</label>
-    <textarea id="pf-skills" rows="12" spellcheck="false">${esc(JSON.stringify(p.skills || [], null, 2))}</textarea>
     <label>验证准则(YAML 列表:match / require_evidence / require_gates / require_capabilities / note)</label>
     <textarea id="pf-rules" rows="8" spellcheck="false">${esc(rulesToYaml(p.rules))}</textarea>
     <div class="form-actions">
       <button class="action" onclick="saveProject()">保存项目信息</button>
       <button class="danger" onclick="deleteProject('${esc(p.id)}')">删除项目</button>
     </div>`;
-  renderRoleTable(); renderChanTable(); renderDocuments();
+  document.getElementById("guide-proj-label").textContent = label;
+  document.getElementById("skill-proj-label").textContent = label;
+  renderRoleTable(); renderChanTable();
+  renderGuidelines(); renderSkills();
+  renderDocuments();
+}
+
+/* ---- 准则文档管理(按篇 CRUD,走专用端点) ---- */
+function projObj() { return overview.projects.find(x => x.id === currentProject); }
+
+function fileRefPicker(elemId, selected) {
+  const sel = new Set(selected || []);
+  const opts = [...new Set([...docFiles, ...sel])].map(f =>
+    `<option value="${esc(f)}" ${sel.has(f) ? "selected" : ""}>${esc(f)}</option>`).join("");
+  return `<label>引用文档库文件(多选;内容会注入执行上下文)</label>
+    <select id="${elemId}" multiple size="5">${opts || ""}</select>
+    <label>额外引用路径(逗号分隔,可引用尚未创建的文件)</label>
+    <input type="text" id="${elemId}-extra" placeholder="specs/deploy.md, guides/style.md">`;
+}
+
+function readFileRefs(elemId) {
+  const picked = [...document.getElementById(elemId).selectedOptions].map(o => o.value);
+  const extra = document.getElementById(`${elemId}-extra`).value
+    .split(",").map(s => s.trim()).filter(Boolean);
+  return [...new Set([...picked, ...extra])];
+}
+
+function renderGuidelines() {
+  const p = projObj();
+  if (!p) return;
+  const rows = (p.guidelines || []).map(g => `<tr>
+    <td><b>${esc(g.title || g.id)}</b><br><span class="muted">${esc(g.id)}</span></td>
+    <td class="muted">${(g.content || "").length} 字</td>
+    <td>${(g.file_refs || []).map(f => `<span class="pill">${esc(f)}</span>`).join("") || "—"}</td>
+    <td>${g.enabled === false ? `<span class="muted">已停用</span>` : `<span style="color:var(--ok)">启用</span>`}</td>
+    <td><button class="ghost" onclick="editGuideline('${esc(g.id)}')">编辑</button>
+        <button class="danger" onclick="deleteGuideline('${esc(g.id)}')">删除</button></td></tr>`).join("");
+  document.getElementById("guide-table").innerHTML =
+    `<tr><th>篇目</th><th>正文</th><th>文件引用</th><th>状态</th><th></th></tr>` +
+    (rows || `<tr><td colspan="5" class="empty">暂无准则文档;开发规范、测试规范、部署说明各写一篇。</td></tr>`);
+}
+
+function editGuideline(id) {
+  const g = (projObj()?.guidelines || []).find(x => x.id === id) ||
+    { id: "", title: "", content: "", file_refs: [], enabled: true };
+  const form = document.getElementById("guide-form");
+  form.style.display = "block";
+  form.innerHTML = `
+    <h3>${id ? "编辑准则文档 " + esc(id) : "新建准则文档"}</h3>
+    <div class="row">
+      <div><label>文档 id</label><input type="text" id="gf-id" value="${esc(g.id)}" ${id ? "disabled" : ""} placeholder="如 dev-spec / test-spec / deploy"></div>
+      <div><label>标题</label><input type="text" id="gf-title" value="${esc(g.title || "")}" placeholder="如 开发规范"></div>
+      <div><label style="display:block">状态</label>
+        <span class="switch ${g.enabled !== false ? "on" : ""}" id="gf-enabled" role="switch"
+          onclick="this.classList.toggle('on')"></span></div>
+    </div>
+    <label>正文(Markdown 章节;会作为完整文档注入执行上下文)</label>
+    <textarea id="gf-content" rows="10">${esc(g.content || "")}</textarea>
+    ${fileRefPicker("gf-refs", g.file_refs)}
+    <div class="form-actions">
+      <button class="action" onclick="saveGuideline()">保存</button>
+      <button class="ghost" onclick="document.getElementById('guide-form').style.display='none'">取消</button>
+    </div>`;
+  form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function saveGuideline() {
+  const id = document.getElementById("gf-id").value.trim();
+  if (!id) { alert("文档 id 不能为空"); return; }
+  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
+    id, title: document.getElementById("gf-title").value.trim(),
+    content: document.getElementById("gf-content").value,
+    file_refs: readFileRefs("gf-refs"),
+    enabled: document.getElementById("gf-enabled").classList.contains("on"),
+  });
+  document.getElementById("guide-form").style.display = "none";
+  await loadOverview(); renderGuidelines();
+}
+
+async function deleteGuideline(id) {
+  if (!confirm(`删除准则文档「${id}」?`)) return;
+  await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(id)}`);
+  await loadOverview(); renderGuidelines();
+}
+
+/* ---- Skill 管理(按 Runtime 注入) ---- */
+let skillRI = [];   // 编辑中的按 Runtime 覆盖说明 [{key, text}]
+
+function skillScopeLabel(s) {
+  const scope = [...(s.runtime_ids || []), ...(s.adapters || [])];
+  return scope.length ? scope.map(x => `<span class="pill">${esc(x)}</span>`).join("")
+                      : `<span class="muted">所有 Runtime</span>`;
+}
+
+function renderSkills() {
+  const p = projObj();
+  if (!p) return;
+  const rows = (p.skills || []).map(s => `<tr>
+    <td><b>${esc(s.name || s.id)}</b><br><span class="muted">${esc(s.id)}</span></td>
+    <td>${skillScopeLabel(s)}</td>
+    <td>${(s.file_refs || []).map(f => `<span class="pill">${esc(f)}</span>`).join("") || "—"}</td>
+    <td class="muted">${Object.keys(s.runtime_instructions || {}).length ? "有覆盖" : "—"}</td>
+    <td>${s.enabled === false ? `<span class="muted">已停用</span>` : `<span style="color:var(--ok)">启用</span>`}</td>
+    <td><button class="ghost" onclick="editSkill('${esc(s.id)}')">编辑</button>
+        <button class="danger" onclick="deleteSkill('${esc(s.id)}')">删除</button></td></tr>`).join("");
+  document.getElementById("skill-table").innerHTML =
+    `<tr><th>Skill</th><th>适用 Runtime</th><th>文件引用</th><th>Runtime 覆盖</th><th>状态</th><th></th></tr>` +
+    (rows || `<tr><td colspan="6" class="empty">暂无 Skill</td></tr>`);
+}
+
+function riRows() {
+  const keys = [...new Set([...overview.backends.map(b => b.id),
+                            ...overview.backends.map(b => b.adapter), "default"])];
+  return skillRI.map((r, i) => `<div class="row" style="margin-top:6px">
+      <div style="flex:0 0 200px"><select onchange="skillRI[${i}].key=this.value">
+        ${keys.map(k => `<option value="${esc(k)}" ${r.key === k ? "selected" : ""}>${esc(k)}</option>`).join("")}
+      </select></div>
+      <div><input type="text" value="${esc(r.text)}" oninput="skillRI[${i}].text=this.value"
+        placeholder="该 Runtime 的补充/覆盖说明"></div>
+      <div style="flex:0 0 60px"><button class="ghost" onclick="skillRI.splice(${i},1);refreshRI()">移除</button></div>
+    </div>`).join("");
+}
+
+function refreshRI() { document.getElementById("sf-ri").innerHTML = riRows(); }
+
+function editSkill(id) {
+  const s = (projObj()?.skills || []).find(x => x.id === id) ||
+    { id: "", name: "", description: "", instructions: "", file_refs: [],
+      runtime_ids: [], adapters: [], runtime_instructions: {}, enabled: true };
+  skillRI = Object.entries(s.runtime_instructions || {}).map(([key, text]) => ({ key, text }));
+  const rtChips = overview.backends.map(b =>
+    `<span class="chip ${(s.runtime_ids || []).includes(b.id) ? "on" : ""}" data-rt="${esc(b.id)}"
+       onclick="this.classList.toggle('on')">${esc(b.id)}</span>`).join("");
+  const form = document.getElementById("skill-form");
+  form.style.display = "block";
+  form.innerHTML = `
+    <h3>${id ? "编辑 Skill " + esc(id) : "新建 Skill"}</h3>
+    <div class="row">
+      <div><label>Skill id</label><input type="text" id="sf-id" value="${esc(s.id)}" ${id ? "disabled" : ""}></div>
+      <div><label>名称</label><input type="text" id="sf-name" value="${esc(s.name || "")}"></div>
+      <div><label style="display:block">状态</label>
+        <span class="switch ${s.enabled !== false ? "on" : ""}" id="sf-enabled" role="switch"
+          onclick="this.classList.toggle('on')"></span></div>
+    </div>
+    <label>一句话描述</label><input type="text" id="sf-desc" value="${esc(s.description || "")}">
+    <label>完整说明(instructions;注入执行上下文的主体)</label>
+    <textarea id="sf-inst" rows="8">${esc(s.instructions || "")}</textarea>
+    ${fileRefPicker("sf-refs", s.file_refs)}
+    <label>适用 Runtime(不选 = 注入所有 Runtime)</label>
+    <div class="chips" id="sf-rts">${rtChips}</div>
+    <label>按 Runtime 覆盖说明(key 可为 runtime id / adapter / default)</label>
+    <div id="sf-ri">${riRows()}</div>
+    <button class="ghost" style="margin-top:6px" onclick="skillRI.push({key:'default',text:''});refreshRI()">+ 添加覆盖</button>
+    <div class="form-actions">
+      <button class="action" onclick="saveSkill()">保存</button>
+      <button class="ghost" onclick="document.getElementById('skill-form').style.display='none'">取消</button>
+    </div>`;
+  form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+async function saveSkill() {
+  const id = document.getElementById("sf-id").value.trim();
+  if (!id) { alert("Skill id 不能为空"); return; }
+  const runtime_instructions = {};
+  for (const r of skillRI) if (r.key && r.text.trim()) runtime_instructions[r.key] = r.text;
+  const existing = (projObj()?.skills || []).find(x => x.id === id);
+  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills`, {
+    id, name: document.getElementById("sf-name").value.trim(),
+    description: document.getElementById("sf-desc").value.trim(),
+    instructions: document.getElementById("sf-inst").value,
+    file_refs: readFileRefs("sf-refs"),
+    runtime_ids: [...document.querySelectorAll("#sf-rts .chip.on")].map(c => c.dataset.rt),
+    adapters: existing?.adapters || [],   // adapter 维度暂由 YAML/API 配置
+    runtime_instructions,
+    enabled: document.getElementById("sf-enabled").classList.contains("on"),
+  });
+  document.getElementById("skill-form").style.display = "none";
+  await loadOverview(); renderSkills();
+}
+
+async function deleteSkill(id) {
+  if (!confirm(`删除 Skill「${id}」?`)) return;
+  await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/skills/${encodeURIComponent(id)}`);
+  await loadOverview(); renderSkills();
 }
 
 async function saveProject() {
   const lines = id2 => document.getElementById(id2).value.split("\n").map(s => s.trim()).filter(Boolean);
-  let guidelines, skills;
-  try {
-    guidelines = JSON.parse(document.getElementById("pf-guidelines").value || "[]");
-    skills = JSON.parse(document.getElementById("pf-skills").value || "[]");
-    if (!Array.isArray(guidelines) || !Array.isArray(skills)) throw new Error();
-  } catch (_) { alert("准则文档和 Skills 必须是 JSON 数组"); return; }
-  const body = {
+  const body = {   // 准则文档/Skills 走专用管理器,此处缺省即保留
     id: currentProject,
     name: document.getElementById("pf-name").value.trim(),
     description: document.getElementById("pf-desc").value.trim(),
-    repos: lines("pf-repos"), guidelines, skills,
+    repos: lines("pf-repos"),
     orchestrator_role_id: document.getElementById("pf-orchestrator").value,
     charter: document.getElementById("pf-charter").value,
     dev_guidelines: document.getElementById("pf-dev").value,
@@ -955,9 +1142,12 @@ async function deleteProject(id) {
 }
 
 /* ---- 版本化文档库 ---- */
+let docFiles = [];   // 文档库文件清单缓存,供准则/Skill 的 file_refs 选择器使用
+
 async function renderDocuments() {
   if (!currentProject || currentTab !== "proj") return;
   const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
+  docFiles = d.files.map(f => f.path);
   document.getElementById("docs-root").textContent = `Runtime 目录：${d.root}`;
   document.getElementById("docs-table").innerHTML =
     `<tr><th>文件</th><th>大小</th><th>修改时间</th><th></th></tr>` +
