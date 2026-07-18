@@ -152,7 +152,15 @@
   table.mgr th { white-space: nowrap; }
   .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px;
           padding: 0 8px; font-size: 11.5px; color: var(--muted); margin: 1px 3px 1px 0; }
-  .switch { cursor: pointer; }
+  /* 滑动开关(启用/停用) */
+  .switch { position: relative; display: inline-block; width: 38px; height: 21px;
+            border-radius: 999px; background: var(--line); cursor: pointer;
+            vertical-align: middle; transition: background .18s; }
+  .switch::after { content: ""; position: absolute; top: 2.5px; left: 3px;
+                   width: 16px; height: 16px; border-radius: 50%; background: #fff;
+                   box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: left .18s; }
+  .switch.on { background: var(--ok); }
+  .switch.on::after { left: 19px; }
   .muted { color: var(--muted); font-size: 12px; }
   .runtime-role-usage { position: relative; display: inline-block; }
   .role-count-btn { min-width: 30px; padding: 1px 9px; border: 1px solid var(--line);
@@ -1110,8 +1118,9 @@ async function renderBackendTable() {
       : `<span style="color:var(--ok)">✓ 已安装</span>` +
         (t.version ? ` <span class="pill">${esc(t.version)}</span>` : "");
     const toggle = t.registered
-      ? `<span class="switch" onclick="toggleBackend('${esc(t.id)}', ${!t.enabled})"
-           style="color:${t.enabled ? "var(--ok)" : "var(--bad)"}">${t.enabled ? "✓ 启用" : "✗ 停用"}</span>`
+      ? `<span class="switch ${t.enabled ? "on" : ""}" role="switch"
+           aria-checked="${t.enabled}" title="${t.enabled ? "已启用,点击停用" : "已停用,点击启用"}"
+           onclick="toggleBackend('${esc(t.id)}', ${!t.enabled})"></span>`
       : "";
     return `<tr>
       <td><b>${esc(t.binary)}</b><br><span class="muted">${esc(t.adapter)}</span></td>
