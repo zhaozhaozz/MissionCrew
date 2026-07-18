@@ -217,17 +217,25 @@
       </div>
     </div>
 
-    <div id="board-view"><main class="board" id="board"></main></div>
+    <div id="board-view">
+      <div style="padding:14px 22px 0">
+        <button class="action" onclick="openNewTask()">+ 新建任务</button>
+      </div>
+      <main class="board" id="board"></main>
+    </div>
 
     <div id="custom-view" class="page">
       <div class="section">
         <h2>自定义面板</h2>
-        <p class="muted">主控角色可创建并编辑任意网格面板；组件内容使用通用 JSON，可表达需求、测试记录、日志分析或其他项目视图。</p>
+        <p class="muted">主控角色可创建并编辑任意网格面板；组件按类型渲染:需求/测试/数据表为表格,任务视图按条件实时取数,指标为数值卡,markdown 支持基础排版。</p>
         <div class="board-toolbar">
           <select id="custom-board-select" onchange="selectCustomBoard(this.value)"></select>
           <button class="ghost" onclick="newCustomBoard('requirements')">+ 需求面板</button>
           <button class="ghost" onclick="newCustomBoard('test_records')">+ 测试面板</button>
           <button class="ghost" onclick="newCustomBoard('log_analysis')">+ 日志面板</button>
+          <button class="ghost" onclick="newCustomBoard('task_query')">+ 任务视图</button>
+          <button class="ghost" onclick="newCustomBoard('metrics')">+ 指标面板</button>
+          <button class="ghost" onclick="newCustomBoard('table')">+ 数据表</button>
           <button class="ghost" onclick="newCustomBoard('markdown')">+ 空白面板</button>
         </div>
         <div class="form" id="custom-board-form" style="display:none"></div>
@@ -310,9 +318,32 @@
   <div class="actions"><button class="action" onclick="createProject()">创建项目</button></div>
 </dialog>
 
+<dialog id="tdlg">
+  <div class="dlg-head"><strong>新建任务</strong>
+    <button class="ghost" onclick="tdlg.close()">取消</button></div>
+  <div class="dlg-body form">
+    <label>标题</label><input type="text" id="nt-title">
+    <label>描述</label><textarea id="nt-desc" rows="3" style="height:auto"></textarea>
+    <div class="row">
+      <div><label>类型</label><select id="nt-type">
+        <option value="feature">feature</option><option value="bug">bug</option>
+        <option value="chore">chore</option><option value="research">research</option>
+      </select></div>
+      <div><label>风险</label><select id="nt-risk">
+        <option value="low">low</option><option value="normal" selected>normal</option>
+        <option value="high">high</option>
+      </select></div>
+      <div><label>标签(逗号分隔)</label><input type="text" id="nt-labels" placeholder="ui, auth"></div>
+    </div>
+    <p class="muted">任务将按项目验证准则生成阶段计划(证据门禁/安全审查/人工审批)。</p>
+  </div>
+  <div class="actions"><button class="action" onclick="createTask()">创建任务</button></div>
+</dialog>
+
 <script>
 const dlg = document.getElementById("dlg");
 const pdlg = document.getElementById("pdlg");
+const tdlg = document.getElementById("tdlg");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let overview = { projects: [], tasks: [], roles: [], channels: [], backends: [], boards: [] };
 let currentProject = localStorage.getItem("mc.project") || null;
@@ -595,21 +626,32 @@ async function approveTask(id, decision) {
 let currentCustomBoard = null;
 let customBoardEditing = false;
 
+// 组件类型注册表:模板 + 标题;新增类型时只改这里(与后端 BOARD_WIDGET_TYPES 对应)
+const WIDGET_TEMPLATES = {
+  requirements: { title: "需求与实现情况",
+    content: { columns: ["需求", "状态", "负责人", "验收结果"], rows: [] } },
+  test_records: { title: "测试记录",
+    content: { columns: ["用例", "环境", "结果", "证据"], rows: [] } },
+  log_analysis: { title: "应用日志分析",
+    content: { query: "", time_range: "24h", findings: [] } },
+  task_query:   { title: "任务视图",
+    content: { status: ["open", "awaiting_approval"], labels: [] } },
+  metrics:      { title: "指标",
+    content: { metrics: [{ label: "示例指标", value: 0 }] } },
+  table:        { title: "数据表",
+    content: { columns: ["列 1", "列 2"], rows: [] } },
+  markdown:     { title: "项目面板", content: { markdown: "在这里记录面板内容。" } },
+};
+
 function boardTemplate(type) {
-  const samples = {
-    requirements: { columns: ["需求", "状态", "负责人", "验收结果"], rows: [] },
-    test_records: { columns: ["用例", "环境", "结果", "证据"], rows: [] },
-    log_analysis: { query: "", time_range: "24h", findings: [] },
-    markdown: { markdown: "在这里记录面板内容。" },
-  };
-  return [{ id: "main", type, title: {
-    requirements: "需求与实现情况", test_records: "测试记录",
-    log_analysis: "应用日志分析", markdown: "项目面板",
-  }[type], x: 0, y: 0, width: 12, height: 6, content: samples[type] }];
+  const t = WIDGET_TEMPLATES[type] || WIDGET_TEMPLATES.markdown;
+  return [{ id: "main", type, title: t.title,
+            x: 0, y: 0, width: 12, height: 6, content: t.content }];
 }
 
 function renderCustomBoards(force = false) {
   if (customBoardEditing && !force) return;
+  if (String(currentCustomBoard || "").startsWith("new:")) return;  // 新建草稿不被轮询冲掉
   const boards = projBoards();
   if (currentCustomBoard && !boards.some(b => b.id === currentCustomBoard))
     currentCustomBoard = null;
@@ -632,7 +674,7 @@ function newCustomBoard(type) {
   if (!currentProject) return;
   const id = prompt("面板 id（字母、数字、下划线或连字符）:", type.replace("_", "-"));
   if (!id) return;
-  customBoardEditing = false;
+  customBoardEditing = true;   // 草稿即未保存编辑态,防止轮询重渲染丢弃
   currentCustomBoard = `new:${id}`;
   window._newBoardDraft = { id, name: boardTemplate(type)[0].title,
     description: "", layout: boardTemplate(type) };
@@ -670,13 +712,76 @@ function previewBoardDraft() {
   catch (_) { document.getElementById("custom-board-preview").innerHTML = `<div class="empty">布局 JSON 尚未完成。</div>`; }
 }
 
+// ---- 组件渲染器:按 type 分派,未知类型回退 JSON 展示 ----
+function miniMarkdown(text) {
+  // 轻量 Markdown:先转义,再处理标题/粗体/行内代码/列表/换行
+  let h = esc(text);
+  h = h.replace(/^### (.*)$/gm, "<h4>$1</h4>")
+       .replace(/^## (.*)$/gm, "<h4>$1</h4>")
+       .replace(/^# (.*)$/gm, "<h3>$1</h3>")
+       .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+       .replace(/`([^`]+)`/g, "<code>$1</code>")
+       .replace(/^[-*] (.*)$/gm, "<li>$1</li>");
+  h = h.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
+  return h.replace(/\n/g, "<br>").replace(/<\/(h3|h4|ul|li)><br>/g, "</$1>");
+}
+
+function widgetTable(columns, rows) {
+  const cols = Array.isArray(columns) ? columns : [];
+  const body = (Array.isArray(rows) ? rows : []).map(r => {
+    const cells = Array.isArray(r) ? r : cols.map(c => (r || {})[c]);
+    return `<tr>${cells.map(c => `<td>${esc(c ?? "")}</td>`).join("")}</tr>`;
+  }).join("");
+  return `<table><tr>${cols.map(c => `<th>${esc(c)}</th>`).join("")}</tr>${
+    body || `<tr><td colspan="${cols.length || 1}" class="empty">暂无数据</td></tr>`}</table>`;
+}
+
+function renderWidgetContent(w) {
+  const c = w.content || {};
+  switch (w.type) {
+    case "markdown":
+      return `<div>${miniMarkdown(c.markdown || "")}</div>`;
+    case "requirements": case "test_records": case "table":
+      return widgetTable(c.columns, c.rows);
+    case "task_query": {   // 按过滤条件从当前项目任务实时取数
+      const want = { status: c.status || [], labels: c.labels || [],
+                     task_type: c.task_type || [] };
+      const hits = projTasks().filter(t =>
+        (!want.status.length || want.status.includes(t.status)) &&
+        (!want.task_type.length || want.task_type.includes(t.task_type)) &&
+        (!want.labels.length || t.labels.some(l => want.labels.includes(l))));
+      return hits.map(t => `<div class="card" onclick="openTask('${t.id}')">
+          <div class="title">${esc(t.title)}</div>
+          <div class="meta">${t.id} · ${esc(t.status)} · ${esc(t.task_type)}</div></div>`)
+        .join("") || `<div class="empty">无匹配任务</div>`;
+    }
+    case "metrics": {
+      const items = Array.isArray(c.metrics) ? c.metrics
+        : Object.entries(c).map(([label, value]) => ({ label, value }));
+      return `<div style="display:flex;flex-wrap:wrap;gap:14px">` + (items.map(m =>
+        `<div><div style="font-size:22px;font-weight:700">${esc(m.value)}</div>
+         <div class="muted">${esc(m.label)}</div></div>`).join("")
+        || `<div class="empty">暂无指标</div>`) + `</div>`;
+    }
+    case "log_analysis": {
+      const head = [c.query && `查询: <code>${esc(c.query)}</code>`,
+                    c.time_range && `窗口: ${esc(c.time_range)}`]
+        .filter(Boolean).join(" · ");
+      const findings = (Array.isArray(c.findings) ? c.findings : []).map(f =>
+        `<li>${esc(typeof f === "string" ? f : JSON.stringify(f))}</li>`).join("");
+      return `${head ? `<div class="muted">${head}</div>` : ""}` +
+        (findings ? `<ul>${findings}</ul>` : `<div class="empty">暂无分析结论</div>`);
+    }
+    default:
+      return `<pre style="white-space:pre-wrap;margin:0">${esc(JSON.stringify(c, null, 2))}</pre>`;
+  }
+}
+
 function renderBoardWidgets(layout) {
-  document.getElementById("custom-board-preview").innerHTML = layout.map(w => {
-    const raw = w.type === "markdown" && w.content?.markdown
-      ? w.content.markdown : JSON.stringify(w.content || {}, null, 2);
-    return `<section class="widget" style="grid-column:${Number(w.x || 0) + 1}/span ${Number(w.width || 6)};grid-row:${Number(w.y || 0) + 1}/span ${Number(w.height || 4)}">
-      <span class="widget-type">${esc(w.type)}</span><h3>${esc(w.title || w.id)}</h3>${esc(raw)}</section>`;
-  }).join("") || `<div class="empty" style="grid-column:1/-1">面板中还没有组件。</div>`;
+  document.getElementById("custom-board-preview").innerHTML = layout.map(w =>
+    `<section class="widget" style="grid-column:${Number(w.x || 0) + 1}/span ${Number(w.width || 6)};grid-row:${Number(w.y || 0) + 1}/span ${Number(w.height || 4)}">
+      <span class="widget-type">${esc(w.type)}</span><h3>${esc(w.title || w.id)}</h3>${renderWidgetContent(w)}</section>`
+  ).join("") || `<div class="empty" style="grid-column:1/-1">面板中还没有组件。</div>`;
 }
 
 async function saveCustomBoard() {
@@ -730,6 +835,29 @@ function openNewProject() {
   document.getElementById("np-name").value = "";
   document.getElementById("np-desc").value = "";
   pdlg.showModal();
+}
+
+function openNewTask() {
+  if (!currentProject) { alert("请先创建/选择项目"); return; }
+  document.getElementById("nt-title").value = "";
+  document.getElementById("nt-desc").value = "";
+  document.getElementById("nt-labels").value = "";
+  tdlg.showModal();
+}
+
+async function createTask() {
+  const title = document.getElementById("nt-title").value.trim();
+  if (!title) { alert("标题不能为空"); return; }
+  await api("POST", "/api/tasks", {
+    project_id: currentProject, title,
+    description: document.getElementById("nt-desc").value,
+    task_type: document.getElementById("nt-type").value,
+    risk: document.getElementById("nt-risk").value,
+    labels: document.getElementById("nt-labels").value
+      .split(",").map(s => s.trim()).filter(Boolean),
+  });
+  tdlg.close();
+  await loadOverview(); renderBoard();
 }
 
 async function createProject() {
