@@ -50,11 +50,17 @@
                 letter-spacing: .06em; margin: 12px 0 6px; }
   /* 并列可折叠分区:频道/面板/文档/角色 */
   .sec-head { display: flex; align-items: center; gap: 5px; cursor: pointer;
-              user-select: none; border-radius: 6px; padding: 2px 4px; }
+              user-select: none; border-radius: 6px; padding: 3px 4px; }
   .sec-head:hover { background: var(--card); }
   .sec-head.active { color: var(--accent); }
-  .sec-head .caret { width: 11px; font-size: 9px; }
+  .sec-head .caret { width: 18px; font-size: 14px; line-height: 1; }
   .sec-head .count { margin-left: auto; font-weight: 400; }
+  .sec-act { display: flex; gap: 2px; margin-left: 4px; }
+  .icon-btn { border: 0; background: transparent; color: var(--muted); cursor: pointer;
+              font-size: 13px; padding: 0 4px; border-radius: 4px; line-height: 1.4; }
+  .icon-btn:hover { color: var(--accent); background: var(--bg); }
+  .side-nav { display: flex; align-items: center; }
+  .side-nav .sec-act { margin-left: auto; }
   .side-item { padding: 4px 10px 4px 20px; border-radius: 8px; cursor: pointer;
                color: var(--muted); font-size: 13px; overflow: hidden;
                text-overflow: ellipsis; white-space: nowrap; }
@@ -184,7 +190,7 @@
               border-radius: 6px; cursor: pointer; font-size: 13px; }
   .tree-row:hover { background: var(--card); }
   .tree-row.selected { background: var(--card); border: 1px solid var(--line); font-weight: 600; }
-  .tree-row .caret { width: 12px; flex: none; color: var(--muted); font-size: 10px; }
+  .tree-row .caret { width: 15px; flex: none; color: var(--muted); font-size: 12px; }
   .tree-row .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .doc-pane .doc-head { display: flex; align-items: center; gap: 10px;
                         border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 12px; }
@@ -224,25 +230,42 @@
       <button class="proj-btn" id="proj-add" onclick="openNewProject()" title="新建项目">＋</button>
     </div>
     <div id="side-scroll">
-      <div class="side-nav" id="nav-board" onclick="switchTab('board')">▦ 任务看板</div>
+      <div class="side-nav" id="nav-board" onclick="switchTab('board')">▦ 任务看板
+        <span class="sec-act"><button class="icon-btn" title="新建任务"
+          onclick="event.stopPropagation();openNewTask()">＋</button></span></div>
       <div class="side-sec">
         <h2 class="sec-head" id="sec-channels" onclick="toggleSection('channels')">
-          <span class="caret">▾</span>频道<span class="count" id="cnt-channels"></span></h2>
+          <span class="caret">▾</span>频道<span class="count" id="cnt-channels"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建频道" onclick="event.stopPropagation();quickCreateChannel()">＋</button>
+            <button class="icon-btn" title="管理频道" onclick="event.stopPropagation();gotoProjSection('chan-table')">⚙</button>
+          </span></h2>
         <div id="chan-list"></div>
       </div>
       <div class="side-sec">
         <h2 class="sec-head" id="sec-boards" onclick="toggleSection('boards')">
-          <span class="caret">▾</span>面板<span class="count" id="cnt-boards"></span></h2>
+          <span class="caret">▾</span>面板<span class="count" id="cnt-boards"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建面板(向主控提需求)" onclick="event.stopPropagation();requestBoardFocus()">＋</button>
+          </span></h2>
         <div id="board-list"></div>
       </div>
       <div class="side-sec">
         <h2 class="sec-head" id="sec-docs" onclick="toggleSection('docs')">
-          <span class="caret">▾</span>文档<span class="count" id="cnt-docs"></span></h2>
+          <span class="caret">▾</span>文档<span class="count" id="cnt-docs"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建文档" onclick="event.stopPropagation();quickNewDocument()">＋</button>
+            <button class="icon-btn" title="打开文档库" onclick="event.stopPropagation();switchTab('docs')">🗂</button>
+          </span></h2>
         <div id="doc-list"></div>
       </div>
       <div class="side-sec">
         <h2 class="sec-head" id="sec-roles" onclick="toggleSection('roles')">
-          <span class="caret">▾</span>角色<span class="count" id="cnt-roles"></span></h2>
+          <span class="caret">▾</span>角色<span class="count" id="cnt-roles"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建角色" onclick="event.stopPropagation();quickNewRole()">＋</button>
+            <button class="icon-btn" title="管理角色" onclick="event.stopPropagation();gotoProjSection('role-table')">⚙</button>
+          </span></h2>
         <div id="role-list"></div>
       </div>
     </div>
@@ -584,6 +607,39 @@ function renderSidebar() {
          ${r.id === orch ? `<span class="pill" style="color:var(--warn);border-color:var(--warn)">主控</span>` : ""}</div>`).join("");
   document.getElementById("role-bar").innerHTML = projRoles().map(r =>
     `<button onclick="insertMention('${r.id}')">@${esc(r.id)} ${esc(r.name)}</button>`).join("");
+}
+
+/* ---- 侧栏分区的快捷操作 ---- */
+async function quickCreateChannel() {
+  if (!currentProject) return;
+  const name = prompt("新频道名(字母、数字、下划线、连字符):");
+  if (!name) return;
+  const purpose = prompt("频道用途/任务边界(可选):") || "";
+  const c = await api("POST", "/api/chat/channels",
+    { id: name.trim(), name: name.trim(), project_id: currentProject, purpose });
+  await loadOverview();
+  selectChannel(c.id);
+}
+
+function requestBoardFocus() {   // 面板由主控创建:跳到需求输入框
+  switchTab("custom");
+  setTimeout(() => document.getElementById("board-request")?.focus(), 80);
+}
+
+function quickNewDocument() {
+  if (currentTab !== "docs") switchTab("docs");
+  newDocument();
+}
+
+function quickNewRole() {
+  switchTab("proj");
+  setTimeout(() => editRole(null), 300);   // 等 traits 元数据与表单渲染就绪
+}
+
+function gotoProjSection(elemId) {
+  switchTab("proj");
+  setTimeout(() => document.getElementById(elemId)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
 }
 
 function openBoardFromSidebar(id) {
