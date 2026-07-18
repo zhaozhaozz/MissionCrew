@@ -468,3 +468,18 @@ def test_dev_guidelines_migrated_into_guideline_doc(seeded):
     doc = next(g for g in p2.guidelines if g.id == "dev-guidelines")
     assert "旧开发准则内容" in doc.content and doc.title == "开发准则"
     assert seed_mod.migrate_project_fields(seeded) == 0   # 幂等
+
+
+def test_fs_dirs_endpoint(seeded, tmp_path):
+    client = _client(seeded)
+    root = tmp_path / "browse"
+    (root / "sub-a").mkdir(parents=True)
+    (root / ".hidden").mkdir()
+    (root / "file.txt").write_text("x")
+    d = client.get(f"/api/fs/dirs?path={root}").json()
+    assert d["dirs"] == ["sub-a"]            # 隐藏目录与文件不列出
+    assert d["parent"] == str(root.parent)
+    assert d["is_git"] is False
+    # 缺省从用户主目录开始;非目录路径报 400
+    assert client.get("/api/fs/dirs").status_code == 200
+    assert client.get(f"/api/fs/dirs?path={root}/file.txt").status_code == 400

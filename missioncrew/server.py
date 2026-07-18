@@ -362,6 +362,24 @@ def create_app() -> FastAPI:
 
     # ---------------- 项目准则与 Skills ----------------
 
+    @app.get("/api/fs/dirs")
+    def fs_dirs(path: str = ""):
+        """本地目录浏览(资源路径选择器用):列出子目录;默认从用户主目录开始。"""
+        base = Path(path).expanduser() if path.strip() else Path.home()
+        try:
+            base = base.resolve()
+            if not base.is_dir():
+                raise HTTPException(400, f"不是目录: {base}")
+            dirs = sorted(d.name for d in base.iterdir()
+                          if d.is_dir() and not d.name.startswith("."))[:200]
+        except PermissionError:
+            raise HTTPException(400, f"无权限访问: {base}")
+        except OSError as exc:
+            raise HTTPException(400, f"无法读取目录: {exc}")
+        parent = str(base.parent) if base.parent != base else ""
+        return {"path": str(base), "parent": parent, "dirs": dirs,
+                "is_git": (base / ".git").exists()}
+
     # ---------------- 项目资源(本地路径 / git 仓) ----------------
 
     def _resolve_project_resource(target: str, name: str) -> ProjectResource:

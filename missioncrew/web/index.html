@@ -349,51 +349,33 @@
         <div class="form" id="proj-form"></div>
       </div>
       <div class="section">
-        <h2>资源 <span class="muted" id="res-proj-label"></span></h2>
+        <h2>资源 <span class="muted" id="res-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="openResourceDialog()">+ 添加资源</button></h2>
         <p class="muted">项目使用的本地路径与 git 仓;本地路径若是 git 仓会自动绑定其远程仓库。有本地路径的资源可作为任务频道的工作目录。</p>
         <table class="mgr" id="res-table"></table>
-        <div class="form" style="max-width:720px">
-          <div class="row">
-            <div><label>本地路径或 git 远程地址</label>
-              <input type="text" id="res-target" placeholder="~/code/myrepo 或 https://github.com/acme/x.git"></div>
-            <div style="flex:0 0 160px"><label>名称(可选)</label><input type="text" id="res-name"></div>
-          </div>
-          <div class="form-actions"><button class="action" onclick="addResourceFromForm()">添加资源</button></div>
-        </div>
       </div>
       <div class="section">
         <h2>角色 <span class="muted" id="role-proj-label"></span>
           <button class="ghost" style="margin-left:8px" onclick="editRole(null)">+ 新建角色</button></h2>
         <p class="muted">角色定位(人格)是"选人"的专长画像,供人类或 @lead 调度时挑人,不是任务描述;任务简报由调度方结合项目章程在 @ 消息里撰写,定位文本平台不会改写。</p>
         <table class="mgr" id="role-table"></table>
-        <div class="form" id="role-form" style="display:none"></div>
       </div>
       <div class="section">
-        <h2>频道 <span class="muted" id="chan-proj-label"></span></h2>
+        <h2>频道 <span class="muted" id="chan-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="openChannelDialog()">+ 新建频道</button></h2>
         <table class="mgr" id="chan-table"></table>
-        <div class="form" style="max-width:720px">
-          <div class="row">
-            <div><label>频道名</label><input type="text" id="nc-id" placeholder="例如 backend-repo"></div>
-            <div><label>工作目录(可选,默认平台内置;填真实仓库路径可直接在仓库上协作)</label>
-              <input type="text" id="nc-workdir" placeholder="~/code/myrepo"></div>
-          </div>
-          <label>频道用途/任务边界</label><input type="text" id="nc-purpose" placeholder="例如：结算模块需求澄清与实现讨论">
-          <div class="form-actions"><button class="action" onclick="createChannel()">在当前项目创建频道</button></div>
-        </div>
       </div>
       <div class="section">
         <h2>准则文档 <span class="muted" id="guide-proj-label"></span>
           <button class="ghost" style="margin-left:8px" onclick="editGuideline(null)">+ 新建准则文档</button></h2>
         <p class="muted">项目准则以完整文档管理:每篇有标题、正文章节和文档库文件引用,启用的篇目会按顺序注入所有角色的执行上下文(开发规范、测试规范、部署说明等各成一篇)。</p>
         <table class="mgr" id="guide-table"></table>
-        <div class="form" id="guide-form" style="display:none"></div>
       </div>
       <div class="section">
         <h2>项目 Skills <span class="muted" id="skill-proj-label"></span>
           <button class="ghost" style="margin-left:8px" onclick="editSkill(null)">+ 新建 Skill</button></h2>
         <p class="muted">Skill = 完整说明 + 文档库文件引用 + Runtime 适用范围;执行时按角色的 Runtime 注入,可用"按 Runtime 覆盖说明"给不同工具写不同指令(key 用 runtime id、adapter 名或 default)。</p>
         <table class="mgr" id="skill-table"></table>
-        <div class="form" id="skill-form" style="display:none"></div>
       </div>
     </div>
 
@@ -466,10 +448,75 @@
   <div class="actions"><button class="action" onclick="createTask()">创建任务</button></div>
 </dialog>
 
+<dialog id="udlg" style="max-width:520px">
+  <div class="dlg-head"><strong id="udlg-title"></strong>
+    <button class="ghost" onclick="_udlgClose(null)">关闭</button></div>
+  <div class="dlg-body form" id="udlg-body"></div>
+  <div class="actions" id="udlg-actions"></div>
+</dialog>
+
+<dialog id="fdlg">
+  <div class="dlg-head"><strong id="fdlg-title"></strong>
+    <button class="ghost" onclick="fdlg.close()">取消</button></div>
+  <div class="dlg-body form" id="fdlg-body"></div>
+  <div class="actions" id="fdlg-actions"></div>
+</dialog>
+
 <script>
 const dlg = document.getElementById("dlg");
 const pdlg = document.getElementById("pdlg");
 const tdlg = document.getElementById("tdlg");
+const udlg = document.getElementById("udlg");
+const fdlg = document.getElementById("fdlg");   // 设置页各类新增/编辑表单的弹窗容器
+
+/* ---- 页面内弹窗控件:替代浏览器原生 alert / confirm / prompt ---- */
+let _udlgResolve = null;
+function _udlgClose(value) {
+  const r = _udlgResolve;
+  _udlgResolve = null;
+  udlg.close();
+  if (r) r(value);
+}
+udlg.addEventListener("cancel", e => { e.preventDefault(); _udlgClose(null); });
+function _udlgOpen(title, bodyHtml, actionsHtml) {
+  document.getElementById("udlg-title").textContent = title;
+  document.getElementById("udlg-body").innerHTML = bodyHtml;
+  document.getElementById("udlg-actions").innerHTML = actionsHtml;
+  udlg.showModal();
+}
+function uiAlert(message, title = "提示") {
+  return new Promise(res => {
+    _udlgResolve = res;
+    _udlgOpen(title, `<div style="white-space:pre-wrap">${esc(String(message))}</div>`,
+      `<button class="action" onclick="_udlgClose()">知道了</button>`);
+  });
+}
+function uiConfirm(message, title = "请确认") {
+  return new Promise(res => {
+    _udlgResolve = res;
+    _udlgOpen(title, `<div style="white-space:pre-wrap">${esc(String(message))}</div>`,
+      `<button class="action" onclick="_udlgClose(true)">确定</button>
+       <button class="ghost" onclick="_udlgClose(false)">取消</button>`);
+  });
+}
+function uiPrompt(message, { value = "", placeholder = "", title = "请输入" } = {}) {
+  return new Promise(res => {
+    _udlgResolve = res;
+    _udlgOpen(title,
+      `<div style="white-space:pre-wrap;margin-bottom:8px">${esc(String(message))}</div>
+       <input type="text" id="udlg-input" value="${esc(value)}" placeholder="${esc(placeholder)}"
+         onkeydown="if(event.key==='Enter')_udlgClose(this.value)">`,
+      `<button class="action" onclick="_udlgClose(document.getElementById('udlg-input').value)">确定</button>
+       <button class="ghost" onclick="_udlgClose(null)">取消</button>`);
+    setTimeout(() => document.getElementById("udlg-input")?.focus(), 60);
+  });
+}
+function openFormDialog(title, bodyHtml, actionsHtml) {
+  document.getElementById("fdlg-title").textContent = title;
+  document.getElementById("fdlg-body").innerHTML = bodyHtml;
+  document.getElementById("fdlg-actions").innerHTML = actionsHtml;
+  fdlg.showModal();
+}
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let overview = { projects: [], tasks: [], roles: [], channels: [], backends: [], boards: [] };
 let currentProject = localStorage.getItem("mc.project") || null;
@@ -674,15 +721,8 @@ function renderSidebar() {
 }
 
 /* ---- 侧栏分区的快捷操作 ---- */
-async function quickCreateChannel() {
-  if (!currentProject) return;
-  const name = prompt("新频道名(字母、数字、下划线、连字符):");
-  if (!name) return;
-  const purpose = prompt("频道用途/任务边界(可选):") || "";
-  const c = await api("POST", "/api/chat/channels",
-    { id: name.trim(), name: name.trim(), project_id: currentProject, purpose });
-  await loadOverview();
-  selectChannel(c.id);
+function quickCreateChannel() {
+  openChannelDialog();
 }
 
 function requestBoardFocus() {   // 面板由主控创建:跳到需求输入框
@@ -706,15 +746,46 @@ function gotoProjSection(elemId) {
     ?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
 }
 
-async function quickAddResource() {
-  if (!currentProject) return;
-  const target = prompt("本地路径或 git 远程地址:\n(本地路径若是 git 仓,会自动绑定其远程仓库)");
-  if (!target) return;
-  const r = await api("POST",
-    `/api/projects/${encodeURIComponent(currentProject)}/resources`, { target });
-  await loadOverview();
-  alert(`已添加资源 ${r.id}(${r.kind === "git" ? "git 仓" : "本地路径"}` +
-        (r.remote ? `,远程 ${r.remote}` : "") + ")");
+function quickAddResource() {
+  openResourceDialog();
+}
+
+function openResourceDialog() {
+  if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
+  openFormDialog("添加资源", `
+    <label>本地路径或 git 远程地址(本地路径若是 git 仓,自动绑定其远程仓库)</label>
+    <div class="row">
+      <div><input type="text" id="res-target" placeholder="~/code/myrepo 或 https://github.com/acme/x.git"></div>
+      <div style="flex:0 0 90px"><button class="ghost" style="width:100%"
+        onclick="browseDirs(document.getElementById('res-target').value)">浏览…</button></div>
+    </div>
+    <div id="res-browser"></div>
+    <label>名称(可选)</label><input type="text" id="res-name">`,
+    `<button class="action" onclick="addResourceFromForm()">添加资源</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+  setTimeout(() => document.getElementById("res-target")?.focus(), 60);
+}
+
+// 服务端目录浏览:在弹窗内逐级选择本地路径(保留直接输入)
+async function browseDirs(path) {
+  let d;
+  try {
+    d = await api("GET", `/api/fs/dirs?path=${encodeURIComponent((path || "").trim())}`);
+  } catch (e) { return; }
+  window._browsePath = d.path;
+  const box = document.getElementById("res-browser");
+  if (!box) return;
+  box.innerHTML = `
+    <div class="muted" style="margin-top:6px">${esc(d.path)}
+      ${d.is_git ? `<span class="pill" style="color:var(--ok);border-color:var(--ok)">git 仓</span>` : ""}
+      <button class="ghost" style="margin-left:6px;padding:1px 10px"
+        onclick="document.getElementById('res-target').value=window._browsePath">选用此目录</button></div>
+    <div style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:4px">
+      ${d.parent ? `<div class="side-item" data-p="${esc(d.parent)}" onclick="browseDirs(this.dataset.p)">⬆ 上一级</div>` : ""}
+      ${d.dirs.map(n => `<div class="side-item" data-p="${esc(d.path)}/${esc(n)}"
+          onclick="browseDirs(this.dataset.p)">📁 ${esc(n)}</div>`).join("")
+        || `<div class="empty" style="padding:8px">无子目录</div>`}
+    </div>`;
 }
 
 function openGuidelineFromSidebar(id) {
@@ -898,7 +969,7 @@ async function advanceTask(id) {
   await loadOverview(); await openTask(id);
 }
 async function approveTask(id, decision) {
-  const approver = prompt("审批人:", "human");
+  const approver = await uiPrompt("审批人:", { value: "human" });
   if (!approver) return;
   await fetch(`/api/tasks/${id}/approve`, {
     method: "POST", headers: { "Content-Type": "application/json" },
@@ -923,7 +994,7 @@ async function requestBoard() {
   if (!text || !p) return;
   const channel = projChannels().find(c =>
     c.id.endsWith(":general") || c.id === "general") || projChannels()[0];
-  if (!channel) { alert("本项目还没有频道,请先在项目设置中创建"); return; }
+  if (!channel) { uiAlert("本项目还没有频道,请先在项目设置中创建"); return; }
   const board = projBoards().find(b => b.id === currentCustomBoard);
   const context = board ? `当前正在查看面板「${board.name}」(id: ${board.id.split(":").pop()})。` : "";
   const content = `@${p.orchestrator_role_id} 自定义面板需求:${text}\n` +
@@ -1134,7 +1205,7 @@ async function renderBoardWidgets(layout) {
 async function saveCustomBoard() {
   let layout;
   try { layout = JSON.parse(document.getElementById("cb-layout").value); }
-  catch (_) { alert("布局必须是合法 JSON"); return; }
+  catch (_) { uiAlert("布局必须是合法 JSON"); return; }
   const id = document.getElementById("cb-id").value.trim();
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
     id, name: document.getElementById("cb-name").value.trim(),
@@ -1148,7 +1219,7 @@ async function saveCustomBoard() {
 
 async function deleteCustomBoard() {
   const board = projBoards().find(b => b.id === currentCustomBoard);
-  if (!board || !confirm(`删除面板「${board.name}」?`)) return;
+  if (!board || !await uiConfirm(`删除面板「${board.name}」?`)) return;
   const shortId = board.id.replace(`${currentProject}:`, "");
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/boards/${encodeURIComponent(shortId)}`);
   currentCustomBoard = null;
@@ -1164,7 +1235,7 @@ async function api(method, url, body) {
   });
   if (!r.ok) {
     const err = await r.json().catch(() => ({}));
-    alert(err.detail || `请求失败 (${r.status})`);
+    uiAlert(err.detail || `请求失败 (${r.status})`);
     throw new Error("api");
   }
   return r.json();
@@ -1185,7 +1256,7 @@ function openNewProject() {
 }
 
 function openNewTask() {
-  if (!currentProject) { alert("请先创建/选择项目"); return; }
+  if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
   document.getElementById("nt-title").value = "";
   document.getElementById("nt-desc").value = "";
   document.getElementById("nt-labels").value = "";
@@ -1194,7 +1265,7 @@ function openNewTask() {
 
 async function createTask() {
   const title = document.getElementById("nt-title").value.trim();
-  if (!title) { alert("标题不能为空"); return; }
+  if (!title) { uiAlert("标题不能为空"); return; }
   await api("POST", "/api/tasks", {
     project_id: currentProject, title,
     description: document.getElementById("nt-desc").value,
@@ -1209,7 +1280,7 @@ async function createTask() {
 
 async function createProject() {
   const id = document.getElementById("np-id").value.trim();
-  if (!id) { alert("项目 id 不能为空"); return; }
+  if (!id) { uiAlert("项目 id 不能为空"); return; }
   await api("POST", "/api/projects", {
     id,
     name: document.getElementById("np-name").value.trim() || id,
@@ -1287,17 +1358,16 @@ function renderResourceTable() {
 
 async function addResourceFromForm() {
   const target = document.getElementById("res-target").value.trim();
-  if (!target) { alert("请输入本地路径或 git 地址"); return; }
+  if (!target) { uiAlert("请输入本地路径或 git 地址"); return; }
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/resources`,
             { target, name: document.getElementById("res-name").value.trim() });
-  document.getElementById("res-target").value = "";
-  document.getElementById("res-name").value = "";
+  fdlg.close();
   await loadOverview();
   renderResourceTable(); renderSidebar();
 }
 
 async function deleteResource(id) {
-  if (!confirm(`移除资源「${id}」?(只解除关联,不删除磁盘内容)`)) return;
+  if (!await uiConfirm(`移除资源「${id}」?(只解除关联,不删除磁盘内容)`)) return;
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/resources/${encodeURIComponent(id)}`);
   await loadOverview();
@@ -1342,10 +1412,7 @@ function renderGuidelines() {
 function editGuideline(id) {
   const g = (projObj()?.guidelines || []).find(x => x.id === id) ||
     { id: "", title: "", content: "", file_refs: [], enabled: true };
-  const form = document.getElementById("guide-form");
-  form.style.display = "block";
-  form.innerHTML = `
-    <h3>${id ? "编辑准则文档 " + esc(id) : "新建准则文档"}</h3>
+  openFormDialog(id ? `编辑准则文档 ${id}` : "新建准则文档", `
     <div class="row">
       <div><label>文档 id</label><input type="text" id="gf-id" value="${esc(g.id)}" ${id ? "disabled" : ""} placeholder="如 dev-spec / test-spec / deploy"></div>
       <div><label>标题</label><input type="text" id="gf-title" value="${esc(g.title || "")}" placeholder="如 开发规范"></div>
@@ -1354,30 +1421,27 @@ function editGuideline(id) {
           onclick="this.classList.toggle('on')"></span></div>
     </div>
     <label>正文(Markdown 章节;会作为完整文档注入执行上下文)</label>
-    <textarea id="gf-content" rows="10">${esc(g.content || "")}</textarea>
-    ${fileRefPicker("gf-refs", g.file_refs)}
-    <div class="form-actions">
-      <button class="action" onclick="saveGuideline()">保存</button>
-      <button class="ghost" onclick="document.getElementById('guide-form').style.display='none'">取消</button>
-    </div>`;
-  form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    <textarea id="gf-content" rows="10" style="height:auto">${esc(g.content || "")}</textarea>
+    ${fileRefPicker("gf-refs", g.file_refs)}`,
+    `<button class="action" onclick="saveGuideline()">保存</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
 }
 
 async function saveGuideline() {
   const id = document.getElementById("gf-id").value.trim();
-  if (!id) { alert("文档 id 不能为空"); return; }
+  if (!id) { uiAlert("文档 id 不能为空"); return; }
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
     id, title: document.getElementById("gf-title").value.trim(),
     content: document.getElementById("gf-content").value,
     file_refs: readFileRefs("gf-refs"),
     enabled: document.getElementById("gf-enabled").classList.contains("on"),
   });
-  document.getElementById("guide-form").style.display = "none";
-  await loadOverview(); renderGuidelines();
+  fdlg.close();
+  await loadOverview(); renderGuidelines(); renderSidebar();
 }
 
 async function deleteGuideline(id) {
-  if (!confirm(`删除准则文档「${id}」?`)) return;
+  if (!await uiConfirm(`删除准则文档「${id}」?`)) return;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(id)}`);
   await loadOverview(); renderGuidelines();
 }
@@ -1430,10 +1494,7 @@ function editSkill(id) {
   const rtChips = overview.backends.map(b =>
     `<span class="chip ${(s.runtime_ids || []).includes(b.id) ? "on" : ""}" data-rt="${esc(b.id)}"
        onclick="this.classList.toggle('on')">${esc(b.id)}</span>`).join("");
-  const form = document.getElementById("skill-form");
-  form.style.display = "block";
-  form.innerHTML = `
-    <h3>${id ? "编辑 Skill " + esc(id) : "新建 Skill"}</h3>
+  openFormDialog(id ? `编辑 Skill ${id}` : "新建 Skill", `
     <div class="row">
       <div><label>Skill id</label><input type="text" id="sf-id" value="${esc(s.id)}" ${id ? "disabled" : ""}></div>
       <div><label>名称</label><input type="text" id="sf-name" value="${esc(s.name || "")}"></div>
@@ -1443,23 +1504,20 @@ function editSkill(id) {
     </div>
     <label>一句话描述</label><input type="text" id="sf-desc" value="${esc(s.description || "")}">
     <label>完整说明(instructions;注入执行上下文的主体)</label>
-    <textarea id="sf-inst" rows="8">${esc(s.instructions || "")}</textarea>
+    <textarea id="sf-inst" rows="8" style="height:auto">${esc(s.instructions || "")}</textarea>
     ${fileRefPicker("sf-refs", s.file_refs)}
     <label>适用 Runtime(不选 = 注入所有 Runtime)</label>
     <div class="chips" id="sf-rts">${rtChips}</div>
     <label>按 Runtime 覆盖说明(key 可为 runtime id / adapter / default)</label>
     <div id="sf-ri">${riRows()}</div>
-    <button class="ghost" style="margin-top:6px" onclick="skillRI.push({key:'default',text:''});refreshRI()">+ 添加覆盖</button>
-    <div class="form-actions">
-      <button class="action" onclick="saveSkill()">保存</button>
-      <button class="ghost" onclick="document.getElementById('skill-form').style.display='none'">取消</button>
-    </div>`;
-  form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    <button class="ghost" style="margin-top:6px" onclick="skillRI.push({key:'default',text:''});refreshRI()">+ 添加覆盖</button>`,
+    `<button class="action" onclick="saveSkill()">保存</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
 }
 
 async function saveSkill() {
   const id = document.getElementById("sf-id").value.trim();
-  if (!id) { alert("Skill id 不能为空"); return; }
+  if (!id) { uiAlert("Skill id 不能为空"); return; }
   const runtime_instructions = {};
   for (const r of skillRI) if (r.key && r.text.trim()) runtime_instructions[r.key] = r.text;
   const existing = (projObj()?.skills || []).find(x => x.id === id);
@@ -1473,12 +1531,12 @@ async function saveSkill() {
     runtime_instructions,
     enabled: document.getElementById("sf-enabled").classList.contains("on"),
   });
-  document.getElementById("skill-form").style.display = "none";
-  await loadOverview(); renderSkills();
+  fdlg.close();
+  await loadOverview(); renderSkills(); renderSidebar();
 }
 
 async function deleteSkill(id) {
-  if (!confirm(`删除 Skill「${id}」?`)) return;
+  if (!await uiConfirm(`删除 Skill「${id}」?`)) return;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/skills/${encodeURIComponent(id)}`);
   await loadOverview(); renderSkills();
 }
@@ -1497,7 +1555,7 @@ async function saveProject() {
 }
 
 async function deleteProject(id) {
-  if (!confirm(`删除项目「${id}」及其全部角色、频道与面板?消息、任务记录和归档后的文档历史会保留。`)) return;
+  if (!await uiConfirm(`删除项目「${id}」及其全部角色、频道与面板?消息、任务记录和归档后的文档历史会保留。`)) return;
   await api("DELETE", `/api/projects/${id}`);
   await loadOverview();
   renderProjSettings();
@@ -1594,9 +1652,9 @@ function selectDocument(path) {
   renderDocTree(); renderDocPane();
 }
 
-function newDocument() {
+async function newDocument() {
   if (!currentProject) return;
-  const path = prompt("新文档相对路径(如 specs/design.md):");
+  const path = await uiPrompt("新文档相对路径:", { placeholder: "specs/design.md", title: "新建文档" });
   if (!path) return;
   docSelected = path.trim(); docMode = "new";
   docViewingRevision = null; docHistoryOpen = false;
@@ -1677,7 +1735,7 @@ async function saveDocument() {
 }
 
 async function deleteDocument() {
-  if (!docSelected || !confirm(`删除文档「${docSelected}」?历史版本仍可查阅。`)) return;
+  if (!docSelected || !await uiConfirm(`删除文档「${docSelected}」?历史版本仍可查阅。`)) return;
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
   docSelected = null; docMode = "view";
@@ -1705,10 +1763,10 @@ async function showDocumentHistory() {
 }
 
 async function restoreDocumentVersion(revision) {
-  if (!docSelected || !confirm(`把 ${docSelected} 恢复到版本 ${revision.slice(0, 10)}?(以新版本写入,历史保留)`)) return;
+  if (!docSelected || !await uiConfirm(`把 ${docSelected} 恢复到版本 ${revision.slice(0, 10)}?(以新版本写入,历史保留)`)) return;
   const r = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/documents/restore`,
                       { path: docSelected, revision });
-  alert(`已恢复,新版本 ${r.revision.slice(0, 10)}`);
+  uiAlert(`已恢复,新版本 ${r.revision.slice(0, 10)}`);
   docViewingRevision = null;
   await renderDocuments();
 }
@@ -1750,10 +1808,7 @@ function editRole(id) {
       `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("")
     : `<option value="">(没有可用 runtime)</option>`;
   window._editingRoleModel = r.model;   // 供模型下拉初始化选中
-  const form = document.getElementById("role-form");
-  form.style.display = "block";
-  form.innerHTML = `
-    <h3>${id ? "编辑角色 @" + esc(id) : "新建角色"}</h3>
+  openFormDialog(id ? `编辑角色 @${id}` : "新建角色", `
     <div class="row">
       <div><label>角色 id(@ 提及名)</label><input type="text" id="rf-id" value="${esc(r.id)}" ${id ? "disabled" : ""}></div>
       <div><label>显示名</label><input type="text" id="rf-name" value="${esc(r.name)}"></div>
@@ -1770,14 +1825,11 @@ function editRole(id) {
     <label>角色能力(逗号分隔,如 coding, reasoning;用于名册与协作选人)</label>
     <input type="text" id="rf-caps" value="${esc((r.capabilities || []).join(", "))}">
     <label>角色偏好(工作风格与专长标签,用于名册与协作选人)</label>
-    <div class="chips" id="rf-traits">${traitChips}</div>
-    <div class="form-actions">
-      <button class="action" onclick="saveRole()">保存</button>
-      <button class="ghost" onclick="document.getElementById('role-form').style.display='none'">取消</button>
-      ${id ? `<button class="danger" onclick="deleteRole('${id}')">删除角色</button>` : ""}
-    </div>`;
+    <div class="chips" id="rf-traits">${traitChips}</div>`,
+    `<button class="action" onclick="saveRole()">保存</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>
+     ${id ? `<button class="danger" onclick="deleteRole('${id}')">删除角色</button>` : ""}`);
   refreshModelOptions();
-  form.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
 // 每个角色必须先选 runtime,模型下拉再带出该 runtime 的固定模型选项。
@@ -1819,20 +1871,20 @@ async function saveRole() {
     runtime_id: document.getElementById("rf-backend").value,
     model: document.getElementById("rf-model").value,
   };
-  if (!body.id) { alert("角色 id 不能为空"); return; }
-  if (!body.runtime_id) { alert("必须为角色选择固定 runtime 和模型"); return; }
+  if (!body.id) { uiAlert("角色 id 不能为空"); return; }
+  if (!body.runtime_id) { uiAlert("必须为角色选择固定 runtime 和模型"); return; }
   await api("POST", "/api/roles", body);
   await loadOverview();
-  document.getElementById("role-form").style.display = "none";
-  renderRoleTable();
+  fdlg.close();
+  renderRoleTable(); renderSidebar();
 }
 
 async function deleteRole(id) {
-  if (!confirm(`删除项目「${currentProject}」的角色 @${id}?`)) return;
+  if (!await uiConfirm(`删除项目「${currentProject}」的角色 @${id}?`)) return;
   await api("DELETE", `/api/roles/${id}?project_id=${encodeURIComponent(currentProject)}`);
   await loadOverview();
-  document.getElementById("role-form").style.display = "none";
-  renderRoleTable();
+  fdlg.close();
+  renderRoleTable(); renderSidebar();
 }
 
 /* ---- 频道(当前项目) ---- */
@@ -1848,24 +1900,39 @@ function renderChanTable() {
     `<tr><th>频道</th><th>用途</th><th>工作目录</th><th>创建者</th><th></th></tr>` + rows;
 }
 
+function openChannelDialog() {
+  if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
+  const repoOpts = (projObj()?.repos || []).filter(r => r.path).map(r =>
+    `<option value="${esc(r.path)}">${esc(r.name || r.id)} — ${esc(r.path)}</option>`).join("");
+  openFormDialog("新建频道", `
+    <label>频道名(字母、数字、下划线、连字符)</label>
+    <input type="text" id="nc-id" placeholder="例如 backend-repo">
+    <label>频道用途/任务边界</label>
+    <input type="text" id="nc-purpose" placeholder="例如：结算模块需求澄清与实现讨论">
+    <label>工作目录(可选;默认平台内置工作区)</label>
+    ${repoOpts ? `<select id="nc-workdir-sel" onchange="document.getElementById('nc-workdir').value=this.value">
+      <option value="">(平台内置工作区)</option>${repoOpts}</select>` : ""}
+    <input type="text" id="nc-workdir" placeholder="或直接输入路径 ~/code/myrepo" style="margin-top:6px">`,
+    `<button class="action" onclick="createChannel()">创建频道</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+  setTimeout(() => document.getElementById("nc-id")?.focus(), 60);
+}
+
 async function createChannel() {
   const id = document.getElementById("nc-id").value.trim();
-  if (!id) { alert("频道名不能为空"); return; }
-  if (!currentProject) { alert("请先创建/选择项目"); return; }
+  if (!id) { uiAlert("频道名不能为空"); return; }
   await api("POST", "/api/chat/channels", {
     id, name: id,
     project_id: currentProject,
-    workdir: document.getElementById("nc-workdir").value.trim() || null,
     purpose: document.getElementById("nc-purpose").value.trim(),
+    workdir: document.getElementById("nc-workdir").value.trim() || null,
   });
-  document.getElementById("nc-id").value = "";
-  document.getElementById("nc-workdir").value = "";
-  document.getElementById("nc-purpose").value = "";
+  fdlg.close();
   await loadOverview(); renderChanTable(); renderSidebar();
 }
 
 async function deleteChannel(id) {
-  if (!confirm(`删除频道 #${id}?(消息记录保留在数据库)`)) return;
+  if (!await uiConfirm(`删除频道 #${id}?(消息记录保留在数据库)`)) return;
   await api("DELETE", `/api/chat/channels/${id}`);
   if (currentChan === id) currentChan = null;
   await loadOverview(); renderChanTable(); renderSidebar();
@@ -1982,9 +2049,9 @@ async function checkUpdates(silent = false) {
       // "查询不到最新版"不等于"已是最新":断网/无 npm 源时如实说明
       const unknown = results.filter(r => !r.latest).map(r => r.id);
       if (unknown.length === results.length && results.length)
-        alert("无法从 npm 源获取任何最新版本信息(可能离线),无法确认是否有更新。");
+        uiAlert("无法从 npm 源获取任何最新版本信息(可能离线),无法确认是否有更新。");
       else
-        alert("可检查的工具都已是最新版本。" +
+        uiAlert("可检查的工具都已是最新版本。" +
               (unknown.length ? `\n无法确认(无版本源): ${unknown.join(", ")}` : ""));
     }
   } finally {
@@ -1995,12 +2062,12 @@ async function checkUpdates(silent = false) {
 async function runUpdate(id) {
   const hint = updateHints[id];
   const target = hint && hint.latest ? `到 ${hint.latest}` : "到最新版本";
-  if (!confirm(`更新 ${id} ${target}?更新期间该工具不会被派发新的执行。`)) return;
+  if (!await uiConfirm(`更新 ${id} ${target}?更新期间该工具不会被派发新的执行。`)) return;
   updatingIds.add(id);
   await renderBackendTable();
   try {
     const r = await api("POST", `/api/backends/${encodeURIComponent(id)}/update`);
-    alert(r.ok
+    uiAlert(r.ok
       ? `更新完成:${r.old_version || "?"} → ${r.version || "?"}`
       : `更新失败:\n${r.log || "(无输出)"}`);
     if (r.ok) delete updateHints[id];   // 失败时版本未变,"可更新"提示仍有效
@@ -2019,7 +2086,7 @@ async function toggleBackend(id, enabled) {
 
 async function detectBackends() {
   const d = await api("POST", "/api/backends/detect");
-  alert(`检测到: ${d.found.join(", ") || "无"}\n新注册: ${d.added.join(", ") || "无"}\n已刷新: ${d.updated.join(", ") || "无"}`);
+  uiAlert(`检测到: ${d.found.join(", ") || "无"}\n新注册: ${d.added.join(", ") || "无"}\n已刷新: ${d.updated.join(", ") || "无"}`);
   updateHints = {};        // 已装版本可能已变,旧比对结果作废
   await loadOverview();
   await renderBackendTable();
