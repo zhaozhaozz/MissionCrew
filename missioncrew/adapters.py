@@ -301,6 +301,10 @@ class MockAdapter:
                  f"{cfg.backend.tier})。")
         for r in dict.fromkeys(asked):
             reply += f"\n@{r} 上面的工作已完成,交给你继续。"
+        # 回显触发消息中的平台控制动作块,模拟真实 Agent 按指示发出动作
+        for block in re.findall(r"<missioncrew-action>.*?</missioncrew-action>",
+                                trigger, re.S):
+            reply += "\n" + block
         return RunResult(True, reply[:120], output=reply)
 
 

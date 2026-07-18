@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
@@ -119,8 +120,8 @@ class DocumentWrite(BaseModel):
 class BoardInput(BaseModel):
     id: str
     name: str = ""
-    description: str = ""
-    layout: list[dict] = []
+    description: Optional[str] = None    # None = 更新时保留现值
+    layout: Optional[list[dict]] = None  # None = 更新时保留现有布局
     actor_role_id: Optional[str] = None
 
 
@@ -142,6 +143,10 @@ def create_app() -> FastAPI:
     seed_mod.ensure_role_bindings(store)
     engine = Engine(store)
     chat = ChatEngine(store)
+    # 更新互斥与"更新中"标记:与 ChatEngine 共享同一集合,更新期间不派发该后端
+    updating_backends: set[str] = set()
+    updating_guard = threading.Lock()
+    chat.updating_backends = updating_backends
 
     def must_project(project_id: str) -> Project:
         project = store.get_project(project_id)
@@ -475,22 +480,24 @@ def create_app() -> FastAPI:
         project = must_project(project_id)
         actor = validate_orchestrator_actor(project, body.actor_role_id)
         board_id = namespaced_id(project_id, body.id, "面板")
-        widgets = []
-        seen = set()
-        try:
-            for raw in body.layout:
-                widget = BoardWidget(**raw)
-                if not MENTION_ID_RE.fullmatch(widget.id) or widget.id in seen:
-                    raise ValueError("组件 id 必须合法且不能重复")
-                if widget.x < 0 or widget.y < 0 or not 1 <= widget.width <= 12 \
-                        or not 1 <= widget.height <= 100:
-                    raise ValueError("组件位置必须非负，宽度为 1..12，高度为 1..100")
-                if not widget.type.strip():
-                    raise ValueError("组件 type 不能为空")
-                seen.add(widget.id)
-                widgets.append(widget)
-        except (TypeError, ValueError) as exc:
-            raise HTTPException(400, f"面板布局不合法: {exc}")
+        widgets = None
+        if body.layout is not None:
+            widgets = []
+            seen = set()
+            try:
+                for raw in body.layout:
+                    widget = BoardWidget(**raw)
+                    if not MENTION_ID_RE.fullmatch(widget.id) or widget.id in seen:
+                        raise ValueError("组件 id 必须合法且不能重复")
+                    if widget.x < 0 or widget.y < 0 or not 1 <= widget.width <= 12 \
+                            or not 1 <= widget.height <= 100:
+                        raise ValueError("组件位置必须非负，宽度为 1..12，高度为 1..100")
+                    if not widget.type.strip():
+                        raise ValueError("组件 type 不能为空")
+                    seen.add(widget.id)
+                    widgets.append(widget)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(400, f"面板布局不合法: {exc}")
         board = store.get_board(board_id) or Board(
             id=board_id, project_id=project_id,
             created_by_role_id=body.actor_role_id or "",
@@ -498,8 +505,10 @@ def create_app() -> FastAPI:
         if board.project_id != project_id:
             raise HTTPException(400, "面板不属于当前项目")
         board.name = body.name or board.name or body.id
-        board.description = body.description
-        board.layout = widgets
+        if body.description is not None:   # 缺省保留,避免只改名时清空
+            board.description = body.description
+        if widgets is not None:
+            board.layout = widgets
         store.put_board(board)
         store.audit(actor, "board_saved", detail=f"project={project_id} board={board_id}")
         return board.to_dict()
@@ -619,22 +628,39 @@ def create_app() -> FastAPI:
 
     @app.post("/api/backends/{backend_id}/update")
     def do_update(backend_id: str):
-        """执行工具更新(自更新命令或 npm),完成后重新探测版本入库。"""
+        """执行工具更新(自更新命令或 npm),完成后重新探测版本入库。
+
+        互斥:同一后端同时只允许一个更新(并发 npm install -g 会写坏全局安装);
+        更新期间该后端不再被派发新的聊天执行(见 ChatEngine.updating_backends)。
+        """
         b = store.get_backend(backend_id)
         if b is None:
             raise HTTPException(404, "后端不存在")
-        ok, log = adapters.run_update(b)
-        old_version = b.version
-        binary = Path(b.binary_path).name if b.binary_path else b.adapter
-        new_path = shutil.which(binary)
-        if new_path:   # 更新后刷新版本与路径(原生更新器可能切换版本目录)
-            b.binary_path = new_path
-            b.version = adapters._cli_version(binary)
-            store.put_backend(b)
-        store.audit("human", "backend_update", detail=(
-            f"backend={backend_id} ok={ok} {old_version} -> {b.version}"))
-        return {"ok": ok, "old_version": old_version, "version": b.version,
-                "log": log[-1500:]}
+        with updating_guard:
+            if backend_id in updating_backends:
+                raise HTTPException(409, "该工具正在更新中,请等待完成")
+            updating_backends.add(backend_id)
+        try:
+            ok, log = adapters.run_update(b)
+            old_version = b.version
+            # 更新可长达数分钟:重取最新记录,只补检测字段,
+            # 避免过期快照覆盖窗口期内的配额扣减/启停等修改
+            fresh = store.get_backend(backend_id)
+            if fresh is None:
+                raise HTTPException(409, "后端在更新期间被删除")
+            binary = Path(fresh.binary_path).name if fresh.binary_path else fresh.adapter
+            new_path = shutil.which(binary)
+            if new_path:   # 原生更新器可能切换版本目录
+                fresh.binary_path = new_path
+                fresh.version = adapters._cli_version(binary)
+                store.put_backend(fresh)
+            store.audit("human", "backend_update", detail=(
+                f"backend={backend_id} ok={ok} {old_version} -> {fresh.version}"))
+            return {"ok": ok, "old_version": old_version, "version": fresh.version,
+                    "log": log[-1500:]}
+        finally:
+            with updating_guard:
+                updating_backends.discard(backend_id)
 
     @app.post("/api/backends/detect")
     def detect():

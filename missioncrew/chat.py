@@ -72,16 +72,33 @@ CHAT_PROMPT = """\
 - 不需要协作就不要 @ 任何角色;不要 @ 你自己;不要编造不存在的角色。
 """
 
-ORCHESTRATOR_SECTION = """\
+ORCHESTRATOR_TEMPLATE = """\
 # 项目主控权限
-你是本项目唯一主控，负责理解项目目标、拆解工作并调度其他角色。需要新建任务频道
-或创建/更新自定义面板时，可在回复中加入一个或多个控制动作（动作会被平台执行并从
-公开回复中移除）：
-<missioncrew-action>{"action":"create_channel","id":"channel-id","name":"名称","purpose":"任务边界"}</missioncrew-action>
-<missioncrew-action>{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}</missioncrew-action>
-<missioncrew-action>{"action":"update_board","id":"board-id","name":"新名称","layout":[]}</missioncrew-action>
-面板 layout 的每项包含 id、type、title、x、y、width、height、content；type 可使用
-markdown、requirements、test_records、log_analysis、task_query、metrics、table。
+你是本项目唯一主控，负责理解项目目标、拆解工作并调度其他角色。可在回复中加入
+一个或多个控制动作（动作会被平台执行并从公开回复中移除，执行结果附在回复末尾）：
+<missioncrew-action>{{"action":"create_channel","id":"channel-id","name":"名称","purpose":"任务边界","workdir":"可选，项目代码仓路径"}}</missioncrew-action>
+<missioncrew-action>{{"action":"post_message","channel":"channel-id","content":"开工简报，@角色 会正常触发执行"}}</missioncrew-action>
+<missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
+<missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
+<missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
+要点：
+- create_channel 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
+  不填时若项目只配了一个代码仓则自动使用它。新频道创建后是空的，
+  用 post_message 把任务简报发进去、@ 相应角色开工。
+- update_board 不携带 layout 字段时保留现有布局；携带则全量替换。
+  layout 每项含 id、type、title、x、y、width、height、content；type 可用
+  markdown、requirements、test_records、log_analysis、task_query、metrics、table。
+- 调度预算：@ 级联深度上限 {max_depth} 层、单条协作链最多 {max_runs} 次执行。
+  复杂任务分批派发，让执行角色完成后 @ 你汇报，再派下一批。
+
+## 项目代码仓
+{repos}
+
+## 现有频道
+{channels}
+
+## 现有面板
+{boards}
 """
 
 
@@ -92,6 +109,9 @@ class ChatEngine:
                                         thread_name_prefix="chat-run")
         self._futures: list[Future] = []
         self._futures_lock = threading.Lock()
+        # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
+        # 避免 Agent 跑在半更新的二进制上
+        self.updating_backends: set[str] = set()
 
     # ---- 对外入口 ----
     def post(self, channel_id: str, author: str, content: str,
@@ -208,7 +228,12 @@ class ChatEngine:
         reply = (result.output or result.summary or "(无输出)").strip()
         project = self.store.get_project(channel.project_id or "")
         if project and role.id == project.orchestrator_role_id:
-            reply = self._apply_orchestrator_actions(project.id, role.id, reply)
+            reply = self._apply_orchestrator_actions(project, role.id, reply,
+                                                     root_id=root_id, depth=depth)
+        elif ACTION_RE.search(reply):
+            # 非主控回复中的控制动作:剥离并明示未执行,避免读者误以为已生效
+            reply = ACTION_RE.sub("", reply).strip()
+            reply += "\n\n(检测到平台控制动作,但只有项目主控可以执行,未生效)"
         self.store.update_chat_run(run_id, "done", backend_id=backend.id)
         # Agent 回复作为该角色的消息发布;其中的 @ 会继续级联(深度 +1)
         self.post(channel.id, role_id, reply, author_type="agent",
@@ -219,6 +244,8 @@ class ChatEngine:
         """解析角色唯一的固定 runtime/model;聊天角色不再自动路由。"""
         if not role.runtime_id:
             return None, "角色未配置固定 runtime/model"
+        if role.runtime_id in self.updating_backends:
+            return None, f"runtime {role.runtime_id} 正在更新中,请稍后再试"
         b = self.store.get_backend(role.runtime_id)
         if b is None or not b.enabled:
             return None, f"角色固定的 runtime {role.runtime_id} 不可用"
@@ -247,7 +274,7 @@ class ChatEngine:
                 project_section = render_project_context(project, backend, library)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
                 if role.id == project.orchestrator_role_id:
-                    orchestrator_section = ORCHESTRATOR_SECTION
+                    orchestrator_section = self._orchestrator_section(project)
 
         history_lines = []
         trigger = ""
@@ -285,14 +312,41 @@ class ChatEngine:
             prompt=prompt, workdir=str(workdir), env=env, timeout=CHAT_TIMEOUT,
         )
 
-    def _apply_orchestrator_actions(self, project_id: str, role_id: str,
-                                    reply: str) -> str:
+    def _orchestrator_section(self, project) -> str:
+        """主控专属上下文:动作说明 + 代码仓/现有频道/现有面板清单与调度预算。
+
+        清单让 create/update 决策有据可依(否则主控只能靠聊天历史猜 id,
+        容易触发"频道已存在/面板不存在")。
+        """
+        def _short(cid: str) -> str:
+            return cid.removeprefix(f"{project.id}:")
+
+        repos = "\n".join(f"- {r}" for r in project.repos) or "(未配置)"
+        channels = "\n".join(
+            f"- {_short(c.id)}(#{c.name}):{c.purpose or '无用途说明'}"
+            + (f";工作目录 {c.workdir}" if c.workdir else "")
+            for c in self.store.list_channels(project.id)) or "(无)"
+        boards = "\n".join(
+            f"- {_short(b.id)}({b.name}):{b.description or '无描述'};组件 "
+            + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
+            for b in self.store.list_boards(project.id)) or "(无)"
+        return ORCHESTRATOR_TEMPLATE.format(
+            max_depth=MAX_DEPTH, max_runs=MAX_CHAIN_RUNS,
+            repos=repos, channels=channels, boards=boards)
+
+    def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
+                                    root_id: int, depth: int) -> str:
         """执行主控回复中的受限平台动作；其他角色的相同文本只会作为普通回复。"""
+        project_id = project.id
         reports = []
         for match in ACTION_RE.finditer(reply):
             try:
                 action = json.loads(match.group(1))
                 kind = action.get("action")
+                if kind == "post_message":
+                    reports.append(self._action_post_message(
+                        project_id, role_id, action, root_id, depth))
+                    continue
                 raw_id = str(action.get("id", "")).strip()
                 if not CONTROL_ID_RE.fullmatch(raw_id):
                     raise ValueError("id 只能包含字母、数字、下划线、连字符")
@@ -300,13 +354,16 @@ class ChatEngine:
                 if kind == "create_channel":
                     if self.store.get_channel(item_id):
                         raise ValueError("频道已存在")
+                    workdir = self._resolve_channel_workdir(
+                        project, str(action.get("workdir", "")).strip())
                     channel = Channel(
                         id=item_id, name=str(action.get("name") or raw_id),
                         project_id=project_id, purpose=str(action.get("purpose", "")),
-                        created_by_role_id=role_id,
+                        workdir=workdir, created_by_role_id=role_id,
                     )
                     self.store.put_channel(channel)
-                    reports.append(f"已创建频道 #{channel.name}")
+                    where = f"(工作目录 {workdir})" if workdir else ""
+                    reports.append(f"已创建频道 #{channel.name}{where}")
                     self.store.audit(role_id, "channel_created",
                                      detail=f"project={project_id} channel={item_id}")
                 elif kind in ("create_board", "update_board"):
@@ -315,15 +372,23 @@ class ChatEngine:
                         raise ValueError("面板已存在")
                     if kind == "update_board" and (not board or board.project_id != project_id):
                         raise ValueError("面板不存在")
-                    layout = self._validate_board_layout(action.get("layout", []))
                     board = board or Board(id=item_id, project_id=project_id,
                                            created_by_role_id=role_id)
+                    if "layout" in action:   # 不携带 layout 时保留现有布局
+                        board.layout = self._validate_board_layout(action["layout"])
                     board.name = str(action.get("name", board.name or raw_id))
                     board.description = str(action.get("description", board.description))
-                    board.layout = layout
                     self.store.put_board(board)
                     reports.append(f"已{'创建' if kind == 'create_board' else '更新'}面板 {board.name}")
                     self.store.audit(role_id, kind,
+                                     detail=f"project={project_id} board={item_id}")
+                elif kind == "delete_board":
+                    board = self.store.get_board(item_id)
+                    if not board or board.project_id != project_id:
+                        raise ValueError("面板不存在")
+                    self.store.delete_board(item_id)
+                    reports.append(f"已删除面板 {board.name}")
+                    self.store.audit(role_id, "board_deleted",
                                      detail=f"project={project_id} board={item_id}")
                 else:
                     raise ValueError(f"不支持的动作: {kind}")
@@ -333,6 +398,44 @@ class ChatEngine:
         if reports:
             cleaned = "\n\n".join(x for x in (cleaned, "平台操作：" + "；".join(reports)) if x)
         return cleaned or "(主控动作已处理)"
+
+    def _action_post_message(self, project_id: str, role_id: str, action: dict,
+                             root_id: int, depth: int) -> str:
+        """主控向本项目任意频道发消息(调度闭环):@ 正常触发级联,
+        共享同一条协作链的深度/执行数预算,防止跨频道绕开防爆炸限制。"""
+        raw = str(action.get("channel", "")).strip()
+        content = str(action.get("content", "")).strip()
+        if not raw or not content:
+            raise ValueError("post_message 需要 channel 和 content")
+        cid = raw if raw.startswith(f"{project_id}:") else f"{project_id}:{raw}"
+        channel = self.store.get_channel(cid) or self.store.get_channel(raw)
+        if channel is None or channel.project_id != project_id:
+            raise ValueError(f"频道不存在或不属于本项目: {raw}")
+        self.post(channel.id, role_id, content, author_type="agent",
+                  root_id=root_id, depth=depth + 1)
+        self.store.audit(role_id, "orchestrator_post",
+                         detail=f"project={project_id} channel={channel.id}")
+        return f"已在 #{channel.name} 发布消息"
+
+    @staticmethod
+    def _resolve_channel_workdir(project, requested: str) -> Optional[str]:
+        """频道工作目录只能落在项目代码仓内;未指定且仅一个仓时默认使用它。"""
+        repos = [str(Path(r).expanduser()) for r in project.repos]
+        if not requested:
+            if len(repos) == 1 and Path(repos[0]).is_dir():
+                return repos[0]
+            return None
+        target = Path(requested).expanduser()
+        if not target.is_dir():
+            raise ValueError(f"workdir 不存在: {requested}")
+        resolved = target.resolve()
+        for repo in repos:
+            try:
+                resolved.relative_to(Path(repo).resolve())
+                return str(target)
+            except ValueError:
+                continue
+        raise ValueError("workdir 必须是项目代码仓路径或其子目录")
 
     @staticmethod
     def _validate_board_layout(raw_layout) -> list[BoardWidget]:

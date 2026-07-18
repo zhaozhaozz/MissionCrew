@@ -159,3 +159,65 @@ def test_runtime_status_does_not_expose_registration_state(client):
     html = client.get("/").text
     assert "已安装,未注册" not in html
     assert "使用角色" in html
+
+
+# ---- 更新互斥 / 更新中不派发 / 快照写回 ----
+
+def test_update_concurrency_returns_409(client, seeded, monkeypatch):
+    import threading
+    seeded.put_backend(Backend(id="codex", name="codex", adapter="codex",
+                               binary_path="/usr/bin/codex", version="1.0.0"))
+    started, release = threading.Event(), threading.Event()
+
+    def slow_update(b, timeout=600):
+        started.set()
+        release.wait(timeout=10)
+        return True, "done"
+
+    monkeypatch.setattr(adapters, "run_update", slow_update)
+    monkeypatch.setattr("missioncrew.server.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(adapters, "_cli_version", lambda binary: "1.0.1")
+    results = {}
+    t = threading.Thread(target=lambda: results.update(
+        first=client.post("/api/backends/codex/update").status_code))
+    t.start()
+    assert started.wait(timeout=5)
+    # 更新进行中:并发触发被拒,且该 runtime 不再被派发聊天执行
+    assert client.post("/api/backends/codex/update").status_code == 409
+    release.set()
+    t.join(timeout=10)
+    assert results["first"] == 200
+
+
+def test_chat_skips_backend_being_updated(seeded):
+    from missioncrew.chat import ChatEngine
+    chat = ChatEngine(seeded, max_workers=2)
+    chat.updating_backends = {"std-1"}
+    seeded.put_role(__import__("missioncrew.models", fromlist=["Role"]).Role(
+        id="pinned", project_id="webshop", runtime_id="std-1", model="pro"))
+    backend, reason = chat._pick_backend(seeded.get_channel("general"),
+                                         seeded.get_role("webshop", "pinned"))
+    assert backend is None and "更新中" in reason
+
+
+def test_update_does_not_clobber_concurrent_writes(client, seeded, monkeypatch):
+    """更新窗口期内的配额扣减/启停修改不能被过期快照覆盖。"""
+    seeded.put_backend(Backend(id="codex", name="codex", adapter="codex",
+                               binary_path="/usr/bin/codex", version="1.0.0",
+                               quota=100.0))
+
+    def update_with_concurrent_write(b, timeout=600):
+        stored = seeded.get_backend("codex")
+        stored.quota = 42.0          # 模拟窗口期内的配额扣减
+        stored.enabled = False       # 模拟窗口期内用户停用
+        seeded.put_backend(stored)
+        return True, "done"
+
+    monkeypatch.setattr(adapters, "run_update", update_with_concurrent_write)
+    monkeypatch.setattr("missioncrew.server.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr(adapters, "_cli_version", lambda binary: "1.0.1")
+    r = client.post("/api/backends/codex/update").json()
+    assert r["ok"] and r["version"] == "1.0.1"
+    after = seeded.get_backend("codex")
+    assert after.quota == 42.0 and after.enabled is False   # 并发写入存活
+    assert after.version == "1.0.1"                          # 检测字段已刷新

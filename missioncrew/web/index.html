@@ -500,10 +500,12 @@ async function send() {
   const content = box.value.trim();
   if (!content || !currentChan) return;
   box.value = "";
-  await fetch(`/api/chat/${currentChan}/messages`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ author: "human", content }),
-  });
+  try {
+    await api("POST", `/api/chat/${currentChan}/messages`, { author: "human", content });
+  } catch (e) {
+    box.value = content;   // 发送失败(频道被删/服务重启):还回输入,不丢内容
+    return;
+  }
   await pollMessages();
 }
 
@@ -1143,8 +1145,15 @@ async function checkUpdates(silent = false) {
     const results = await api("POST", "/api/backends/check_updates");
     updateHints = Object.fromEntries(results.map(r => [r.id, r]));
     await renderBackendTable();
-    if (!silent && !results.some(r => r.update_available))
-      alert("所有可检查的工具都已是最新版本。");
+    if (!silent && !results.some(r => r.update_available)) {
+      // "查询不到最新版"不等于"已是最新":断网/无 npm 源时如实说明
+      const unknown = results.filter(r => !r.latest).map(r => r.id);
+      if (unknown.length === results.length && results.length)
+        alert("无法从 npm 源获取任何最新版本信息(可能离线),无法确认是否有更新。");
+      else
+        alert("可检查的工具都已是最新版本。" +
+              (unknown.length ? `\n无法确认(无版本源): ${unknown.join(", ")}` : ""));
+    }
   } finally {
     btn.disabled = false; btn.textContent = "检查更新";
   }
@@ -1153,7 +1162,7 @@ async function checkUpdates(silent = false) {
 async function runUpdate(id) {
   const hint = updateHints[id];
   const target = hint && hint.latest ? `到 ${hint.latest}` : "到最新版本";
-  if (!confirm(`更新 ${id} ${target}?更新期间该工具的执行可能失败。`)) return;
+  if (!confirm(`更新 ${id} ${target}?更新期间该工具不会被派发新的执行。`)) return;
   updatingIds.add(id);
   await renderBackendTable();
   try {
@@ -1161,10 +1170,11 @@ async function runUpdate(id) {
     alert(r.ok
       ? `更新完成:${r.old_version || "?"} → ${r.version || "?"}`
       : `更新失败:\n${r.log || "(无输出)"}`);
-    delete updateHints[id];   // 版本已变,旧提示作废
+    if (r.ok) delete updateHints[id];   // 失败时版本未变,"可更新"提示仍有效
   } finally {
     updatingIds.delete(id);
-    await loadOverview();
+    await renderBackendTable();          // 先清"更新中…",再刷新全局数据
+    try { await loadOverview(); } catch (e) { /* 服务重启间隙,忽略 */ }
     await renderBackendTable();
   }
 }
@@ -1177,12 +1187,15 @@ async function toggleBackend(id, enabled) {
 async function detectBackends() {
   const d = await api("POST", "/api/backends/detect");
   alert(`检测到: ${d.found.join(", ") || "无"}\n新注册: ${d.added.join(", ") || "无"}\n已刷新: ${d.updated.join(", ") || "无"}`);
-  await loadOverview(); renderBackendTable();
+  updateHints = {};        // 已装版本可能已变,旧比对结果作废
+  await loadOverview();
+  await renderBackendTable();
+  checkUpdates(true);      // 用新版本静默重新比对
 }
 
 loadOverview();
 setInterval(pollMessages, 2000);
-setInterval(loadOverview, 8000);
+setInterval(() => loadOverview().catch(() => {}), 8000);  // 服务重启间隙静默跳过
 </script>
 </body>
 </html>
