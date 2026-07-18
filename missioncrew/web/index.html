@@ -196,6 +196,7 @@
       <div id="chan-list"></div>
       <div class="side-nav" id="nav-board" onclick="switchTab('board')">▦ 任务看板</div>
       <div class="side-nav" id="nav-custom" onclick="switchTab('custom')">▦ 自定义面板</div>
+      <div class="side-nav" id="nav-docs" onclick="switchTab('docs')">🗂 文档库</div>
       <h2>角色</h2>
       <div id="role-list"></div>
     </div>
@@ -285,9 +286,12 @@
         <table class="mgr" id="skill-table"></table>
         <div class="form" id="skill-form" style="display:none"></div>
       </div>
+    </div>
+
+    <div id="docs-view" class="page">
       <div class="section">
-        <h2>版本化文档库</h2>
-        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本，也可在这里编辑和查看历史。</p>
+        <h2>版本化文档库 <span class="muted" id="docs-proj-label"></span></h2>
+        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本，也可在这里编辑和查看历史。准则文档与 Skill 的文件引用都取自这里。</p>
         <div class="muted" id="docs-root"></div>
         <table class="mgr" id="docs-table"></table>
         <div id="docs-timeline"></div>
@@ -378,7 +382,7 @@ const projBoards = () => (overview.boards || []).filter(b => b.project_id === cu
 
 /* ---- URL 路由:/<项目>/<视图>[/<频道>](History API,干净 URL),
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
-const TABS = ["chat", "board", "custom", "proj", "settings"];
+const TABS = ["chat", "board", "custom", "docs", "proj", "settings"];
 
 function parsePath() {
   // 兼容旧的 hash 链接(/#/default/settings):路径为根时读 hash
@@ -423,6 +427,7 @@ function setProject(id) {
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   renderSidebar(); renderBoard(); renderCustomBoards();
   if (currentTab === "proj") renderProjSettings();
+  if (currentTab === "docs") renderDocuments();
   const chans = projChannels();
   if (chans.length) selectChannel(chans[0].id, false);
   syncUrl();
@@ -433,16 +438,19 @@ function switchTab(tab) {
   document.getElementById("chat-view").style.display = tab === "chat" ? "flex" : "none";
   document.getElementById("board-view").style.display = tab === "board" ? "block" : "none";
   document.getElementById("custom-view").style.display = tab === "custom" ? "block" : "none";
+  document.getElementById("docs-view").style.display = tab === "docs" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
   document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
-  // 导航都在侧栏:看板/全局设置是导航项,项目设置是选择器旁的 ⚙,聊天由频道列表进入
+  // 导航都在侧栏:看板/面板/文档库/全局设置是导航项,项目设置是选择器旁的 ⚙,聊天由频道列表进入
   document.getElementById("nav-board").classList.toggle("active", tab === "board");
   document.getElementById("nav-custom").classList.toggle("active", tab === "custom");
+  document.getElementById("nav-docs").classList.toggle("active", tab === "docs");
   document.getElementById("nav-settings").classList.toggle("active", tab === "settings");
   document.getElementById("proj-cfg").classList.toggle("active", tab === "proj");
   renderSidebar();
   if (tab === "proj") renderProjSettings();
   if (tab === "custom") renderCustomBoards(true);
+  if (tab === "docs") renderDocuments();
   if (tab === "settings") renderGlobalSettings();
   syncUrl();
 }
@@ -1004,7 +1012,7 @@ async function renderProjSettings() {
   document.getElementById("skill-proj-label").textContent = label;
   renderRoleTable(); renderChanTable();
   renderGuidelines(); renderSkills();
-  renderDocuments();
+  loadDocFiles();   // 文档库页独立成侧栏入口,这里只取引用选择器的数据
 }
 
 /* ---- 准则文档管理(按篇 CRUD,走专用端点) ---- */
@@ -1212,8 +1220,18 @@ async function deleteProject(id) {
 /* ---- 版本化文档库 ---- */
 let docFiles = [];   // 文档库文件清单缓存,供准则/Skill 的 file_refs 选择器使用
 
+async function loadDocFiles() {
+  // 轻量拉取文件清单(准则/Skill 编辑器的引用选择器数据源),不渲染文档页
+  if (!currentProject) return;
+  try {
+    const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
+    docFiles = d.files.map(f => f.path);
+  } catch (e) { /* ignore */ }
+}
+
 async function renderDocuments() {
-  if (!currentProject || currentTab !== "proj") return;
+  if (!currentProject || currentTab !== "docs") return;
+  document.getElementById("docs-proj-label").textContent = `— 项目「${esc(currentProject)}」`;
   const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
   docFiles = d.files.map(f => f.path);
   document.getElementById("docs-root").textContent =
