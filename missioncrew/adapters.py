@@ -305,6 +305,11 @@ class MockAdapter:
         for block in re.findall(r"<missioncrew-action>.*?</missioncrew-action>",
                                 trigger, re.S):
             reply += "\n" + block
+        # 触发消息带 [写文档] 指令时,在执行期间写入项目文档库
+        docs_dir = cfg.env.get("MISSIONCREW_DOCUMENTS_DIR")
+        if docs_dir and "[写文档]" in trigger:
+            Path(docs_dir, "mock-note.md").write_text(f"由 @{me} 在执行中写入。\n")
+            reply += "\n已写入文档库 mock-note.md。"
         return RunResult(True, reply[:120], output=reply)
 
 

@@ -117,6 +117,12 @@ class DocumentWrite(BaseModel):
     message: str = ""
 
 
+class DocumentRestore(BaseModel):
+    path: str
+    revision: str
+    actor: str = "human"
+
+
 class BoardInput(BaseModel):
     id: str
     name: str = ""
@@ -437,11 +443,30 @@ def create_app() -> FastAPI:
         must_project(project_id)
         try:
             content = library_for(project_id).read(file_path, revision)
+        except UnicodeDecodeError:   # 注意:它是 ValueError 子类,必须先捕获
+            raise HTTPException(415, "二进制或非 UTF-8 文件,无法在线查看(可直接在文档库目录中操作)")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc))
         return {"path": file_path, "revision": revision, "content": content}
+
+    @app.post("/api/projects/{project_id}/documents/restore")
+    def restore_document(project_id: str, body: DocumentRestore):
+        """把文件恢复到历史版本(作为新版本提交,历史保持完整)。"""
+        must_project(project_id)
+        try:
+            revision = library_for(project_id).restore(body.path, body.revision, body.actor)
+        except UnicodeDecodeError:   # ValueError 子类,先捕获
+            raise HTTPException(415, "二进制文件请直接在文档库目录中恢复")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc))
+        store.audit(body.actor, "document_restored",
+                    detail=f"project={project_id} path={body.path} "
+                           f"from={body.revision[:10]} new={revision[:10]}")
+        return {"path": body.path, "revision": revision}
 
     @app.put("/api/projects/{project_id}/documents/file/{file_path:path}")
     def write_document(project_id: str, file_path: str, body: DocumentWrite):

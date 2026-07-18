@@ -207,7 +207,11 @@ class ChatEngine:
         library = library_for(channel.project_id or "")
         library.commit_changes("platform", "Capture external document changes before chat run")
         result = adapters.get_adapter(backend.adapter).run(cfg)
-        library.commit_changes(f"role:{role.id}", f"Documents updated from channel {channel.name}")
+        revision = library.commit_changes(
+            f"role:{role.id}", f"Documents updated from channel {channel.name}")
+        if revision:   # Agent 直接写目录的改动也进平台审计,与 API 写入口径一致
+            self.store.audit(f"role:{role.id}", "documents_committed",
+                             detail=f"project={channel.project_id} revision={revision[:10]}")
 
         # 配额扣减在工具级记账:重取注册表记录,避免模型副本覆盖工具条目
         stored = self.store.get_backend(backend.id)
@@ -273,6 +277,8 @@ class ChatEngine:
                 library = library_for(project.id)
                 project_section = render_project_context(project, backend, library)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
+                if not channel.workdir:   # 平台自有工作区才建软链,不污染真实代码仓
+                    library.link_into(workdir)
                 if role.id == project.orchestrator_role_id:
                     orchestrator_section = self._orchestrator_section(project)
 

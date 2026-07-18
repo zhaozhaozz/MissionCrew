@@ -58,6 +58,7 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
     ws = workspace_for(task.id)
 
     library = library_for(project.id)
+    library.link_into(ws)   # 任务工作区是平台自有目录:软链让沙箱内也能读写文档库
     resources_section = ""
     if resource_notes:
         resources_section = "\n# 受控资源(平台已授权,任务结束自动回收)\n" + "\n".join(resource_notes) + "\n"

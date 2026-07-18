@@ -287,3 +287,71 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
     assert "## 现有频道" in cfg.prompt and "general" in cfg.prompt
     assert "## 现有面板" in cfg.prompt and "quality" in cfg.prompt
     assert "调度预算" in cfg.prompt and "post_message" in cfg.prompt
+
+
+# ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----
+
+def test_document_restore_creates_new_version(seeded):
+    client = _client(seeded)
+    url = "/api/projects/webshop/documents/file/notes/plan.md"
+    client.put(url, json={"content": "v1", "actor": "alice"})
+    client.put(url, json={"content": "v2", "actor": "bob"})
+    history = client.get(
+        "/api/projects/webshop/documents/history?path=notes%2Fplan.md").json()
+    restored = client.post("/api/projects/webshop/documents/restore", json={
+        "path": "notes/plan.md", "revision": history[1]["revision"]})
+    assert restored.status_code == 200
+    assert client.get(url).json()["content"] == "v1"     # 内容回到 v1
+    new_history = client.get(
+        "/api/projects/webshop/documents/history?path=notes%2Fplan.md").json()
+    assert len(new_history) == 3                          # 历史完整保留
+    assert "Restore" in new_history[0]["message"]
+    # 不存在的版本 -> 404
+    assert client.post("/api/projects/webshop/documents/restore", json={
+        "path": "notes/plan.md", "revision": "deadbeef00"}).status_code == 404
+
+
+def test_document_library_linked_into_platform_workdirs(seeded):
+    """平台自有工作区内 documents/ 软链指向文档库;真实代码仓不被污染。"""
+    from missioncrew.config import mc_home
+    chat = ChatEngine(seeded)
+    msg = seeded.add_message("general", "human", "human", "@dev 干活", ["dev"])
+    cfg = chat._assemble(seeded.get_channel("general"),
+                         seeded.get_role("webshop", "dev"),
+                         seeded.get_backend("std-1"), msg)
+    link = __import__("pathlib").Path(cfg.workdir) / "documents"
+    assert link.is_symlink()
+    assert link.resolve() == library_for("webshop").root.resolve()
+    # 指定了外部 workdir 的频道:不建软链
+    from missioncrew.models import Channel
+    ext = mc_home() / "ext-repo"
+    ext.mkdir(parents=True, exist_ok=True)
+    seeded.put_channel(Channel(id="webshop:ext", name="ext", project_id="webshop",
+                               workdir=str(ext)))
+    msg2 = seeded.add_message("webshop:ext", "human", "human", "@dev 干活", ["dev"])
+    chat._assemble(seeded.get_channel("webshop:ext"),
+                   seeded.get_role("webshop", "dev"),
+                   seeded.get_backend("std-1"), msg2)
+    assert not (ext / "documents").exists()
+
+
+def test_binary_document_read_returns_415(seeded):
+    client = _client(seeded)
+    library = library_for("webshop")
+    (library.root / "image.bin").write_bytes(b"\x89PNG\x00\xff\xfe binary")
+    library.commit_changes("human", "add binary")
+    r = client.get("/api/projects/webshop/documents/file/image.bin")
+    assert r.status_code == 415
+
+
+def test_agent_document_writes_are_audited(seeded):
+    """Agent 执行期间写文档库:执行后自动提交、归属该角色并进平台审计。"""
+    chat = ChatEngine(seeded)
+    chat.post("general", "human", "@dev [写文档] 记录一下")
+    chat.wait_idle()
+    library = library_for("webshop")
+    assert (library.root / "mock-note.md").exists()
+    assert library.history("mock-note.md")[0]["actor"] == "role:dev"
+    audits = [a for a in seeded.list_audit(limit=50)
+              if a["action"] == "documents_committed"]
+    assert audits and audits[0]["actor"] == "role:dev"

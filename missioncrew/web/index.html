@@ -288,6 +288,7 @@
         <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本，也可在这里编辑和查看历史。</p>
         <div class="muted" id="docs-root"></div>
         <table class="mgr" id="docs-table"></table>
+        <div id="docs-timeline"></div>
         <div class="form">
           <label>文档相对路径</label><input type="text" id="doc-path" placeholder="例如 specs/checkout.md">
           <label>内容</label><textarea id="doc-content" rows="10"></textarea>
@@ -1148,13 +1149,23 @@ async function renderDocuments() {
   if (!currentProject || currentTab !== "proj") return;
   const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
   docFiles = d.files.map(f => f.path);
-  document.getElementById("docs-root").textContent = `Runtime 目录：${d.root}`;
+  document.getElementById("docs-root").textContent =
+    `Runtime 目录：${d.root}(平台工作区内可经 ./documents 软链访问)`;
   document.getElementById("docs-table").innerHTML =
     `<tr><th>文件</th><th>大小</th><th>修改时间</th><th></th></tr>` +
     (d.files.map(f => `<tr><td>${esc(f.path)}</td><td>${f.size} B</td>
       <td>${new Date(f.modified_at * 1000).toLocaleString()}</td><td>
-      <button class="ghost" data-path="${esc(f.path)}" onclick="openDocument(this.dataset.path)">编辑</button></td></tr>`).join("")
+      <button class="ghost" data-path="${esc(f.path)}" onclick="openDocument(this.dataset.path)">编辑</button>
+      <button class="ghost" data-path="${esc(f.path)}"
+        onclick="document.getElementById('doc-path').value=this.dataset.path;showDocumentHistory()">历史</button></td></tr>`).join("")
       || `<tr><td colspan="4" class="empty">文档库为空</td></tr>`);
+  // 全库时间线:执行中的自动版本一目了然;含已删除文件的提交
+  document.getElementById("docs-timeline").innerHTML = (d.history || []).length
+    ? `<h3>最近变更</h3><table><tr><th>版本</th><th>时间</th><th>作者</th><th>说明</th></tr>` +
+      d.history.map(v => `<tr><td>${esc(v.revision.slice(0, 10))}</td>
+        <td>${new Date(v.created_at * 1000).toLocaleString()}</td>
+        <td>${esc(v.actor)}</td><td>${esc(v.message)}</td></tr>`).join("") + `</table>`
+    : "";
 }
 
 async function openDocument(path) {
@@ -1189,7 +1200,19 @@ async function showDocumentHistory() {
   document.getElementById("doc-history").innerHTML = `<h3>版本历史</h3><table>
     <tr><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>` +
     rows.map(v => `<tr><td>${esc(v.revision.slice(0, 10))}</td><td>${new Date(v.created_at * 1000).toLocaleString()}</td>
-      <td>${esc(v.actor)}</td><td>${esc(v.message)}</td><td><button class="ghost" data-rev="${esc(v.revision)}" onclick="readDocumentVersion(this.dataset.rev)">查看</button></td></tr>`).join("") + `</table>`;
+      <td>${esc(v.actor)}</td><td>${esc(v.message)}</td><td>
+      <button class="ghost" data-rev="${esc(v.revision)}" onclick="readDocumentVersion(this.dataset.rev)">查看</button>
+      <button class="ghost" data-rev="${esc(v.revision)}" onclick="restoreDocumentVersion(this.dataset.rev)">恢复此版本</button></td></tr>`).join("") + `</table>`;
+}
+
+async function restoreDocumentVersion(revision) {
+  const path = document.getElementById("doc-path").value.trim();
+  if (!path || !confirm(`把 ${path} 恢复到版本 ${revision.slice(0, 10)}?(以新版本写入,历史保留)`)) return;
+  const r = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/documents/restore`,
+                      { path, revision });
+  alert(`已恢复,新版本 ${r.revision.slice(0, 10)}`);
+  await openDocument(path);
+  await renderDocuments();
 }
 
 async function readDocumentVersion(revision) {

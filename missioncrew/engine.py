@@ -119,7 +119,11 @@ class Engine:
         library = library_for(project.id)
         library.commit_changes("platform", "Capture external document changes before task run")
         result = adapters.get_adapter(backend.adapter).run(cfg)
-        library.commit_changes(f"task:{task.id}", f"Documents updated in stage {stage.name}")
+        revision = library.commit_changes(
+            f"task:{task.id}", f"Documents updated in stage {stage.name}")
+        if revision:   # 执行中的文档改动进平台审计,与 API 写入口径一致
+            self.store.audit(f"task:{task.id}", "documents_committed", task.id,
+                             f"stage={stage.name} revision={revision[:10]}")
 
         # 记账:配额扣减(工具级,重取注册表记录,避免模型副本覆盖工具条目)
         stored = self.store.get_backend(backend.id)
