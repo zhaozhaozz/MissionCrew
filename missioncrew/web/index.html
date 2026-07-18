@@ -48,6 +48,19 @@
   #side-bottom .side-nav { margin: 0; }
   #sidebar h2 { font-size: 12px; color: var(--muted); text-transform: uppercase;
                 letter-spacing: .06em; margin: 12px 0 6px; }
+  /* 并列可折叠分区:频道/面板/文档/角色 */
+  .sec-head { display: flex; align-items: center; gap: 5px; cursor: pointer;
+              user-select: none; border-radius: 6px; padding: 2px 4px; }
+  .sec-head:hover { background: var(--card); }
+  .sec-head.active { color: var(--accent); }
+  .sec-head .caret { width: 11px; font-size: 9px; }
+  .sec-head .count { margin-left: auto; font-weight: 400; }
+  .side-item { padding: 4px 10px 4px 20px; border-radius: 8px; cursor: pointer;
+               color: var(--muted); font-size: 13px; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+  .side-item:hover { background: var(--card); }
+  .side-item.selected { background: var(--card); color: var(--text);
+                        font-weight: 600; border: 1px solid var(--line); }
   .chan { padding: 6px 10px; border-radius: 8px; cursor: pointer; color: var(--muted); }
   .chan.active { background: var(--card); color: var(--text); font-weight: 600;
                  border: 1px solid var(--line); }
@@ -211,13 +224,27 @@
       <button class="proj-btn" id="proj-add" onclick="openNewProject()" title="新建项目">＋</button>
     </div>
     <div id="side-scroll">
-      <h2>频道</h2>
-      <div id="chan-list"></div>
       <div class="side-nav" id="nav-board" onclick="switchTab('board')">▦ 任务看板</div>
-      <div class="side-nav" id="nav-custom" onclick="switchTab('custom')">▦ 自定义面板</div>
-      <div class="side-nav" id="nav-docs" onclick="switchTab('docs')">🗂 文档库</div>
-      <h2>角色</h2>
-      <div id="role-list"></div>
+      <div class="side-sec">
+        <h2 class="sec-head" id="sec-channels" onclick="toggleSection('channels')">
+          <span class="caret">▾</span>频道<span class="count" id="cnt-channels"></span></h2>
+        <div id="chan-list"></div>
+      </div>
+      <div class="side-sec">
+        <h2 class="sec-head" id="sec-boards" onclick="toggleSection('boards')">
+          <span class="caret">▾</span>面板<span class="count" id="cnt-boards"></span></h2>
+        <div id="board-list"></div>
+      </div>
+      <div class="side-sec">
+        <h2 class="sec-head" id="sec-docs" onclick="toggleSection('docs')">
+          <span class="caret">▾</span>文档<span class="count" id="cnt-docs"></span></h2>
+        <div id="doc-list"></div>
+      </div>
+      <div class="side-sec">
+        <h2 class="sec-head" id="sec-roles" onclick="toggleSection('roles')">
+          <span class="caret">▾</span>角色<span class="count" id="cnt-roles"></span></h2>
+        <div id="role-list"></div>
+      </div>
     </div>
     <div id="side-bottom">
       <div class="side-nav" id="nav-settings" onclick="switchTab('settings')">⚙ 全局设置</div>
@@ -440,7 +467,9 @@ function setProject(id) {
   currentCustomBoard = null; customBoardEditing = false;
   document.getElementById("msgs").innerHTML = "";
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
+  docFiles = []; docSelected = null;
   renderSidebar(); renderBoard(); renderCustomBoards();
+  loadDocFiles().then(renderSidebar);
   if (currentTab === "proj") renderProjSettings();
   if (currentTab === "docs") renderDocuments();
   const chans = projChannels();
@@ -456,12 +485,14 @@ function switchTab(tab) {
   document.getElementById("docs-view").style.display = tab === "docs" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
   document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
-  // 导航都在侧栏:看板/面板/文档库/全局设置是导航项,项目设置是选择器旁的 ⚙,聊天由频道列表进入
+  // 侧栏导航:任务看板/全局设置是导航项,项目设置是 ⚙;
+  // 频道/面板/文档/角色是并列可折叠分区,激活态落在分区标题上
   document.getElementById("nav-board").classList.toggle("active", tab === "board");
-  document.getElementById("nav-custom").classList.toggle("active", tab === "custom");
-  document.getElementById("nav-docs").classList.toggle("active", tab === "docs");
   document.getElementById("nav-settings").classList.toggle("active", tab === "settings");
   document.getElementById("proj-cfg").classList.toggle("active", tab === "proj");
+  document.getElementById("sec-channels").classList.toggle("active", tab === "chat");
+  document.getElementById("sec-boards").classList.toggle("active", tab === "custom");
+  document.getElementById("sec-docs").classList.toggle("active", tab === "docs");
   renderSidebar();
   if (tab === "proj") renderProjSettings();
   if (tab === "custom") renderCustomBoards(true);
@@ -489,6 +520,7 @@ async function loadOverview() {
     `<option value="${esc(p.id)}" ${p.id === currentProject ? "selected" : ""}>${esc(p.name || p.id)}</option>`).join("");
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   renderSidebar(); renderBoard(); renderCustomBoards();
+  loadDocFiles().then(renderSidebar);   // 文档分区的文件清单异步补齐
   const chans = projChannels();
   if ((!currentChan || !chans.some(c => c.id === currentChan)) && chans.length)
     selectChannel(chans[0].id, false);
@@ -498,17 +530,76 @@ async function loadOverview() {
   }
 }
 
+// 侧栏四个并列分区(频道/面板/文档/角色)的折叠状态,跨会话记忆
+const sideCollapsed = new Set(JSON.parse(localStorage.getItem("mc.sideCollapsed") || "[]"));
+
+function toggleSection(sec) {
+  sideCollapsed.has(sec) ? sideCollapsed.delete(sec) : sideCollapsed.add(sec);
+  localStorage.setItem("mc.sideCollapsed", JSON.stringify([...sideCollapsed]));
+  renderSidebar();
+}
+
+function _secState(sec, listId, countId, count) {
+  const closed = sideCollapsed.has(sec);
+  const head = document.getElementById(`sec-${sec}`);
+  if (head) head.querySelector(".caret").textContent = closed ? "▸" : "▾";
+  const cnt = document.getElementById(countId);
+  if (cnt) cnt.textContent = count ? String(count) : "";
+  const list = document.getElementById(listId);
+  if (list) list.style.display = closed ? "none" : "block";
+  return closed;
+}
+
 function renderSidebar() {
-  document.getElementById("chan-list").innerHTML = projChannels().map(c =>
-    `<div class="chan ${c.id === currentChan && currentTab === "chat" ? "active" : ""}"
-          onclick="selectChannel('${c.id}')"># ${esc(c.name || c.id)}</div>`).join("")
-    || `<div class="empty">本项目暂无频道</div>`;
-  document.getElementById("role-list").innerHTML = projRoles().map(r =>
-    `<div class="role-chip" onclick="insertMention('${r.id}')" title="${esc(r.description)}">
-       <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>
-       <span>@${esc(r.id)}</span><small>${esc(r.name)}</small></div>`).join("");
+  // 频道 -> 聊天
+  const chans = projChannels();
+  if (!_secState("channels", "chan-list", "cnt-channels", chans.length))
+    document.getElementById("chan-list").innerHTML = chans.map(c =>
+      `<div class="side-item ${c.id === currentChan && currentTab === "chat" ? "selected" : ""}"
+            onclick="selectChannel('${c.id}')" title="${esc(c.purpose || "")}"># ${esc(c.name || c.id)}</div>`).join("")
+      || `<div class="empty" style="padding-left:20px">暂无频道</div>`;
+  // 面板 -> 自定义面板视图
+  const boards = projBoards();
+  if (!_secState("boards", "board-list", "cnt-boards", boards.length))
+    document.getElementById("board-list").innerHTML = boards.map(b =>
+      `<div class="side-item ${b.id === currentCustomBoard && currentTab === "custom" ? "selected" : ""}"
+            data-id="${esc(b.id)}" onclick="openBoardFromSidebar(this.dataset.id)"
+            title="${esc(b.description || "")}">▦ ${esc(b.name || b.id)}</div>`).join("")
+      || `<div class="side-item" onclick="switchTab('custom')">＋ 向主控提一个面板需求…</div>`;
+  // 文档 -> 文档库视图
+  if (!_secState("docs", "doc-list", "cnt-docs", docFiles.length))
+    document.getElementById("doc-list").innerHTML = docFiles.slice(0, 40).map(p =>
+      `<div class="side-item ${p === docSelected && currentTab === "docs" ? "selected" : ""}"
+            data-path="${esc(p)}" onclick="openDocFromSidebar(this.dataset.path)"
+            title="${esc(p)}">📄 ${esc(p)}</div>`).join("")
+      + (docFiles.length > 40 ? `<div class="side-item" onclick="switchTab('docs')">…共 ${docFiles.length} 个文件</div>` : "")
+      || `<div class="side-item" onclick="switchTab('docs')">＋ 新建第一篇文档…</div>`;
+  // 角色 -> 聊天 @(主控带标记)
+  const orch = projObj()?.orchestrator_role_id;
+  if (!_secState("roles", "role-list", "cnt-roles", projRoles().length))
+    document.getElementById("role-list").innerHTML = projRoles().map(r =>
+      `<div class="role-chip" style="padding-left:20px" onclick="insertMention('${r.id}')" title="${esc(r.description)}">
+         <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>
+         <span>@${esc(r.id)}</span><small>${esc(r.name)}</small>
+         ${r.id === orch ? `<span class="pill" style="color:var(--warn);border-color:var(--warn)">主控</span>` : ""}</div>`).join("");
   document.getElementById("role-bar").innerHTML = projRoles().map(r =>
     `<button onclick="insertMention('${r.id}')">@${esc(r.id)} ${esc(r.name)}</button>`).join("");
+}
+
+function openBoardFromSidebar(id) {
+  currentCustomBoard = id;
+  customBoardEditing = false;
+  boardEditorVisible = false;
+  switchTab("custom");
+}
+
+function openDocFromSidebar(path) {
+  docSelected = path;
+  docMode = "view";
+  docViewingRevision = null;
+  docHistoryOpen = false;
+  if (currentTab === "docs") { renderDocTree(); renderDocPane(); renderSidebar(); }
+  else switchTab("docs");
 }
 
 function insertMention(id) {
