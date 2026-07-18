@@ -86,8 +86,18 @@ ORCHESTRATOR_TEMPLATE = """\
   不填时若项目只配了一个代码仓则自动使用它。新频道创建后是空的，
   用 post_message 把任务简报发进去、@ 相应角色开工。
 - update_board 不携带 layout 字段时保留现有布局；携带则全量替换。
-  layout 每项含 id、type、title、x、y、width、height、content；type 可用
-  markdown、requirements、test_records、log_analysis、task_query、metrics、table。
+  layout 每项含 id、type、title、x、y、width、height、content。
+  type 是通用展示原语（领域含义来自数据，不是类型）：
+    markdown（content.markdown）、table（columns+rows）、card（metrics 数值卡）、
+    chart（kind=bar|line|pie + data + x_key/y_key）、list（items）、
+    log（lines）、code（code+language）。
+  卡片可用 content.source 绑定平台实时数据，渲染时自动取数：
+    {{"from":"tasks","status":["open"],"labels":[]}}（项目任务→表格行）
+    {{"from":"document","path":"specs/x.md"}}（文档库文件→markdown）
+    {{"from":"audit","actions":[],"limit":30}}（审计事件→列表）
+    {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
+  例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
+  实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
 - 调度预算：@ 级联深度上限 {max_depth} 层、单条协作链最多 {max_runs} 次执行。
   复杂任务分批派发，让执行角色完成后 @ 你汇报，再派下一批。
 

@@ -21,9 +21,24 @@ CAP_MULTIMODAL = "multimodal"
 
 # 自定义面板组件保持通用数据模型，前端可以按 type 选择不同呈现方式；
 # 未知类型仍可按 JSON/Markdown 展示，避免面板能力被固定模板限制。
+# 面板卡片是一组通用展示原语(参考 AgentDesk 内置组件的思路):
+# 领域含义来自数据与组合,而非类型本身——"需求面板"只是绑定了需求数据的 table。
+# 卡片可通过 content.source 绑定平台数据源(tasks/audit/document/messages),
+# 无 source 时渲染 content 里的静态数据。
 BOARD_WIDGET_TYPES = {
-    "markdown", "requirements", "test_records", "log_analysis",
-    "task_query", "metrics", "table",
+    "markdown",   # 富文本:content.markdown
+    "table",      # 表格:content.columns(:[{key,label}]或[str]) + rows([obj]或[数组])
+    "card",       # 数值卡:content.metrics [{label,value,unit?,tone?}]
+    "chart",      # 图表:content.kind(bar|line|pie) + data + x_key/y_key
+    "list",       # 条目列表:content.items [str 或 {text,tone?}]
+    "log",        # 日志尾部:content.lines [str] 或 content.text
+    "code",       # 代码块:content.code + language?
+}
+
+# 旧类型 -> 展示原语 的兼容别名:既有面板与主控旧习惯继续可用
+LEGACY_WIDGET_ALIASES = {
+    "requirements": "table", "test_records": "table", "task_query": "table",
+    "metrics": "card", "log_analysis": "list",
 }
 
 

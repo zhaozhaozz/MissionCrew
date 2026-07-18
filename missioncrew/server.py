@@ -131,6 +131,10 @@ class BoardInput(BaseModel):
     actor_role_id: Optional[str] = None
 
 
+class WidgetDataInput(BaseModel):
+    widgets: list[dict] = []
+
+
 class BackendInput(BaseModel):
     id: str
     name: Optional[str] = None
@@ -499,6 +503,73 @@ def create_app() -> FastAPI:
     def list_boards(project_id: str):
         must_project(project_id)
         return [board.to_dict() for board in store.list_boards(project_id)]
+
+    def _resolve_widget_source(project_id: str, source: dict):
+        """解析卡片数据源:卡片是通用展示原语,领域数据从平台实时取。"""
+        kind = source.get("from")
+        if kind == "tasks":
+            want_status = source.get("status") or []
+            want_labels = source.get("labels") or []
+            want_type = source.get("task_type") or []
+            rows = []
+            for t in store.list_tasks():
+                if t.project_id != project_id:
+                    continue
+                if want_status and t.status not in want_status:
+                    continue
+                if want_type and t.task_type not in want_type:
+                    continue
+                if want_labels and not set(t.labels) & set(want_labels):
+                    continue
+                stage = t.current_stage.name if t.current_stage else "-"
+                rows.append({"id": t.id, "标题": t.title, "状态": t.status,
+                             "类型": t.task_type, "风险": t.risk, "阶段": stage,
+                             "标签": ", ".join(t.labels)})
+            return {"rows": rows}
+        if kind == "audit":
+            actions = source.get("actions") or []
+            limit = min(int(source.get("limit", 30)), 200)
+            rows = []
+            for a in store.list_audit(limit=200):
+                if actions and a["action"] not in actions:
+                    continue
+                if project_id not in (a.get("detail") or "") and a.get("task_id", "") == "":
+                    # 审计明细里带项目标记的才算本项目(任务审计经 task_id 关联)
+                    if f"project={project_id}" not in (a.get("detail") or ""):
+                        continue
+                rows.append({"text": f"{a['actor']} {a['action']} {a['detail']}"[:200]})
+                if len(rows) >= limit:
+                    break
+            return {"items": rows}
+        if kind == "document":
+            path = str(source.get("path", ""))
+            try:
+                text = library_for(project_id).read(path)
+            except (ValueError, FileNotFoundError, UnicodeDecodeError) as exc:
+                return {"error": f"文档不可读: {exc}"}
+            return {"markdown": text, "text": text}
+        if kind == "messages":
+            raw = str(source.get("channel", ""))
+            cid = raw if raw.startswith(f"{project_id}:") else f"{project_id}:{raw}"
+            channel = store.get_channel(cid) or store.get_channel(raw)
+            if channel is None or channel.project_id != project_id:
+                return {"error": f"频道不存在: {raw}"}
+            limit = min(int(source.get("limit", 20)), 100)
+            return {"items": [
+                {"text": f"[{m['author']}] {m['content'][:160]}"}
+                for m in store.recent_messages(channel.id, limit)]}
+        return {"error": f"未知数据源: {kind}"}
+
+    @app.post("/api/projects/{project_id}/widget_data")
+    def widget_data(project_id: str, body: WidgetDataInput):
+        """批量解析面板卡片的数据源(保存的面板与编辑预览共用)。"""
+        must_project(project_id)
+        resolved = {}
+        for w in body.widgets:
+            source = ((w.get("content") or {}).get("source")) or None
+            if isinstance(source, dict) and w.get("id"):
+                resolved[w["id"]] = _resolve_widget_source(project_id, source)
+        return resolved
 
     @app.post("/api/projects/{project_id}/boards")
     def save_board(project_id: str, body: BoardInput):

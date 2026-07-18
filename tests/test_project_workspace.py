@@ -355,3 +355,53 @@ def test_agent_document_writes_are_audited(seeded):
     audits = [a for a in seeded.list_audit(limit=50)
               if a["action"] == "documents_committed"]
     assert audits and audits[0]["actor"] == "role:dev"
+
+
+# ---- 面板卡片:通用展示原语 + 平台数据源(AgentDesk 式) ----
+
+def test_widget_data_resolves_tasks_source(seeded):
+    client = _client(seeded)
+    from missioncrew.engine import Engine
+    engine = Engine(seeded)
+    engine.create_task("webshop", "支付重构", task_type="feature", labels=["pay"])
+    engine.create_task("webshop", "修购物车", task_type="bug")
+    resolved = client.post("/api/projects/webshop/widget_data", json={"widgets": [
+        {"id": "w1", "type": "table",
+         "content": {"source": {"from": "tasks", "task_type": ["bug"]}}},
+    ]}).json()
+    rows = resolved["w1"]["rows"]
+    assert len(rows) == 1 and rows[0]["标题"] == "修购物车"
+
+
+def test_widget_data_resolves_document_and_messages(seeded):
+    client = _client(seeded)
+    client.put("/api/projects/webshop/documents/file/notes/status.md",
+               json={"content": "# 状态\n一切正常\n"})
+    seeded.add_message("general", "human", "human", "进展同步:一切顺利", [])
+    resolved = client.post("/api/projects/webshop/widget_data", json={"widgets": [
+        {"id": "doc", "type": "markdown",
+         "content": {"source": {"from": "document", "path": "notes/status.md"}}},
+        {"id": "msgs", "type": "list",
+         "content": {"source": {"from": "messages", "channel": "general", "limit": 5}}},
+        {"id": "bad", "type": "markdown",
+         "content": {"source": {"from": "document", "path": "ghost.md"}}},
+    ]}).json()
+    assert "一切正常" in resolved["doc"]["markdown"]
+    assert any("一切顺利" in item["text"] for item in resolved["msgs"]["items"])
+    assert "error" in resolved["bad"]          # 坏源返回错误说明而不是 500
+
+
+def test_widget_data_skips_static_widgets(seeded):
+    client = _client(seeded)
+    resolved = client.post("/api/projects/webshop/widget_data", json={"widgets": [
+        {"id": "s", "type": "markdown", "content": {"markdown": "静态"}},
+    ]}).json()
+    assert resolved == {}
+
+
+def test_widget_types_are_display_primitives(seeded):
+    from missioncrew.models import BOARD_WIDGET_TYPES, LEGACY_WIDGET_ALIASES
+    assert BOARD_WIDGET_TYPES == {"markdown", "table", "card", "chart",
+                                  "list", "log", "code"}
+    # 旧领域类型全部退役为原语别名
+    assert set(LEGACY_WIDGET_ALIASES.values()) <= BOARD_WIDGET_TYPES
