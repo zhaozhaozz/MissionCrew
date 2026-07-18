@@ -162,6 +162,25 @@
   .switch.on { background: var(--ok); }
   .switch.on::after { left: 19px; }
   .muted { color: var(--muted); font-size: 12px; }
+  /* 文档库:目录树 + 阅读/编辑双栏 */
+  .docs-layout { display: flex; gap: 18px; align-items: flex-start; margin-top: 10px; }
+  .doc-tree { width: 280px; flex: none; }
+  .doc-pane { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line);
+              border-radius: 10px; padding: 14px 18px; min-height: 300px; }
+  .tree-row { display: flex; align-items: center; gap: 6px; padding: 3px 8px;
+              border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .tree-row:hover { background: var(--card); }
+  .tree-row.selected { background: var(--card); border: 1px solid var(--line); font-weight: 600; }
+  .tree-row .caret { width: 12px; flex: none; color: var(--muted); font-size: 10px; }
+  .tree-row .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-pane .doc-head { display: flex; align-items: center; gap: 10px;
+                        border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 12px; }
+  .doc-pane .doc-head b { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .doc-body { line-height: 1.7; }
+  .doc-body h3 { color: var(--text); font-size: 17px; margin: 12px 0 6px; }
+  .doc-body h4 { color: var(--text); font-size: 14px; margin: 10px 0 4px; }
+  .doc-body code { background: var(--bg); border-radius: 4px; padding: 0 4px; }
+  .doc-body ul { margin: 4px 0; padding-left: 20px; }
   .runtime-role-usage { position: relative; display: inline-block; }
   .role-count-btn { min-width: 30px; padding: 1px 9px; border: 1px solid var(--line);
                     border-radius: 999px; background: var(--card); color: var(--accent);
@@ -290,20 +309,16 @@
 
     <div id="docs-view" class="page">
       <div class="section">
-        <h2>版本化文档库 <span class="muted" id="docs-proj-label"></span></h2>
-        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本，也可在这里编辑和查看历史。准则文档与 Skill 的文件引用都取自这里。</p>
+        <h2>版本化文档库 <span class="muted" id="docs-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="newDocument()">＋ 新建文档</button></h2>
+        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本。左侧是目录树,点开查看文档,右上角可编辑。</p>
         <div class="muted" id="docs-root"></div>
-        <table class="mgr" id="docs-table"></table>
-        <div id="docs-timeline"></div>
-        <div class="form">
-          <label>文档相对路径</label><input type="text" id="doc-path" placeholder="例如 specs/checkout.md">
-          <label>内容</label><textarea id="doc-content" rows="10"></textarea>
-          <div class="form-actions">
-            <button class="action" onclick="saveDocument()">保存新版本</button>
-            <button class="ghost" onclick="showDocumentHistory()">查看历史</button>
-            <button class="danger" onclick="deleteDocument()">删除文档</button>
+        <div class="docs-layout">
+          <div class="doc-tree">
+            <div id="doc-tree"></div>
+            <div id="docs-timeline"></div>
           </div>
-          <div id="doc-history"></div>
+          <div class="doc-pane" id="doc-pane"></div>
         </div>
       </div>
     </div>
@@ -1229,81 +1244,202 @@ async function loadDocFiles() {
   } catch (e) { /* ignore */ }
 }
 
+// ---- 文档库:目录树 + 阅读/编辑 ----
+let docFilesMeta = [];            // [{path,size,modified_at}]
+let docSelected = null;           // 当前选中文件路径
+let docMode = "view";             // view | edit | new
+let docViewingRevision = null;    // 查看历史版本时的 revision
+let docHistoryOpen = false;
+const docCollapsed = new Set();   // 收起的目录前缀
+
+function docEncode(path) {
+  return path.split("/").map(encodeURIComponent).join("/");
+}
+
 async function renderDocuments() {
   if (!currentProject || currentTab !== "docs") return;
   document.getElementById("docs-proj-label").textContent = `— 项目「${esc(currentProject)}」`;
   const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
+  docFilesMeta = d.files;
   docFiles = d.files.map(f => f.path);
   document.getElementById("docs-root").textContent =
     `Runtime 目录：${d.root}(平台工作区内可经 ./documents 软链访问)`;
-  document.getElementById("docs-table").innerHTML =
-    `<tr><th>文件</th><th>大小</th><th>修改时间</th><th></th></tr>` +
-    (d.files.map(f => `<tr><td>${esc(f.path)}</td><td>${f.size} B</td>
-      <td>${new Date(f.modified_at * 1000).toLocaleString()}</td><td>
-      <button class="ghost" data-path="${esc(f.path)}" onclick="openDocument(this.dataset.path)">编辑</button>
-      <button class="ghost" data-path="${esc(f.path)}"
-        onclick="document.getElementById('doc-path').value=this.dataset.path;showDocumentHistory()">历史</button></td></tr>`).join("")
-      || `<tr><td colspan="4" class="empty">文档库为空</td></tr>`);
-  // 全库时间线:执行中的自动版本一目了然;含已删除文件的提交
+  if (docSelected && !docFiles.includes(docSelected) && docMode !== "new") {
+    docSelected = null; docMode = "view";
+  }
+  renderDocTree();
   document.getElementById("docs-timeline").innerHTML = (d.history || []).length
-    ? `<h3>最近变更</h3><table><tr><th>版本</th><th>时间</th><th>作者</th><th>说明</th></tr>` +
-      d.history.map(v => `<tr><td>${esc(v.revision.slice(0, 10))}</td>
-        <td>${new Date(v.created_at * 1000).toLocaleString()}</td>
-        <td>${esc(v.actor)}</td><td>${esc(v.message)}</td></tr>`).join("") + `</table>`
+    ? `<h3>最近变更</h3>` + d.history.slice(0, 8).map(v =>
+        `<div class="muted" style="padding:2px 0" title="${esc(v.message)}">
+          ${new Date(v.created_at * 1000).toLocaleDateString()} ${esc(v.actor)} · ${esc(v.message.slice(0, 24))}</div>`).join("")
     : "";
+  await renderDocPane();
 }
 
-async function openDocument(path) {
-  const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}`);
-  document.getElementById("doc-path").value = path;
-  document.getElementById("doc-content").value = d.content;
-  document.getElementById("doc-history").innerHTML = "";
+function buildDocTree(files) {
+  const root = { dirs: {}, files: [] };
+  for (const f of files) {
+    const parts = f.path.split("/");
+    let node = root;
+    for (const p of parts.slice(0, -1))
+      node = node.dirs[p] ?? (node.dirs[p] = { dirs: {}, files: [] });
+    node.files.push({ ...f, name: parts[parts.length - 1] });
+  }
+  return root;
+}
+
+function renderDocTree() {
+  const rows = [];
+  const walk = (node, prefix, depth) => {
+    for (const dir of Object.keys(node.dirs).sort()) {
+      const key = prefix ? `${prefix}/${dir}` : dir;
+      const closed = docCollapsed.has(key);
+      rows.push(`<div class="tree-row" style="padding-left:${8 + depth * 14}px"
+          data-dir="${esc(key)}" onclick="toggleDocDir(this.dataset.dir)">
+          <span class="caret">${closed ? "▸" : "▾"}</span>
+          <span class="fname">📁 ${esc(dir)}</span></div>`);
+      if (!closed) walk(node.dirs[dir], key, depth + 1);
+    }
+    for (const f of node.files.sort((a, b) => a.name.localeCompare(b.name))) {
+      rows.push(`<div class="tree-row ${f.path === docSelected ? "selected" : ""}"
+          style="padding-left:${8 + depth * 14}px" data-path="${esc(f.path)}"
+          onclick="selectDocument(this.dataset.path)">
+          <span class="caret"></span><span class="fname">📄 ${esc(f.name)}</span></div>`);
+    }
+  };
+  walk(buildDocTree(docFilesMeta), "", 0);
+  document.getElementById("doc-tree").innerHTML = rows.join("")
+    || `<div class="empty">文档库为空,点上方「＋ 新建文档」。</div>`;
+}
+
+function toggleDocDir(key) {
+  docCollapsed.has(key) ? docCollapsed.delete(key) : docCollapsed.add(key);
+  renderDocTree();
+}
+
+function selectDocument(path) {
+  docSelected = path; docMode = "view";
+  docViewingRevision = null; docHistoryOpen = false;
+  renderDocTree(); renderDocPane();
+}
+
+function newDocument() {
+  if (!currentProject) return;
+  const path = prompt("新文档相对路径(如 specs/design.md):");
+  if (!path) return;
+  docSelected = path.trim(); docMode = "new";
+  docViewingRevision = null; docHistoryOpen = false;
+  renderDocPane();
+}
+
+function isMarkdownDoc(path) {
+  return /\.(md|markdown|txt)$/i.test(path) || !path.includes(".");
+}
+
+async function renderDocPane() {
+  const pane = document.getElementById("doc-pane");
+  if (!pane) return;
+  if (!docSelected) {
+    pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看。</div>`;
+    return;
+  }
+  const meta = docFilesMeta.find(f => f.path === docSelected);
+  const metaLine = meta ? `${meta.size} B · ${new Date(meta.modified_at * 1000).toLocaleString()}` : "";
+  // 编辑 / 新建:文本编辑器
+  if (docMode === "edit" || docMode === "new") {
+    let content = "";
+    if (docMode === "edit") {
+      const d = await api("GET",
+        `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
+      content = d.content;
+    }
+    pane.innerHTML = `
+      <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${docMode === "new" ? "新建" : "编辑中"}</span>
+        <button class="action" onclick="saveDocument()">保存新版本</button>
+        <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
+      <textarea id="doc-content" rows="20" style="width:100%;height:auto">${esc(content)}</textarea>`;
+    return;
+  }
+  // 查看:渲染 markdown / 纯文本;支持查看历史版本
+  let d;
+  try {
+    const rev = docViewingRevision ? `?revision=${encodeURIComponent(docViewingRevision)}` : "";
+    d = await api("GET",
+      `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}${rev}`);
+  } catch (e) {
+    pane.innerHTML = `<div class="doc-head"><b>${esc(docSelected)}</b></div>
+      <div class="empty">无法在线查看(可能是二进制文件),可直接在文档库目录中操作。</div>`;
+    return;
+  }
+  const revBanner = docViewingRevision
+    ? `<div class="muted" style="margin-bottom:8px">正在查看历史版本 ${esc(docViewingRevision.slice(0, 10))}
+        <button class="ghost" data-rev="${esc(docViewingRevision)}" onclick="restoreDocumentVersion(this.dataset.rev)">恢复此版本</button>
+        <button class="ghost" onclick="docViewingRevision=null;renderDocPane()">返回最新</button></div>`
+    : "";
+  const body = isMarkdownDoc(docSelected)
+    ? `<div class="doc-body">${miniMarkdown(d.content)}</div>`
+    : `<pre style="white-space:pre-wrap;font-size:12.5px">${esc(d.content)}</pre>`;
+  pane.innerHTML = `
+    <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
+      <button class="action" onclick="docMode='edit';renderDocPane()">编辑</button>
+      <button class="ghost" onclick="toggleDocHistory()">历史</button>
+      <button class="danger" onclick="deleteDocument()">删除</button></div>
+    ${revBanner}${body}<div id="doc-history"></div>`;
+  if (docHistoryOpen) await showDocumentHistory();
+}
+
+function cancelDocEdit() {
+  if (docMode === "new") { docSelected = null; }
+  docMode = "view";
+  renderDocPane();
 }
 
 async function saveDocument() {
-  const path = document.getElementById("doc-path").value.trim();
-  if (!path) { alert("文档路径不能为空"); return; }
-  await api("PUT", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}`, {
+  if (!docSelected) return;
+  await api("PUT",
+    `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`, {
     content: document.getElementById("doc-content").value,
-    message: `Update ${path} from project document editor`,
+    message: `Update ${docSelected} from project document editor`,
   });
-  await renderDocuments(); await showDocumentHistory();
+  docMode = "view";
+  await renderDocuments();
 }
 
 async function deleteDocument() {
-  const path = document.getElementById("doc-path").value.trim();
-  if (!path || !confirm(`删除文档「${path}」?历史版本仍可查阅。`)) return;
-  await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}`);
-  document.getElementById("doc-content").value = "";
-  await renderDocuments(); await showDocumentHistory();
+  if (!docSelected || !confirm(`删除文档「${docSelected}」?历史版本仍可查阅。`)) return;
+  await api("DELETE",
+    `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
+  docSelected = null; docMode = "view";
+  await renderDocuments();
+}
+
+async function toggleDocHistory() {
+  docHistoryOpen = !docHistoryOpen;
+  if (docHistoryOpen) await showDocumentHistory();
+  else { const el = document.getElementById("doc-history"); if (el) el.innerHTML = ""; }
 }
 
 async function showDocumentHistory() {
-  const path = document.getElementById("doc-path").value.trim();
-  if (!path) return;
-  const rows = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents/history?path=${encodeURIComponent(path)}`);
-  document.getElementById("doc-history").innerHTML = `<h3>版本历史</h3><table>
+  if (!docSelected) return;
+  const rows = await api("GET",
+    `/api/projects/${encodeURIComponent(currentProject)}/documents/history?path=${encodeURIComponent(docSelected)}`);
+  const el = document.getElementById("doc-history");
+  if (!el) return;
+  el.innerHTML = `<h3>版本历史</h3><table>
     <tr><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>` +
     rows.map(v => `<tr><td>${esc(v.revision.slice(0, 10))}</td><td>${new Date(v.created_at * 1000).toLocaleString()}</td>
       <td>${esc(v.actor)}</td><td>${esc(v.message)}</td><td>
-      <button class="ghost" data-rev="${esc(v.revision)}" onclick="readDocumentVersion(this.dataset.rev)">查看</button>
+      <button class="ghost" data-rev="${esc(v.revision)}" onclick="docViewingRevision=this.dataset.rev;docHistoryOpen=true;renderDocPane()">查看</button>
       <button class="ghost" data-rev="${esc(v.revision)}" onclick="restoreDocumentVersion(this.dataset.rev)">恢复此版本</button></td></tr>`).join("") + `</table>`;
 }
 
 async function restoreDocumentVersion(revision) {
-  const path = document.getElementById("doc-path").value.trim();
-  if (!path || !confirm(`把 ${path} 恢复到版本 ${revision.slice(0, 10)}?(以新版本写入,历史保留)`)) return;
+  if (!docSelected || !confirm(`把 ${docSelected} 恢复到版本 ${revision.slice(0, 10)}?(以新版本写入,历史保留)`)) return;
   const r = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/documents/restore`,
-                      { path, revision });
+                      { path: docSelected, revision });
   alert(`已恢复,新版本 ${r.revision.slice(0, 10)}`);
-  await openDocument(path);
+  docViewingRevision = null;
   await renderDocuments();
-}
-
-async function readDocumentVersion(revision) {
-  const path = document.getElementById("doc-path").value.trim();
-  const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${path.split("/").map(encodeURIComponent).join("/")}?revision=${encodeURIComponent(revision)}`);
-  document.getElementById("doc-content").value = d.content;
 }
 
 /* ---- 角色(当前项目) ---- */
