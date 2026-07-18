@@ -227,16 +227,18 @@
     <div id="custom-view" class="page">
       <div class="section">
         <h2>自定义面板</h2>
-        <p class="muted">主控角色可创建并编辑任意网格面板；组件按类型渲染:需求/测试/数据表为表格,任务视图按条件实时取数,指标为数值卡,markdown 支持基础排版。</p>
+        <p class="muted">面板由项目主控创建和维护:用一句话提需求(例如"建一个需求管理面板,上面是需求清单表格,下面实时显示进行中的任务"),主控通过控制动作完成创建或修改,过程在聊天频道全程可见。</p>
+        <div class="form" style="max-width:none;margin-bottom:10px">
+          <div id="input-row">
+            <textarea id="board-request" style="height:48px"
+              placeholder="描述你想要的面板,或对当前面板的修改要求…(Enter 发送,Shift+Enter 换行)"></textarea>
+            <button class="send" onclick="requestBoard()">交给主控</button>
+          </div>
+          <div class="muted" id="board-request-status"></div>
+        </div>
         <div class="board-toolbar">
           <select id="custom-board-select" onchange="selectCustomBoard(this.value)"></select>
-          <button class="ghost" onclick="newCustomBoard('requirements')">+ 需求面板</button>
-          <button class="ghost" onclick="newCustomBoard('test_records')">+ 测试面板</button>
-          <button class="ghost" onclick="newCustomBoard('log_analysis')">+ 日志面板</button>
-          <button class="ghost" onclick="newCustomBoard('tasks')">+ 任务视图</button>
-          <button class="ghost" onclick="newCustomBoard('metrics')">+ 指标面板</button>
-          <button class="ghost" onclick="newCustomBoard('chart')">+ 图表面板</button>
-          <button class="ghost" onclick="newCustomBoard('blank')">+ 空白面板</button>
+          <button class="ghost" onclick="toggleBoardEditor()">手动编辑</button>
         </div>
         <div class="form" id="custom-board-form" style="display:none"></div>
         <div class="custom-grid" id="custom-board-preview"></div>
@@ -558,6 +560,9 @@ async function send() {
 document.getElementById("input").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
 });
+document.getElementById("board-request").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); requestBoard(); }
+});
 
 /* ---------------- 看板 ---------------- */
 const COLS = [
@@ -637,61 +642,38 @@ async function approveTask(id, decision) {
   await loadOverview(); await openTask(id);
 }
 
-/* ---------------- 自定义面板 ---------------- */
+/* ---------------- 自定义面板 ----------------
+   面板由主控 Agent 创建与维护:人类提需求 -> 主控通过控制动作落地。
+   卡片是通用展示原语(markdown/table/card/chart/list/log/code),
+   content.source 可绑定平台实时数据源;"手动编辑"仅作应急入口。 */
 let currentCustomBoard = null;
 let customBoardEditing = false;
+let boardEditorVisible = false;
 
-// 卡片是通用展示原语(markdown/table/card/chart/list/log/code),
-// 领域含义来自数据与组合;content.source 可绑定平台实时数据源。
-// 旧类型经别名兼容渲染(requirements/test_records/task_query→table 等)。
-const LEGACY_WIDGET = { requirements: "table", test_records: "table",
-                        task_query: "table", metrics: "card", log_analysis: "list" };
-
-// 面板模板 = 原语组合,示范"预定义卡片 + 数据源"的用法
-const BOARD_TEMPLATES = {
-  requirements: { name: "需求与实现情况", layout: [
-    { id: "reqs", type: "table", title: "需求清单(手工维护)", x: 0, y: 0, width: 12, height: 5,
-      content: { columns: ["需求", "状态", "负责人", "验收结果"], rows: [] } },
-    { id: "live-tasks", type: "table", title: "关联任务(实时)", x: 0, y: 5, width: 12, height: 5,
-      content: { source: { from: "tasks", status: [], labels: [] } } },
-  ] },
-  test_records: { name: "测试记录", layout: [
-    { id: "cases", type: "table", title: "用例记录", x: 0, y: 0, width: 12, height: 6,
-      content: { columns: ["用例", "环境", "结果", "证据"], rows: [] } },
-  ] },
-  log_analysis: { name: "应用日志分析", layout: [
-    { id: "findings", type: "list", title: "分析结论", x: 0, y: 0, width: 6, height: 6,
-      content: { items: [] } },
-    { id: "conclusion", type: "markdown", title: "总结", x: 6, y: 0, width: 6, height: 6,
-      content: { markdown: "在这里写分析总结。" } },
-  ] },
-  tasks: { name: "任务视图", layout: [
-    { id: "open-tasks", type: "table", title: "进行中任务(实时)", x: 0, y: 0, width: 12, height: 8,
-      content: { source: { from: "tasks", status: ["open", "awaiting_approval"] } } },
-  ] },
-  metrics: { name: "指标", layout: [
-    { id: "kpis", type: "card", title: "关键指标", x: 0, y: 0, width: 12, height: 3,
-      content: { metrics: [{ label: "示例指标", value: 0 }] } },
-  ] },
-  chart: { name: "图表", layout: [
-    { id: "trend", type: "chart", title: "趋势", x: 0, y: 0, width: 12, height: 7,
-      content: { kind: "bar", x_key: "x", y_key: "y",
-                 data: [{ x: "一", y: 3 }, { x: "二", y: 5 }, { x: "三", y: 2 }] } },
-  ] },
-  blank: { name: "项目面板", layout: [
-    { id: "main", type: "markdown", title: "项目面板", x: 0, y: 0, width: 12, height: 6,
-      content: { markdown: "在这里记录面板内容。" } },
-  ] },
-};
-
-function boardTemplate(type) {
-  const t = BOARD_TEMPLATES[type] || BOARD_TEMPLATES.blank;
-  return JSON.parse(JSON.stringify(t.layout));
+// 把面板需求交给项目主控:发到项目的 general 频道,全程可见
+async function requestBoard() {
+  const box = document.getElementById("board-request");
+  const text = box.value.trim();
+  const p = projObj();
+  if (!text || !p) return;
+  const channel = projChannels().find(c =>
+    c.id.endsWith(":general") || c.id === "general") || projChannels()[0];
+  if (!channel) { alert("本项目还没有频道,请先在项目设置中创建"); return; }
+  const board = projBoards().find(b => b.id === currentCustomBoard);
+  const context = board ? `当前正在查看面板「${board.name}」(id: ${board.id.split(":").pop()})。` : "";
+  const content = `@${p.orchestrator_role_id} 自定义面板需求:${text}\n` +
+    `${context}请用控制动作(create_board/update_board)完成,面板 id 用英文短横线命名。`;
+  box.value = "";
+  try {
+    await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`,
+              { author: "human", content });
+    document.getElementById("board-request-status").textContent =
+      `已交给主控 @${p.orchestrator_role_id}(频道 #${channel.name});完成后面板会自动出现在下方,过程可在聊天页查看。`;
+  } catch (e) { box.value = text; }
 }
 
 function renderCustomBoards(force = false) {
   if (customBoardEditing && !force) return;
-  if (String(currentCustomBoard || "").startsWith("new:")) return;  // 新建草稿不被轮询冲掉
   const boards = projBoards();
   if (currentCustomBoard && !boards.some(b => b.id === currentCustomBoard))
     currentCustomBoard = null;
@@ -700,24 +682,20 @@ function renderCustomBoards(force = false) {
   if (!sel) return;
   sel.innerHTML = boards.length ? boards.map(b =>
     `<option value="${esc(b.id)}" ${b.id === currentCustomBoard ? "selected" : ""}>${esc(b.name || b.id)}</option>`
-  ).join("") : `<option value="">(暂无自定义面板)</option>`;
+  ).join("") : `<option value="">(暂无面板,向主控提一个需求吧)</option>`;
   renderCustomBoardEditor();
 }
 
 function selectCustomBoard(id) {
   customBoardEditing = false;
+  boardEditorVisible = false;
   currentCustomBoard = id || null;
   renderCustomBoardEditor();
 }
 
-function newCustomBoard(type) {
-  if (!currentProject) return;
-  const id = prompt("面板 id（字母、数字、下划线或连字符）:", type.replace("_", "-"));
-  if (!id) return;
-  customBoardEditing = true;   // 草稿即未保存编辑态,防止轮询重渲染丢弃
-  currentCustomBoard = `new:${id}`;
-  window._newBoardDraft = { id, name: (BOARD_TEMPLATES[type] || BOARD_TEMPLATES.blank).name,
-    description: "", layout: boardTemplate(type) };
+function toggleBoardEditor() {
+  boardEditorVisible = !boardEditorVisible;
+  if (!boardEditorVisible) customBoardEditing = false;
   renderCustomBoardEditor();
 }
 
@@ -725,24 +703,28 @@ function renderCustomBoardEditor() {
   const form = document.getElementById("custom-board-form");
   const preview = document.getElementById("custom-board-preview");
   if (!form || !preview) return;
-  const board = String(currentCustomBoard || "").startsWith("new:")
-    ? window._newBoardDraft : projBoards().find(b => b.id === currentCustomBoard);
+  const board = projBoards().find(b => b.id === currentCustomBoard);
   if (!board) {
     form.style.display = "none";
-    preview.innerHTML = `<div class="empty" style="grid-column:1/-1">请选择模板创建第一个面板。</div>`;
+    preview.innerHTML = `<div class="empty" style="grid-column:1/-1">还没有面板:在上方描述你想要的面板,交给主控创建。</div>`;
+    return;
+  }
+  if (!boardEditorVisible) {   // 默认只看渲染结果;手动编辑是应急入口
+    form.style.display = "none";
+    renderBoardWidgets(board.layout || []);
     return;
   }
   form.style.display = "block";
   form.innerHTML = `
     <div class="row">
-      <div><label>面板 id</label><input id="cb-id" value="${esc(board.id.includes(":") ? board.id.split(":").slice(1).join(":") : board.id)}" ${board.id.includes(":") ? "disabled" : ""}></div>
+      <div><label>面板 id</label><input id="cb-id" value="${esc(board.id.split(":").pop())}" disabled></div>
       <div><label>名称</label><input id="cb-name" oninput="customBoardEditing=true" value="${esc(board.name)}"></div>
     </div>
     <label>用途说明</label><input id="cb-desc" oninput="customBoardEditing=true" value="${esc(board.description || "")}">
-    <label>动态布局 JSON（12 列网格；每项含 id/type/title/x/y/width/height/content）</label>
+    <label>布局 JSON(应急手动编辑;日常修改建议直接向主控提需求)</label>
     <textarea id="cb-layout" rows="14" spellcheck="false" oninput="previewBoardDraft()">${esc(JSON.stringify(board.layout || [], null, 2))}</textarea>
     <div class="form-actions"><button class="action" onclick="saveCustomBoard()">保存面板</button>
-      ${board.id.includes(":") ? `<button class="danger" onclick="deleteCustomBoard()">删除面板</button>` : ""}</div>`;
+      <button class="danger" onclick="deleteCustomBoard()">删除面板</button></div>`;
   renderBoardWidgets(board.layout || []);
 }
 
@@ -823,18 +805,6 @@ function widgetChart(c) {
   return `<svg viewBox="0 0 ${W} ${H}" style="width:100%">${marks}${axis}</svg>`;
 }
 
-// 旧类型内容 -> 原语内容 的规范化(领域类型退役为别名)
-function normalizeWidget(w) {
-  const type = LEGACY_WIDGET[w.type] || w.type;
-  let c = { ...(w.content || {}) };
-  if (w.type === "task_query" && !c.source)
-    c = { source: { from: "tasks", status: c.status || [], labels: c.labels || [],
-                    task_type: c.task_type || [] } };
-  if (w.type === "log_analysis" && !c.items)
-    c.items = (c.findings || []).map(f => typeof f === "string" ? f : JSON.stringify(f));
-  return { ...w, type, content: c };
-}
-
 function renderWidgetContent(w, resolved) {
   if (resolved && resolved.error)
     return `<div class="empty">${esc(resolved.error)}</div>`;
@@ -877,7 +847,7 @@ function renderWidgetContent(w, resolved) {
 }
 
 async function renderBoardWidgets(layout) {
-  const widgets = (Array.isArray(layout) ? layout : []).map(normalizeWidget);
+  const widgets = Array.isArray(layout) ? layout : [];
   // 有数据源的卡片:批量向平台解析(保存态与预览态共用同一端点)
   let resolved = {};
   const sourced = widgets.filter(w => w.content && w.content.source);

@@ -59,7 +59,7 @@ def test_orchestrator_can_create_task_channel_and_dynamic_board(seeded):
     assert "频道用途/讨论边界:只讨论结算 API" in prompt
 
     layout = [{
-        "id": "requirements", "type": "requirements", "title": "需求",
+        "id": "requirements", "type": "table", "title": "需求",
         "x": 0, "y": 0, "width": 8, "height": 6,
         "content": {"columns": ["需求", "状态"], "rows": []},
     }]
@@ -68,7 +68,7 @@ def test_orchestrator_can_create_task_channel_and_dynamic_board(seeded):
         "actor_role_id": "lead",
     })
     assert board.status_code == 200
-    assert board.json()["layout"][0]["type"] == "requirements"
+    assert board.json()["layout"][0]["type"] == "table"
     assert client.post("/api/projects/webshop/boards", json={
         "id": "bad", "layout": layout, "actor_role_id": "dev",
     }).status_code == 403
@@ -400,8 +400,21 @@ def test_widget_data_skips_static_widgets(seeded):
 
 
 def test_widget_types_are_display_primitives(seeded):
-    from missioncrew.models import BOARD_WIDGET_TYPES, LEGACY_WIDGET_ALIASES
+    from missioncrew.models import BOARD_WIDGET_TYPES
     assert BOARD_WIDGET_TYPES == {"markdown", "table", "card", "chart",
                                   "list", "log", "code"}
-    # 旧领域类型全部退役为原语别名
-    assert set(LEGACY_WIDGET_ALIASES.values()) <= BOARD_WIDGET_TYPES
+    # 旧领域类型已彻底移除,未知类型在 API 与聊天动作两条链路都被拒绝
+    client = _client(seeded)
+    bad = client.post("/api/projects/webshop/boards", json={
+        "id": "legacy", "name": "旧", "layout": [{
+            "id": "w", "type": "requirements", "title": "x",
+            "x": 0, "y": 0, "width": 6, "height": 4, "content": {}}]})
+    assert bad.status_code == 400 and "未知组件类型" in bad.json()["detail"]
+    chat = ChatEngine(seeded)
+    reply = chat._apply_orchestrator_actions(
+        seeded.get_project("webshop"), "lead",
+        '<missioncrew-action>{"action":"create_board","id":"old","name":"O",'
+        '"layout":[{"id":"w","type":"task_query","title":"t",'
+        '"x":0,"y":0,"width":6,"height":4}]}</missioncrew-action>',
+        root_id=1, depth=0)
+    assert "未知组件类型" in reply and seeded.get_board("webshop:old") is None

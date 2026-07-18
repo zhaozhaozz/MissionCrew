@@ -588,8 +588,9 @@ def create_app() -> FastAPI:
                     if widget.x < 0 or widget.y < 0 or not 1 <= widget.width <= 12 \
                             or not 1 <= widget.height <= 100:
                         raise ValueError("组件位置必须非负，宽度为 1..12，高度为 1..100")
-                    if not widget.type.strip():
-                        raise ValueError("组件 type 不能为空")
+                    if widget.type not in BOARD_WIDGET_TYPES:
+                        raise ValueError(f"未知组件类型 {widget.type},"
+                                         f"可用: {', '.join(sorted(BOARD_WIDGET_TYPES))}")
                     seen.add(widget.id)
                     widgets.append(widget)
             except (TypeError, ValueError) as exc:

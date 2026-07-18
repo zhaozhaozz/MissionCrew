@@ -35,12 +35,6 @@ BOARD_WIDGET_TYPES = {
     "code",       # 代码块:content.code + language?
 }
 
-# 旧类型 -> 展示原语 的兼容别名:既有面板与主控旧习惯继续可用
-LEGACY_WIDGET_ALIASES = {
-    "requirements": "table", "test_records": "table", "task_query": "table",
-    "metrics": "card", "log_analysis": "list",
-}
-
 
 def new_id(prefix: str) -> str:
     return f"{prefix}_{_secrets.token_hex(3)}"
