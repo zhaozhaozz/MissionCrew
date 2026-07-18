@@ -188,3 +188,28 @@ def ensure_role_bindings(store: Store) -> int:
         # 即使已有固定组合也重写一次,清除旧 JSON 字段并落成新模型。
         store.put_role(role)
     return bound
+
+
+def migrate_project_fields(store: Store) -> int:
+    """一次性字段迁移:开发准则并入准则文档;旧版字符串 repos 归一化为资源。
+
+    幂等:dev_guidelines 迁移后清空;repos 经 Project.__post_init__ 归一化,
+    重写一遍即落库为结构化条目。
+    """
+    migrated = 0
+    for project in store.list_projects():
+        changed = False
+        if project.dev_guidelines.strip():
+            gid = "dev-guidelines"
+            if not any(g.id == gid for g in project.guidelines):
+                from .models import GuidelineDocument
+                project.guidelines.append(GuidelineDocument(
+                    id=gid, title="开发准则", content=project.dev_guidelines))
+            project.dev_guidelines = ""
+            changed = True
+            migrated += 1
+        store.put_project(project)   # 顺带把旧字符串 repos 写成结构化资源
+        if changed:
+            store.audit("platform", "project_migrated",
+                        detail=f"project={project.id} dev_guidelines->guideline")
+    return migrated

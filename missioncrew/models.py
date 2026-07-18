@@ -162,13 +162,35 @@ class ProjectSkill:
 
 
 @dataclass
+class ProjectResource:
+    """项目资源:本地路径或 git 仓。
+
+    本地路径若是 git 仓,添加时自动读取其远程地址绑定为 git 资源;
+    纯远程地址(http/git@)则是没有本地路径的 git 资源。
+    """
+
+    id: str
+    kind: str = "path"     # path(普通本地路径) | git(git 仓,含 remote)
+    path: str = ""         # 本地路径;纯远程 git 资源可为空
+    remote: str = ""       # git 远程地址
+    name: str = ""
+
+    @classmethod
+    def from_dict(cls, value: "dict | str") -> "ProjectResource":
+        if isinstance(value, str):   # 旧版 repos 是路径字符串列表
+            base = value.rstrip("/").rsplit("/", 1)[-1] or "repo"
+            return cls(id=base, kind="path", path=value, name=base)
+        return cls(**value)
+
+
+@dataclass
 class Project:
     """项目中心条目:领域知识的主要载体，并显式指定唯一主控角色。"""
 
     id: str
     name: str
     description: str = ""
-    repos: list[str] = field(default_factory=list)
+    repos: list[ProjectResource] = field(default_factory=list)
     charter: str = ""            # 项目准则:目标、范围、业务边界
     dev_guidelines: str = ""     # 开发准则:架构原则、代码要求、变更约束
     orchestrator_role_id: str = "lead"  # 负责整个项目和其他角色调度的唯一角色
@@ -177,6 +199,15 @@ class Project:
     resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
     rules: list[Rule] = field(default_factory=list)     # 验证准则
+
+    def __post_init__(self):
+        # 资源条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
+        self.repos = [r if isinstance(r, ProjectResource) else ProjectResource.from_dict(r)
+                      for r in self.repos]
+
+    def repo_paths(self) -> list[str]:
+        """有本地路径的资源(供频道工作目录校验等使用)。"""
+        return [r.path for r in self.repos if r.path]
 
     def to_dict(self) -> dict:
         return asdict(self)

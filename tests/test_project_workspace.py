@@ -210,7 +210,8 @@ def test_create_channel_workdir_validated_against_repos(seeded, tmp_path):
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
     project = seeded.get_project("webshop")
-    project.repos = [str(repo)]
+    from missioncrew.models import ProjectResource
+    project.repos = [ProjectResource(id="repo", kind="path", path=str(repo))]
     seeded.put_project(project)
     chat = ChatEngine(seeded)
     # 合法:repo 子目录
@@ -418,3 +419,52 @@ def test_widget_types_are_display_primitives(seeded):
         '"x":0,"y":0,"width":6,"height":4}]}</missioncrew-action>',
         root_id=1, depth=0)
     assert "未知组件类型" in reply and seeded.get_board("webshop:old") is None
+
+
+# ---- 项目资源:本地路径 / git 仓自动绑远程 / 迁移 ----
+
+def test_resource_local_git_repo_binds_remote(seeded, tmp_path):
+    import subprocess
+    client = _client(seeded)
+    repo = tmp_path / "myrepo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                    "https://example.com/team/myrepo.git"], check=True)
+    r = client.post("/api/projects/webshop/resources",
+                    json={"target": str(repo)}).json()
+    assert r["kind"] == "git"                      # 本地 git 仓自动识别
+    assert r["remote"] == "https://example.com/team/myrepo.git"  # 自动绑定远程
+    assert r["path"] == str(repo)
+
+
+def test_resource_plain_path_url_and_dedup(seeded, tmp_path):
+    client = _client(seeded)
+    plain = tmp_path / "assets"
+    plain.mkdir()
+    r1 = client.post("/api/projects/webshop/resources",
+                     json={"target": str(plain)}).json()
+    assert r1["kind"] == "path" and r1["remote"] == ""
+    r2 = client.post("/api/projects/webshop/resources",
+                     json={"target": "https://github.com/acme/widget.git"}).json()
+    assert r2["kind"] == "git" and r2["path"] == "" and r2["id"] == "widget"
+    r3 = client.post("/api/projects/webshop/resources",
+                     json={"target": str(plain)}).json()
+    assert r3["id"] == "assets-2"                  # 同名资源自动加序号
+    assert client.post("/api/projects/webshop/resources",
+                       json={"target": "/nonexistent/dir"}).status_code == 400
+    assert client.delete("/api/projects/webshop/resources/assets").status_code == 200
+    assert client.delete("/api/projects/webshop/resources/ghost").status_code == 404
+
+
+def test_dev_guidelines_migrated_into_guideline_doc(seeded):
+    from missioncrew import seed as seed_mod
+    p = seeded.get_project("webshop")
+    p.dev_guidelines = "旧开发准则内容"
+    seeded.put_project(p)
+    assert seed_mod.migrate_project_fields(seeded) == 1
+    p2 = seeded.get_project("webshop")
+    assert p2.dev_guidelines == ""
+    doc = next(g for g in p2.guidelines if g.id == "dev-guidelines")
+    assert "旧开发准则内容" in doc.content and doc.title == "开发准则"
+    assert seed_mod.migrate_project_fields(seeded) == 0   # 幂等

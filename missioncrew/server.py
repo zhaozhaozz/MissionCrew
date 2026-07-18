@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -23,7 +24,7 @@ from .config import db_path
 from .documents import archive_library, library_for, safe_relative_path
 from .engine import Engine
 from .models import (BOARD_WIDGET_TYPES, TIER_ORDER, TRAITS, Board, BoardWidget, Channel,
-                     GuidelineDocument, Project, ProjectSkill, Role, Rule)
+                     GuidelineDocument, Project, ProjectResource, ProjectSkill, Role, Rule)
 from .store import Store
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -100,15 +101,20 @@ class ProjectInput(BaseModel):
     id: str
     name: str = ""
     description: str = ""
-    repos: list[str] = []
+    repos: Optional[list[dict | str]] = None   # None = 保留;资源经专用端点管理
     charter: str = ""
-    dev_guidelines: str = ""
+    dev_guidelines: Optional[str] = None       # 已由准则文档替代;None = 保留
     orchestrator_role_id: Optional[str] = None
     guidelines: Optional[list[dict]] = None
     skills: Optional[list[dict | str]] = None
     resources: Optional[list[str]] = None
     required_env: Optional[str] = None
     rules_yaml: Optional[str] = None  # 验证准则,YAML 列表；None 表示更新时保留
+
+
+class ResourceAdd(BaseModel):
+    target: str          # 本地路径或 git 远程地址
+    name: str = ""
 
 
 class DocumentWrite(BaseModel):
@@ -151,6 +157,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="MissionCrew", version="0.2.0")
     store = Store(db_path())
     seed_mod.ensure_role_bindings(store)
+    seed_mod.migrate_project_fields(store)
     engine = Engine(store)
     chat = ChatEngine(store)
     # 更新互斥与"更新中"标记:与 ChatEngine 共享同一集合,更新期间不派发该后端
@@ -301,6 +308,10 @@ def create_app() -> FastAPI:
         if is_new and orchestrator != "lead":
             raise HTTPException(400, "新项目请先创建角色，再修改主控角色")
         data["orchestrator_role_id"] = orchestrator
+        data["repos"] = (body.repos if body.repos is not None else
+                         ([r.__dict__ for r in existing.repos] if existing else []))
+        data["dev_guidelines"] = (body.dev_guidelines if body.dev_guidelines is not None
+                                  else (existing.dev_guidelines if existing else ""))
         data["guidelines"] = (body.guidelines if body.guidelines is not None else
                               ([g.__dict__ for g in existing.guidelines] if existing else []))
         data["skills"] = (body.skills if body.skills is not None else
@@ -350,6 +361,62 @@ def create_app() -> FastAPI:
         return {"ok": True, "documents_archive": archive}
 
     # ---------------- 项目准则与 Skills ----------------
+
+    # ---------------- 项目资源(本地路径 / git 仓) ----------------
+
+    def _resolve_project_resource(target: str, name: str) -> ProjectResource:
+        """解析资源:远程地址 -> git 资源;本地路径若是 git 仓自动绑定其远程。"""
+        raw = target.strip()
+        if not raw:
+            raise HTTPException(400, "资源路径或地址不能为空")
+        looks_remote = raw.startswith(("http://", "https://", "git@", "ssh://"))
+        if looks_remote:
+            base = raw.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git") or "repo"
+            return ProjectResource(id=base, kind="git", remote=raw, name=name or base)
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            raise HTTPException(400, f"本地路径不存在或不是目录: {raw}")
+        base = path.name
+        if (path / ".git").exists():
+            remote = ""
+            try:   # 自动绑定远程仓库;本地纯 git 仓(无远程)也算 git 资源
+                proc = subprocess.run(
+                    ["git", "-C", str(path), "remote", "get-url", "origin"],
+                    capture_output=True, text=True, timeout=10)
+                remote = proc.stdout.strip() if proc.returncode == 0 else ""
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            return ProjectResource(id=base, kind="git", path=str(path),
+                                   remote=remote, name=name or base)
+        return ProjectResource(id=base, kind="path", path=str(path), name=name or base)
+
+    @app.post("/api/projects/{project_id}/resources")
+    def add_resource(project_id: str, body: ResourceAdd):
+        project = must_project(project_id)
+        resource = _resolve_project_resource(body.target, body.name)
+        taken = {r.id for r in project.repos}
+        if resource.id in taken:   # id 冲突时追加序号
+            n = 2
+            while f"{resource.id}-{n}" in taken:
+                n += 1
+            resource.id = f"{resource.id}-{n}"
+        project.repos.append(resource)
+        store.put_project(project)
+        store.audit("human", "resource_added",
+                    detail=f"project={project_id} resource={resource.id} kind={resource.kind}")
+        return resource.__dict__
+
+    @app.delete("/api/projects/{project_id}/resources/{resource_id}")
+    def delete_resource(project_id: str, resource_id: str):
+        project = must_project(project_id)
+        before = len(project.repos)
+        project.repos = [r for r in project.repos if r.id != resource_id]
+        if len(project.repos) == before:
+            raise HTTPException(404, "资源不存在")
+        store.put_project(project)
+        store.audit("human", "resource_removed",
+                    detail=f"project={project_id} resource={resource_id}")
+        return {"ok": True}
 
     @app.get("/api/projects/{project_id}/guidelines")
     def list_guidelines(project_id: str):

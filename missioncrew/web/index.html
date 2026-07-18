@@ -260,6 +260,33 @@
         <div id="doc-list"></div>
       </div>
       <div class="side-sec">
+        <h2 class="sec-head" id="sec-resources" onclick="toggleSection('resources')">
+          <span class="caret">▾</span>资源<span class="count" id="cnt-resources"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="添加资源(本地路径或 git 地址)" onclick="event.stopPropagation();quickAddResource()">＋</button>
+            <button class="icon-btn" title="管理资源" onclick="event.stopPropagation();gotoProjSection('res-table')">⚙</button>
+          </span></h2>
+        <div id="resource-list"></div>
+      </div>
+      <div class="side-sec">
+        <h2 class="sec-head" id="sec-guides" onclick="toggleSection('guides')">
+          <span class="caret">▾</span>准则<span class="count" id="cnt-guides"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建准则文档" onclick="event.stopPropagation();quickNewGuideline()">＋</button>
+            <button class="icon-btn" title="管理准则" onclick="event.stopPropagation();gotoProjSection('guide-table')">⚙</button>
+          </span></h2>
+        <div id="guide-list"></div>
+      </div>
+      <div class="side-sec">
+        <h2 class="sec-head" id="sec-skills" onclick="toggleSection('skills')">
+          <span class="caret">▾</span>Skill<span class="count" id="cnt-skills"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建 Skill" onclick="event.stopPropagation();quickNewSkill()">＋</button>
+            <button class="icon-btn" title="管理 Skill" onclick="event.stopPropagation();gotoProjSection('skill-table')">⚙</button>
+          </span></h2>
+        <div id="skill-list"></div>
+      </div>
+      <div class="side-sec">
         <h2 class="sec-head" id="sec-roles" onclick="toggleSection('roles')">
           <span class="caret">▾</span>角色<span class="count" id="cnt-roles"></span>
           <span class="sec-act">
@@ -320,6 +347,19 @@
         <h2>项目信息 <span class="muted" id="proj-label"></span></h2>
         <p class="muted">项目是第一层级:角色、频道、任务、准则都归属当前项目,项目之间互不相干。</p>
         <div class="form" id="proj-form"></div>
+      </div>
+      <div class="section">
+        <h2>资源 <span class="muted" id="res-proj-label"></span></h2>
+        <p class="muted">项目使用的本地路径与 git 仓;本地路径若是 git 仓会自动绑定其远程仓库。有本地路径的资源可作为任务频道的工作目录。</p>
+        <table class="mgr" id="res-table"></table>
+        <div class="form" style="max-width:720px">
+          <div class="row">
+            <div><label>本地路径或 git 远程地址</label>
+              <input type="text" id="res-target" placeholder="~/code/myrepo 或 https://github.com/acme/x.git"></div>
+            <div style="flex:0 0 160px"><label>名称(可选)</label><input type="text" id="res-name"></div>
+          </div>
+          <div class="form-actions"><button class="action" onclick="addResourceFromForm()">添加资源</button></div>
+        </div>
       </div>
       <div class="section">
         <h2>角色 <span class="muted" id="role-proj-label"></span>
@@ -597,6 +637,30 @@ function renderSidebar() {
             title="${esc(p)}">📄 ${esc(p)}</div>`).join("")
       + (docFiles.length > 40 ? `<div class="side-item" onclick="switchTab('docs')">…共 ${docFiles.length} 个文件</div>` : "")
       || `<div class="side-item" onclick="switchTab('docs')">＋ 新建第一篇文档…</div>`;
+  // 资源 -> 项目设置资源管理;本地 git 仓自动带远程标记
+  const res = projObj()?.repos || [];
+  if (!_secState("resources", "resource-list", "cnt-resources", res.length))
+    document.getElementById("resource-list").innerHTML = res.map(r =>
+      `<div class="side-item" onclick="gotoProjSection('res-table')"
+            title="${esc(r.path || "")}${r.remote ? "\n远程: " + esc(r.remote) : ""}">
+         ${r.kind === "git" ? "🔗" : "📁"} ${esc(r.name || r.id)}</div>`).join("")
+      || `<div class="side-item" onclick="quickAddResource()">＋ 添加本地路径或 git 仓…</div>`;
+  // 准则 -> 逐篇编辑
+  const guides = projObj()?.guidelines || [];
+  if (!_secState("guides", "guide-list", "cnt-guides", guides.length))
+    document.getElementById("guide-list").innerHTML = guides.map(g =>
+      `<div class="side-item ${g.enabled === false ? "" : ""}" data-id="${esc(g.id)}"
+            onclick="openGuidelineFromSidebar(this.dataset.id)" title="${esc(g.id)}">
+         📜 ${esc(g.title || g.id)}${g.enabled === false ? " (停用)" : ""}</div>`).join("")
+      || `<div class="side-item" onclick="quickNewGuideline()">＋ 写第一篇项目准则…</div>`;
+  // Skill -> 逐个编辑
+  const skills = projObj()?.skills || [];
+  if (!_secState("skills", "skill-list", "cnt-skills", skills.length))
+    document.getElementById("skill-list").innerHTML = skills.map(s =>
+      `<div class="side-item" data-id="${esc(s.id)}"
+            onclick="openSkillFromSidebar(this.dataset.id)" title="${esc(s.description || s.id)}">
+         ⚡ ${esc(s.name || s.id)}${s.enabled === false ? " (停用)" : ""}</div>`).join("")
+      || `<div class="side-item" onclick="quickNewSkill()">＋ 添加第一个 Skill…</div>`;
   // 角色 -> 聊天 @(主控带标记)
   const orch = projObj()?.orchestrator_role_id;
   if (!_secState("roles", "role-list", "cnt-roles", projRoles().length))
@@ -640,6 +704,37 @@ function gotoProjSection(elemId) {
   switchTab("proj");
   setTimeout(() => document.getElementById(elemId)
     ?.scrollIntoView({ behavior: "smooth", block: "start" }), 300);
+}
+
+async function quickAddResource() {
+  if (!currentProject) return;
+  const target = prompt("本地路径或 git 远程地址:\n(本地路径若是 git 仓,会自动绑定其远程仓库)");
+  if (!target) return;
+  const r = await api("POST",
+    `/api/projects/${encodeURIComponent(currentProject)}/resources`, { target });
+  await loadOverview();
+  alert(`已添加资源 ${r.id}(${r.kind === "git" ? "git 仓" : "本地路径"}` +
+        (r.remote ? `,远程 ${r.remote}` : "") + ")");
+}
+
+function openGuidelineFromSidebar(id) {
+  switchTab("proj");
+  setTimeout(() => editGuideline(id), 300);
+}
+
+function openSkillFromSidebar(id) {
+  switchTab("proj");
+  setTimeout(() => editSkill(id), 300);
+}
+
+function quickNewGuideline() {
+  switchTab("proj");
+  setTimeout(() => editGuideline(null), 300);
+}
+
+function quickNewSkill() {
+  switchTab("proj");
+  setTimeout(() => editSkill(null), 300);
 }
 
 function openBoardFromSidebar(id) {
@@ -1158,12 +1253,8 @@ async function renderProjSettings() {
     <label>一句话描述</label><input type="text" id="pf-desc" value="${esc(p.description)}">
     <label>项目主控角色（唯一；其固定 Runtime / 模型负责项目与其他角色调度）</label>
     <select id="pf-orchestrator">${orchestratorOptions}</select>
-    <label>代码仓路径(每行一个)</label>
-    <textarea id="pf-repos" rows="2">${esc(p.repos.join("\n"))}</textarea>
-    <label>项目准则(目标、范围、业务边界)</label>
+    <label>项目章程(目标、范围、业务边界;开发/测试/部署等完整规范写成下方"准则文档")</label>
     <textarea id="pf-charter" rows="4">${esc(p.charter)}</textarea>
-    <label>开发准则(架构原则、代码要求、变更约束;完整规范建议写成下方"准则文档")</label>
-    <textarea id="pf-dev" rows="4">${esc(p.dev_guidelines)}</textarea>
     <label>验证准则(YAML 列表:match / require_evidence / require_gates / require_capabilities / note)</label>
     <textarea id="pf-rules" rows="8" spellcheck="false">${esc(rulesToYaml(p.rules))}</textarea>
     <div class="form-actions">
@@ -1172,9 +1263,45 @@ async function renderProjSettings() {
     </div>`;
   document.getElementById("guide-proj-label").textContent = label;
   document.getElementById("skill-proj-label").textContent = label;
+  document.getElementById("res-proj-label").textContent = label;
   renderRoleTable(); renderChanTable();
+  renderResourceTable();
   renderGuidelines(); renderSkills();
   loadDocFiles();   // 文档库页独立成侧栏入口,这里只取引用选择器的数据
+}
+
+/* ---- 项目资源管理 ---- */
+function renderResourceTable() {
+  const res = projObj()?.repos || [];
+  const rows = res.map(r => `<tr>
+    <td>${r.kind === "git" ? "🔗 git 仓" : "📁 本地路径"}</td>
+    <td><b>${esc(r.name || r.id)}</b></td>
+    <td class="muted">${esc(r.path || "—")}</td>
+    <td class="muted">${esc(r.remote || "—")}</td>
+    <td><button class="danger" data-id="${esc(r.id)}"
+      onclick="deleteResource(this.dataset.id)">移除</button></td></tr>`).join("");
+  document.getElementById("res-table").innerHTML =
+    `<tr><th>类型</th><th>名称</th><th>本地路径</th><th>git 远程</th><th></th></tr>` +
+    (rows || `<tr><td colspan="5" class="empty">暂无资源</td></tr>`);
+}
+
+async function addResourceFromForm() {
+  const target = document.getElementById("res-target").value.trim();
+  if (!target) { alert("请输入本地路径或 git 地址"); return; }
+  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/resources`,
+            { target, name: document.getElementById("res-name").value.trim() });
+  document.getElementById("res-target").value = "";
+  document.getElementById("res-name").value = "";
+  await loadOverview();
+  renderResourceTable(); renderSidebar();
+}
+
+async function deleteResource(id) {
+  if (!confirm(`移除资源「${id}」?(只解除关联,不删除磁盘内容)`)) return;
+  await api("DELETE",
+    `/api/projects/${encodeURIComponent(currentProject)}/resources/${encodeURIComponent(id)}`);
+  await loadOverview();
+  renderResourceTable(); renderSidebar();
 }
 
 /* ---- 准则文档管理(按篇 CRUD,走专用端点) ---- */
@@ -1357,15 +1484,12 @@ async function deleteSkill(id) {
 }
 
 async function saveProject() {
-  const lines = id2 => document.getElementById(id2).value.split("\n").map(s => s.trim()).filter(Boolean);
-  const body = {   // 准则文档/Skills 走专用管理器,此处缺省即保留
+  const body = {   // 资源/准则文档/Skills 走专用管理器,此处缺省即保留
     id: currentProject,
     name: document.getElementById("pf-name").value.trim(),
     description: document.getElementById("pf-desc").value.trim(),
-    repos: lines("pf-repos"),
     orchestrator_role_id: document.getElementById("pf-orchestrator").value,
     charter: document.getElementById("pf-charter").value,
-    dev_guidelines: document.getElementById("pf-dev").value,
     rules_yaml: document.getElementById("pf-rules").value,
   };
   await api("POST", "/api/projects", body);

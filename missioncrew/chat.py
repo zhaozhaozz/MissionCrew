@@ -338,7 +338,10 @@ class ChatEngine:
         def _short(cid: str) -> str:
             return cid.removeprefix(f"{project.id}:")
 
-        repos = "\n".join(f"- {r}" for r in project.repos) or "(未配置)"
+        repos = "\n".join(
+            f"- {r.name or r.id}: {r.path or '(无本地路径)'}"
+            + (f"(git 远程 {r.remote})" if r.remote else "")
+            for r in project.repos) or "(未配置)"
         channels = "\n".join(
             f"- {_short(c.id)}(#{c.name}):{c.purpose or '无用途说明'}"
             + (f";工作目录 {c.workdir}" if c.workdir else "")
@@ -437,7 +440,7 @@ class ChatEngine:
     @staticmethod
     def _resolve_channel_workdir(project, requested: str) -> Optional[str]:
         """频道工作目录只能落在项目代码仓内;未指定且仅一个仓时默认使用它。"""
-        repos = [str(Path(r).expanduser()) for r in project.repos]
+        repos = [str(Path(r).expanduser()) for r in project.repo_paths()]
         if not requested:
             if len(repos) == 1 and Path(repos[0]).is_dir():
                 return repos[0]
