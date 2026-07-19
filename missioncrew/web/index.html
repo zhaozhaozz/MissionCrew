@@ -1842,7 +1842,7 @@ function renderRoleTable() {
   const rows = projRoles().map(r => {
     const exec = r.runtime_id
       ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}`
-      : `<span class="muted">自动路由(按能力匹配)</span>`;
+      : `<span class="muted">未绑定(请编辑角色选择 runtime)</span>`;
     return `<tr>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
           <b>@${esc(r.id)}</b> ${esc(r.name)} ${r.id === project?.orchestrator_role_id ? `<span class="pill">主控</span>` : ""}</td>
@@ -1862,7 +1862,7 @@ function editRole(id) {
   const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
     `<span class="chip ${(r.capabilities || []).includes(k) ? "on" : ""}" data-cap="${k}"
        onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");
-  const backendOpts = `<option value="" ${!r.runtime_id ? "selected" : ""}>(自动路由:按能力匹配最合适的 runtime)</option>` +
+  const backendOpts = (r.runtime_id ? "" : `<option value="" disabled selected>选择 runtime…</option>`) +
     overview.backends.map(b =>
       `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("");
   window._editingRoleModel = r.model;   // 供模型下拉初始化选中
@@ -1873,16 +1873,16 @@ function editRole(id) {
       <div><label>标识色</label><input type="text" id="rf-color" value="${esc(r.color)}"></div>
     </div>
     <div class="row">
-      <div><label>Runtime(不选 = 按能力自动路由;主控也可用控制动作改绑)</label>
+      <div><label>Runtime(定义角色时固定,必选)</label>
         <select id="rf-backend" onchange="window._editingRoleModel=null;refreshModelOptions()">${backendOpts}</select></div>
-      <div><label>模型(固定 Runtime 时选择;清单来自 runtime)</label>
+      <div><label>模型(清单来自 runtime)</label>
         <select id="rf-model"></select></div>
     </div>
     <label>角色定位/人格(专长画像,供调度选人;自由文本,平台原样装配、不改写;任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
-    <label>角色能力(固定选项;自动路由时是 runtime 匹配的硬性条件)</label>
+    <label>角色能力(固定选项;在名册中展示,供主控按能力选人)</label>
     <div class="chips" id="rf-caps">${abilityChips}</div>
-    <label>角色偏好(自由文本:风格/领域,如"前端"、"后端,偏好 Go";供主控选人与安排 runtime)</label>
+    <label>角色偏好(自由文本:风格/领域,如"前端"、"后端,偏好 Go";供主控选人参考)</label>
     <input type="text" id="rf-pref" value="${esc(r.preference || "")}">`,
     `<button class="action" onclick="saveRole()">保存</button>
      <button class="ghost" onclick="fdlg.close()">取消</button>
@@ -1899,7 +1899,7 @@ async function refreshModelOptions() {
   const sel = document.getElementById("rf-model");
   const cur = window._editingRoleModel;
   if (!bid) {
-    sel.innerHTML = `<option value="">(自动路由:模型随所选 runtime 决定)</option>`;
+    sel.innerHTML = `<option value="">先选择 runtime</option>`;
     sel.disabled = true;
     return;
   }
@@ -1947,9 +1947,10 @@ async function saveRole() {
     capabilities,
     preference: document.getElementById("rf-pref").value.trim(),
     runtime_id,
-    model: runtime_id ? document.getElementById("rf-model").value : "",
+    model: document.getElementById("rf-model").value,
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
+  if (!runtime_id) { uiAlert("请为角色选择 runtime(定义时固定执行组合)"); return; }
   await api("POST", "/api/roles", body);
   await loadOverview();
   fdlg.close();

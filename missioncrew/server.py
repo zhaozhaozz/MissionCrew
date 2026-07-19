@@ -66,8 +66,8 @@ class ChannelCreate(BaseModel):
 class RoleInput(BaseModel):
     id: str
     project_id: str
-    runtime_id: str = ""       # 空 = 不固定,由平台按能力自动路由
-    model: str = ""
+    runtime_id: str            # 角色定义时固定的 runtime,必填
+    model: str = ""            # 空 = CLI 默认模型
     name: str = ""
     description: str = ""
     capabilities: list[str] = []   # 固定能力选项(ROLE_ABILITIES)
@@ -272,15 +272,11 @@ def create_app() -> FastAPI:
         bad = [c for c in body.capabilities if c not in ROLE_ABILITIES]
         if bad:
             raise HTTPException(400, f"未知能力选项: {bad}(可用: {', '.join(sorted(ROLE_ABILITIES))})")
-        backend = store.get_backend(body.runtime_id) if body.runtime_id else None
-        if body.runtime_id and backend is None:
-            raise HTTPException(400, f"固定 runtime 不存在: {body.runtime_id}")
-        if backend is None:   # 自动路由:模型随 runtime 决定,不做模型校验
-            role = Role(**body.model_dump())
-            store.put_role(role)
-            store.audit("human", "role_saved",
-                        detail=f"project={role.project_id} role={role.id} (自动路由)")
-            return role.to_dict()
+        if not body.runtime_id.strip():
+            raise HTTPException(400, "角色必须选择 runtime(定义角色时固定执行组合)")
+        backend = store.get_backend(body.runtime_id)
+        if backend is None:
+            raise HTTPException(400, f"runtime 不存在: {body.runtime_id}")
         known_models = {str(m.get("name", "")) for m in backend.models}
         if known_models and body.model not in known_models:
             # 配置阶梯之外:再查 runtime 动态发现的模型目录(仿 Multica 从 runtime 取)

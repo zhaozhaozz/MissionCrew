@@ -82,7 +82,6 @@ ORCHESTRATOR_TEMPLATE = """\
 <missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
 <missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
-<missioncrew-action>{{"action":"set_role_runtime","role":"角色id","runtime":"runtime-id","model":"模型,可空=CLI默认"}}</missioncrew-action>
 要点：
 - create_channel 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
   不填时若项目只配了一个代码仓则自动使用它。新频道创建后是空的，
@@ -100,14 +99,11 @@ ORCHESTRATOR_TEMPLATE = """\
     {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
-- 你负责为角色安排合适的 runtime：结合角色定位、能力(硬性要求)与偏好
-  (风格/领域,如前端/后端),用 set_role_runtime 调整绑定;未固定 runtime
-  的角色由平台按能力自动路由到最低成本的可用 runtime。
+- 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
+  调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
+  最合适的角色，@ 它并写清任务简报。
 - 调度预算：@ 级联深度上限 {max_depth} 层、单条协作链最多 {max_runs} 次执行。
   复杂任务分批派发，让执行角色完成后 @ 你汇报，再派下一批。
-
-## 可用 Runtime(能力 | 模型)
-{runtimes}
 
 ## 项目代码仓
 {repos}
@@ -263,9 +259,9 @@ class ChatEngine:
 
     # ---- 内部:固定执行组合与上下文装配 ----
     def _pick_backend(self, _channel: Channel, role: Role):
-        """固定了 runtime 则直用;未固定则按角色能力自动路由到合适的 runtime。"""
+        """角色的 runtime/model 在定义时已固定,执行时直接使用,不做自动路由。"""
         if not role.runtime_id:
-            return self._route_by_abilities(role)
+            return None, "角色未绑定 runtime,请在角色设置中选择 runtime 与模型"
         if role.runtime_id in self.updating_backends:
             return None, f"runtime {role.runtime_id} 正在更新中,请稍后再试"
         b = self.store.get_backend(role.runtime_id)
@@ -280,26 +276,6 @@ class ChatEngine:
             b = replace(b, model=role.model)
         model = b.model or "(CLI 默认)"
         return b, f"角色固定组合 {b.id}+{model}"
-
-    def _route_by_abilities(self, role: Role):
-        """按角色能力匹配 runtime:能力位是硬性过滤,择最低档位/成本的执行单元。
-
-        角色偏好是自由文本,不参与硬过滤——主控可依据定位/偏好用
-        set_role_runtime 动作显式改绑更合适的 runtime。
-        """
-        from .models import TIER_ORDER
-        need = set(role.capabilities)
-        units = [u for b in self.store.list_backends()
-                 if b.enabled and b.id not in self.updating_backends
-                 for u in b.units()]
-        matched = [u for u in units if need <= set(u.capabilities)]
-        if not matched:
-            want = ", ".join(sorted(need)) or "无"
-            return None, f"没有满足能力要求({want})的可用 runtime"
-        u = min(matched, key=lambda x: (TIER_ORDER.index(x.tier), x.cost_per_run))
-        model = u.model or "(CLI 默认)"
-        return u, (f"自动路由(能力 {', '.join(sorted(need)) or '无'})"
-                   f" -> {u.id}+{model}")
 
     def _assemble(self, channel: Channel, role: Role, backend, msg_id: int) -> ExecutionConfig:
         workdir = Path(channel.workdir) if channel.workdir \
@@ -378,13 +354,9 @@ class ChatEngine:
             f"- {_short(b.id)}({b.name}):{b.description or '无描述'};组件 "
             + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
             for b in self.store.list_boards(project.id)) or "(无)"
-        runtimes = "\n".join(
-            f"- {b.id}: [{', '.join(b.capabilities)}] | 模型: "
-            + (", ".join((m.get("name") or "(默认)") for m in b.models) or "(CLI 默认)")
-            for b in self.store.list_backends() if b.enabled) or "(无)"
         return ORCHESTRATOR_TEMPLATE.format(
             max_depth=MAX_DEPTH, max_runs=MAX_CHAIN_RUNS,
-            runtimes=runtimes, repos=repos, channels=channels, boards=boards)
+            repos=repos, channels=channels, boards=boards)
 
     def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
                                     root_id: int, depth: int) -> str:
@@ -399,9 +371,9 @@ class ChatEngine:
                     reports.append(self._action_post_message(
                         project_id, role_id, action, root_id, depth))
                     continue
-                if kind == "set_role_runtime":
-                    reports.append(self._action_set_role_runtime(project_id, role_id, action))
-                    continue
+                if kind not in ("create_channel", "create_board",
+                                "update_board", "delete_board"):
+                    raise ValueError(f"不支持的动作: {kind}")
                 raw_id = str(action.get("id", "")).strip()
                 if not CONTROL_ID_RE.fullmatch(raw_id):
                     raise ValueError("id 只能包含字母、数字、下划线、连字符")
@@ -445,39 +417,12 @@ class ChatEngine:
                     reports.append(f"已删除面板 {board.name}")
                     self.store.audit(role_id, "board_deleted",
                                      detail=f"project={project_id} board={item_id}")
-                else:
-                    raise ValueError(f"不支持的动作: {kind}")
             except (TypeError, ValueError, json.JSONDecodeError) as exc:
                 reports.append(f"控制动作未执行：{exc}")
         cleaned = ACTION_RE.sub("", reply).strip()
         if reports:
             cleaned = "\n\n".join(x for x in (cleaned, "平台操作：" + "；".join(reports)) if x)
         return cleaned or "(主控动作已处理)"
-
-    def _action_set_role_runtime(self, project_id: str, actor_id: str,
-                                 action: dict) -> str:
-        """主控按角色定位/能力/偏好把角色改绑到合适的 runtime。"""
-        target = str(action.get("role", "")).strip()
-        runtime = str(action.get("runtime", "")).strip()
-        model = str(action.get("model", "")).strip()
-        role = self.store.get_role(project_id, target)
-        if role is None:
-            raise ValueError(f"角色不存在: {target}")
-        if runtime:
-            backend = self.store.get_backend(runtime)
-            if backend is None or not backend.enabled:
-                raise ValueError(f"runtime 不可用: {runtime}")
-            missing = set(role.capabilities) - set(backend.capabilities)
-            if missing:
-                raise ValueError(f"runtime {runtime} 缺少角色所需能力: {', '.join(sorted(missing))}")
-        role.runtime_id = runtime   # 空 = 交回平台按能力自动路由
-        role.model = model
-        self.store.put_role(role)
-        self.store.audit(actor_id, "role_runtime_set",
-                         detail=f"project={project_id} role={target} "
-                                f"runtime={runtime or '(自动)'} model={model or '(默认)'}")
-        return (f"已把 @{target} 绑定到 {runtime}+{model or '(CLI 默认)'}"
-                if runtime else f"已把 @{target} 改为按能力自动路由")
 
     def _action_post_message(self, project_id: str, role_id: str, action: dict,
                              root_id: int, depth: int) -> str:

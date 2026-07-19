@@ -306,8 +306,8 @@ class Task:
 
 
 # 角色能力是固定选项(id 与 runtime 的 capabilities 能力位一致):
-# 勾选后既是名册展示,也是自动路由的硬性过滤条件——角色未固定 runtime 时,
-# 平台只会把它路由到具备全部所需能力的 runtime 上。
+# 在名册中展示,供调度方(人类或主控)按能力挑选合适的角色;
+# 不参与执行时路由——角色的 runtime/model 在定义时已固定。
 ROLE_ABILITIES: dict[str, str] = {
     "coding":      "代码执行",
     "reasoning":   "深度推理",
@@ -341,7 +341,7 @@ _LEGACY_TRAIT_CAPABILITIES = {
 class Role:
     """聊天中可 @ 的角色 = 固定执行组合 + 定位 + 能力 + 偏好。
 
-    runtime_id/model 指向固定执行组合(可空=按能力自动路由);description/capabilities/preference
+    runtime_id/model 是定义角色时固定的执行组合;description/capabilities/preference
     用于协作方理解和选择角色,不参与执行时路由。
     """
 

@@ -87,9 +87,10 @@ def test_role_api_rejects_unknown_trait_and_bad_id(client):
     assert client.post("/api/roles", json={"id": "x", "capabilities": ["nope"], **p}).status_code == 400
     assert client.post("/api/roles", json={"id": "bad name", **p}).status_code == 400
     assert client.post("/api/roles", json={"id": "y", **{**p, "runtime_id": "ghost"}}).status_code == 400
-    # 不填 runtime 是合法的:按能力自动路由的角色
-    auto = client.post("/api/roles", json={"id": "auto-role", "project_id": "webshop"})
-    assert auto.status_code == 200 and auto.json()["runtime_id"] == ""
+    # runtime 是定义角色时的必选项:缺字段 422,显式传空 400
+    assert client.post("/api/roles", json={"id": "no-rt", "project_id": "webshop"}).status_code == 422
+    empty = client.post("/api/roles", json={"id": "no-rt", "project_id": "webshop", "runtime_id": ""})
+    assert empty.status_code == 400 and "必须选择 runtime" in empty.json()["detail"]
     # 角色必须归属已存在的项目
     assert client.post("/api/roles", json={"id": "z", **{**p, "project_id": "ghost"}}).status_code == 400
 
@@ -263,50 +264,26 @@ def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch)
     assert bad.status_code == 400                             # 两个目录都没有:拒绝
 
 
-# ---- 按能力自动路由 + 主控改绑 runtime ----
+# ---- 执行组合在定义时固定,不做运行时路由 ----
 
-def test_auto_routed_role_matches_ability(seeded):
-    seeded.put_role(Role(id="viz", project_id="webshop", name="视觉",
-                         capabilities=["multimodal"]))   # 未固定 runtime
+def test_unbound_role_gets_clear_error(seeded):
+    seeded.put_role(Role(id="ghost-rt", project_id="webshop", name="幽灵",
+                         capabilities=["multimodal"]))   # 异常状态:未绑定 runtime
     chat = ChatEngine(seeded, max_workers=2)
     backend, reason = chat._pick_backend(seeded.get_channel("general"),
-                                         seeded.get_role("webshop", "viz"))
-    assert backend.id == "vis-1"                 # 唯一具备 multimodal 的 runtime
-    assert "自动路由" in reason
-    # 无 runtime 满足能力时给出明确说明
-    seeded.put_role(Role(id="talker", project_id="webshop", capabilities=["audio"]))
-    backend2, reason2 = chat._pick_backend(seeded.get_channel("general"),
-                                           seeded.get_role("webshop", "talker"))
-    assert backend2 is None and "audio" in reason2
+                                         seeded.get_role("webshop", "ghost-rt"))
+    assert backend is None and "未绑定 runtime" in reason
 
 
-def test_auto_routed_role_prefers_cheapest_unit(seeded):
-    seeded.put_role(Role(id="anyone", project_id="webshop", capabilities=["coding"]))
+def test_set_role_runtime_action_no_longer_supported(seeded):
+    """主控只在预定义角色中选人,不再有改绑 runtime 的控制动作。"""
     chat = ChatEngine(seeded, max_workers=2)
-    backend, _ = chat._pick_backend(seeded.get_channel("general"),
-                                    seeded.get_role("webshop", "anyone"))
-    assert backend.tier == "economy"             # 满足能力的最低档位
-
-
-def test_orchestrator_can_rebind_role_runtime(seeded):
-    chat = ChatEngine(seeded, max_workers=2)
+    before = seeded.get_role("webshop", "dev")
     reply = chat._apply_orchestrator_actions(
         seeded.get_project("webshop"), "lead",
         '<missioncrew-action>{"action":"set_role_runtime","role":"dev",'
         '"runtime":"exp-1","model":"ultra"}</missioncrew-action>',
         root_id=1, depth=0)
-    role = seeded.get_role("webshop", "dev")
-    assert role.runtime_id == "exp-1" and role.model == "ultra"
-    assert "已把 @dev 绑定到 exp-1+ultra" in reply
-    # 缺少角色所需能力的 runtime:拒绝并说明
-    reply2 = chat._apply_orchestrator_actions(
-        seeded.get_project("webshop"), "lead",
-        '<missioncrew-action>{"action":"set_role_runtime","role":"vision",'
-        '"runtime":"eco-1"}</missioncrew-action>', root_id=1, depth=0)
-    assert "缺少角色所需能力" in reply2
-    # 改回自动路由
-    chat._apply_orchestrator_actions(
-        seeded.get_project("webshop"), "lead",
-        '<missioncrew-action>{"action":"set_role_runtime","role":"dev",'
-        '"runtime":""}</missioncrew-action>', root_id=1, depth=0)
-    assert seeded.get_role("webshop", "dev").runtime_id == ""
+    assert "不支持的动作" in reply
+    after = seeded.get_role("webshop", "dev")
+    assert (after.runtime_id, after.model) == (before.runtime_id, before.model)
