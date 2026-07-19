@@ -222,6 +222,16 @@ def test_spa_fallback_serves_page_for_clean_urls(client):
     assert client.get("/api/nonexistent").status_code == 404
 
 
+def test_shared_dialog_headers_do_not_duplicate_bottom_cancel_actions(client):
+    html = client.get("/").text
+    # Form dialogs and alert/confirm/prompt dialogs already render their close/cancel
+    # action in the footer; their headers should contain only the title.
+    assert '<div class="dlg-head"><strong id="fdlg-title"></strong></div>' in html
+    assert '<div class="dlg-head"><strong id="udlg-title"></strong></div>' in html
+    assert 'onclick="fdlg.close()">取消</button></div>' not in html
+    assert 'onclick="_udlgClose(null)">关闭</button></div>' not in html
+
+
 def test_tools_endpoint_merges_registration_state(client):
     rows = client.get("/api/backends/tools").json()
     by_id = {r["id"]: r for r in rows}
