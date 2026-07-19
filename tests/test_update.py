@@ -156,9 +156,9 @@ def test_tools_endpoint_exposes_pinned_role_usage(client, seeded):
 
 
 def test_runtime_status_does_not_expose_registration_state(client):
-    html = client.get("/").text
-    assert "已安装,未注册" not in html
-    assert "使用角色" in html
+    js = client.get("/assets/js/settings-runtime.js").text
+    assert "已安装,未注册" not in js
+    assert "使用角色" in js
 
 
 # ---- 更新互斥 / 更新中不派发 / 快照写回 ----

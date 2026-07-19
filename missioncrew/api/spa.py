@@ -1,10 +1,11 @@
-"""页面服务:首页与干净 URL 的 SPA 兜底。必须最后注册(catch-all)。"""
+"""页面服务:静态资源、首页与干净 URL 的 SPA 兜底。必须最后注册(catch-all)。"""
 from __future__ import annotations
 
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from .context import ApiContext
 
@@ -12,6 +13,9 @@ WEB_DIR = Path(__file__).parent.parent / "web"
 
 
 def register(app: FastAPI, _ctx: ApiContext) -> None:
+    # 前端拆分后的 css/js 走静态资源;挂载在 catch-all 之前,前缀优先匹配
+    app.mount("/assets", StaticFiles(directory=str(WEB_DIR)), name="assets")
+
     @app.get("/", response_class=HTMLResponse)
     def index():
         return (WEB_DIR / "index.html").read_text()
