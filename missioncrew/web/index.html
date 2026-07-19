@@ -459,6 +459,19 @@
   <div class="actions" id="udlg-actions"></div>
 </dialog>
 
+<dialog id="ddlg" style="max-width:560px">
+  <div class="dlg-head"><strong>选择目录</strong>
+    <label class="muted" style="margin-left:auto;display:flex;align-items:center;gap:6px;font-weight:400;cursor:pointer">
+      显示隐藏目录 <span class="switch" id="ddlg-hidden" role="switch"
+        onclick="togglePickHidden(this)"></span></label>
+    <button class="ghost" onclick="ddlg.close()">取消</button></div>
+  <div class="dlg-body">
+    <div class="muted" id="ddlg-path"></div>
+    <div id="ddlg-list" style="max-height:300px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:6px"></div>
+  </div>
+  <div class="actions"><button class="action" onclick="pickDirConfirm()">选用此目录</button></div>
+</dialog>
+
 <dialog id="fdlg">
   <div class="dlg-head"><strong id="fdlg-title"></strong>
     <button class="ghost" onclick="fdlg.close()">取消</button></div>
@@ -472,6 +485,7 @@ const pdlg = document.getElementById("pdlg");
 const tdlg = document.getElementById("tdlg");
 const udlg = document.getElementById("udlg");
 const fdlg = document.getElementById("fdlg");   // 设置页各类新增/编辑表单的弹窗容器
+const ddlg = document.getElementById("ddlg");   // 本地目录选择弹窗
 
 /* ---- 页面内弹窗控件:替代浏览器原生 alert / confirm / prompt ---- */
 let _udlgResolve = null;
@@ -761,35 +775,50 @@ function openResourceDialog() {
     <div class="row">
       <div><input type="text" id="res-target" placeholder="~/code/myrepo 或 https://github.com/acme/x.git"></div>
       <div style="flex:0 0 90px"><button class="ghost" style="width:100%"
-        onclick="browseDirs(document.getElementById('res-target').value)">浏览…</button></div>
+        onclick="openDirPicker(document.getElementById('res-target').value)">浏览…</button></div>
     </div>
-    <div id="res-browser"></div>
     <label>名称(可选)</label><input type="text" id="res-name">`,
     `<button class="action" onclick="addResourceFromForm()">添加资源</button>
      <button class="ghost" onclick="fdlg.close()">取消</button>`);
   setTimeout(() => document.getElementById("res-target")?.focus(), 60);
 }
 
-// 服务端目录浏览:在弹窗内逐级选择本地路径(保留直接输入)
-async function browseDirs(path) {
+// 本地目录选择弹窗:逐级浏览,支持显示隐藏目录;确认后回填资源输入框
+let _pickHidden = false;
+
+function openDirPicker(startPath) {
+  _pickHidden = false;
+  document.getElementById("ddlg-hidden").classList.remove("on");
+  ddlg.showModal();
+  pickBrowse(startPath || "");
+}
+
+async function pickBrowse(path) {
   let d;
   try {
-    d = await api("GET", `/api/fs/dirs?path=${encodeURIComponent((path || "").trim())}`);
+    d = await api("GET", `/api/fs/dirs?path=${encodeURIComponent((path || "").trim())}` +
+                          `&hidden=${_pickHidden}`);
   } catch (e) { return; }
-  window._browsePath = d.path;
-  const box = document.getElementById("res-browser");
-  if (!box) return;
-  box.innerHTML = `
-    <div class="muted" style="margin-top:6px">${esc(d.path)}
-      ${d.is_git ? `<span class="pill" style="color:var(--ok);border-color:var(--ok)">git 仓</span>` : ""}
-      <button class="ghost" style="margin-left:6px;padding:1px 10px"
-        onclick="document.getElementById('res-target').value=window._browsePath">选用此目录</button></div>
-    <div style="max-height:180px;overflow:auto;border:1px solid var(--line);border-radius:8px;margin-top:4px">
-      ${d.parent ? `<div class="side-item" data-p="${esc(d.parent)}" onclick="browseDirs(this.dataset.p)">⬆ 上一级</div>` : ""}
-      ${d.dirs.map(n => `<div class="side-item" data-p="${esc(d.path)}/${esc(n)}"
-          onclick="browseDirs(this.dataset.p)">📁 ${esc(n)}</div>`).join("")
-        || `<div class="empty" style="padding:8px">无子目录</div>`}
-    </div>`;
+  window._pickPath = d.path;
+  document.getElementById("ddlg-path").innerHTML = `${esc(d.path)}` +
+    (d.is_git ? ` <span class="pill" style="color:var(--ok);border-color:var(--ok)">git 仓</span>` : "");
+  document.getElementById("ddlg-list").innerHTML =
+    (d.parent ? `<div class="side-item" data-p="${esc(d.parent)}" onclick="pickBrowse(this.dataset.p)">⬆ 上一级</div>` : "") +
+    (d.dirs.map(n => `<div class="side-item" data-p="${esc(d.path)}/${esc(n)}"
+        onclick="pickBrowse(this.dataset.p)">📁 ${esc(n)}</div>`).join("")
+      || `<div class="empty" style="padding:8px">无子目录</div>`);
+}
+
+function togglePickHidden(el) {
+  el.classList.toggle("on");
+  _pickHidden = el.classList.contains("on");
+  pickBrowse(window._pickPath);
+}
+
+function pickDirConfirm() {
+  const input = document.getElementById("res-target");
+  if (input && window._pickPath) input.value = window._pickPath;
+  ddlg.close();
 }
 
 function openGuidelineFromSidebar(id) {

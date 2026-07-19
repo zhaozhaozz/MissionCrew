@@ -477,9 +477,11 @@ def test_fs_dirs_endpoint(seeded, tmp_path):
     (root / ".hidden").mkdir()
     (root / "file.txt").write_text("x")
     d = client.get(f"/api/fs/dirs?path={root}").json()
-    assert d["dirs"] == ["sub-a"]            # 隐藏目录与文件不列出
+    assert d["dirs"] == ["sub-a"]            # 隐藏目录与文件默认不列出
     assert d["parent"] == str(root.parent)
     assert d["is_git"] is False
+    shown = client.get(f"/api/fs/dirs?path={root}&hidden=true").json()
+    assert shown["dirs"] == [".hidden", "sub-a"]   # 开启后包含隐藏目录
     # 缺省从用户主目录开始;非目录路径报 400
     assert client.get("/api/fs/dirs").status_code == 200
     assert client.get(f"/api/fs/dirs?path={root}/file.txt").status_code == 400
