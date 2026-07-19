@@ -113,28 +113,28 @@ def default_roles(store: Store, project_id: str) -> list[Role]:
              description="调度者,不亲自实现。接到需求先结合项目章程理解目标,必要时拆解;"
                          "对照名册按各角色定位挑选人选,@分派时为每个子任务写清背景、要求、"
                          "验收标准,并要求完成后向你汇报;收到汇报后核对验收标准再汇总结论。",
-             capabilities=["reasoning"], traits=["quality"]),
+             capabilities=["reasoning"], preference="统筹与调度,重质量"),
         Role(id="dev", project_id=project_id, name="开发", color="#3564d7",
              description="全栈开发工程师,负责实现需求、修复缺陷。动手前先看清现有代码约定。",
-             capabilities=["coding"]),
+             capabilities=["coding"], preference="全栈"),
         Role(id="reviewer", project_id=project_id, name="评审", color="#2e9e5b",
              description="独立代码评审员,只审查不改代码:正确性、可维护性、边界条件。",
-             capabilities=["review"], traits=["review"]),
+             capabilities=["review"], preference="严谨,只审不改"),
         Role(id="expert", project_id=project_id, name="专家", color="#8b5cf6",
              description="资深架构师,处理疑难问题、复杂分析和大型重构方案。",
-             capabilities=["coding", "reasoning"], traits=["deep", "quality"]),
+             capabilities=["coding", "reasoning"], preference="深度攻坚,高质量"),
         Role(id="vision", project_id=project_id, name="视觉验证", color="#c98a1b",
              description="多模态验证员,负责页面截图、浏览器流程测试和视觉回归确认。",
-             capabilities=["multimodal"], traits=["multimodal"]),
+             capabilities=["multimodal"], preference="页面与视觉验证"),
         Role(id="secure", project_id=project_id, name="安全", color="#c94b3c",
              description="安全工程师,从注入、越权、凭据泄露等角度审查变更与配置。",
-             capabilities=["security", "review"], traits=["security"]),
+             capabilities=["review", "security"], preference="安全视角"),
         Role(id="tester", project_id=project_id, name="测试", color="#0e9488",
              description="测试工程师,写用例、跑回归、构造边界输入,报告只讲事实与复现步骤。",
-             capabilities=["coding"], traits=["testing", "fast"]),
+             capabilities=["coding"], preference="适合测试,快速反馈"),
         Role(id="scribe", project_id=project_id, name="文档", color="#64748b",
              description="技术写作者,维护 README、变更说明和使用文档,行文简洁面向读者。",
-             traits=["docs", "fast", "low-cost"]),
+             capabilities=[], preference="适合文档,快速低成本"),
     ]
     for role in roles:
         if not _bind_role(store, role):
@@ -197,6 +197,8 @@ def migrate_project_fields(store: Store) -> int:
     重写一遍即落库为结构化条目。
     """
     migrated = 0
+    for role in store.list_roles():
+        store.put_role(role)   # 旧 traits 标签经 from_dict 迁移为 preference,重写落库
     for project in store.list_projects():
         changed = False
         if project.dev_guidelines.strip():

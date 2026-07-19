@@ -305,19 +305,26 @@ class Task:
         return cls(**d)
 
 
-# 角色偏好标签:描述角色的工作风格并展示在名册中;
-# runtime/model 已固定,偏好不再参与执行时路由。
-TRAITS: dict[str, dict] = {
-    "fast":       {"label": "快速"},
-    "low-cost":   {"label": "低成本"},
-    "quality":    {"label": "高质量"},
-    "deep":       {"label": "深度攻坚"},
-    "multimodal": {"label": "多模态"},
-    "web":        {"label": "联网检索"},
-    "review":     {"label": "代码评审"},
-    "security":   {"label": "安全审查"},
-    "testing":    {"label": "适合测试"},
-    "docs":       {"label": "适合文档"},
+# 角色能力是固定选项(id 与 runtime 的 capabilities 能力位一致):
+# 勾选后既是名册展示,也是自动路由的硬性过滤条件——角色未固定 runtime 时,
+# 平台只会把它路由到具备全部所需能力的 runtime 上。
+ROLE_ABILITIES: dict[str, str] = {
+    "coding":      "代码执行",
+    "reasoning":   "深度推理",
+    "review":      "代码评审",
+    "security":    "安全审查",
+    "multimodal":  "图像/视觉输入",
+    "audio":       "语音输入",
+    "image_gen":   "图像生成",
+    "web_search":  "联网检索",
+    "sub_agents":  "多 Agent 编排",
+}
+
+# 旧偏好标签 -> 偏好文本 的迁移映射(偏好已改为自由文本)
+_LEGACY_TRAIT_TEXT = {
+    "fast": "快速", "low-cost": "低成本", "quality": "高质量", "deep": "深度攻坚",
+    "multimodal": "多模态", "web": "联网检索", "review": "代码评审",
+    "security": "安全审查", "testing": "适合测试", "docs": "适合文档",
 }
 
 # 旧版中这些偏好会隐式追加路由能力。仅在读取旧角色 JSON 时
@@ -334,7 +341,7 @@ _LEGACY_TRAIT_CAPABILITIES = {
 class Role:
     """聊天中可 @ 的角色 = 固定执行组合 + 定位 + 能力 + 偏好。
 
-    runtime_id/model 始终指向固定执行组合;description/capabilities/traits
+    runtime_id/model 指向固定执行组合(可空=按能力自动路由);description/capabilities/preference
     用于协作方理解和选择角色,不参与执行时路由。
     """
 
@@ -344,12 +351,12 @@ class Role:
     description: str = ""         # 人格与领域上下文(自由文本,不锁定)
     runtime_id: str = ""             # 固定 runtime(后端注册表 id)
     model: str = ""                  # 固定模型;"" 表示显式使用 CLI 默认模型
-    capabilities: list[str] = field(default_factory=list)  # 角色能力标签
-    traits: list[str] = field(default_factory=list)        # 工作偏好,见 TRAITS
+    capabilities: list[str] = field(default_factory=list)  # 固定能力选项,见 ROLE_ABILITIES
+    preference: str = ""                   # 工作偏好:自由文本(如"前端"/"后端,偏好 React")
     color: str = ""                        # 看板/聊天中的标识色
 
-    def trait_labels(self) -> list[str]:
-        return [TRAITS[t]["label"] for t in self.traits if t in TRAITS]
+    def ability_labels(self) -> list[str]:
+        return [ROLE_ABILITIES.get(c, c) for c in self.capabilities]
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -370,6 +377,10 @@ class Role:
             d["capabilities"] = sorted(legacy_caps)
         d.pop("min_tier", None)
         d.pop("max_tier", None)
+        # 偏好从固定标签迁移为自由文本
+        traits = d.pop("traits", [])
+        if traits and not d.get("preference"):
+            d["preference"] = "、".join(_LEGACY_TRAIT_TEXT.get(t, t) for t in traits)
         return cls(**d)
 
 

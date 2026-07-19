@@ -10,11 +10,15 @@ from missioncrew.server import create_app
 
 # ---- 角色元数据 + 固定执行组合 ----
 
-def test_traits_and_capabilities_are_role_metadata():
+def test_abilities_fixed_and_preference_free_text():
     r = Role(id="x", runtime_id="std-1", model="pro",
-             capabilities=["coding", "reasoning"], traits=["deep", "quality"])
-    assert r.capabilities == ["coding", "reasoning"]
-    assert r.trait_labels() == ["深度攻坚", "高质量"]
+             capabilities=["coding", "multimodal"], preference="前端,偏好 React")
+    assert r.ability_labels() == ["代码执行", "图像/视觉输入"]   # 能力是固定选项
+    assert r.preference == "前端,偏好 React"                     # 偏好是自由文本
+    # 旧版 traits 标签自动迁移为偏好文本
+    legacy = Role.from_dict({"id": "y", "project_id": "p", "runtime_id": "std-1",
+                             "model": "", "traits": ["deep", "quality"]})
+    assert legacy.preference == "深度攻坚、高质量"
 
 
 def test_default_roles_are_bound_once_to_runtime_and_model(seeded):
@@ -39,7 +43,7 @@ def test_fixed_runtime_and_model(seeded):
 
 def test_preferences_do_not_reroute_fixed_runtime(seeded):
     seeded.put_role(Role(id="cheap-expert", project_id="webshop", runtime_id="exp-1",
-                         model="ultra", traits=["fast", "low-cost"]))
+                         model="ultra", preference="快速低成本"))
     chat = ChatEngine(seeded, max_workers=2)
     backend, _ = chat._pick_backend(seeded.get_channel("general"),
                                     seeded.get_role("webshop", "cheap-expert"))
@@ -67,10 +71,10 @@ def client(seeded):
 def test_role_crud_api(client):
     body = {"id": "writer", "project_id": "webshop", "name": "写手",
             "runtime_id": "std-1", "model": "pro", "capabilities": ["coding"],
-            "description": "自由文本人格", "traits": ["docs", "fast"], "color": "#123456"}
+            "description": "自由文本人格", "preference": "文档写作", "color": "#123456"}
     assert client.post("/api/roles", json=body).status_code == 200
     roles = {r["id"]: r for r in client.get("/api/roles").json()}
-    assert roles["writer"]["traits"] == ["docs", "fast"]
+    assert roles["writer"]["preference"] == "文档写作"
     assert roles["writer"]["runtime_id"] == "std-1"
     assert roles["writer"]["model"] == "pro"
     assert roles["writer"]["description"] == "自由文本人格"
@@ -80,10 +84,12 @@ def test_role_crud_api(client):
 
 def test_role_api_rejects_unknown_trait_and_bad_id(client):
     p = {"project_id": "webshop", "runtime_id": "std-1", "model": "pro"}
-    assert client.post("/api/roles", json={"id": "x", "traits": ["nope"], **p}).status_code == 400
+    assert client.post("/api/roles", json={"id": "x", "capabilities": ["nope"], **p}).status_code == 400
     assert client.post("/api/roles", json={"id": "bad name", **p}).status_code == 400
     assert client.post("/api/roles", json={"id": "y", **{**p, "runtime_id": "ghost"}}).status_code == 400
-    assert client.post("/api/roles", json={"id": "missing", "project_id": "webshop"}).status_code == 422
+    # 不填 runtime 是合法的:按能力自动路由的角色
+    auto = client.post("/api/roles", json={"id": "auto-role", "project_id": "webshop"})
+    assert auto.status_code == 200 and auto.json()["runtime_id"] == ""
     # 角色必须归属已存在的项目
     assert client.post("/api/roles", json={"id": "z", **{**p, "project_id": "ghost"}}).status_code == 400
 
@@ -191,7 +197,8 @@ def test_backend_update_api(client, seeded):
 
 def test_traits_endpoint(client):
     d = client.get("/api/traits").json()
-    assert "low-cost" in d["traits"] and d["tiers"] == ["economy", "standard", "expert"]
+    assert d["abilities"]["multimodal"] == "图像/视觉输入"   # 能力固定选项词表
+    assert d["tiers"] == ["economy", "standard", "expert"]
 
 
 # ---- 运行时页(仿 Multica):工具矩阵 + 状态,不含档位/成本配置 ----
@@ -254,3 +261,52 @@ def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch)
         "id": "bad-user", "project_id": "webshop", "runtime_id": "laddered",
         "model": "nonexistent-model"})
     assert bad.status_code == 400                             # 两个目录都没有:拒绝
+
+
+# ---- 按能力自动路由 + 主控改绑 runtime ----
+
+def test_auto_routed_role_matches_ability(seeded):
+    seeded.put_role(Role(id="viz", project_id="webshop", name="视觉",
+                         capabilities=["multimodal"]))   # 未固定 runtime
+    chat = ChatEngine(seeded, max_workers=2)
+    backend, reason = chat._pick_backend(seeded.get_channel("general"),
+                                         seeded.get_role("webshop", "viz"))
+    assert backend.id == "vis-1"                 # 唯一具备 multimodal 的 runtime
+    assert "自动路由" in reason
+    # 无 runtime 满足能力时给出明确说明
+    seeded.put_role(Role(id="talker", project_id="webshop", capabilities=["audio"]))
+    backend2, reason2 = chat._pick_backend(seeded.get_channel("general"),
+                                           seeded.get_role("webshop", "talker"))
+    assert backend2 is None and "audio" in reason2
+
+
+def test_auto_routed_role_prefers_cheapest_unit(seeded):
+    seeded.put_role(Role(id="anyone", project_id="webshop", capabilities=["coding"]))
+    chat = ChatEngine(seeded, max_workers=2)
+    backend, _ = chat._pick_backend(seeded.get_channel("general"),
+                                    seeded.get_role("webshop", "anyone"))
+    assert backend.tier == "economy"             # 满足能力的最低档位
+
+
+def test_orchestrator_can_rebind_role_runtime(seeded):
+    chat = ChatEngine(seeded, max_workers=2)
+    reply = chat._apply_orchestrator_actions(
+        seeded.get_project("webshop"), "lead",
+        '<missioncrew-action>{"action":"set_role_runtime","role":"dev",'
+        '"runtime":"exp-1","model":"ultra"}</missioncrew-action>',
+        root_id=1, depth=0)
+    role = seeded.get_role("webshop", "dev")
+    assert role.runtime_id == "exp-1" and role.model == "ultra"
+    assert "已把 @dev 绑定到 exp-1+ultra" in reply
+    # 缺少角色所需能力的 runtime:拒绝并说明
+    reply2 = chat._apply_orchestrator_actions(
+        seeded.get_project("webshop"), "lead",
+        '<missioncrew-action>{"action":"set_role_runtime","role":"vision",'
+        '"runtime":"eco-1"}</missioncrew-action>', root_id=1, depth=0)
+    assert "缺少角色所需能力" in reply2
+    # 改回自动路由
+    chat._apply_orchestrator_actions(
+        seeded.get_project("webshop"), "lead",
+        '<missioncrew-action>{"action":"set_role_runtime","role":"dev",'
+        '"runtime":""}</missioncrew-action>', root_id=1, depth=0)
+    assert seeded.get_role("webshop", "dev").runtime_id == ""

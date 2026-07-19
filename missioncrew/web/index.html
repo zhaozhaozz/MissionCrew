@@ -1289,9 +1289,9 @@ async function api(method, url, body) {
   return r.json();
 }
 
-let traitMeta = { traits: {}, tiers: [] };
+let traitMeta = { abilities: {}, tiers: [] };
 async function ensureTraits() {
-  if (!Object.keys(traitMeta.traits).length)
+  if (!Object.keys(traitMeta.abilities).length)
     traitMeta = await (await fetch("/api/traits")).json();
 }
 
@@ -1832,9 +1832,9 @@ async function restoreDocumentVersion(revision) {
 }
 
 /* ---- 角色(当前项目) ---- */
-function traitPills(role) {
-  return (role.traits || []).map(t =>
-    `<span class="pill">${esc(traitMeta.traits[t]?.label || t)}</span>`).join("");
+function abilityPills(role) {
+  return (role.capabilities || []).map(c =>
+    `<span class="pill">${esc(traitMeta.abilities[c] || c)}</span>`).join("");
 }
 
 function renderRoleTable() {
@@ -1842,31 +1842,29 @@ function renderRoleTable() {
   const rows = projRoles().map(r => {
     const exec = r.runtime_id
       ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}`
-      : `<span style="color:var(--bad)">未配置</span>`;
+      : `<span class="muted">自动路由(按能力匹配)</span>`;
     return `<tr>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
           <b>@${esc(r.id)}</b> ${esc(r.name)} ${r.id === project?.orchestrator_role_id ? `<span class="pill">主控</span>` : ""}</td>
-      <td>${traitPills(r)}</td>
-      <td>${(r.capabilities || []).map(c => `<span class="pill">${esc(c)}</span>`).join("")}</td>
+      <td class="muted">${esc(r.preference || "—")}</td>
+      <td>${abilityPills(r) || "—"}</td>
       <td class="muted">${exec}</td>
       <td><button class="ghost" onclick="editRole('${r.id}')">编辑</button></td></tr>`;
   }).join("");
   document.getElementById("role-table").innerHTML =
-    `<tr><th>角色</th><th>偏好</th><th>能力</th><th>固定 Runtime / 模型</th><th></th></tr>` + rows;
+    `<tr><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th></th></tr>` + rows;
 }
 
 function editRole(id) {
-  const fallbackRuntime = overview.backends.find(b => b.enabled) || overview.backends[0];
   const r = projRoles().find(x => x.id === id) || {
-    id: "", name: "", description: "", capabilities: [], traits: [],
-    runtime_id: fallbackRuntime?.id || "", model: null, color: "#3564d7" };
-  const traitChips = Object.entries(traitMeta.traits).map(([k, v]) =>
-    `<span class="chip ${r.traits.includes(k) ? "on" : ""}" data-trait="${k}"
-       onclick="this.classList.toggle('on')">${esc(v.label)}</span>`).join("");
-  const backendOpts = overview.backends.length
-    ? overview.backends.map(b =>
-      `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("")
-    : `<option value="">(没有可用 runtime)</option>`;
+    id: "", name: "", description: "", capabilities: [], preference: "",
+    runtime_id: "", model: "", color: "#3564d7" };
+  const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
+    `<span class="chip ${(r.capabilities || []).includes(k) ? "on" : ""}" data-cap="${k}"
+       onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");
+  const backendOpts = `<option value="" ${!r.runtime_id ? "selected" : ""}>(自动路由:按能力匹配最合适的 runtime)</option>` +
+    overview.backends.map(b =>
+      `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("");
   window._editingRoleModel = r.model;   // 供模型下拉初始化选中
   openFormDialog(id ? `编辑角色 @${id}` : "新建角色", `
     <div class="row">
@@ -1875,17 +1873,17 @@ function editRole(id) {
       <div><label>标识色</label><input type="text" id="rf-color" value="${esc(r.color)}"></div>
     </div>
     <div class="row">
-      <div><label>固定 Runtime(必选)</label>
+      <div><label>Runtime(不选 = 按能力自动路由;主控也可用控制动作改绑)</label>
         <select id="rf-backend" onchange="window._editingRoleModel=null;refreshModelOptions()">${backendOpts}</select></div>
-      <div><label>固定模型(必选;CLI 默认也是明确选项)</label>
+      <div><label>模型(固定 Runtime 时选择;清单来自 runtime)</label>
         <select id="rf-model"></select></div>
     </div>
     <label>角色定位/人格(专长画像,供调度选人;自由文本,平台原样装配、不改写;任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
-    <label>角色能力(逗号分隔,如 coding, reasoning;用于名册与协作选人)</label>
-    <input type="text" id="rf-caps" value="${esc((r.capabilities || []).join(", "))}">
-    <label>角色偏好(工作风格与专长标签,用于名册与协作选人)</label>
-    <div class="chips" id="rf-traits">${traitChips}</div>`,
+    <label>角色能力(固定选项;自动路由时是 runtime 匹配的硬性条件)</label>
+    <div class="chips" id="rf-caps">${abilityChips}</div>
+    <label>角色偏好(自由文本:风格/领域,如"前端"、"后端,偏好 Go";供主控选人与安排 runtime)</label>
+    <input type="text" id="rf-pref" value="${esc(r.preference || "")}">`,
     `<button class="action" onclick="saveRole()">保存</button>
      <button class="ghost" onclick="fdlg.close()">取消</button>
      ${id ? `<button class="danger" onclick="deleteRole('${id}')">删除角色</button>` : ""}`);
@@ -1901,7 +1899,7 @@ async function refreshModelOptions() {
   const sel = document.getElementById("rf-model");
   const cur = window._editingRoleModel;
   if (!bid) {
-    sel.innerHTML = `<option value="">(请先选择 runtime)</option>`;
+    sel.innerHTML = `<option value="">(自动路由:模型随所选 runtime 决定)</option>`;
     sel.disabled = true;
     return;
   }
@@ -1938,21 +1936,20 @@ async function refreshModelOptions() {
 }
 
 async function saveRole() {
-  const traits = [...document.querySelectorAll("#rf-traits .chip.on")].map(c => c.dataset.trait);
+  const capabilities = [...document.querySelectorAll("#rf-caps .chip.on")].map(c => c.dataset.cap);
+  const runtime_id = document.getElementById("rf-backend").value;
   const body = {
     id: document.getElementById("rf-id").value.trim(),
     project_id: currentProject,
     name: document.getElementById("rf-name").value.trim(),
     color: document.getElementById("rf-color").value.trim(),
     description: document.getElementById("rf-desc").value,
-    traits,
-    capabilities: document.getElementById("rf-caps").value
-      .split(",").map(s => s.trim()).filter(Boolean),
-    runtime_id: document.getElementById("rf-backend").value,
-    model: document.getElementById("rf-model").value,
+    capabilities,
+    preference: document.getElementById("rf-pref").value.trim(),
+    runtime_id,
+    model: runtime_id ? document.getElementById("rf-model").value : "",
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
-  if (!body.runtime_id) { uiAlert("必须为角色选择固定 runtime 和模型"); return; }
   await api("POST", "/api/roles", body);
   await loadOverview();
   fdlg.close();

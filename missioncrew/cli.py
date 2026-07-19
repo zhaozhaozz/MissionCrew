@@ -302,7 +302,7 @@ def role_list(project: Optional[str] = typer.Option(None, "-p", "--project")):
     for r in _store().list_roles(project):
         model = r.model or "(CLI 默认)"
         fixed = f" runtime={r.runtime_id or '(未配置)'}/{model}"
-        traits = f" 偏好=[{','.join(r.trait_labels())}]" if r.traits else ""
+        traits = f" 偏好={r.preference}" if r.preference else ""
         caps = f" 能力=[{','.join(r.capabilities)}]" if r.capabilities else ""
         typer.echo(f"[{r.project_id}] @{r.id:<10} {r.name:<6}{traits}{caps}{fixed}  {r.description}")
 

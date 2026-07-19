@@ -23,7 +23,7 @@ from .chat import ChatEngine
 from .config import db_path
 from .documents import archive_library, library_for, safe_relative_path
 from .engine import Engine
-from .models import (BOARD_WIDGET_TYPES, TIER_ORDER, TRAITS, Board, BoardWidget, Channel,
+from .models import (BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER, Board, BoardWidget, Channel,
                      GuidelineDocument, Project, ProjectResource, ProjectSkill, Role, Rule)
 from .store import Store
 
@@ -66,12 +66,12 @@ class ChannelCreate(BaseModel):
 class RoleInput(BaseModel):
     id: str
     project_id: str
-    runtime_id: str
-    model: str
+    runtime_id: str = ""       # 空 = 不固定,由平台按能力自动路由
+    model: str = ""
     name: str = ""
     description: str = ""
-    capabilities: list[str] = []
-    traits: list[str] = []
+    capabilities: list[str] = []   # 固定能力选项(ROLE_ABILITIES)
+    preference: str = ""           # 偏好:自由文本(风格/领域,如前端/后端)
     color: str = ""
 
 
@@ -260,7 +260,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/traits")
     def traits():
-        return {"traits": TRAITS, "tiers": TIER_ORDER,
+        return {"abilities": ROLE_ABILITIES, "tiers": TIER_ORDER,
                 "board_widget_types": sorted(BOARD_WIDGET_TYPES)}
 
     @app.post("/api/roles")
@@ -269,12 +269,18 @@ def create_app() -> FastAPI:
             raise HTTPException(400, "角色 id 只能包含字母、数字、下划线、连字符")
         if store.get_project(body.project_id) is None:
             raise HTTPException(400, f"项目不存在: {body.project_id}")
-        bad = [t for t in body.traits if t not in TRAITS]
+        bad = [c for c in body.capabilities if c not in ROLE_ABILITIES]
         if bad:
-            raise HTTPException(400, f"未知偏好标签: {bad}")
-        backend = store.get_backend(body.runtime_id)
-        if backend is None:
+            raise HTTPException(400, f"未知能力选项: {bad}(可用: {', '.join(sorted(ROLE_ABILITIES))})")
+        backend = store.get_backend(body.runtime_id) if body.runtime_id else None
+        if body.runtime_id and backend is None:
             raise HTTPException(400, f"固定 runtime 不存在: {body.runtime_id}")
+        if backend is None:   # 自动路由:模型随 runtime 决定,不做模型校验
+            role = Role(**body.model_dump())
+            store.put_role(role)
+            store.audit("human", "role_saved",
+                        detail=f"project={role.project_id} role={role.id} (自动路由)")
+            return role.to_dict()
         known_models = {str(m.get("name", "")) for m in backend.models}
         if known_models and body.model not in known_models:
             # 配置阶梯之外:再查 runtime 动态发现的模型目录(仿 Multica 从 runtime 取)
