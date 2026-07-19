@@ -2,9 +2,9 @@
 import sys
 from pathlib import Path
 
-from missioncrew import adapters
-from missioncrew.acp import _pick_permission_option
-from missioncrew.models import Backend, ExecutionConfig
+from missioncrew.runtime import adapters
+from missioncrew.runtime.acp import _pick_permission_option
+from missioncrew.core.models import Backend, ExecutionConfig
 
 FAKE = str(Path(__file__).parent / "fake_acp_agent.py")
 
@@ -58,6 +58,6 @@ def test_permission_option_preference():
 
 
 def test_acp_list_models_from_config_options():
-    from missioncrew import acp
+    from missioncrew.runtime import acp
     models = acp.list_models([sys.executable, FAKE], timeout=15)
     assert models == ["fake/base", "fake/pro"]

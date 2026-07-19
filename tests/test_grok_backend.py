@@ -1,7 +1,7 @@
 """Grok Build 后端的命令模板、自动检测与更新方式。"""
 
-from missioncrew import adapters
-from missioncrew.models import Backend
+from missioncrew.runtime import adapters
+from missioncrew.core.models import Backend
 
 
 def test_grok_command_uses_headless_automation_mode():

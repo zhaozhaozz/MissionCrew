@@ -20,8 +20,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import acp
-from .assembler import MANIFEST
-from .models import Backend, ExecutionConfig, RunResult, TIER_ORDER
+from ..taskflow.assembler import MANIFEST
+from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 
 # 各适配器的默认命令模板,{prompt}/{model} 在运行时替换;
 # model 为空时 {model} 及其前面的 --model/-m 标志会被移除。

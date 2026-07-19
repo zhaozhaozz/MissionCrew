@@ -2,10 +2,11 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from missioncrew import adapters, assembler
-from missioncrew.chat import ChatEngine
-from missioncrew.documents import library_for
-from missioncrew.models import ProjectSkill, Task, TaskStage
+from missioncrew.runtime import adapters
+from missioncrew.taskflow import assembler
+from missioncrew.collab.chat import ChatEngine
+from missioncrew.collab.documents import library_for
+from missioncrew.core.models import ProjectSkill, Task, TaskStage
 from missioncrew.server import create_app
 
 
@@ -210,7 +211,7 @@ def test_create_channel_workdir_validated_against_repos(seeded, tmp_path):
     repo = tmp_path / "repo"
     (repo / "src").mkdir(parents=True)
     project = seeded.get_project("webshop")
-    from missioncrew.models import ProjectResource
+    from missioncrew.core.models import ProjectResource
     project.repos = [ProjectResource(id="repo", kind="path", path=str(repo))]
     seeded.put_project(project)
     chat = ChatEngine(seeded)
@@ -314,7 +315,7 @@ def test_document_restore_creates_new_version(seeded):
 
 def test_document_library_linked_into_platform_workdirs(seeded):
     """平台自有工作区内 documents/ 软链指向文档库;真实代码仓不被污染。"""
-    from missioncrew.config import mc_home
+    from missioncrew.core.config import mc_home
     chat = ChatEngine(seeded)
     msg = seeded.add_message("general", "human", "human", "@dev 干活", ["dev"])
     cfg = chat._assemble(seeded.get_channel("general"),
@@ -324,7 +325,7 @@ def test_document_library_linked_into_platform_workdirs(seeded):
     assert link.is_symlink()
     assert link.resolve() == library_for("webshop").root.resolve()
     # 指定了外部 workdir 的频道:不建软链
-    from missioncrew.models import Channel
+    from missioncrew.core.models import Channel
     ext = mc_home() / "ext-repo"
     ext.mkdir(parents=True, exist_ok=True)
     seeded.put_channel(Channel(id="webshop:ext", name="ext", project_id="webshop",
@@ -362,7 +363,7 @@ def test_agent_document_writes_are_audited(seeded):
 
 def test_widget_data_resolves_tasks_source(seeded):
     client = _client(seeded)
-    from missioncrew.engine import Engine
+    from missioncrew.taskflow.engine import Engine
     engine = Engine(seeded)
     engine.create_task("webshop", "支付重构", task_type="feature", labels=["pay"])
     engine.create_task("webshop", "修购物车", task_type="bug")
@@ -401,7 +402,7 @@ def test_widget_data_skips_static_widgets(seeded):
 
 
 def test_widget_types_are_display_primitives(seeded):
-    from missioncrew.models import BOARD_WIDGET_TYPES
+    from missioncrew.core.models import BOARD_WIDGET_TYPES
     assert BOARD_WIDGET_TYPES == {"markdown", "table", "card", "chart",
                                   "list", "log", "code"}
     # 旧领域类型已彻底移除,未知类型在 API 与聊天动作两条链路都被拒绝
@@ -458,7 +459,7 @@ def test_resource_plain_path_url_and_dedup(seeded, tmp_path):
 
 
 def test_dev_guidelines_migrated_into_guideline_doc(seeded):
-    from missioncrew import seed as seed_mod
+    from missioncrew.core import seed as seed_mod
     p = seeded.get_project("webshop")
     p.dev_guidelines = "旧开发准则内容"
     seeded.put_project(p)

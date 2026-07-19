@@ -8,7 +8,7 @@ import threading
 import time
 from pathlib import Path, PurePosixPath
 
-from .config import projects_dir
+from ..core.config import projects_dir
 
 _PROJECT_ID_RE = re.compile(r"[\w-]+")
 _REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")

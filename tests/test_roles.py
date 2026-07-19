@@ -2,9 +2,9 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from missioncrew import seed as seed_mod
-from missioncrew.chat import ChatEngine
-from missioncrew.models import Backend, Role
+from missioncrew.core import seed as seed_mod
+from missioncrew.collab.chat import ChatEngine
+from missioncrew.core.models import Backend, Role
 from missioncrew.server import create_app
 
 
@@ -205,7 +205,7 @@ def test_traits_endpoint(client):
 # ---- 运行时页(仿 Multica):工具矩阵 + 状态,不含档位/成本配置 ----
 
 def test_detect_report_lists_all_supported_tools():
-    from missioncrew.adapters import KNOWN_CLIS, detect_report
+    from missioncrew.runtime.adapters import KNOWN_CLIS, detect_report
     report = detect_report(with_version=False)
     assert {i["binary"] for i in report} == {b for b, *_ in KNOWN_CLIS}
     for i in report:
@@ -245,7 +245,7 @@ def test_tools_endpoint_merges_registration_state(client):
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----
 
 def test_backend_models_endpoint_merges_ladder_and_runtime(client, seeded, monkeypatch):
-    from missioncrew import adapters
+    from missioncrew.runtime import adapters
     seeded.put_backend(Backend(
         id="laddered", name="laddered", adapter="mock",
         models=[{"name": "small", "tier": "economy", "cost": 1}]))
@@ -259,7 +259,7 @@ def test_backend_models_endpoint_merges_ladder_and_runtime(client, seeded, monke
 
 def test_claude_catalog_lists_concrete_model_ids():
     """claude 无枚举命令,静态目录须包含别名和具体型号(对齐 Multica)。"""
-    from missioncrew import adapters
+    from missioncrew.runtime import adapters
     models = adapters.list_runtime_models(
         Backend(id="c", name="c", adapter="claude_code"))
     assert models[:3] == ["haiku", "sonnet", "opus"]          # 稳定别名在前
@@ -267,7 +267,7 @@ def test_claude_catalog_lists_concrete_model_ids():
 
 
 def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch):
-    from missioncrew import adapters
+    from missioncrew.runtime import adapters
     seeded.put_backend(Backend(
         id="laddered", name="laddered", adapter="mock",
         models=[{"name": "small", "tier": "economy", "cost": 1}]))

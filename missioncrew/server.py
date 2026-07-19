@@ -17,15 +17,15 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from . import adapters
-from . import seed as seed_mod
-from .chat import ChatEngine
-from .config import db_path
-from .documents import archive_library, library_for, safe_relative_path
-from .engine import Engine
-from .models import (BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER, Board, BoardWidget, Channel,
+from .runtime import adapters
+from .core import seed as seed_mod
+from .collab.chat import ChatEngine
+from .core.config import db_path
+from .collab.documents import archive_library, library_for, safe_relative_path
+from .taskflow.engine import Engine
+from .core.models import (BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER, Board, BoardWidget, Channel,
                      GuidelineDocument, Project, ProjectResource, ProjectSkill, Role, Rule)
-from .store import Store
+from .core.store import Store
 
 WEB_DIR = Path(__file__).parent / "web"
 MENTION_ID_RE = re.compile(r"[\w-]+")

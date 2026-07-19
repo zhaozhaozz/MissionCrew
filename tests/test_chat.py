@@ -1,7 +1,7 @@
 """聊天协作:@ 触发、级联、防环、失败可见性。"""
 import pytest
 
-from missioncrew.chat import MAX_CHAIN_RUNS, MAX_DEPTH, ChatEngine
+from missioncrew.collab.chat import MAX_CHAIN_RUNS, MAX_DEPTH, ChatEngine
 
 
 @pytest.fixture()

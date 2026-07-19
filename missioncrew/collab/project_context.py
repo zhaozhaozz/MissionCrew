@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from .documents import DocumentLibrary
-from .models import Backend, GuidelineDocument, Project, ProjectSkill
+from ..core.models import Backend, GuidelineDocument, Project, ProjectSkill
 
 _MAX_REF_CHARS = 32_000
 _MAX_CONTEXT_REF_CHARS = 96_000

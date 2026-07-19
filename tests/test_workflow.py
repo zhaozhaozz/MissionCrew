@@ -1,5 +1,5 @@
 """计划构建与端到端流程(mock 后端)。"""
-from missioncrew.workflow import build_plan
+from missioncrew.taskflow.workflow import build_plan
 
 
 def _plan_names(seeded, task_type, labels=None, risk="normal"):

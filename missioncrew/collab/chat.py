@@ -18,13 +18,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from . import adapters
-from .config import mc_home
+from ..runtime import adapters
+from ..core.config import mc_home
 from .documents import library_for
-from .models import (BOARD_WIDGET_TYPES, Board, BoardWidget, Channel,
+from ..core.models import (BOARD_WIDGET_TYPES, Board, BoardWidget, Channel,
                      ExecutionConfig, Role)
 from .project_context import render_project_context
-from .store import Store
+from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
 MAX_DEPTH = 4          # 级联深度:人类消息为 0,Agent 回复逐层 +1

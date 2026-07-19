@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from .models import Project, TaskStage
+from ..core.models import Project, TaskStage
 
 # 基础工作流:每类任务的阶段骨架。final 阶段无 Agent,只做门禁与收尾。
 BASE_WORKFLOWS: dict[str, list[dict]] = {

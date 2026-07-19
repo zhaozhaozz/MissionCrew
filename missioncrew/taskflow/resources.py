@@ -11,9 +11,9 @@ from typing import Optional
 
 import yaml
 
-from .config import secrets_path
-from .models import Project, Task, TaskStage
-from .store import Store
+from ..core.config import secrets_path
+from ..core.models import Project, Task, TaskStage
+from ..core.store import Store
 
 
 def _resolve_secret(ref: str) -> Optional[str]:

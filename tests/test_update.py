@@ -4,8 +4,8 @@ import sys
 import pytest
 from fastapi.testclient import TestClient
 
-from missioncrew import adapters
-from missioncrew.models import Backend, Role
+from missioncrew.runtime import adapters
+from missioncrew.core.models import Backend, Role
 from missioncrew.server import create_app
 
 
@@ -190,10 +190,10 @@ def test_update_concurrency_returns_409(client, seeded, monkeypatch):
 
 
 def test_chat_skips_backend_being_updated(seeded):
-    from missioncrew.chat import ChatEngine
+    from missioncrew.collab.chat import ChatEngine
     chat = ChatEngine(seeded, max_workers=2)
     chat.updating_backends = {"std-1"}
-    seeded.put_role(__import__("missioncrew.models", fromlist=["Role"]).Role(
+    seeded.put_role(__import__("missioncrew.core.models", fromlist=["Role"]).Role(
         id="pinned", project_id="webshop", runtime_id="std-1", model="pro"))
     backend, reason = chat._pick_backend(seeded.get_channel("general"),
                                          seeded.get_role("webshop", "pinned"))

@@ -1,8 +1,8 @@
 import pytest
 
-from missioncrew import seed as seed_mod
-from missioncrew.engine import Engine
-from missioncrew.store import Store
+from missioncrew.core import seed as seed_mod
+from missioncrew.taskflow.engine import Engine
+from missioncrew.core.store import Store
 
 
 @pytest.fixture()

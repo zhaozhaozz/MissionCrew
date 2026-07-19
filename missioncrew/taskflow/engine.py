@@ -9,10 +9,11 @@ import json
 from dataclasses import dataclass
 from typing import Optional
 
-from . import adapters, assembler, resources, router, workflow
-from .documents import library_for
-from .models import Task, TaskStage, new_id
-from .store import Store
+from . import assembler, resources, router, workflow
+from ..runtime import adapters
+from ..collab.documents import library_for
+from ..core.models import Task, TaskStage, new_id
+from ..core.store import Store
 
 MAX_ATTEMPTS = 3  # 每阶段最多尝试次数(0->economy 1->standard 2->expert)
 

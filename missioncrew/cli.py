@@ -9,14 +9,14 @@ from typing import Optional
 import typer
 import yaml
 
-from . import adapters
-from . import seed as seed_mod
-from .chat import ChatEngine
-from .config import db_path, mc_home
-from .engine import Engine
-from .documents import library_for
-from .models import Backend, Channel, Project, Role, Task
-from .store import Store
+from .runtime import adapters
+from .core import seed as seed_mod
+from .collab.chat import ChatEngine
+from .core.config import db_path, mc_home
+from .taskflow.engine import Engine
+from .collab.documents import library_for
+from .core.models import Backend, Channel, Project, Role, Task
+from .core.store import Store
 
 app = typer.Typer(help="MissionCrew:策略驱动的多 Agent 研发任务执行平台(纯本地)")
 project_app = typer.Typer(help="项目中心")
