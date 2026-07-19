@@ -71,7 +71,7 @@ initialize → session/new → [session/set_model] → session/prompt
 2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟):
    - codex:`codex debug models --bundled`(JSON 目录,过滤 `visibility=hide`);
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);
-   - ACP 工具:一次性会话,从 `session/new` 响应解析模型目录(`configOptions` 中 `category=model` 的 select 选项,兼容 `models` 块两种形态);
+   - ACP 工具:一次性会话,从 `session/new` 响应解析模型目录——kimi 形态是 `configOptions` 中 `category=model` 的 select 选项;trae 形态是 `models.availableModels`(`{modelId,...}` 列表,含 `currentModelId`,与 Multica 的解析对齐),同时兼容 `available_models`/`available` 与裸数组;
    - claude:CLI 无枚举命令,返回静态目录 `CLAUDE_MODEL_CATALOG`——稳定别名(haiku/sonnet/opus,自动跟随最新版)在前,`--model` 实际接受的具体型号在后;
    - mock:返回配置阶梯。
 

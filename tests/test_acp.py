@@ -61,3 +61,10 @@ def test_acp_list_models_from_config_options():
     from missioncrew.runtime import acp
     models = acp.list_models([sys.executable, FAKE], timeout=15)
     assert models == ["fake/base", "fake/pro"]
+
+
+def test_acp_list_models_from_trae_models_block():
+    """trae 形态:目录在 models.availableModels(无 configOptions)。"""
+    from missioncrew.runtime import acp
+    models = acp.list_models([sys.executable, FAKE, "trae"], timeout=15)
+    assert models == ["GLM-5.2", "Kimi-K2.6"]

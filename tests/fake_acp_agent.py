@@ -4,6 +4,9 @@
 行为:initialize/session/new 正常应答;session/prompt 时先发一个文本块,
 再反向发起 session/request_permission(验证客户端会从 options 里选
 allow_once),收到应答后把所选 optionId 写进第二个文本块,最后结束回合。
+
+argv[1] 控制 session/new 的模型目录形态:缺省 = kimi 形态(configOptions);
+"trae" = trae 形态(models.availableModels + currentModelId,无 configOptions)。
 """
 import json
 import sys
@@ -21,7 +24,23 @@ def chunk(text):
                    "content": {"type": "text", "text": text}}}})
 
 
+def _session_new_result(shape):
+    if shape == "trae":   # 真实 traecli 的形态(实测 + Multica 对齐)
+        return {"sessionId": "s-test",
+                "models": {"availableModels": [
+                    {"modelId": "GLM-5.2", "name": "GLM-5.2", "description": ""},
+                    {"modelId": "Kimi-K2.6", "name": "Kimi K2.6", "description": ""}],
+                    "currentModelId": "GLM-5.2"}}
+    return {"sessionId": "s-test",
+            "configOptions": [{
+                "type": "select", "id": "model", "category": "model",
+                "currentValue": "fake/base",
+                "options": [{"value": "fake/base", "name": "Base"},
+                            {"value": "fake/pro", "name": "Pro"}]}]}
+
+
 def main():
+    shape = sys.argv[1] if len(sys.argv) > 1 else "config"
     model = ""
     for line in sys.stdin:
         line = line.strip()
@@ -32,13 +51,8 @@ def main():
         if method == "initialize":
             send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
         elif method == "session/new":
-            send({"jsonrpc": "2.0", "id": mid, "result": {
-                "sessionId": "s-test",
-                "configOptions": [{
-                    "type": "select", "id": "model", "category": "model",
-                    "currentValue": "fake/base",
-                    "options": [{"value": "fake/base", "name": "Base"},
-                                {"value": "fake/pro", "name": "Pro"}]}]}})
+            send({"jsonrpc": "2.0", "id": mid,
+                  "result": _session_new_result(shape)})
         elif method == "session/set_model":
             model = msg["params"]["modelId"]
             send({"jsonrpc": "2.0", "id": mid, "result": {}})

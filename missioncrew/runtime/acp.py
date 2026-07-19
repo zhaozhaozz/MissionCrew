@@ -168,7 +168,9 @@ def list_models(cmd: list[str], env: Optional[dict] = None,
     """向 ACP 工具查询可用模型:一次性会话,从 session/new 响应解析模型目录。
 
     兼容两种形态:kimi 等返回 configOptions(category=model 的 select 选项);
-    部分实现返回 models 块({available:[...]} 或数组)。查不到返回空列表。
+    部分实现返回 models 块——trae 用 {availableModels:[{modelId,...}]}
+    (对齐 Multica parseACPSessionNewModels,兼容 snake_case 与旧的
+    {available:[...]} 及裸数组)。查不到返回空列表。
     """
     import os
     import tempfile
@@ -192,9 +194,11 @@ def list_models(cmd: list[str], env: Optional[dict] = None,
         if not models:
             block = sess.get("models")
             if isinstance(block, dict):
-                block = block.get("available", [])
+                block = (block.get("availableModels") or block.get("available_models")
+                         or block.get("available") or [])
             if isinstance(block, list):
-                models = [str(m.get("modelId") or m.get("id") or m.get("value") or "")
+                models = [str(m.get("modelId") or m.get("model_id") or m.get("id")
+                              or m.get("value") or "")
                           if isinstance(m, dict) else str(m) for m in block]
         return [m for m in models if m]
     except AcpError:
