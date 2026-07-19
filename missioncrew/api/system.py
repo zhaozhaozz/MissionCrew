@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from ..core.models import BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER
+from ..runtime.adapters import EFFORT_SUPPORT
 from .context import ApiContext
 
 
@@ -24,4 +25,5 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.get("/api/traits")
     def traits():
         return {"abilities": ROLE_ABILITIES, "tiers": TIER_ORDER,
-                "board_widget_types": sorted(BOARD_WIDGET_TYPES)}
+                "board_widget_types": sorted(BOARD_WIDGET_TYPES),
+                "effort_options": EFFORT_SUPPORT}   # adapter -> 可选推理力度档位

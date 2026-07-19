@@ -49,7 +49,7 @@ CHAT_PROMPT = """\
 {role_desc}
 角色能力:{role_capabilities}
 角色偏好:{role_traits}
-固定执行组合:{role_runtime}/{role_model}
+固定执行组合:{role_runtime}/{role_model}{role_effort}
 当前频道:#{channel_name}
 频道用途/讨论边界:{channel_purpose}
 {project_section}
@@ -275,7 +275,8 @@ class ChatEngine:
         else:
             b = replace(b, model=role.model)
         model = b.model or "(CLI 默认)"
-        return b, f"角色固定组合 {b.id}+{model}"
+        combo = f"{b.id}+{model}" + (f"+effort={role.effort}" if role.effort else "")
+        return b, f"角色固定组合 {combo}"
 
     def _assemble(self, channel: Channel, role: Role, backend, msg_id: int) -> ExecutionConfig:
         workdir = Path(channel.workdir) if channel.workdir \
@@ -321,6 +322,7 @@ class ChatEngine:
             role_traits=role.preference or "无特别标注",
             role_runtime=role.runtime_id,
             role_model=role.model or "(CLI 默认)",
+            role_effort=f"/effort={role.effort}" if role.effort else "",
             channel_name=channel.name or channel.id,
             channel_purpose=channel.purpose or "(未说明)",
             project_section=project_section,
@@ -331,6 +333,7 @@ class ChatEngine:
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
             prompt=prompt, workdir=str(workdir), env=env, timeout=CHAT_TIMEOUT,
+            effort=role.effort,
         )
 
     def _orchestrator_section(self, project) -> str:

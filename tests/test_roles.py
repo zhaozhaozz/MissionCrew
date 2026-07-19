@@ -296,6 +296,62 @@ def test_save_role_rejects_disabled_runtime(client, seeded):
     assert r.status_code == 400 and "已停用" in r.json()["detail"]
 
 
+# ---- effort(推理力度):仅支持的 runtime 可配,并注入本次执行 ----
+
+def test_role_effort_saved_only_for_supporting_runtime(client, seeded):
+    p = {"project_id": "webshop", "runtime_id": "std-1", "model": "pro"}
+    # 种子后端是 mock 适配器,支持 low/medium/high
+    ok = client.post("/api/roles", json={"id": "deep", "effort": "high", **p})
+    assert ok.status_code == 200 and ok.json()["effort"] == "high"
+    bad = client.post("/api/roles", json={"id": "deep2", "effort": "extreme", **p})
+    assert bad.status_code == 400 and "effort" in bad.json()["detail"]
+    # 不支持 effort 的适配器:非空拒绝,空值(CLI 默认)放行
+    seeded.put_backend(Backend(id="plain", name="plain", adapter="opencode"))
+    deny = client.post("/api/roles", json={
+        "id": "on-plain", "project_id": "webshop", "runtime_id": "plain",
+        "effort": "high"})
+    assert deny.status_code == 400 and "不支持 effort" in deny.json()["detail"]
+    empty = client.post("/api/roles", json={
+        "id": "on-plain", "project_id": "webshop", "runtime_id": "plain"})
+    assert empty.status_code == 200 and empty.json()["effort"] == ""
+
+
+def test_role_effort_flows_into_execution_config(seeded):
+    seeded.put_role(Role(id="deep", project_id="webshop", name="深想",
+                         runtime_id="std-1", model="pro", effort="high"))
+    chat = ChatEngine(seeded, max_workers=2)
+    channel = seeded.get_channel("general")
+    role = seeded.get_role("webshop", "deep")
+    backend, reason = chat._pick_backend(channel, role)
+    assert "effort=high" in reason
+    cfg = chat._assemble(channel, role, backend, msg_id=0)
+    assert cfg.effort == "high"
+    assert "/effort=high" in cfg.prompt          # 固定执行组合对角色可见
+
+
+def test_effort_rendered_into_cli_commands():
+    from missioncrew.runtime import adapters
+    claude = adapters.render_command(adapters.DEFAULT_COMMANDS["claude_code"],
+                                     "work", "opus", "/docs", effort="high")
+    assert claude[claude.index("--effort") + 1] == "high"
+    codex = adapters.render_command(adapters.DEFAULT_COMMANDS["codex"],
+                                    "work", "gpt-test", "/docs", effort="xhigh")
+    assert codex[codex.index("-c") + 1] == "model_reasoning_effort=xhigh"
+    # 空 effort:占位符连同紧邻标志一起移除,回到 CLI 默认
+    plain = adapters.render_command(adapters.DEFAULT_COMMANDS["claude_code"],
+                                    "work", "opus", "/docs")
+    assert "--effort" not in plain and all("{effort}" not in t for t in plain)
+    plain_codex = adapters.render_command(adapters.DEFAULT_COMMANDS["codex"],
+                                          "work", "", "")
+    assert "-c" not in plain_codex and plain_codex[-1] == "work"
+
+
+def test_traits_endpoint_exposes_effort_options(client):
+    d = client.get("/api/traits").json()
+    assert d["effort_options"]["claude_code"] == ["low", "medium", "high", "xhigh", "max"]
+    assert "mock" in d["effort_options"]
+
+
 # ---- 执行组合在定义时固定,不做运行时路由 ----
 
 def test_unbound_role_gets_clear_error(seeded):

@@ -351,6 +351,8 @@ class Role:
     description: str = ""         # 人格与领域上下文(自由文本,不锁定)
     runtime_id: str = ""             # 固定 runtime(后端注册表 id)
     model: str = ""                  # 固定模型;"" 表示显式使用 CLI 默认模型
+    effort: str = ""                 # 推理力度;"" = CLI 默认。仅支持 effort 的
+                                     # runtime 可设(adapters.EFFORT_SUPPORT)
     capabilities: list[str] = field(default_factory=list)  # 固定能力选项,见 ROLE_ABILITIES
     preference: str = ""                   # 工作偏好:自由文本(如"前端"/"后端,偏好 React")
     color: str = ""                        # 看板/聊天中的标识色
@@ -461,4 +463,5 @@ class ExecutionConfig:
     workdir: str
     env: dict = field(default_factory=dict)
     timeout: int = 3600
+    effort: str = ""      # 推理力度(聊天执行由角色填入;任务阶段暂不使用)
     routing_trace: list[str] = field(default_factory=list)

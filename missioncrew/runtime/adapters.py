@@ -23,13 +23,15 @@ from . import acp
 from ..taskflow.assembler import MANIFEST
 from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 
-# 各适配器的默认命令模板,{prompt}/{model} 在运行时替换;
-# model 为空时 {model} 及其前面的 --model/-m 标志会被移除。
+# 各适配器的默认命令模板,{prompt}/{model}/{effort} 在运行时替换;
+# model/effort 为空时对应 token 及其前面的参数标志会被移除。
 DEFAULT_COMMANDS = {
     "claude_code": ["claude", "-p", "{prompt}", "--model", "{model}",
+                    "--effort", "{effort}",
                     "--permission-mode", "acceptEdits", "--add-dir", "{documents_dir}"],
     "codex": ["codex", "exec", "--sandbox", "workspace-write", "--add-dir",
-              "{documents_dir}", "-m", "{model}", "{prompt}"],
+              "{documents_dir}", "-m", "{model}",
+              "-c", "model_reasoning_effort={effort}", "{prompt}"],
     "grok_build": ["grok", "-p", "{prompt}", "--model", "{model}",
                    "--always-approve", "--no-auto-update"],
     "opencode": ["opencode", "run", "--model", "{model}", "{prompt}"],
@@ -77,6 +79,19 @@ KNOWN_MODELS: dict[str, list[dict]] = {
         {"name": "", "tier": "standard", "cost": 5.0},
         {"name": "opus", "tier": "expert", "cost": 20.0},
     ],
+}
+
+
+# 各适配器的 effort(推理力度)支持:adapter -> 允许的档位(从低到高)。
+# 只有列出的适配器可在角色上配置 effort,注入方式见 DEFAULT_COMMANDS 的 {effort}:
+# - claude:原生 `--effort` 标志(档位来自 `claude --help`);
+# - codex:配置覆盖 `-c model_reasoning_effort=<档位>`(具体模型未必支持全部档位,
+#   越界时 CLI 自行报错,错误照常回流到频道);
+# - mock:仅供测试/演示走通配置链路。
+EFFORT_SUPPORT: dict[str, list[str]] = {
+    "claude_code": ["low", "medium", "high", "xhigh", "max"],
+    "codex": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    "mock": ["low", "medium", "high"],
 }
 
 
@@ -221,8 +236,8 @@ def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
 
 
 def render_command(template: list[str], prompt: str, model: str,
-                   documents_dir: str = "") -> list[str]:
-    """渲染命令模板；空模型/文档目录会连同紧邻的参数标志一起移除。"""
+                   documents_dir: str = "", effort: str = "") -> list[str]:
+    """渲染命令模板；空模型/effort/文档目录会连同紧邻的参数标志一起移除。"""
     cmd: list[str] = []
     for tok in template:
         if "{model}" in tok:
@@ -231,6 +246,12 @@ def render_command(template: list[str], prompt: str, model: str,
                     cmd.pop()
                 continue
             tok = tok.replace("{model}", model)
+        if "{effort}" in tok:
+            if not effort:
+                if cmd and cmd[-1] in ("--effort", "-c", "--config"):
+                    cmd.pop()
+                continue
+            tok = tok.replace("{effort}", effort)
         if "{documents_dir}" in tok:
             if not documents_dir:
                 if cmd and cmd[-1] == "--add-dir":
@@ -297,8 +318,9 @@ class MockAdapter:
         trigger = _trigger_from_prompt(cfg.prompt)
         # 遵循触发消息中的协作指令:"请 @x ..." -> 回复中 @x 发起协作
         asked = [m for m in re.findall(r"请\s*@([\w-]+)", trigger) if m != me]
+        combo = cfg.backend.tier + (f"/effort={cfg.effort}" if cfg.effort else "")
         reply = (f"收到。我已在工作区完成相关处理(模拟执行,by {cfg.backend.id}/"
-                 f"{cfg.backend.tier})。")
+                 f"{combo})。")
         for r in dict.fromkeys(asked):
             reply += f"\n@{r} 上面的工作已完成,交给你继续。"
         # 回显触发消息中的平台控制动作块,模拟真实 Agent 按指示发出动作
@@ -347,7 +369,7 @@ class CliAdapter:
                                     f"(ACP 类 CLI 请在 Backend.command 中配置)")
         cmd = render_command(
             template, cfg.prompt, cfg.backend.model,
-            cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""),
+            cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
         )
         try:
             proc = subprocess.run(

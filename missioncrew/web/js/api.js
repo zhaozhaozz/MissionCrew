@@ -12,7 +12,7 @@ async function api(method, url, body) {
   return r.json();
 }
 
-let traitMeta = { abilities: {}, tiers: [] };
+let traitMeta = { abilities: {}, tiers: [], effort_options: {} };
 async function ensureTraits() {
   if (!Object.keys(traitMeta.abilities).length)
     traitMeta = await (await fetch("/api/traits")).json();

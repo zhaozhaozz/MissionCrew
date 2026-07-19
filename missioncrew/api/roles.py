@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from ..core.models import ROLE_ABILITIES, Role
+from ..runtime.adapters import EFFORT_SUPPORT
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import RoleInput
 
@@ -39,6 +40,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             if body.model not in set(ctx.discovered_models(backend)):
                 raise HTTPException(
                     400, f"模型 {body.model or '(CLI 默认)'} 不属于 runtime {body.runtime_id}")
+        # 空 effort = CLI 默认,总是合法;非空要求该 runtime 支持且档位在允许范围内
+        if body.effort:
+            allowed = EFFORT_SUPPORT.get(backend.adapter, [])
+            if not allowed:
+                raise HTTPException(400, f"runtime {body.runtime_id} 不支持 effort(推理力度)配置")
+            if body.effort not in allowed:
+                raise HTTPException(400, f"effort 必须是 {'/'.join(allowed)} 之一")
         role = Role(**body.model_dump())
         store.put_role(role)
         store.audit("human", "role_saved", detail=f"project={role.project_id} role={role.id}")

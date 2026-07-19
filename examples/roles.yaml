@@ -4,6 +4,7 @@
 # 角色 = 人格提示词(description,自由文本,平台不改写)
 #      + 结构化配置:
 #        - runtime_id / model:每个角色必须固定选择 runtime 与模型;model: "" 表示明确使用 CLI 默认
+#        - effort 推理力度(可选,仅支持的 runtime 可设,如 claude/codex;省略 = CLI 默认)
 #        - traits 偏好标签:fast(快速) low-cost(低成本) quality(高质量)
 #          deep(深度攻坚) multimodal(多模态) web(联网检索) review(代码评审)
 #          security(安全审查) testing(适合测试) docs(适合文档)
@@ -32,6 +33,7 @@
   color: "#8b5cf6"
   runtime_id: claude
   model: opus
+  effort: high
   description: 首席架构师,评审重大设计决策,权衡演进成本与一致性。
   capabilities: [coding, reasoning]
   traits: [deep]

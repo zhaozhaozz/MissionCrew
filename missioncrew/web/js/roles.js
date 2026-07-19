@@ -8,7 +8,8 @@ function renderRoleTable() {
   const project = overview.projects.find(p => p.id === currentProject);
   const rows = projRoles().map(r => {
     const exec = r.runtime_id
-      ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}`
+      ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}` +
+        (r.effort ? ` / effort ${esc(r.effort)}` : "")
       : `<span class="muted">未绑定(请编辑角色选择 runtime)</span>`;
     return `<tr>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
@@ -30,7 +31,7 @@ function editRole(id) {
   }
   const r = projRoles().find(x => x.id === id) || {
     id: "", name: "", description: "", capabilities: [], preference: "",
-    runtime_id: "", model: "", color: "#3564d7" };
+    runtime_id: "", model: "", effort: "", color: "#3564d7" };
   const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
     `<span class="chip ${(r.capabilities || []).includes(k) ? "on" : ""}" data-cap="${k}"
        onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");
@@ -40,7 +41,8 @@ function editRole(id) {
       `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}
          ${!b.enabled && r.runtime_id !== b.id ? "disabled" : ""}>` +
       `${esc(b.id)} — ${esc(b.name)}${b.enabled ? "" : "(已停用)"}</option>`).join("");
-  window._editingRoleModel = r.model;   // 供模型下拉初始化选中
+  window._editingRoleModel = r.model;    // 供模型下拉初始化选中
+  window._editingRoleEffort = r.effort;  // 供 effort 下拉初始化选中
   openFormDialog(id ? `编辑角色 @${id}` : "新建角色", `
     <div class="row">
       <div><label>角色 id(@ 提及名)</label><input type="text" id="rf-id" value="${esc(r.id)}" ${id ? "disabled" : ""}></div>
@@ -49,9 +51,11 @@ function editRole(id) {
     </div>
     <div class="row">
       <div><label>Runtime(定义角色时固定,必选)</label>
-        <select id="rf-backend" onchange="window._editingRoleModel=null;refreshModelOptions()">${backendOpts}</select></div>
+        <select id="rf-backend" onchange="window._editingRoleModel=null;window._editingRoleEffort=null;refreshModelOptions();refreshEffortOptions()">${backendOpts}</select></div>
       <div><label>模型(清单来自 runtime)</label>
         <select id="rf-model"></select></div>
+      <div><label>Effort(推理力度,仅部分 runtime 支持)</label>
+        <select id="rf-effort"></select></div>
     </div>
     <label>角色定位/人格(专长画像,供调度选人;自由文本,平台原样装配、不改写;任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
@@ -63,6 +67,7 @@ function editRole(id) {
      <button class="ghost" onclick="fdlg.close()">取消</button>
      ${id ? `<button class="danger" onclick="deleteRole('${id}')">删除角色</button>` : ""}`);
   refreshModelOptions();
+  refreshEffortOptions();
 }
 
 // 每个角色必须先选 runtime;模型清单向 runtime 本体动态查询(仿 Multica),
@@ -110,6 +115,25 @@ async function refreshModelOptions() {
   sel.innerHTML = opts;
 }
 
+// effort(推理力度)是 adapter 级静态选项(词表来自 /api/traits):
+// 选中的 runtime 支持才可配置,不支持时下拉禁用、保存为空。
+function refreshEffortOptions() {
+  const sel = document.getElementById("rf-effort");
+  const bid = document.getElementById("rf-backend").value;
+  const adapter = overview.backends.find(x => x.id === bid)?.adapter;
+  const levels = (adapter && traitMeta.effort_options?.[adapter]) || [];
+  const cur = window._editingRoleEffort ?? sel.value;
+  window._editingRoleEffort = null;
+  if (!levels.length) {
+    sel.innerHTML = `<option value="">${bid ? "(该 runtime 不支持)" : "先选择 runtime"}</option>`;
+    sel.disabled = true;
+    return;
+  }
+  sel.disabled = false;
+  sel.innerHTML = `<option value="">(CLI 默认)</option>` + levels.map(l =>
+    `<option value="${esc(l)}" ${cur === l ? "selected" : ""}>${esc(l)}</option>`).join("");
+}
+
 async function saveRole() {
   const capabilities = [...document.querySelectorAll("#rf-caps .chip.on")].map(c => c.dataset.cap);
   const runtime_id = document.getElementById("rf-backend").value;
@@ -123,6 +147,7 @@ async function saveRole() {
     preference: document.getElementById("rf-pref").value.trim(),
     runtime_id,
     model: document.getElementById("rf-model").value,
+    effort: document.getElementById("rf-effort").value,
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
   if (!runtime_id) { uiAlert("请为角色选择 runtime(定义时固定执行组合)"); return; }

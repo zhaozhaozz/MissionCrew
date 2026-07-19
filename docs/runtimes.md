@@ -35,6 +35,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 - `{prompt}` — 装配好的完整提示词(角色定位、项目上下文、最近对话、触发消息);
 - `{model}` — 角色固定的模型;为空时该 token 连同紧邻的 `--model`/`-m` 标志一起移除,即显式使用 CLI 默认模型;
+- `{effort}` — 角色固定的推理力度(见下方 Effort 一节);为空时连同紧邻的 `--effort`/`-c` 标志一起移除;
 - `{documents_dir}` — 项目文档库路径;为空时连同 `--add-dir` 一起移除。
 
 模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。完整输出落盘到工作区 `.mc_last_output_<adapter>.log` 便于回查,聊天回复取输出尾部。
@@ -75,6 +76,17 @@ initialize → session/new → [session/set_model] → session/prompt
    - mock:返回配置阶梯。
 
 保存角色时模型必须属于两个目录之一;空模型 = 显式使用 CLI 默认,总是合法。执行时把模型(及命中的档位/成本)套用到本次执行配置上,**不写回注册表**——注册表始终保持工具级条目。
+
+## Effort(推理力度)
+
+部分工具支持按次指定推理力度,支持矩阵在 `EFFORT_SUPPORT`(adapter → 允许档位):
+
+- claude:原生 `--effort` 标志,档位 low/medium/high/xhigh/max;
+- codex:配置覆盖 `-c model_reasoning_effort=<档位>`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 CLI 自行报错并照常回流到频道);
+- mock:low/medium/high,仅供测试/演示走通链路;
+- 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。
+
+effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI 默认,总是合法;执行时经命令模板的 `{effort}` 占位符注入,为空时连同紧邻标志一起移除,结构化任务的阶段执行不使用它。注意:用 `Backend.command` 覆盖默认模板时,模板需自带 `{effort}` 占位符,否则角色配置的 effort 不会生效。
 
 ## 升级
 

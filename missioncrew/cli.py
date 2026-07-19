@@ -302,6 +302,8 @@ def role_list(project: Optional[str] = typer.Option(None, "-p", "--project")):
     for r in _store().list_roles(project):
         model = r.model or "(CLI 默认)"
         fixed = f" runtime={r.runtime_id or '(未配置)'}/{model}"
+        if r.effort:
+            fixed += f"/effort={r.effort}"
         traits = f" 偏好={r.preference}" if r.preference else ""
         caps = f" 能力=[{','.join(r.capabilities)}]" if r.capabilities else ""
         typer.echo(f"[{r.project_id}] @{r.id:<10} {r.name:<6}{traits}{caps}{fixed}  {r.description}")
@@ -317,7 +319,7 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
     for d in items:
         if project:
             d["project_id"] = project
-        r = Role(**d)
+        r = Role.from_dict(d)   # 经迁移入口,示例 YAML 的旧版 traits 等字段可直接用
         if not r.project_id or store.get_project(r.project_id) is None:
             raise typer.BadParameter(f"@{r.id} 缺少有效的 project_id(角色按项目隔离)")
         backend = store.get_backend(r.runtime_id)
@@ -326,6 +328,9 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
         known_models = {str(m.get("name", "")) for m in backend.models}
         if known_models and r.model not in known_models:
             raise typer.BadParameter(f"@{r.id} 的模型不属于 runtime {r.runtime_id}")
+        if r.effort and r.effort not in adapters.EFFORT_SUPPORT.get(backend.adapter, []):
+            raise typer.BadParameter(
+                f"@{r.id} 的 effort={r.effort} 不受 runtime {r.runtime_id} 支持")
         store.put_role(r)
         typer.echo(f"角色已保存: [{r.project_id}] @{r.id}")
 
