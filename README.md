@@ -99,8 +99,8 @@ uv run mc role list -p default
 
 - **固定执行组合**(`runtime_id` + `model`):每个角色必填。runtime 停用或删除时该角色执行失败并明确报错,不会回退到其他 runtime。`model=""` 表示明确选择该 CLI 的默认模型。
 - **角色定位**(description):自由文本,平台原样装配、不改写。它的用途是**供调度方选人**(名册中展示给人类和其他角色),在执行时也会告知角色自身,但明确标注"不是任务,不要据此自行发挥"——任务只来自 @ 消息里的简报。
-- **能力**(capabilities):例如 `coding`、`reasoning`、`review`;作为角色名册中的专长标签,帮助调度方选人。
-- **偏好标签**(traits):`快速`、`低成本`、`高质量`、`深度攻坚`、`多模态`、`联网检索`、`代码评审`、`安全审查`、`适合测试`、`适合文档`;描述工作风格与专长,不再改变执行组合。
+- **能力**(capabilities):固定选项(代码执行、深度推理、代码评审、安全审查、图像/视觉输入、语音输入、图像生成、联网检索、多 Agent 编排),作为角色名册中的专长标签,帮助调度方选人,不参与执行路由。
+- **偏好**(preference):自由文本(如「前端」「后端,偏好 Go」「严谨,只审不改」),描述工作风格与领域,供主控选人参考。
 
 默认角色:`@lead` 主管(调度,不亲自实现)、`@dev` 开发、`@reviewer` 评审、`@expert` 专家(深度攻坚)、`@vision` 视觉验证(多模态)、`@secure` 安全审查、`@tester` 测试、`@scribe` 文档。Web「设置」页可增删改角色、启停/调整后端、管理频道;「项目」页可管理项目准则与验证规则。YAML 方式见 `examples/roles.yaml`。
 
@@ -142,16 +142,16 @@ uv run mc audit                       # 全平台审计日志
                     │
      ┌──────────────▼───────────────┐
      │           控制平面           │
-     │  @提及解析/转交语义/级联防护   │   聊天协作引擎(chat.py)
-     │  工作流计划/证据门禁/审批     │   任务引擎(engine.py + workflow.py)
-     │  任务阶段路由:安全→能力→适配→成功率→成本(router.py,决策可审计)
-     │  上下文装配: 项目准则+角色人格+历史对话+证据契约(assembler.py/chat.py)
-     │  受控资源: 阶段级限时授权,密钥不进 Prompt(resources.py)
+     │  @提及解析/转交语义/级联防护   │   聊天协作引擎(collab/chat.py)
+     │  工作流计划/证据门禁/审批     │   任务引擎(taskflow/engine.py + workflow.py)
+     │  任务阶段路由:安全→能力→适配→成功率→成本(taskflow/router.py,决策可审计)
+     │  上下文装配: 项目准则+角色人格+历史对话+证据契约(taskflow/assembler.py / collab/chat.py)
+     │  受控资源: 阶段级限时授权,密钥不进 Prompt(taskflow/resources.py)
      └──────────────┬───────────────┘
                     │ 执行配置
      ┌──────────────▼───────────────┐
      │           执行平面           │
-     │  本地 Agent CLI 子进程(adapters.py)
+     │  本地 Agent CLI 子进程(runtime/adapters.py)
      │  claude / codex / grok / opencode / copilot / cursor-agent / …
      │  每频道/每任务隔离工作区
      └──────────────────────────────┘

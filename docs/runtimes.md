@@ -2,7 +2,7 @@
 
 Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资源**:注册表存在 SQLite,所有项目共享;角色在项目内定义时固定绑定某个 runtime 与模型,执行时直接使用,不做运行时路由。
 
-本文说明支持哪些工具、用什么技术接入、如何检测/升级、模型清单从哪来,以及如何接入新工具。所有事实以 `missioncrew/adapters.py` 与 `missioncrew/acp.py` 为准。
+本文说明支持哪些工具、用什么技术接入、如何检测/升级、模型清单从哪来,以及如何接入新工具。所有事实以 `missioncrew/runtime/adapters.py` 与 `missioncrew/runtime/acp.py` 为准。
 
 ## 支持的工具矩阵
 
