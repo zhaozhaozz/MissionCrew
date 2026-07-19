@@ -485,3 +485,38 @@ def test_fs_dirs_endpoint(seeded, tmp_path):
     # 缺省从用户主目录开始;非目录路径报 400
     assert client.get("/api/fs/dirs").status_code == 200
     assert client.get(f"/api/fs/dirs?path={root}/file.txt").status_code == 400
+
+
+def test_fs_dirs_git_remotes_listed(seeded, tmp_path):
+    import subprocess
+    client = _client(seeded)
+    repo = tmp_path / "multi-remote"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "upstream",
+                    "https://example.com/up/multi.git"], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                    "https://example.com/me/multi.git"], check=True)
+    d = client.get(f"/api/fs/dirs?path={repo}").json()
+    assert d["is_git"] is True
+    remotes = {r["name"]: r["url"] for r in d["remotes"]}
+    assert remotes == {"origin": "https://example.com/me/multi.git",
+                       "upstream": "https://example.com/up/multi.git"}
+    # 资源绑定:有 origin 时优先 origin
+    r = client.post("/api/projects/webshop/resources",
+                    json={"target": str(repo)}).json()
+    assert r["remote"] == "https://example.com/me/multi.git"
+
+
+def test_resource_binding_without_origin_uses_first_remote(seeded, tmp_path):
+    import subprocess
+    client = _client(seeded)
+    repo = tmp_path / "no-origin"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "mirror",
+                    "https://example.com/mirror/x.git"], check=True)
+    r = client.post("/api/projects/webshop/resources",
+                    json={"target": str(repo)}).json()
+    assert r["kind"] == "git"
+    assert r["remote"] == "https://example.com/mirror/x.git"

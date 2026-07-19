@@ -378,10 +378,26 @@ def create_app() -> FastAPI:
         except OSError as exc:
             raise HTTPException(400, f"无法读取目录: {exc}")
         parent = str(base.parent) if base.parent != base else ""
+        is_git = (base / ".git").exists()
         return {"path": str(base), "parent": parent, "dirs": dirs,
-                "is_git": (base / ".git").exists()}
+                "is_git": is_git,
+                "remotes": _git_remotes(base) if is_git else []}
 
     # ---------------- 项目资源(本地路径 / git 仓) ----------------
+
+    def _git_remotes(path: Path) -> list[dict]:
+        """列出 git 仓的全部远程(name+url,fetch/push 去重)。"""
+        try:
+            proc = subprocess.run(["git", "-C", str(path), "remote", "-v"],
+                                  capture_output=True, text=True, timeout=10)
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        seen: dict[str, str] = {}
+        for line in proc.stdout.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] not in seen:
+                seen[parts[0]] = parts[1]
+        return [{"name": k, "url": v} for k, v in seen.items()]
 
     def _resolve_project_resource(target: str, name: str) -> ProjectResource:
         """解析资源:远程地址 -> git 资源;本地路径若是 git 仓自动绑定其远程。"""
@@ -397,14 +413,10 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"本地路径不存在或不是目录: {raw}")
         base = path.name
         if (path / ".git").exists():
-            remote = ""
-            try:   # 自动绑定远程仓库;本地纯 git 仓(无远程)也算 git 资源
-                proc = subprocess.run(
-                    ["git", "-C", str(path), "remote", "get-url", "origin"],
-                    capture_output=True, text=True, timeout=10)
-                remote = proc.stdout.strip() if proc.returncode == 0 else ""
-            except (OSError, subprocess.TimeoutExpired):
-                pass
+            # 自动绑定远程:优先 origin,多远程时退而取第一个;无远程也算 git 资源
+            remotes = _git_remotes(path)
+            remote = next((r["url"] for r in remotes if r["name"] == "origin"),
+                          remotes[0]["url"] if remotes else "")
             return ProjectResource(id=base, kind="git", path=str(path),
                                    remote=remote, name=name or base)
         return ProjectResource(id=base, kind="path", path=str(path), name=name or base)

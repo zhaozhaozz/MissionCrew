@@ -70,6 +70,8 @@
   .side-item:hover { background: var(--card); }
   .side-item.selected { background: var(--card); color: var(--text);
                         font-weight: 600; border: 1px solid var(--line); }
+  .crumb { cursor: pointer; }
+  .crumb:hover { color: var(--accent); text-decoration: underline; }
   .chan { padding: 6px 10px; border-radius: 8px; cursor: pointer; color: var(--muted); }
   .chan.active { background: var(--card); color: var(--text); font-weight: 600;
                  border: 1px solid var(--line); }
@@ -800,8 +802,21 @@ async function pickBrowse(path) {
                           `&hidden=${_pickHidden}`);
   } catch (e) { return; }
   window._pickPath = d.path;
-  document.getElementById("ddlg-path").innerHTML = `${esc(d.path)}` +
-    (d.is_git ? ` <span class="pill" style="color:var(--ok);border-color:var(--ok)">git 仓</span>` : "");
+  // 面包屑:每一段都可点击跳转到对应上级目录
+  const parts = d.path.split("/").filter(Boolean);
+  let acc = "";
+  const crumbs = [`<span class="crumb" data-p="/" onclick="pickBrowse(this.dataset.p)">/</span>`]
+    .concat(parts.map(p => {
+      acc += "/" + p;
+      return `<span class="crumb" data-p="${esc(acc)}" onclick="pickBrowse(this.dataset.p)">${esc(p)}</span>`;
+    })).join(`<span style="opacity:.45">/</span>`).replace(
+      `</span><span style="opacity:.45">/</span>`, `</span>`);  // 根后不重复斜杠
+  const gitInfo = !d.is_git ? "" :
+    ` <span class="pill" style="color:var(--ok);border-color:var(--ok)">git 仓</span>` +
+    ((d.remotes || []).map(r =>
+      `<div class="muted" style="font-size:12px;margin-top:2px">🔗 ${esc(r.name)}: ${esc(r.url)}</div>`).join("")
+     || `<div class="muted" style="font-size:12px;margin-top:2px">(未配置远程)</div>`);
+  document.getElementById("ddlg-path").innerHTML = crumbs + gitInfo;
   document.getElementById("ddlg-list").innerHTML =
     (d.parent ? `<div class="side-item" data-p="${esc(d.parent)}" onclick="pickBrowse(this.dataset.p)">⬆ 上一级</div>` : "") +
     (d.dirs.map(n => `<div class="side-item" data-p="${esc(d.path)}/${esc(n)}"
