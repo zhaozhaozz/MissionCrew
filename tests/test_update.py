@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from missioncrew.runtime import adapters
 from missioncrew.core.models import Backend, Role
-from missioncrew.server import create_app
+from missioncrew.api import create_app
 
 
 # ---- 版本比较 ----
@@ -116,7 +116,7 @@ def test_update_api_refreshes_version(client, seeded, monkeypatch):
     seeded.put_backend(Backend(id="codex", name="codex", adapter="codex",
                                binary_path="/usr/bin/codex", version="0.144.4"))
     monkeypatch.setattr(adapters, "run_update", lambda b, timeout=600: (True, "done"))
-    monkeypatch.setattr("missioncrew.server.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr("missioncrew.api.backends.shutil.which", lambda name: "/usr/bin/codex")
     monkeypatch.setattr(adapters, "_cli_version", lambda binary: "0.144.5")
     r = client.post("/api/backends/codex/update").json()
     assert r["ok"] and r["old_version"] == "0.144.4" and r["version"] == "0.144.5"
@@ -175,7 +175,7 @@ def test_update_concurrency_returns_409(client, seeded, monkeypatch):
         return True, "done"
 
     monkeypatch.setattr(adapters, "run_update", slow_update)
-    monkeypatch.setattr("missioncrew.server.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr("missioncrew.api.backends.shutil.which", lambda name: "/usr/bin/codex")
     monkeypatch.setattr(adapters, "_cli_version", lambda binary: "1.0.1")
     results = {}
     t = threading.Thread(target=lambda: results.update(
@@ -214,7 +214,7 @@ def test_update_does_not_clobber_concurrent_writes(client, seeded, monkeypatch):
         return True, "done"
 
     monkeypatch.setattr(adapters, "run_update", update_with_concurrent_write)
-    monkeypatch.setattr("missioncrew.server.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr("missioncrew.api.backends.shutil.which", lambda name: "/usr/bin/codex")
     monkeypatch.setattr(adapters, "_cli_version", lambda binary: "1.0.1")
     r = client.post("/api/backends/codex/update").json()
     assert r["ok"] and r["version"] == "1.0.1"

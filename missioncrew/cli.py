@@ -108,7 +108,7 @@ def demo(run: bool = typer.Option(True, help="是否顺带演示典型流程")):
 def serve(host: str = "127.0.0.1", port: int = 8321):
     """启动 Web 服务(REST API + 看板)。"""
     import uvicorn
-    from .server import create_app
+    from .api import create_app
     typer.echo(f"MissionCrew 看板: http://{host}:{port}")
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 

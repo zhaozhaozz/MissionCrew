@@ -1,0 +1,128 @@
+"""API 请求体模型(pydantic)。"""
+from __future__ import annotations
+
+from typing import Optional
+
+from pydantic import BaseModel
+
+
+class TaskCreate(BaseModel):
+    project_id: str
+    title: str
+    description: str = ""
+    task_type: str = "feature"
+    labels: list[str] = []
+    risk: str = "normal"
+    security_level: int = 0
+    max_tier: Optional[str] = None
+
+
+class ApprovalInput(BaseModel):
+    approver: str = "human"
+    decision: str = "approved"
+    note: str = ""
+    stage: Optional[str] = None
+
+
+class MessageInput(BaseModel):
+    author: str = "human"
+    content: str
+
+
+class ChannelCreate(BaseModel):
+    id: str
+    name: str = ""
+    project_id: Optional[str] = None
+    workdir: Optional[str] = None
+    purpose: str = ""
+    actor_role_id: Optional[str] = None
+
+
+class RoleInput(BaseModel):
+    id: str
+    project_id: str
+    runtime_id: str            # 角色定义时固定的 runtime,必填
+    model: str = ""            # 空 = CLI 默认模型
+    name: str = ""
+    description: str = ""
+    capabilities: list[str] = []   # 固定能力选项(ROLE_ABILITIES)
+    preference: str = ""           # 偏好:自由文本(风格/领域,如前端/后端)
+    color: str = ""
+
+
+class GuidelineInput(BaseModel):
+    id: str
+    title: str = ""
+    content: str = ""
+    file_refs: list[str] = []
+    enabled: bool = True
+    actor_role_id: Optional[str] = None
+
+
+class SkillInput(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    instructions: str = ""
+    file_refs: list[str] = []
+    runtime_ids: list[str] = []
+    adapters: list[str] = []
+    runtime_instructions: dict[str, str] = {}
+    enabled: bool = True
+    actor_role_id: Optional[str] = None
+
+
+class ProjectInput(BaseModel):
+    id: str
+    name: str = ""
+    description: str = ""
+    repos: Optional[list[dict | str]] = None   # None = 保留;资源经专用端点管理
+    charter: str = ""
+    dev_guidelines: Optional[str] = None       # 已由准则文档替代;None = 保留
+    orchestrator_role_id: Optional[str] = None
+    guidelines: Optional[list[dict]] = None
+    skills: Optional[list[dict | str]] = None
+    resources: Optional[list[str]] = None
+    required_env: Optional[str] = None
+    rules_yaml: Optional[str] = None  # 验证准则,YAML 列表;None 表示更新时保留
+
+
+class ResourceAdd(BaseModel):
+    target: str          # 本地路径或 git 远程地址
+    name: str = ""
+
+
+class DocumentWrite(BaseModel):
+    content: str
+    actor: str = "human"
+    message: str = ""
+
+
+class DocumentRestore(BaseModel):
+    path: str
+    revision: str
+    actor: str = "human"
+
+
+class BoardInput(BaseModel):
+    id: str
+    name: str = ""
+    description: Optional[str] = None    # None = 更新时保留现值
+    layout: Optional[list[dict]] = None  # None = 更新时保留现有布局
+    actor_role_id: Optional[str] = None
+
+
+class WidgetDataInput(BaseModel):
+    widgets: list[dict] = []
+
+
+class BackendInput(BaseModel):
+    id: str
+    name: Optional[str] = None
+    model: Optional[str] = None
+    tier: Optional[str] = None
+    cost_per_run: Optional[float] = None
+    security_level: Optional[int] = None
+    capabilities: Optional[list[str]] = None
+    models: Optional[list[dict]] = None   # 模型阶梯 [{name, tier, cost}]
+    enabled: Optional[bool] = None

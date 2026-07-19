@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from missioncrew.core import seed as seed_mod
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.core.models import Backend, Role
-from missioncrew.server import create_app
+from missioncrew.api import create_app
 
 
 # ---- 角色元数据 + 固定执行组合 ----

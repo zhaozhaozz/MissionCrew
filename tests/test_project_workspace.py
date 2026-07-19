@@ -7,7 +7,7 @@ from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
 from missioncrew.core.models import ProjectSkill, Task, TaskStage
-from missioncrew.server import create_app
+from missioncrew.api import create_app
 
 
 def _client(seeded):

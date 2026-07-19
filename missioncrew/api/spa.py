@@ -1,0 +1,25 @@
+"""页面服务:首页与干净 URL 的 SPA 兜底。必须最后注册(catch-all)。"""
+from __future__ import annotations
+
+from pathlib import Path
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+
+from .context import ApiContext
+
+WEB_DIR = Path(__file__).parent.parent / "web"
+
+
+def register(app: FastAPI, _ctx: ApiContext) -> None:
+    @app.get("/", response_class=HTMLResponse)
+    def index():
+        return (WEB_DIR / "index.html").read_text()
+
+    # 干净 URL 支持:必须注册在所有 API 路由之后(Starlette 按注册顺序匹配),
+    # 非 API 路径一律返回页面,由前端路由还原视图
+    @app.get("/{full_path:path}", response_class=HTMLResponse)
+    def spa_fallback(full_path: str):
+        if full_path.startswith("api/"):
+            raise HTTPException(404, "接口不存在")
+        return (WEB_DIR / "index.html").read_text()
