@@ -277,8 +277,12 @@ def create_app() -> FastAPI:
         backend = store.get_backend(body.runtime_id)
         if backend is None:
             raise HTTPException(400, f"runtime 不存在: {body.runtime_id}")
+        if not backend.enabled:
+            raise HTTPException(400, f"runtime {body.runtime_id} 已停用,"
+                                     "请先在 Runtime 设置页启用")
         known_models = {str(m.get("name", "")) for m in backend.models}
-        if known_models and body.model not in known_models:
+        # 空模型 = 显式使用 CLI 默认,总是合法;非空才校验归属
+        if body.model and known_models and body.model not in known_models:
             # 配置阶梯之外:再查 runtime 动态发现的模型目录(仿 Multica 从 runtime 取)
             if body.model not in set(discovered_models(backend)):
                 raise HTTPException(

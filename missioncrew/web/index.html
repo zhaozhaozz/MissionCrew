@@ -1856,15 +1856,23 @@ function renderRoleTable() {
 }
 
 function editRole(id) {
+  // runtime 是定义角色时的必选项:没有已启用的 runtime 就没法新建,提前引导
+  if (!id && !overview.backends.some(b => b.enabled)) {
+    uiAlert("没有已启用的 runtime,请先在全局设置的 Runtime 页注册并启用,再创建角色。");
+    return;
+  }
   const r = projRoles().find(x => x.id === id) || {
     id: "", name: "", description: "", capabilities: [], preference: "",
     runtime_id: "", model: "", color: "#3564d7" };
   const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
     `<span class="chip ${(r.capabilities || []).includes(k) ? "on" : ""}" data-cap="${k}"
        onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");
+  // 停用的 runtime 不可选(角色当前绑定的除外,保留以如实显示现状)
   const backendOpts = (r.runtime_id ? "" : `<option value="" disabled selected>选择 runtime…</option>`) +
     overview.backends.map(b =>
-      `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}>${esc(b.id)} — ${esc(b.name)}</option>`).join("");
+      `<option value="${esc(b.id)}" ${r.runtime_id === b.id ? "selected" : ""}
+         ${!b.enabled && r.runtime_id !== b.id ? "disabled" : ""}>` +
+      `${esc(b.id)} — ${esc(b.name)}${b.enabled ? "" : "(已停用)"}</option>`).join("");
   window._editingRoleModel = r.model;   // 供模型下拉初始化选中
   openFormDialog(id ? `编辑角色 @${id}` : "新建角色", `
     <div class="row">

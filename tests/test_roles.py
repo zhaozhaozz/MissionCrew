@@ -262,6 +262,19 @@ def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch)
         "id": "bad-user", "project_id": "webshop", "runtime_id": "laddered",
         "model": "nonexistent-model"})
     assert bad.status_code == 400                             # 两个目录都没有:拒绝
+    # 空模型 = CLI 默认,即使配置阶梯非空且不含空名条目也总是合法
+    cli_default = client.post("/api/roles", json={
+        "id": "cli-default", "project_id": "webshop", "runtime_id": "laddered"})
+    assert cli_default.status_code == 200
+    assert cli_default.json()["model"] == ""
+
+
+def test_save_role_rejects_disabled_runtime(client, seeded):
+    seeded.put_backend(Backend(id="paused", name="停用中", adapter="mock",
+                               enabled=False))
+    r = client.post("/api/roles", json={
+        "id": "on-paused", "project_id": "webshop", "runtime_id": "paused"})
+    assert r.status_code == 400 and "已停用" in r.json()["detail"]
 
 
 # ---- 执行组合在定义时固定,不做运行时路由 ----
