@@ -1397,7 +1397,9 @@ function renderResourceTable() {
     <td><b>${esc(r.name || r.id)}</b></td>
     <td class="muted">${esc(r.path || "—")}</td>
     <td class="muted">${esc(r.remote || "—")}</td>
-    <td><button class="danger" data-id="${esc(r.id)}"
+    <td>${r.path ? `<button class="ghost" data-id="${esc(r.id)}" title="重新探测 git 绑定与远程"
+        onclick="refreshResource(this.dataset.id)">刷新</button>` : ""}
+      <button class="danger" data-id="${esc(r.id)}"
       onclick="deleteResource(this.dataset.id)">移除</button></td></tr>`).join("");
   document.getElementById("res-table").innerHTML =
     `<tr><th>类型</th><th>名称</th><th>本地路径</th><th>git 远程</th><th></th></tr>` +
@@ -1412,6 +1414,16 @@ async function addResourceFromForm() {
   fdlg.close();
   await loadOverview();
   renderResourceTable(); renderSidebar();
+}
+
+async function refreshResource(id) {
+  const r = await api("POST",
+    `/api/projects/${encodeURIComponent(currentProject)}/resources/${encodeURIComponent(id)}/refresh`);
+  await loadOverview();
+  renderResourceTable(); renderSidebar();
+  uiAlert(r.kind === "git"
+    ? `已刷新:git 仓,远程 ${r.remote || "(未配置)"}`
+    : "已刷新:普通本地路径(未检测到 git 仓)");
 }
 
 async function deleteResource(id) {

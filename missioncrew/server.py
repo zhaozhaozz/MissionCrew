@@ -437,6 +437,31 @@ def create_app() -> FastAPI:
                     detail=f"project={project_id} resource={resource.id} kind={resource.kind}")
         return resource.__dict__
 
+    @app.post("/api/projects/{project_id}/resources/{resource_id}/refresh")
+    def refresh_resource(project_id: str, resource_id: str):
+        """重新探测资源的 git 绑定:路径后来 init 了 git、换了远程等场景。"""
+        project = must_project(project_id)
+        res = next((r for r in project.repos if r.id == resource_id), None)
+        if res is None:
+            raise HTTPException(404, "资源不存在")
+        if not res.path:
+            raise HTTPException(400, "该资源没有本地路径(纯远程 git 资源),无需刷新")
+        path = Path(res.path).expanduser()
+        if not path.is_dir():
+            raise HTTPException(400, f"本地路径已不存在: {res.path}")
+        if (path / ".git").exists():
+            remotes = _git_remotes(path)
+            res.kind = "git"
+            res.remote = next((r["url"] for r in remotes if r["name"] == "origin"),
+                              remotes[0]["url"] if remotes else "")
+        else:
+            res.kind, res.remote = "path", ""
+        store.put_project(project)
+        store.audit("human", "resource_refreshed",
+                    detail=f"project={project_id} resource={resource_id} "
+                           f"kind={res.kind} remote={res.remote}")
+        return res.__dict__
+
     @app.delete("/api/projects/{project_id}/resources/{resource_id}")
     def delete_resource(project_id: str, resource_id: str):
         project = must_project(project_id)

@@ -520,3 +520,25 @@ def test_resource_binding_without_origin_uses_first_remote(seeded, tmp_path):
                     json={"target": str(repo)}).json()
     assert r["kind"] == "git"
     assert r["remote"] == "https://example.com/mirror/x.git"
+
+
+def test_resource_refresh_rebinds_git_remote(seeded, tmp_path):
+    import subprocess
+    client = _client(seeded)
+    repo = tmp_path / "later-git"
+    repo.mkdir()
+    r = client.post("/api/projects/webshop/resources",
+                    json={"target": str(repo)}).json()
+    assert r["kind"] == "path"                      # 添加时还是普通目录
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin",
+                    "https://example.com/late/binding.git"], check=True)
+    refreshed = client.post(
+        f"/api/projects/webshop/resources/{r['id']}/refresh").json()
+    assert refreshed["kind"] == "git"               # 刷新后识别为 git 仓
+    assert refreshed["remote"] == "https://example.com/late/binding.git"
+    # 纯远程资源无本地路径,刷新返回 400
+    url_res = client.post("/api/projects/webshop/resources",
+                          json={"target": "https://github.com/acme/pure.git"}).json()
+    assert client.post(
+        f"/api/projects/webshop/resources/{url_res['id']}/refresh").status_code == 400
