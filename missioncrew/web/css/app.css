@@ -301,6 +301,11 @@
   .section { margin-bottom: 34px; scroll-margin-top: 56px; }
   .section > h2 { font-size: 14.5px; margin: 0 0 10px; display: flex; align-items: center; }
   table.mgr th { white-space: nowrap; }
+  /* 拖动排序:手柄格可抓取,拖动中的行半透明 */
+  td.drag-handle { cursor: grab; user-select: none; color: var(--muted);
+                   width: 24px; text-align: center; }
+  td.drag-handle:active { cursor: grabbing; }
+  tr.dragging { opacity: .45; }
   .pill { display: inline-block; border: 1px solid var(--line); border-radius: 999px;
           padding: 0 8px; font-size: 11.5px; color: var(--muted); margin: 1px 3px 1px 0; }
   /* 滑动开关(启用/停用) */

@@ -6,19 +6,14 @@ function abilityPills(role) {
 
 function renderRoleTable() {
   const project = overview.projects.find(p => p.id === currentProject);
-  const roles = projRoles();   // 已按 sort_order 排好(服务端顺序)
-  const rows = roles.map((r, i) => {
+  const rows = projRoles().map(r => {   // 已按 sort_order 排好(服务端顺序)
     const exec = r.runtime_id
       ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}` +
         (r.effort ? ` / effort ${esc(r.effort)}` : "")
       : `<span class="muted">未绑定(请编辑角色选择 runtime)</span>`;
-    const sort =
-      `<button class="ghost" title="上移" ${i === 0 ? "disabled" : ""}
-         onclick="moveRole('${r.id}', -1)">↑</button>` +
-      `<button class="ghost" title="下移" ${i === roles.length - 1 ? "disabled" : ""}
-         onclick="moveRole('${r.id}', 1)">↓</button>`;
-    return `<tr>
-      <td class="muted" style="white-space:nowrap">${sort}</td>
+    return `<tr data-id="${esc(r.id)}">
+      <td class="drag-handle" draggable="true" title="拖动排序"
+          ondragstart="roleDragStart(event)" ondragend="roleDragEnd()">⠿</td>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
           <b>@${esc(r.id)}</b> ${esc(r.name)} ${r.id === project?.orchestrator_role_id ? `<span class="pill">主控</span>` : ""}</td>
       <td class="muted">${esc(r.preference || "—")}</td>
@@ -26,20 +21,51 @@ function renderRoleTable() {
       <td class="muted">${exec}</td>
       <td><button class="ghost" onclick="editRole('${r.id}')">编辑</button></td></tr>`;
   }).join("");
-  document.getElementById("role-table").innerHTML =
-    `<tr><th>顺序</th><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th></th></tr>` + rows;
+  const table = document.getElementById("role-table");
+  table.innerHTML =
+    `<tr><th></th><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th></th></tr>` + rows;
+  table.ondragover = roleDragOver;              // 插入点判定放在表级,行随拖动实时移位
+  table.ondrop = e => e.preventDefault();       // 阻止浏览器对放置数据的默认处理
 }
 
-// 上移/下移一格:提交项目全部角色 id 的新顺序,服务端整体重排 sort_order。
-// 顺序影响设置页、侧栏角色列表和装配进提示词的角色名册。
-async function moveRole(id, delta) {
-  const ids = projRoles().map(r => r.id);
-  const i = ids.indexOf(id), j = i + delta;
-  if (i < 0 || j < 0 || j >= ids.length) return;
-  [ids[i], ids[j]] = [ids[j], ids[i]];
-  await api("POST", "/api/roles/reorder", { project_id: currentProject, ids });
-  await loadOverview();
-  renderRoleTable(); renderSidebar();
+// 拖动排序:拖手柄实时移动整行,松手后提交项目全部角色 id 的新顺序,
+// 服务端整体重排 sort_order。顺序影响设置页、侧栏角色列表和提示词名册。
+let _dragRoleRow = null, _dragRoleFrom = "";
+
+const _roleRowIds = () =>
+  [...document.querySelectorAll("#role-table tr[data-id]")].map(t => t.dataset.id);
+
+function roleDragStart(e) {
+  _dragRoleRow = e.target.closest("tr");
+  _dragRoleFrom = _roleRowIds().join(",");
+  e.dataTransfer.effectAllowed = "move";
+  e.dataTransfer.setData("text/plain", _dragRoleRow.dataset.id);  // Firefox 必需
+  e.dataTransfer.setDragImage(_dragRoleRow, 16, 16);              // 拖影用整行而非手柄格
+  _dragRoleRow.classList.add("dragging");
+}
+
+function roleDragOver(e) {
+  if (!_dragRoleRow) return;
+  e.preventDefault();                            // 声明本表可放置
+  const over = e.target.closest("tr[data-id]");
+  if (!over || over === _dragRoleRow) return;
+  const mid = over.getBoundingClientRect();
+  const after = e.clientY > mid.top + mid.height / 2;
+  over.parentNode.insertBefore(_dragRoleRow, after ? over.nextSibling : over);
+}
+
+async function roleDragEnd() {
+  if (!_dragRoleRow) return;
+  _dragRoleRow.classList.remove("dragging");
+  _dragRoleRow = null;
+  const ids = _roleRowIds();
+  if (ids.join(",") === _dragRoleFrom) return;   // 顺序没变,不发请求
+  try {
+    await api("POST", "/api/roles/reorder", { project_id: currentProject, ids });
+    await loadOverview();
+  } finally {   // 成功按新数据重绘;失败回退到服务端顺序
+    renderRoleTable(); renderSidebar();
+  }
 }
 
 function editRole(id) {
