@@ -407,7 +407,19 @@ def _trigger_from_prompt(prompt: str) -> str:
 # ---- 按 runtime 动态发现可用模型(仿 Multica 的 per-provider ListModels) ----
 
 # claude CLI 无模型枚举命令:用稳定别名目录(仿 claudeStaticModels 的静态策略)
-CLAUDE_MODEL_ALIASES = ["haiku", "sonnet", "opus"]
+# claude CLI 无模型枚举命令;此目录对齐 Multica 的 claudeStaticModels,
+# 反映 `claude --model` 实际接受的值:别名(自动跟随最新版)在前,具体型号在后。
+CLAUDE_MODEL_CATALOG = [
+    "haiku", "sonnet", "opus",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-haiku-4-5-20251001",
+    "claude-opus-4-6",
+    "claude-sonnet-4-5",
+]
 
 
 def _parse_codex_models(raw: str) -> list[str]:
@@ -432,13 +444,14 @@ def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
     - codex:`codex debug models --bundled`(JSON 目录)
     - opencode:`opencode models`(行式目录)
     - ACP 工具(kimi/kiro/qoder/trae):一次性会话,session/new 返回目录
-    - claude:CLI 无枚举命令,返回稳定别名;mock:返回配置阶梯(测试/演示)
+    - claude:CLI 无枚举命令,返回静态目录(别名 + 具体型号,对齐 Multica);
+      mock:返回配置阶梯(测试/演示)
     """
     adapter = backend.adapter
     if adapter == "mock":
         return [str(m.get("name", "")) for m in backend.models if m.get("name")]
     if adapter == "claude_code":
-        return list(CLAUDE_MODEL_ALIASES)
+        return list(CLAUDE_MODEL_CATALOG)
     binary = Path(backend.binary_path).name if backend.binary_path else None
     try:
         if adapter == "codex":

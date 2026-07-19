@@ -257,6 +257,15 @@ def test_backend_models_endpoint_merges_ladder_and_runtime(client, seeded, monke
     assert client.get("/api/backends/ghost/models").status_code == 404
 
 
+def test_claude_catalog_lists_concrete_model_ids():
+    """claude 无枚举命令,静态目录须包含别名和具体型号(对齐 Multica)。"""
+    from missioncrew import adapters
+    models = adapters.list_runtime_models(
+        Backend(id="c", name="c", adapter="claude_code"))
+    assert models[:3] == ["haiku", "sonnet", "opus"]          # 稳定别名在前
+    assert {"claude-sonnet-5", "claude-fable-5", "claude-opus-4-8"} <= set(models)
+
+
 def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch):
     from missioncrew import adapters
     seeded.put_backend(Backend(
