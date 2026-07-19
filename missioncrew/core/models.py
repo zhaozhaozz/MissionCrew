@@ -6,6 +6,7 @@ Project 承载"准则、上下文、Skill"(领域怎么理解);
 """
 from __future__ import annotations
 
+import re as _re
 import secrets as _secrets
 import time
 from dataclasses import dataclass, field, asdict
@@ -305,20 +306,36 @@ class Task:
         return cls(**d)
 
 
-# 角色能力是固定选项(id 与 runtime 的 capabilities 能力位一致):
+# 角色能力是固定选项,只收录"硬性模态/工具事实"(能不能做到,而非负责什么):
 # 在名册中展示,供调度方(人类或主控)按能力挑选合适的角色;
 # 不参与执行时路由——角色的 runtime/model 在定义时已固定。
+# 职责类描述(评审、安全审查等)写进定位/偏好自由文本;runtime 特性
+# (如多 Agent 编排)由绑定的 runtime 决定,不在角色上声明。
+# 注意与 Backend.capabilities 区分:后端能力位(含 review/security)
+# 仍是结构化任务路由的过滤条件,词表互相独立。
 ROLE_ABILITIES: dict[str, str] = {
     "coding":      "代码执行",
     "reasoning":   "深度推理",
-    "review":      "代码评审",
-    "security":    "安全审查",
     "multimodal":  "图像/视觉输入",
     "audio":       "语音输入",
     "image_gen":   "图像生成",
     "web_search":  "联网检索",
-    "sub_agents":  "多 Agent 编排",
 }
+
+# v0.5 起从角色能力词表退役的选项(职责/由 runtime 决定的特性):
+# 旧角色带这些标签时,读取即迁移——从 capabilities 移除,含义并入偏好文本。
+_RETIRED_ABILITY_TEXT = {
+    "review": "代码评审", "security": "安全审查", "sub_agents": "多 Agent 编排",
+}
+
+
+def preference_segments(preference: str) -> set[str]:
+    """偏好文本按顿号/逗号/分号切成片段集合。
+
+    迁移去重与种子绑定都用"片段精确匹配"而非子串:避免"不做代码评审"
+    这类否定表述被误认为已含"代码评审",导致含义被静默丢弃或反转。
+    """
+    return {s.strip() for s in _re.split(r"[、,,;;]", preference or "") if s.strip()}
 
 # 旧偏好标签 -> 偏好文本 的迁移映射(偏好已改为自由文本)
 _LEGACY_TRAIT_TEXT = {
@@ -329,11 +346,10 @@ _LEGACY_TRAIT_TEXT = {
 
 # 旧版中这些偏好会隐式追加路由能力。仅在读取旧角色 JSON 时
 # 还原为显式能力,避免升级后名册丢失原有的专长信息。
+# (review/security 已随能力词表退役,其含义由偏好文本承载,不再还原)
 _LEGACY_TRAIT_CAPABILITIES = {
     "multimodal": ["multimodal"],
     "web": ["web_search"],
-    "review": ["review"],
-    "security": ["security", "review"],
 }
 
 
@@ -384,6 +400,18 @@ class Role:
         traits = d.pop("traits", [])
         if traits and not d.get("preference"):
             d["preference"] = "、".join(_LEGACY_TRAIT_TEXT.get(t, t) for t in traits)
+        # v0.5:退役的能力标签迁移进偏好文本(读取即迁移,下次保存落库);
+        # 去重按片段精确匹配,子串命中(如"不做代码评审")仍会追加,宁重勿丢
+        caps = d.get("capabilities") or []
+        retired = [c for c in caps if c in _RETIRED_ABILITY_TEXT]
+        if retired:
+            d["capabilities"] = [c for c in caps if c not in _RETIRED_ABILITY_TEXT]
+            pref = d.get("preference") or ""
+            segs = preference_segments(pref)
+            extra = "、".join(_RETIRED_ABILITY_TEXT[c] for c in retired
+                             if _RETIRED_ABILITY_TEXT[c] not in segs)
+            if extra:
+                d["preference"] = "、".join(x for x in (pref, extra) if x)
         return cls(**d)
 
 

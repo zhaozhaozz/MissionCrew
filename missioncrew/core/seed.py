@@ -6,7 +6,8 @@ adapter 改为 claude_code / codex 并配置模型。
 from __future__ import annotations
 
 from .models import (TIER_ORDER, Backend, Channel, Project, ProjectSkill,
-                     Resource, Role, Rule)
+                     Resource, Role, Rule, _RETIRED_ABILITY_TEXT,
+                     preference_segments)
 from .store import Store
 
 DEMO_BACKENDS = [
@@ -78,6 +79,11 @@ def _choose_role_unit(store: Store, role: Role) -> Backend | None:
     if not units:
         return None
     need = set(role.capabilities)
+    # 职责标签(代码评审/安全审查等)已从角色能力迁移进偏好文本;
+    # 绑定时按片段还原为 Backend 能力位倾向,让评审/安全角色仍落在
+    # 具备 review/security 位的后端上(软约束:无满足单元时回退全部)
+    segs = preference_segments(role.preference)
+    need |= {cap for cap, text in _RETIRED_ABILITY_TEXT.items() if text in segs}
     compatible = [u for u in units if need <= set(u.capabilities)]
     pool = compatible or units
     target = TIER_ORDER.index(_DEFAULT_ROLE_TIERS.get(role.id, "standard"))
@@ -119,7 +125,7 @@ def default_roles(store: Store, project_id: str) -> list[Role]:
              capabilities=["coding"], preference="全栈"),
         Role(id="reviewer", project_id=project_id, name="评审", color="#2e9e5b",
              description="独立代码评审员,只审查不改代码:正确性、可维护性、边界条件。",
-             capabilities=["review"], preference="严谨,只审不改"),
+             capabilities=[], preference="代码评审,严谨,只审不改"),
         Role(id="expert", project_id=project_id, name="专家", color="#8b5cf6",
              description="资深架构师,处理疑难问题、复杂分析和大型重构方案。",
              capabilities=["coding", "reasoning"], preference="深度攻坚,高质量"),
@@ -128,7 +134,7 @@ def default_roles(store: Store, project_id: str) -> list[Role]:
              capabilities=["multimodal"], preference="页面与视觉验证"),
         Role(id="secure", project_id=project_id, name="安全", color="#c94b3c",
              description="安全工程师,从注入、越权、凭据泄露等角度审查变更与配置。",
-             capabilities=["review", "security"], preference="安全视角"),
+             capabilities=[], preference="安全审查,代码评审视角"),
         Role(id="tester", project_id=project_id, name="测试", color="#0e9488",
              description="测试工程师,写用例、跑回归、构造边界输入,报告只讲事实与复现步骤。",
              capabilities=["coding"], preference="适合测试,快速反馈"),

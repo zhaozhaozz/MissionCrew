@@ -85,6 +85,8 @@ def test_role_crud_api(client):
 def test_role_api_rejects_unknown_trait_and_bad_id(client):
     p = {"project_id": "webshop", "runtime_id": "std-1", "model": "pro"}
     assert client.post("/api/roles", json={"id": "x", "capabilities": ["nope"], **p}).status_code == 400
+    # 退役的职责类标签不再是合法能力选项
+    assert client.post("/api/roles", json={"id": "x", "capabilities": ["review"], **p}).status_code == 400
     assert client.post("/api/roles", json={"id": "bad name", **p}).status_code == 400
     assert client.post("/api/roles", json={"id": "y", **{**p, "runtime_id": "ghost"}}).status_code == 400
     # runtime 是定义角色时的必选项:缺字段 422,显式传空 400
@@ -104,9 +106,36 @@ def test_legacy_auto_routed_role_is_migrated_once(seeded):
     })
     assert seed_mod.ensure_role_bindings(seeded) == 1
     role = seeded.get_role("webshop", "legacy")
+    # 职责类标签不再进能力位:security 的含义只保留在偏好文本里,
+    # 但绑定仍按职责倾向落在具备 security 能力位的后端上
     assert role.runtime_id == "rev-1" and role.model == "pro"
-    assert role.capabilities == ["review", "security"]
+    assert role.capabilities == []
+    assert "安全审查" in role.preference
     assert "pinned_backend" not in role.to_dict() and "min_tier" not in role.to_dict()
+
+
+def test_retired_ability_tags_migrate_into_preference():
+    """v0.5:代码评审/安全审查/多 Agent 编排从能力词表退役,读取即迁移。"""
+    role = Role.from_dict({
+        "id": "old", "project_id": "p", "runtime_id": "std-1",
+        "capabilities": ["coding", "review", "security", "sub_agents"],
+        "preference": "严谨",
+    })
+    assert role.capabilities == ["coding"]
+    assert role.preference == "严谨、代码评审、安全审查、多 Agent 编排"
+    # 已有同名片段不重复;子串命中(如否定表述)不算已含,宁重勿丢
+    same = Role.from_dict({"id": "x", "project_id": "p", "runtime_id": "std-1",
+                           "capabilities": ["review"], "preference": "代码评审,严谨"})
+    assert same.capabilities == [] and same.preference == "代码评审,严谨"
+    neg = Role.from_dict({"id": "y", "project_id": "p", "runtime_id": "std-1",
+                          "capabilities": ["review"], "preference": "不做代码评审"})
+    assert neg.preference == "不做代码评审、代码评审"
+
+
+def test_seed_binding_keeps_duty_affinity(seeded):
+    """评审/安全角色的职责在偏好文本里,绑定仍应选 review/security 后端。"""
+    assert seeded.get_role("webshop", "reviewer").runtime_id == "rev-1"
+    assert seeded.get_role("webshop", "secure").runtime_id == "rev-1"
 
 
 def test_project_api_with_rules_yaml(client):
@@ -199,6 +228,8 @@ def test_backend_update_api(client, seeded):
 def test_traits_endpoint(client):
     d = client.get("/api/traits").json()
     assert d["abilities"]["multimodal"] == "图像/视觉输入"   # 能力固定选项词表
+    # 职责/runtime 特性不属于角色能力词表(后端能力位是独立词表,不受影响)
+    assert not {"review", "security", "sub_agents"} & set(d["abilities"])
     assert d["tiers"] == ["economy", "standard", "expert"]
 
 
