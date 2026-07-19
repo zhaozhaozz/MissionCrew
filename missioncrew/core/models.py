@@ -10,7 +10,7 @@ import re as _re
 import secrets as _secrets
 import time
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import Callable, Optional
 
 # 成本档位从低到高,路由优先低档,失败后逐级升级
 TIER_ORDER = ["economy", "standard", "expert"]
@@ -494,3 +494,6 @@ class ExecutionConfig:
     timeout: int = 3600
     effort: str = ""      # 推理力度(聊天执行由角色填入;任务阶段暂不使用)
     routing_trace: list[str] = field(default_factory=list)
+    # 运行过程回调 (kind, text):适配器在执行期间实时上报思考/工具/输出等
+    # 事件,None 表示调用方不关心过程(如结构化任务阶段)
+    emit: Optional[Callable[[str, str], None]] = None

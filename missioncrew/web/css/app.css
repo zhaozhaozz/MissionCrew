@@ -157,7 +157,12 @@
   .msg .body { background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-sm);
                border-radius: 4px 12px 12px 12px; padding: 9px 13px; white-space: pre-wrap;
                word-break: break-word; line-height: 1.65; }
-  .msg.human .body { background: var(--me); border-color: transparent; }
+  /* 人类消息靠右(头像在右、气泡右对齐收窄),Agent/系统靠左,类即时通讯布局 */
+  .msg.human { flex-direction: row-reverse; margin-left: auto; }
+  .msg.human .msg-main { display: flex; flex-direction: column; align-items: flex-end; }
+  .msg.human .body { background: var(--me); border-color: transparent;
+                     border-radius: 12px 4px 12px 12px; max-width: 640px; }
+  .msg.human .time { margin: 0 8px 0 0; }
   .msg.platform .body { background: transparent; border-style: dashed; box-shadow: none;
                         color: var(--muted); font-size: 13px; }
   .msg .body h3 { color: var(--text); font-size: 15px; margin: 10px 0 4px; }
@@ -168,9 +173,34 @@
   .date-sep { text-align: center; margin: 20px 0 16px; animation: fadeUp .18s ease; }
   .date-sep span { background: var(--bg-soft); color: var(--muted); font-size: 11.5px;
                    padding: 3px 14px; border-radius: 999px; }
-  .running { color: var(--muted); font-size: 13px; padding: 3px 24px; }
-  .running .dot { display: inline-block; animation: blink 1.2s infinite; color: var(--accent); }
   @keyframes blink { 50% { opacity: .2; } }
+  /* 运行过程卡片:内联在触发消息下方,可折叠;过程流按事件类型着色 */
+  .run-card { margin: -8px 0 16px 40px; max-width: 840px; font-size: 12.5px;
+              border: 1px dashed var(--line); border-radius: 10px;
+              background: var(--bg-soft); animation: fadeUp .18s ease; }
+  .run-card summary { cursor: pointer; padding: 6px 12px; color: var(--muted);
+                      user-select: none; display: flex; align-items: center; gap: 8px; }
+  .run-card summary::-webkit-details-marker { display: none; }
+  .run-card summary::before { content: "▸"; font-size: 10px; transition: transform .15s; }
+  .run-card[open] summary::before { transform: rotate(90deg); }
+  .rc-dot { font-size: 9px; }
+  .rc-dot.live { color: var(--accent); animation: blink 1.2s infinite; }
+  .rc-dot.done { color: var(--ok); }
+  .rc-dot.failed { color: var(--bad); }
+  .rc-err { color: var(--bad); font-size: 12px; }
+  .rc-events { max-height: 320px; overflow-y: auto; padding: 2px 12px 10px;
+               border-top: 1px dashed var(--line); }
+  .re { margin-top: 8px; white-space: pre-wrap; word-break: break-word;
+        line-height: 1.55; }
+  .re .re-k { display: inline-block; font-size: 10.5px; color: var(--muted);
+              border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
+              margin-right: 7px; vertical-align: 1px; }
+  .re-thinking { color: var(--muted); font-style: italic; }
+  .re-tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+             font-size: 12px; color: var(--text-2); }
+  .re-stderr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+               font-size: 12px; color: var(--bad); opacity: .85; }
+  .re-status { color: var(--muted); }
 
   #composer { flex: none; border-top: 1px solid var(--line); padding: 12px 24px 14px;
               background: var(--card); }

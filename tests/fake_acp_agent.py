@@ -58,6 +58,15 @@ def main():
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/prompt":
             text = msg["params"]["prompt"][0]["text"]
+            # 思考与工具调用通知:验证客户端把运行过程实时上报
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "s-test",
+                "update": {"sessionUpdate": "agent_thought_chunk",
+                           "content": {"type": "text", "text": "思考中…"}}}})
+            send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                "sessionId": "s-test",
+                "update": {"sessionUpdate": "tool_call", "toolCallId": "t1",
+                           "title": "read_file", "status": "completed"}}})
             chunk(f"ACP 收到任务({len(text)} 字符)")
             # 反向权限请求:客户端必须从 options 里选安全项,否则本进程会卡住
             send({"jsonrpc": "2.0", "id": 900, "method": "session/request_permission",

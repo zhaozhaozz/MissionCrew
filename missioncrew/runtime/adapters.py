@@ -16,6 +16,8 @@ import os
 import re
 import shutil
 import subprocess
+import threading
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
@@ -26,8 +28,11 @@ from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 # 各适配器的默认命令模板,{prompt}/{model}/{effort} 在运行时替换;
 # model/effort 为空时对应 token 及其前面的参数标志会被移除。
 DEFAULT_COMMANDS = {
+    # claude 用 stream-json 输出:逐事件拿到思考/工具调用/文本,实时上报
+    # 运行过程;最终回复取 result 事件(CliAdapter 检测到 stream-json 才解析)
     "claude_code": ["claude", "-p", "{prompt}", "--model", "{model}",
                     "--effort", "{effort}",
+                    "--output-format", "stream-json", "--verbose",
                     "--permission-mode", "acceptEdits", "--add-dir", "{documents_dir}"],
     "codex": ["codex", "exec", "--sandbox", "workspace-write", "--add-dir",
               "{documents_dir}", "-m", "{model}",
@@ -316,6 +321,10 @@ class MockAdapter:
     def _chat(self, cfg: ExecutionConfig) -> RunResult:
         me = _role_from_prompt(cfg.prompt)
         trigger = _trigger_from_prompt(cfg.prompt)
+        # 模拟运行过程事件,让事件管道可测试/可演示
+        emit = cfg.emit or (lambda kind, text: None)
+        emit("thinking", f"[mock] 理解触发消息({len(trigger)} 字符),对照角色定位准备回复。\n")
+        emit("tool", "workspace.inspect .\n")
         # 遵循触发消息中的协作指令:"请 @x ..." -> 回复中 @x 发起协作
         asked = [m for m in re.findall(r"请\s*@([\w-]+)", trigger) if m != me]
         combo = cfg.backend.tier + (f"/effort={cfg.effort}" if cfg.effort else "")
@@ -332,6 +341,7 @@ class MockAdapter:
         if docs_dir and "[写文档]" in trigger:
             Path(docs_dir, "mock-note.md").write_text(f"由 @{me} 在执行中写入。\n")
             reply += "\n已写入文档库 mock-note.md。"
+        emit("text", reply)
         return RunResult(True, reply[:120], output=reply)
 
 
@@ -347,7 +357,7 @@ class AcpAdapter:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置 ACP serve 命令")
         ok, text = acp.run_prompt(
             cmd, cfg.prompt, cfg.workdir, {**os.environ, **cfg.env},
-            model=cfg.backend.model, timeout=cfg.timeout,
+            model=cfg.backend.model, timeout=cfg.timeout, emit=cfg.emit,
         )
         try:
             Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(text)
@@ -356,8 +366,73 @@ class AcpAdapter:
         return RunResult(ok, text[-300:], output=text[-4000:])
 
 
+def _kill_process_group(proc: subprocess.Popen) -> None:
+    """结束整个进程组并收尸(start_new_session 后组 id == 子进程 pid)。"""
+    import signal
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def _summarize_tool_result(content) -> str:
+    """tool_result 的 content 可能是字符串或内容块列表,压成一行摘要。"""
+    if isinstance(content, list):
+        content = " ".join(str(b.get("content") or b.get("text") or "")
+                           if isinstance(b, dict) else str(b) for b in content)
+    return " ".join(str(content).split())[:400]
+
+
+def _claude_stream_event(line: str, emit) -> Optional[str]:
+    """解析 claude stream-json 的一行事件并上报运行过程。
+
+    事件形态(实测 claude 2.x):assistant 事件的 message.content 里是
+    thinking/text/tool_use 块;user 事件携带 tool_result;result 事件的
+    result 字段是最终回复文本。返回最终回复,其余情况返回 None。
+    hook/thinking_tokens/rate_limit 等 system 子事件不进过程流。
+    """
+    try:
+        d = json.loads(line)
+    except json.JSONDecodeError:
+        emit("stdout", line + "\n")
+        return None
+    t = d.get("type")
+    if t == "assistant":
+        for block in (d.get("message") or {}).get("content") or []:
+            bt = block.get("type")
+            if bt == "thinking":
+                emit("thinking", block.get("thinking", ""))
+            elif bt == "text":
+                emit("text", block.get("text", ""))
+            elif bt == "tool_use":
+                args = json.dumps(block.get("input") or {}, ensure_ascii=False)
+                emit("tool", f"{block.get('name', '?')} {args[:300]}\n")
+    elif t == "user":
+        for block in (d.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                mark = "✗ " if block.get("is_error") else ""
+                emit("tool_result",
+                     f"{mark}{_summarize_tool_result(block.get('content'))}\n")
+    elif t == "result":
+        return str(d.get("result") or "")
+    elif t == "system" and d.get("subtype") == "init":
+        emit("status", f"会话启动 model={d.get('model', '')}\n")
+    return None
+
+
 class CliAdapter:
-    """通用 CLI 适配器:按命令模板在工作目录内启动真实本地 Agent。"""
+    """通用 CLI 适配器:按命令模板在工作目录内启动真实本地 Agent。
+
+    执行期间逐行读取输出并经 cfg.emit 实时上报:模板含 stream-json 的
+    (claude)按事件解析出思考/工具/文本;其余 CLI 按原始行透传。
+    """
 
     def __init__(self, adapter_name: str):
         self.adapter_name = adapter_name
@@ -371,21 +446,87 @@ class CliAdapter:
             template, cfg.prompt, cfg.backend.model,
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
         )
+        raw_emit = cfg.emit or (lambda kind, text: None)
+
+        def emit(kind: str, text: str) -> None:
+            # 过程上报失败(落库异常等)只丢事件,绝不能拖死读线程:
+            # 读线程死亡会让子进程写满管道缓冲后阻塞,整次执行假死到超时
+            try:
+                raw_emit(kind, text)
+            except Exception:
+                pass
+
+        stream_json = any("stream-json" in tok for tok in cmd)
         try:
-            proc = subprocess.run(
+            # start_new_session:CLI 可能派生孙进程并继承管道,结束时按
+            # 进程组整体清理;errors=replace 防非法字节炸死读线程
+            proc = subprocess.Popen(
                 cmd, cwd=cfg.workdir, env={**os.environ, **cfg.env},
-                capture_output=True, text=True, timeout=cfg.timeout,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                encoding="utf-8", errors="replace", bufsize=1,
+                stdin=subprocess.DEVNULL, start_new_session=True,
             )
         except FileNotFoundError:
             return RunResult(False, f"命令不存在: {template[0]}(后端 {cfg.backend.id})")
-        except subprocess.TimeoutExpired:
-            return RunResult(False, f"执行超时({cfg.timeout}s)")
-        out = (proc.stdout or "").strip() or (proc.stderr or "").strip()
-        # 完整输出落盘工作区,便于回查;聊天回复取输出尾部
+        out_tail: deque = deque(maxlen=400)   # 原始输出尾部(落盘/兜底回复)
+        err_tail: deque = deque(maxlen=200)
+        final_box: list[str] = []             # stream-json 的 result 最终回复
+        text_acc: list[str] = []              # stream-json 的文本块(无 result 时兜底)
+
+        def parse_emit(kind, text):
+            if kind == "text":
+                text_acc.append(text)
+            emit(kind, text)
+
+        def _drain(pipe, kind):
+            for raw in pipe:
+                line = raw.rstrip("\n")
+                if not line.strip():
+                    continue
+                (out_tail if kind == "stdout" else err_tail).append(line)
+                if kind == "stdout" and stream_json:
+                    final = _claude_stream_event(line, parse_emit)
+                    if final is not None:
+                        final_box.append(final)
+                else:
+                    emit(kind, line + "\n")
+
+        def _write_log():
+            try:
+                Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(
+                    "\n".join(out_tail) + ("\n--- stderr ---\n" + "\n".join(err_tail)
+                                          if err_tail else ""))
+            except OSError:
+                pass
+
+        readers = [threading.Thread(target=_drain, args=(proc.stdout, "stdout"), daemon=True),
+                   threading.Thread(target=_drain, args=(proc.stderr, "stderr"), daemon=True)]
+        for r in readers:
+            r.start()
         try:
-            Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(out)
-        except OSError:
-            pass
+            proc.wait(timeout=cfg.timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            for r in readers:
+                r.join(timeout=3)
+            _write_log()
+            return RunResult(False, f"执行超时({cfg.timeout}s)")
+        for r in readers:
+            r.join(timeout=5)
+        if any(r.is_alive() for r in readers):
+            # 子进程已退出但孙进程仍握着管道:结束进程组促成 EOF,
+            # 避免回复被后续输出污染、事件在 run 结束后继续增长
+            _kill_process_group(proc)
+            for r in readers:
+                r.join(timeout=3)
+        raw_out = "\n".join(out_tail).strip() or "\n".join(err_tail).strip()
+        _write_log()
+        # stream-json:回复取 result 事件;异常中断没等到 result 时退回已解析
+        # 的文本块或 stderr,不把原始 JSONL 发进频道
+        out = (final_box[-1].strip() if final_box else "")
+        if not out and stream_json:
+            out = "\n".join(text_acc).strip() or "\n".join(err_tail).strip()
+        out = out or raw_out
         return RunResult(proc.returncode == 0, out[-300:], output=out[-4000:])
 
 

@@ -143,6 +143,7 @@ function insertMention(id) {
 
 function selectChannel(id, jump = true) {
   currentChan = id; lastMsgId = 0; lastMsgDate = "";
+  runCards.clear();
   document.getElementById("msgs").innerHTML = "";
   if (jump && currentTab !== "chat") switchTab("chat");
   renderSidebar(); pollMessages();
@@ -183,6 +184,7 @@ function appendMessages(list) {
     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const div = document.createElement("div");
     div.className = `msg ${m.author_type}`;
+    div.dataset.msgId = m.id;   // 运行过程卡片按触发消息内联定位
     div.innerHTML = `<span class="avatar" style="background:${color}">${esc(initial)}</span>
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${isAgent ? color : "var(--text)"}">${esc(name)}</span>
@@ -195,19 +197,109 @@ function appendMessages(list) {
   if (list.length && nearBottom) pane.scrollTop = pane.scrollHeight;
 }
 
+/* ---- 运行过程卡片:内联在触发消息之后,可折叠,实时刷新 ---- */
+const runCards = new Map();   // run_id -> {el, key, userToggled}
+const RUN_EVENT_META = {
+  thinking:    { label: "思考", cls: "re-thinking" },
+  tool:        { label: "工具", cls: "re-tool" },
+  tool_result: { label: "结果", cls: "re-tool" },
+  text:        { label: "输出", cls: "re-text" },
+  stdout:      { label: "输出", cls: "re-tool" },
+  stderr:      { label: "stderr", cls: "re-stderr" },
+  status:      { label: "状态", cls: "re-status" },
+};
+
+function runSummary(run) {
+  const st = { queued: "排队中", running: "运行中", done: "已完成", failed: "失败" }[run.status] || run.status;
+  const live = run.status === "queued" || run.status === "running";
+  const secs = run.finished_at ? ` · ${Math.max(1, Math.round(run.finished_at - run.created_at))}s` : "";
+  return `<span class="rc-dot ${live ? "live" : run.status}">●</span>
+    <b style="color:${roleColor[run.role_id] || "var(--muted)"}">@${esc(run.role_id)}</b>
+    <span class="muted">${run.backend_id ? esc(run.backend_id) : "…"} · ${st}${secs}</span>
+    ${run.error ? `<span class="rc-err">${esc(run.error).slice(0, 120)}</span>` : ""}`;
+}
+
+async function renderRunEvents(run, card) {
+  // 静默拉取(不弹 toast,服务重启间隙下轮重试);成功才返回 true,
+  // 调用方据此提交 card.key,失败时下轮按 key 未变化重试
+  try {
+    const r = await fetch(`/api/chat/runs/${run.id}/events`);
+    if (!r.ok) return false;
+    const d = await r.json();
+    const pane = document.getElementById("msgs");
+    const outerNear = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
+    const body = card.el.querySelector(".rc-events");
+    const innerNear = !body.childElementCount ||
+      body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+    body.innerHTML = d.events.map(e => {
+      const meta = RUN_EVENT_META[e.kind] || { label: e.kind, cls: "re-status" };
+      return `<div class="re ${meta.cls}"><span class="re-k">${esc(meta.label)}</span>${esc(e.content)}</div>`;
+    }).join("") || `<div class="re re-status">(暂无过程输出)</div>`;
+    // 内外滚动都只在原本贴底时跟随,不打断正在回看历史的读者
+    if (innerNear) body.scrollTop = body.scrollHeight;
+    if (outerNear) pane.scrollTop = pane.scrollHeight;
+    return true;
+  } catch (_) { return false; }
+}
+
+function syncRuns(runs) {
+  const pane = document.getElementById("msgs");
+  const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
+  for (const run of runs) {
+    let card = runCards.get(run.id);
+    if (!card) {
+      // 内联定位:触发消息之后、同触发的更早卡片之后。触发消息还没
+      // 分页加载进来时先不建卡,下轮消息就位后再挂,避免卡片错位搁浅
+      let anchor = pane.querySelector(`[data-msg-id="${run.trigger_message_id}"]`);
+      if (!anchor && run.trigger_message_id > lastMsgId) continue;
+      const el = document.createElement("details");
+      el.className = "run-card";
+      el.dataset.trigger = run.trigger_message_id;
+      el.dataset.runId = run.id;
+      el.innerHTML = `<summary></summary><div class="rc-events"></div>`;
+      card = { el, key: null, userToggled: false, fetching: false };
+      el.querySelector("summary").addEventListener("click", () => { card.userToggled = true; });
+      el.addEventListener("toggle", () => {   // 展开时过程流贴底显示最新
+        if (el.open) { const b = el.querySelector(".rc-events"); b.scrollTop = b.scrollHeight; }
+      });
+      while (anchor && anchor.nextElementSibling?.classList?.contains("run-card")
+             && Number(anchor.nextElementSibling.dataset.runId) < run.id)
+        anchor = anchor.nextElementSibling;
+      if (anchor) anchor.after(el); else pane.appendChild(el);
+      runCards.set(run.id, card);
+    }
+    const live = run.status === "queued" || run.status === "running";
+    const key = `${run.status}:${run.events_size}`;
+    if (card.key !== key && !card.fetching) {
+      card.el.querySelector("summary").innerHTML = runSummary(run);
+      if (!card.userToggled) card.el.open = live;   // 运行中自动展开,结束自动收起
+      if (run.events_size > 0 || !live) {
+        card.fetching = true;
+        renderRunEvents(run, card).then(ok => {
+          card.fetching = false;
+          if (ok) card.key = key;
+        });
+      } else {
+        card.key = key;
+      }
+    }
+  }
+  if (nearBottom) pane.scrollTop = pane.scrollHeight;
+}
+
 async function pollMessages() {
   if (!currentChan) return;
+  const chan = currentChan;   // 响应落地时可能已切频道:丢弃过期响应
   try {
-    const r = await fetch(`/api/chat/${currentChan}/messages?after_id=${lastMsgId}`);
-    if (!r.ok) return;
+    const r = await fetch(`/api/chat/${chan}/messages?after_id=${lastMsgId}`);
+    if (!r.ok || chan !== currentChan) return;
     const d = await r.json();
+    if (chan !== currentChan) return;
     appendMessages(d.messages);
+    syncRuns(d.runs || []);
     const pane = document.getElementById("msgs");
     if (!pane.children.length)
       pane.innerHTML = `<div class="chat-empty empty">还没有消息:@角色 布置工作,对话会显示在这里</div>`;
-    document.getElementById("running-bar").innerHTML = d.active_runs.map(run =>
-      `<div class="running"><span class="dot">●</span> @${esc(run.role_id)} 正在工作
-       ${run.backend_id ? "(后端 " + esc(run.backend_id) + ")" : "(排队中)"}…</div>`).join("");
   } catch (e) { /* 服务重启间隙,忽略 */ }
 }
 

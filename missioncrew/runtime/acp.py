@@ -15,7 +15,7 @@ import queue
 import subprocess
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 
 class AcpError(Exception):
@@ -23,13 +23,24 @@ class AcpError(Exception):
 
 
 class _AcpClient:
-    def __init__(self, cmd: list[str], cwd: str, env: dict, timeout: int):
+    def __init__(self, cmd: list[str], cwd: str, env: dict, timeout: int,
+                 emit: Optional[Callable[[str, str], None]] = None):
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, cwd=cwd, env=env, text=True, bufsize=1,
+            stderr=subprocess.PIPE, cwd=cwd, env=env,
+            encoding="utf-8", errors="replace", bufsize=1,
         )
         self.deadline = time.time() + timeout
         self.chunks: list[str] = []          # agent_message_chunk 文本
+        raw_emit = emit or (lambda kind, text: None)
+
+        def _safe_emit(kind: str, text: str) -> None:
+            # 上报失败只丢事件:读循环死亡会让所有 pending 请求挂到超时
+            try:
+                raw_emit(kind, text)
+            except Exception:
+                pass
+        self.emit = _safe_emit                # 运行过程实时上报
         self._next_id = 0
         self._pending: dict[int, queue.Queue] = {}
         self._write_lock = threading.Lock()
@@ -59,16 +70,27 @@ class _AcpClient:
             self._handle_agent_request(msg)
         elif msg.get("method") in ("session/update", "session/notification"):
             update = (msg.get("params") or {}).get("update") or {}
-            if update.get("sessionUpdate") == "agent_message_chunk":
-                content = update.get("content") or {}
+            kind = update.get("sessionUpdate")
+            content = update.get("content") or {}
+            if kind == "agent_message_chunk":
                 if content.get("type") == "text":
                     self.chunks.append(content.get("text", ""))
+                    self.emit("text", content.get("text", ""))
+            elif kind == "agent_thought_chunk":
+                if content.get("type") == "text":
+                    self.emit("thinking", content.get("text", ""))
+            elif kind in ("tool_call", "tool_call_update"):
+                label = update.get("title") or update.get("toolCallId") or ""
+                status = update.get("status") or ""
+                if label or status:
+                    self.emit("tool", f"{label} {status}".strip() + "\n")
 
     def _handle_agent_request(self, msg: dict) -> None:
         """应答 agent -> client 方向的请求,平台是无头的,权限自动决策。"""
         if msg["method"] == "session/request_permission":
             option = _pick_permission_option((msg.get("params") or {}).get("options") or [])
             if option is not None:
+                self.emit("status", f"权限请求:自动选择 {option}\n")
                 self._write({"jsonrpc": "2.0", "id": msg["id"],
                              "result": {"outcome": {"outcome": "selected",
                                                     "optionId": option}}})
@@ -132,10 +154,14 @@ def _pick_permission_option(options: list[dict]) -> Optional[str]:
 
 
 def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
-               model: str = "", timeout: int = 900) -> tuple[bool, str]:
-    """启动 ACP 服务进程,完成一轮 prompt,返回 (成功, 回复文本/错误)。"""
+               model: str = "", timeout: int = 900,
+               emit: Optional[Callable[[str, str], None]] = None) -> tuple[bool, str]:
+    """启动 ACP 服务进程,完成一轮 prompt,返回 (成功, 回复文本/错误)。
+
+    emit 非空时,会话期间的思考/工具/文本/权限事件实时上报 (kind, text)。
+    """
     try:
-        client = _AcpClient(cmd, workdir, env, timeout)
+        client = _AcpClient(cmd, workdir, env, timeout, emit=emit)
     except OSError as e:
         return False, f"ACP 进程启动失败: {e}"
     try:

@@ -70,6 +70,12 @@ CREATE TABLE IF NOT EXISTS chat_runs (
   depth INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued',
   error TEXT DEFAULT '', created_at REAL NOT NULL, finished_at REAL
 );
+CREATE TABLE IF NOT EXISTS run_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id INTEGER NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
+  created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id);
 """
 
 
@@ -345,3 +351,45 @@ class Store:
         """一条协作链(同一 root 消息)累计触发的执行数,用于防爆炸。"""
         rows = self._query("SELECT COUNT(*) AS n FROM chat_runs WHERE root_id=?", (root_id,))
         return rows[0]["n"]
+
+    # ---- 聊天:执行过程事件(实时运行输出) ----
+    # 同类连续事件合并进同一行(追加文本),避免逐 chunk/逐行插入把表撑爆;
+    # 换 kind 或单行超过上限时另起新行。前端按"行"整体重渲染,无需增量游标。
+    RUN_EVENT_MAX = 8000
+
+    def append_run_event(self, run_id: int, kind: str, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            rows = self._query(
+                "SELECT id, kind, LENGTH(content) AS n FROM run_events "
+                "WHERE run_id=? ORDER BY id DESC LIMIT 1", (run_id,))
+            last = rows[0] if rows else None
+            if last and last["kind"] == kind and last["n"] < self.RUN_EVENT_MAX:
+                self._execute(
+                    "UPDATE run_events SET content = content || ? WHERE id=?",
+                    (text[: self.RUN_EVENT_MAX], last["id"]))
+            else:
+                self._execute(
+                    "INSERT INTO run_events(run_id, kind, content, created_at) "
+                    "VALUES(?,?,?,?)",
+                    (run_id, kind, text[: self.RUN_EVENT_MAX], time.time()))
+
+    def run_events(self, run_id: int, limit: int = 200) -> list[dict]:
+        rows = self._query(
+            "SELECT id, kind, content, created_at FROM run_events "
+            "WHERE run_id=? ORDER BY id DESC LIMIT ?", (run_id, limit))
+        return [dict(r) for r in reversed(rows)]
+
+    def chat_runs_for_channel(self, channel: str, limit: int = 30) -> list[dict]:
+        """频道最近的执行记录(含已结束)。
+
+        events_size 是事件内容总长度:合并式追加不改行数,前端用它判断
+        过程输出是否有增量、要不要重新拉取事件。
+        """
+        rows = self._query(
+            "SELECT r.*, (SELECT COALESCE(SUM(LENGTH(e.content)), 0) "
+            "FROM run_events e WHERE e.run_id = r.id) AS events_size "
+            "FROM chat_runs r WHERE r.channel=? ORDER BY r.id DESC LIMIT ?",
+            (channel, limit))
+        return [dict(r) for r in reversed(rows)]

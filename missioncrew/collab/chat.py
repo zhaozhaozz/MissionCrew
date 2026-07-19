@@ -218,6 +218,8 @@ class ChatEngine:
                                 f"backend={backend.id} depth={depth} {trace}")
 
         cfg = self._assemble(channel, role, backend, msg_id)
+        # 运行过程(思考/工具/输出)实时落库,前端在聊天流中内联展示
+        cfg.emit = lambda kind, text: self.store.append_run_event(run_id, kind, text)
         library = library_for(channel.project_id or "")
         library.commit_changes("platform", "Capture external document changes before chat run")
         result = adapters.get_adapter(backend.adapter).run(cfg)

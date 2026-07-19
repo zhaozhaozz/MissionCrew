@@ -39,7 +39,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         return {
             "messages": store.list_messages(channel_id, after_id),
             "active_runs": store.active_chat_runs(channel_id),
+            # 最近执行记录(含已结束):前端按 events_size 变化拉取过程事件
+            "runs": store.chat_runs_for_channel(channel_id),
         }
+
+    @app.get("/api/chat/runs/{run_id}/events")
+    def run_events(run_id: int):
+        return {"events": store.run_events(run_id)}
 
     @app.post("/api/chat/{channel_id}/messages")
     def post_message(channel_id: str, body: MessageInput):
