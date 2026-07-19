@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from ..core.models import ROLE_ABILITIES, Role
 from ..runtime.adapters import EFFORT_SUPPORT
 from .context import MENTION_ID_RE, ApiContext
-from .schemas import RoleInput
+from .schemas import RoleInput, RoleReorder
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -47,10 +47,28 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 raise HTTPException(400, f"runtime {body.runtime_id} 不支持 effort(推理力度)配置")
             if body.effort not in allowed:
                 raise HTTPException(400, f"effort 必须是 {'/'.join(allowed)} 之一")
-        role = Role(**body.model_dump())
+        data = body.model_dump()
+        if data["sort_order"] is None:   # 编辑保留现有顺序;新角色排到项目末尾
+            existing = store.get_role(body.project_id, body.id)
+            data["sort_order"] = existing.sort_order if existing else 10 + max(
+                (r.sort_order for r in store.list_roles(body.project_id)), default=0)
+        role = Role(**data)
         store.put_role(role)
         store.audit("human", "role_saved", detail=f"project={role.project_id} role={role.id}")
         return role.to_dict()
+
+    @app.post("/api/roles/reorder")
+    def reorder_roles(body: RoleReorder):
+        ctx.must_project(body.project_id)
+        current = {r.id: r for r in store.list_roles(body.project_id)}
+        if set(body.ids) != set(current) or len(body.ids) != len(current):
+            raise HTTPException(400, "ids 必须恰好包含该项目的全部角色,不重不漏")
+        for i, rid in enumerate(body.ids):
+            current[rid].sort_order = (i + 1) * 10
+            store.put_role(current[rid])
+        store.audit("human", "roles_reordered",
+                    detail=f"project={body.project_id} order={','.join(body.ids)}")
+        return {"ok": True, "ids": body.ids}
 
     @app.delete("/api/roles/{role_id}")
     def delete_role(role_id: str, project_id: str):

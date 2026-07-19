@@ -6,12 +6,19 @@ function abilityPills(role) {
 
 function renderRoleTable() {
   const project = overview.projects.find(p => p.id === currentProject);
-  const rows = projRoles().map(r => {
+  const roles = projRoles();   // 已按 sort_order 排好(服务端顺序)
+  const rows = roles.map((r, i) => {
     const exec = r.runtime_id
       ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}` +
         (r.effort ? ` / effort ${esc(r.effort)}` : "")
       : `<span class="muted">未绑定(请编辑角色选择 runtime)</span>`;
+    const sort =
+      `<button class="ghost" title="上移" ${i === 0 ? "disabled" : ""}
+         onclick="moveRole('${r.id}', -1)">↑</button>` +
+      `<button class="ghost" title="下移" ${i === roles.length - 1 ? "disabled" : ""}
+         onclick="moveRole('${r.id}', 1)">↓</button>`;
     return `<tr>
+      <td class="muted" style="white-space:nowrap">${sort}</td>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
           <b>@${esc(r.id)}</b> ${esc(r.name)} ${r.id === project?.orchestrator_role_id ? `<span class="pill">主控</span>` : ""}</td>
       <td class="muted">${esc(r.preference || "—")}</td>
@@ -20,7 +27,19 @@ function renderRoleTable() {
       <td><button class="ghost" onclick="editRole('${r.id}')">编辑</button></td></tr>`;
   }).join("");
   document.getElementById("role-table").innerHTML =
-    `<tr><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th></th></tr>` + rows;
+    `<tr><th>顺序</th><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th></th></tr>` + rows;
+}
+
+// 上移/下移一格:提交项目全部角色 id 的新顺序,服务端整体重排 sort_order。
+// 顺序影响设置页、侧栏角色列表和装配进提示词的角色名册。
+async function moveRole(id, delta) {
+  const ids = projRoles().map(r => r.id);
+  const i = ids.indexOf(id), j = i + delta;
+  if (i < 0 || j < 0 || j >= ids.length) return;
+  [ids[i], ids[j]] = [ids[j], ids[i]];
+  await api("POST", "/api/roles/reorder", { project_id: currentProject, ids });
+  await loadOverview();
+  renderRoleTable(); renderSidebar();
 }
 
 function editRole(id) {

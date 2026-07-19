@@ -356,6 +356,7 @@ class Role:
     capabilities: list[str] = field(default_factory=list)  # 固定能力选项,见 ROLE_ABILITIES
     preference: str = ""                   # 工作偏好:自由文本(如"前端"/"后端,偏好 React")
     color: str = ""                        # 看板/聊天中的标识色
+    sort_order: int = 0                    # 项目内显示顺序(设置页/侧栏/名册),小的在前
 
     def ability_labels(self) -> list[str]:
         return [ROLE_ABILITIES.get(c, c) for c in self.capabilities]

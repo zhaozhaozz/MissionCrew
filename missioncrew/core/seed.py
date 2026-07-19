@@ -136,7 +136,8 @@ def default_roles(store: Store, project_id: str) -> list[Role]:
              description="技术写作者,维护 README、变更说明和使用文档,行文简洁面向读者。",
              capabilities=[], preference="适合文档,快速低成本"),
     ]
-    for role in roles:
+    for i, role in enumerate(roles):
+        role.sort_order = (i + 1) * 10   # 按模板顺序展示(主控在前),留间隔便于插入
         if not _bind_role(store, role):
             raise RuntimeError("没有已启用的 runtime,无法创建固定执行角色")
     return roles

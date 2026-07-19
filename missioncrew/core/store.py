@@ -269,7 +269,8 @@ class Store:
         rs = [Role.from_dict(d) for d in self._list("roles")]
         if project_id is not None:
             rs = [r for r in rs if r.project_id == project_id]
-        return sorted(rs, key=lambda r: (r.project_id, r.id))
+        # 手工排序优先,同序号(含旧数据的默认 0)按 id 字母序稳定兜底
+        return sorted(rs, key=lambda r: (r.project_id, r.sort_order, r.id))
 
     # ---- 自定义面板 ----
     def put_board(self, board: Board) -> None:

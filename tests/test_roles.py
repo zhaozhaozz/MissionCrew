@@ -296,6 +296,37 @@ def test_save_role_rejects_disabled_runtime(client, seeded):
     assert r.status_code == 400 and "已停用" in r.json()["detail"]
 
 
+# ---- 角色排序:项目内手工顺序,影响设置页/侧栏/名册 ----
+
+def test_seeded_roles_follow_template_order_not_alphabetical(seeded):
+    assert [r.id for r in seeded.list_roles("webshop")][:3] == ["lead", "dev", "reviewer"]
+
+
+def test_reorder_roles_api(client, seeded):
+    ids = [r.id for r in seeded.list_roles("webshop")]
+    ids.append(ids.pop(0))       # 第一个角色移到末尾
+    assert client.post("/api/roles/reorder",
+                       json={"project_id": "webshop", "ids": ids}).status_code == 200
+    assert [x.id for x in seeded.list_roles("webshop")] == ids
+    # 不完整或含未知 id:整体拒绝,顺序不变
+    bad = client.post("/api/roles/reorder", json={"project_id": "webshop", "ids": ids[:-1]})
+    ghost = client.post("/api/roles/reorder",
+                        json={"project_id": "webshop", "ids": [*ids[:-1], "ghost"]})
+    assert bad.status_code == 400 and ghost.status_code == 400
+    assert [x.id for x in seeded.list_roles("webshop")] == ids
+
+
+def test_new_role_appended_and_edit_keeps_position(client, seeded):
+    p = {"project_id": "webshop", "runtime_id": "std-1", "model": "pro"}
+    client.post("/api/roles", json={"id": "newbie", **p})
+    assert seeded.list_roles("webshop")[-1].id == "newbie"
+    # 编辑已有角色(请求不带 sort_order)不改变它的位置
+    first = seeded.list_roles("webshop")[0]
+    client.post("/api/roles", json={"id": first.id, "name": "改名", **p})
+    roles = seeded.list_roles("webshop")
+    assert roles[0].id == first.id and roles[0].name == "改名"
+
+
 # ---- effort(推理力度):仅支持的 runtime 可配,并注入本次执行 ----
 
 def test_role_effort_saved_only_for_supporting_runtime(client, seeded):

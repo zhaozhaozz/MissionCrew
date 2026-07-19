@@ -49,6 +49,12 @@ class RoleInput(BaseModel):
     capabilities: list[str] = []   # 固定能力选项(ROLE_ABILITIES)
     preference: str = ""           # 偏好:自由文本(风格/领域,如前端/后端)
     color: str = ""
+    sort_order: Optional[int] = None   # None = 保留现值;新角色排到项目末尾
+
+
+class RoleReorder(BaseModel):
+    project_id: str
+    ids: list[str]                 # 项目全部角色 id,按目标显示顺序排列
 
 
 class GuidelineInput(BaseModel):
