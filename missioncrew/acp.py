@@ -161,3 +161,43 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
         return False, str(e)
     finally:
         client.close()
+
+
+def list_models(cmd: list[str], env: Optional[dict] = None,
+                timeout: int = 30) -> list[str]:
+    """向 ACP 工具查询可用模型:一次性会话,从 session/new 响应解析模型目录。
+
+    兼容两种形态:kimi 等返回 configOptions(category=model 的 select 选项);
+    部分实现返回 models 块({available:[...]} 或数组)。查不到返回空列表。
+    """
+    import os
+    import tempfile
+    workdir = tempfile.mkdtemp(prefix="mc-acp-models-")
+    try:
+        client = _AcpClient(cmd, workdir, env or dict(os.environ), timeout)
+    except OSError:
+        return []
+    try:
+        client.request("initialize", {
+            "protocolVersion": 1,
+            "clientInfo": {"name": "missioncrew-model-discovery", "version": "0.4.0"},
+            "clientCapabilities": {},
+        })
+        sess = client.request("session/new", {"cwd": workdir, "mcpServers": []})
+        models: list[str] = []
+        for opt in sess.get("configOptions") or []:
+            if opt.get("category") == "model" or opt.get("id") == "model":
+                models = [str(o.get("value", "")) for o in opt.get("options", [])]
+                break
+        if not models:
+            block = sess.get("models")
+            if isinstance(block, dict):
+                block = block.get("available", [])
+            if isinstance(block, list):
+                models = [str(m.get("modelId") or m.get("id") or m.get("value") or "")
+                          if isinstance(m, dict) else str(m) for m in block]
+        return [m for m in models if m]
+    except AcpError:
+        return []
+    finally:
+        client.close()

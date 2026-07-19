@@ -222,3 +222,35 @@ def test_tools_endpoint_merges_registration_state(client):
     assert by_id["eco-1"]["registered"] is True
     for r in rows:  # 运行时页不暴露档位/成本/能力
         assert "tier" not in r and "cost_per_run" not in r and "capabilities" not in r
+
+
+# ---- 模型清单来自 runtime(仿 Multica 动态发现) ----
+
+def test_backend_models_endpoint_merges_ladder_and_runtime(client, seeded, monkeypatch):
+    from missioncrew import adapters
+    seeded.put_backend(Backend(
+        id="laddered", name="laddered", adapter="mock",
+        models=[{"name": "small", "tier": "economy", "cost": 1}]))
+    monkeypatch.setattr(adapters, "list_runtime_models",
+                        lambda b, timeout=25: ["dyn/alpha", "dyn/beta"])
+    d = client.get("/api/backends/laddered/models").json()
+    assert {m["name"] for m in d["configured"]} == {"small"}   # 配置阶梯保留
+    assert d["discovered"] == ["dyn/alpha", "dyn/beta"]        # runtime 动态目录
+    assert client.get("/api/backends/ghost/models").status_code == 404
+
+
+def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch):
+    from missioncrew import adapters
+    seeded.put_backend(Backend(
+        id="laddered", name="laddered", adapter="mock",
+        models=[{"name": "small", "tier": "economy", "cost": 1}]))
+    monkeypatch.setattr(adapters, "list_runtime_models",
+                        lambda b, timeout=25: ["dyn/alpha"])
+    ok = client.post("/api/roles", json={
+        "id": "dyn-user", "project_id": "webshop", "runtime_id": "laddered",
+        "model": "dyn/alpha"})
+    assert ok.status_code == 200                              # 阶梯外但 runtime 提供
+    bad = client.post("/api/roles", json={
+        "id": "bad-user", "project_id": "webshop", "runtime_id": "laddered",
+        "model": "nonexistent-model"})
+    assert bad.status_code == 400                             # 两个目录都没有:拒绝

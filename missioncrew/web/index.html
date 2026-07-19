@@ -1892,8 +1892,11 @@ function editRole(id) {
   refreshModelOptions();
 }
 
-// 每个角色必须先选 runtime,模型下拉再带出该 runtime 的固定模型选项。
-function refreshModelOptions() {
+// 每个角色必须先选 runtime;模型清单向 runtime 本体动态查询(仿 Multica),
+// 配置阶梯(带档位/成本)与 runtime 目录合并展示,服务端缓存 10 分钟。
+const modelCatalogCache = {};   // backend id -> {configured, discovered}
+
+async function refreshModelOptions() {
   const bid = document.getElementById("rf-backend").value;
   const sel = document.getElementById("rf-model");
   const cur = window._editingRoleModel;
@@ -1903,17 +1906,34 @@ function refreshModelOptions() {
     return;
   }
   sel.disabled = false;
-  const b = overview.backends.find(x => x.id === bid);
-  const models = (b?.models || []).length
-    ? b.models : [{name: b?.model || "", tier: b?.tier || "standard", cost: b?.cost_per_run || 0}];
-  let opts = models.map(m => {
+  let catalog = modelCatalogCache[bid];
+  if (!catalog) {
+    sel.innerHTML = `<option value="">加载模型清单…</option>`;
+    try {
+      catalog = await api("GET", `/api/backends/${encodeURIComponent(bid)}/models`);
+      modelCatalogCache[bid] = catalog;
+    } catch (e) {   // 查询失败:退回配置阶梯
+      const b = overview.backends.find(x => x.id === bid);
+      catalog = { configured: b?.models || [], discovered: [] };
+    }
+    if (document.getElementById("rf-backend")?.value !== bid) return;  // 期间已切换
+  }
+  const configured = catalog.configured || [];
+  const configuredNames = new Set(configured.map(m => String(m.name ?? "")));
+  let opts = configured.map(m => {
     const name = String(m.name ?? "");
-    const label = name || "(CLI 默认)";
     return `<option value="${esc(name)}" ${cur === name ? "selected" : ""}>` +
-      `${esc(label)} (${esc(m.tier)} · ${m.cost})</option>`;
+      `${esc(name || "(CLI 默认)")}${m.tier ? ` (${esc(m.tier)} · ${m.cost})` : ""}</option>`;
   }).join("");
-  if (cur !== null && cur !== undefined && !models.some(m => String(m.name ?? "") === cur))
-    opts += `<option value="${esc(cur)}" selected>${esc(cur)}(自定义)</option>`;
+  if (!configuredNames.has(""))
+    opts = `<option value="" ${cur === "" ? "selected" : ""}>(CLI 默认)</option>` + opts;
+  const extra = (catalog.discovered || []).filter(n => !configuredNames.has(n));
+  if (extra.length)
+    opts += `<optgroup label="来自 runtime">` + extra.map(n =>
+      `<option value="${esc(n)}" ${cur === n ? "selected" : ""}>${esc(n)}</option>`).join("") +
+      `</optgroup>`;
+  if (cur && !configuredNames.has(cur) && !extra.includes(cur))
+    opts += `<option value="${esc(cur)}" selected>${esc(cur)}(当前值)</option>`;
   sel.innerHTML = opts;
 }
 

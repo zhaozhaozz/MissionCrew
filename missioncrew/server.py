@@ -164,6 +164,20 @@ def create_app() -> FastAPI:
     updating_backends: set[str] = set()
     updating_guard = threading.Lock()
     chat.updating_backends = updating_backends
+    # runtime 模型目录缓存:发现可能要起进程(codex/opencode/ACP),10 分钟内复用
+    model_catalog_cache: dict[str, tuple[float, list[str]]] = {}
+    model_catalog_guard = threading.Lock()
+
+    def discovered_models(backend, refresh: bool = False) -> list[str]:
+        import time as _time
+        with model_catalog_guard:
+            cached = model_catalog_cache.get(backend.id)
+            if cached and not refresh and _time.time() - cached[0] < 600:
+                return cached[1]
+        models = adapters.list_runtime_models(backend)
+        with model_catalog_guard:
+            model_catalog_cache[backend.id] = (_time.time(), models)
+        return models
 
     def must_project(project_id: str) -> Project:
         project = store.get_project(project_id)
@@ -263,7 +277,10 @@ def create_app() -> FastAPI:
             raise HTTPException(400, f"固定 runtime 不存在: {body.runtime_id}")
         known_models = {str(m.get("name", "")) for m in backend.models}
         if known_models and body.model not in known_models:
-            raise HTTPException(400, f"模型 {body.model or '(CLI 默认)'} 不属于 runtime {body.runtime_id}")
+            # 配置阶梯之外:再查 runtime 动态发现的模型目录(仿 Multica 从 runtime 取)
+            if body.model not in set(discovered_models(backend)):
+                raise HTTPException(
+                    400, f"模型 {body.model or '(CLI 默认)'} 不属于 runtime {body.runtime_id}")
         role = Role(**body.model_dump())
         store.put_role(role)
         store.audit("human", "role_saved", detail=f"project={role.project_id} role={role.id}")
@@ -825,6 +842,19 @@ def create_app() -> FastAPI:
                 **usage(b.id),
             })
         return rows
+
+    @app.get("/api/backends/{backend_id}/models")
+    def backend_models(backend_id: str, refresh: bool = False):
+        """runtime 可用模型:向工具本体动态查询(缓存 10 分钟),
+        configured 为工具的模型阶梯(带档位/成本),discovered 为 runtime 目录。"""
+        b = store.get_backend(backend_id)
+        if b is None:
+            raise HTTPException(404, "后端不存在")
+        return {
+            "configured": [{"name": m.get("name", ""), "tier": m.get("tier", ""),
+                            "cost": m.get("cost")} for m in b.models],
+            "discovered": discovered_models(b, refresh=refresh),
+        }
 
     @app.post("/api/backends/check_updates")
     def check_updates():

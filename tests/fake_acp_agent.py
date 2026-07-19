@@ -32,7 +32,13 @@ def main():
         if method == "initialize":
             send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
         elif method == "session/new":
-            send({"jsonrpc": "2.0", "id": mid, "result": {"sessionId": "s-test"}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "sessionId": "s-test",
+                "configOptions": [{
+                    "type": "select", "id": "model", "category": "model",
+                    "currentValue": "fake/base",
+                    "options": [{"value": "fake/base", "name": "Base"},
+                                {"value": "fake/pro", "name": "Pro"}]}]}})
         elif method == "session/set_model":
             model = msg["params"]["modelId"]
             send({"jsonrpc": "2.0", "id": mid, "result": {}})

@@ -402,3 +402,58 @@ def _role_from_prompt(prompt: str) -> str:
 def _trigger_from_prompt(prompt: str) -> str:
     m = re.search(r"# 触发消息[^\n]*\n(.*?)(?:\n# |\Z)", prompt, re.S)
     return m.group(1) if m else ""
+
+
+# ---- 按 runtime 动态发现可用模型(仿 Multica 的 per-provider ListModels) ----
+
+# claude CLI 无模型枚举命令:用稳定别名目录(仿 claudeStaticModels 的静态策略)
+CLAUDE_MODEL_ALIASES = ["haiku", "sonnet", "opus"]
+
+
+def _parse_codex_models(raw: str) -> list[str]:
+    """`codex debug models --bundled` 输出 JSON,取 visibility=list 的 slug。"""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    return [str(m.get("slug", "")) for m in data.get("models", [])
+            if m.get("slug") and m.get("visibility") != "hide"]
+
+
+def _parse_opencode_models(raw: str) -> list[str]:
+    """`opencode models` 每行一个 provider/model id;过滤日志噪声行。"""
+    return [line.strip() for line in raw.splitlines()
+            if line.strip() and "/" in line and " " not in line.strip()]
+
+
+def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
+    """向 runtime 本体查询可用模型;查不到返回空(调用方回退到配置的阶梯)。
+
+    - codex:`codex debug models --bundled`(JSON 目录)
+    - opencode:`opencode models`(行式目录)
+    - ACP 工具(kimi/kiro/qoder/trae):一次性会话,session/new 返回目录
+    - claude:CLI 无枚举命令,返回稳定别名;mock:返回配置阶梯(测试/演示)
+    """
+    adapter = backend.adapter
+    if adapter == "mock":
+        return [str(m.get("name", "")) for m in backend.models if m.get("name")]
+    if adapter == "claude_code":
+        return list(CLAUDE_MODEL_ALIASES)
+    binary = Path(backend.binary_path).name if backend.binary_path else None
+    try:
+        if adapter == "codex":
+            proc = subprocess.run([binary or "codex", "debug", "models", "--bundled"],
+                                  capture_output=True, text=True, timeout=timeout,
+                                  stdin=subprocess.DEVNULL)
+            return _parse_codex_models(proc.stdout)
+        if adapter == "opencode":
+            proc = subprocess.run([binary or "opencode", "models"],
+                                  capture_output=True, text=True, timeout=timeout,
+                                  stdin=subprocess.DEVNULL)
+            return _parse_opencode_models(proc.stdout)
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    if adapter in ACP_SERVE_COMMANDS:
+        cmd = backend.command or ACP_SERVE_COMMANDS[adapter]
+        return acp.list_models(cmd, timeout=timeout)
+    return []

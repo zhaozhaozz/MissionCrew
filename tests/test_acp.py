@@ -55,3 +55,9 @@ def test_permission_option_preference():
         [{"optionId": "no", "kind": "reject_once"}]) == "no"  # 无允许项选单次拒绝
     assert _pick_permission_option(
         [{"optionId": "never", "kind": "reject_always"}]) is None  # 永久拒绝不可选
+
+
+def test_acp_list_models_from_config_options():
+    from missioncrew import acp
+    models = acp.list_models([sys.executable, FAKE], timeout=15)
+    assert models == ["fake/base", "fake/pro"]
