@@ -5,6 +5,7 @@ from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import archive_library, library_for
 from ..collab.project_context import write_guideline_context
+from ..collab.skills import materialize_project_skills, sync_project_skill_library
 from ..core import seed as seed_mod
 from ..core.models import DEFAULT_MAX_CHAIN_RUNS, Project
 from .context import MENTION_ID_RE, ApiContext
@@ -61,6 +62,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 raise HTTPException(400, f"Skill id 不合法: {skill.id}")
         store.put_project(project)
         write_guideline_context(project)
+        materialize_project_skills(project, overwrite=body.skills is not None)
+        sync_project_skill_library(store, project)
         if is_new:  # 新项目复制当前全局角色模板并获得自己的 general 频道
             seed_mod.init_project(store, project.id, new_roles)
             library_for(project.id)

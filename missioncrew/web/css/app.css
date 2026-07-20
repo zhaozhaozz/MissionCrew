@@ -279,6 +279,16 @@
   .board-toolbar select { min-width: 220px; background: var(--card); color: var(--text);
                           border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
                           font: inherit; cursor: pointer; }
+  .skill-library-box { margin: 8px 0 14px; padding: 10px 12px; border: 1px solid var(--line);
+                       border-radius: 10px; background: var(--bg-soft); font-size: 12.5px;
+                       overflow-wrap: anywhere; }
+  .skill-library-box code, .skill-package-files code { user-select: all; }
+  .skill-scan-issues { margin-top: 6px; color: var(--warn); }
+  .skill-scan-issues ul { margin: 5px 0 0; padding-left: 20px; }
+  .skill-folder-import { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+  .skill-package-files { margin: 8px 0; padding: 9px 10px; border-left: 3px solid var(--accent);
+                         background: var(--bg-soft); border-radius: 0 8px 8px 0;
+                         overflow-wrap: anywhere; }
 
   /* ---- 弹窗 ---- */
   dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--card);
@@ -360,6 +370,8 @@
                     border-bottom: 1px solid var(--line); padding-bottom: 10px;
                     margin-bottom: 16px; }
   .content-topbar > div { min-width: 0; flex: 1; }
+  .content-topbar > .content-topbar-actions { flex: 0 1 auto; display: flex;
+                                              justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
   .content-topbar h2 { margin: 0; font-size: 15px; }
   .content-topbar p { margin: 4px 0 0; }
   .ghost.compact { flex: none; padding: 3px 9px; font-size: 12px; }

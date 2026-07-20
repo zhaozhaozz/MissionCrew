@@ -15,6 +15,9 @@ from .collab.chat import ChatEngine
 from .core.config import db_path, mc_home
 from .taskflow.engine import Engine
 from .collab.documents import library_for
+from .collab.skills import (materialize_project_skills,
+                            sync_all_project_skill_libraries,
+                            sync_project_skill_library)
 from .collab.workspace import migrate_legacy_workspace_layout
 from .core.models import Backend, Channel, Project, Role, Task
 from .core.store import Store
@@ -43,6 +46,7 @@ def _store() -> Store:
     if migrated_paths:
         store.audit("platform", "agent_workspace_layout_migrated",
                     detail=f"paths={migrated_paths}")
+    sync_all_project_skill_libraries(store)
     return store
 
 
@@ -170,6 +174,8 @@ def project_add(file: Path = typer.Option(..., help="项目定义 YAML 文件"))
     if is_new and p.orchestrator_role_id not in {role.id for role in new_roles}:
         raise typer.BadParameter(f"主控角色不属于全局角色模板: @{p.orchestrator_role_id}")
     store.put_project(p)
+    materialize_project_skills(p, overwrite=True)
+    sync_project_skill_library(store, p)
     if is_new:
         seed_mod.init_project(store, p.id, new_roles)
         library_for(p.id)

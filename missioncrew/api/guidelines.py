@@ -3,12 +3,15 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from ..collab.project_context import write_guideline_context
+from ..collab.skills import (delete_project_skill, import_skill_folder,
+                             import_skill_zip, save_project_skill,
+                             skill_library_info, sync_project_skill_library)
 from ..core.models import GuidelineDocument, ProjectSkill
 from .context import MENTION_ID_RE, ApiContext
-from .schemas import GuidelineInput, SkillInput
+from .schemas import GuidelineInput, SkillFolderImport, SkillInput
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -57,7 +60,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/projects/{project_id}/skills")
     def list_skills(project_id: str):
-        return [s.__dict__ for s in ctx.must_project(project_id).skills]
+        project = ctx.must_project(project_id)
+        project, _ = sync_project_skill_library(store, project)
+        return [s.__dict__ for s in project.skills]
+
+    @app.get("/api/projects/{project_id}/skills/library")
+    def get_skill_library(project_id: str):
+        return skill_library_info(store, ctx.must_project(project_id))
 
     @app.post("/api/projects/{project_id}/skills")
     def save_skill(project_id: str, body: SkillInput):
@@ -66,21 +75,50 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if not MENTION_ID_RE.fullmatch(body.id):
             raise HTTPException(400, "Skill id 只能包含字母、数字、下划线、连字符")
         skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id"}))
-        project.skills = [s for s in project.skills if s.id != skill.id]
-        project.skills.append(skill)
-        store.put_project(project)
-        store.audit(actor, "skill_saved", detail=f"project={project_id} skill={skill.id}")
-        return skill.__dict__
+        try:
+            return save_project_skill(store, project, skill, actor=actor).__dict__
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/skills/import-folder")
+    def import_skills_from_folder(project_id: str, body: SkillFolderImport):
+        project = ctx.must_project(project_id)
+        actor = ctx.validate_orchestrator_actor(project, body.actor_role_id)
+        try:
+            return import_skill_folder(
+                store, project, body.path, overwrite=body.overwrite, actor=actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/skills/import-zip")
+    async def import_skills_from_zip(project_id: str, request: Request,
+                                     overwrite: bool = False,
+                                     actor_role_id: Optional[str] = None):
+        project = ctx.must_project(project_id)
+        actor = ctx.validate_orchestrator_actor(project, actor_role_id)
+        try:
+            return import_skill_zip(
+                store, project, await request.body(), overwrite=overwrite, actor=actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/skills/rescan")
+    def rescan_skill_library(project_id: str,
+                             actor_role_id: Optional[str] = None):
+        project = ctx.must_project(project_id)
+        ctx.validate_orchestrator_actor(project, actor_role_id)
+        return skill_library_info(store, project)
 
     @app.delete("/api/projects/{project_id}/skills/{skill_id}")
     def delete_skill(project_id: str, skill_id: str,
                      actor_role_id: Optional[str] = None):
         project = ctx.must_project(project_id)
         actor = ctx.validate_orchestrator_actor(project, actor_role_id)
-        before = len(project.skills)
-        project.skills = [s for s in project.skills if s.id != skill_id]
-        if len(project.skills) == before:
-            raise HTTPException(404, "Skill 不存在")
-        store.put_project(project)
-        store.audit(actor, "skill_deleted", detail=f"project={project_id} skill={skill_id}")
-        return {"ok": True}
+        if not MENTION_ID_RE.fullmatch(skill_id):
+            raise HTTPException(400, "Skill id 不合法")
+        try:
+            archive = delete_project_skill(
+                store, project, skill_id, actor=actor)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, "Skill 不存在") from exc
+        return {"ok": True, "archive": archive}

@@ -8,6 +8,7 @@ import tempfile
 import threading
 
 from .documents import DocumentLibrary
+from .skills import project_skill_library_dir, skill_directory_version
 from ..core.config import projects_dir
 from ..core.models import GuidelineDocument, Project, ProjectSkill
 
@@ -87,6 +88,7 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary,
     write_guideline_context(project)
     context_dirs = ([str(workspace_dir)] if workspace_dir is not None
                     else [str(guideline_context_dir(project))])
+    context_dirs.append(str(project_skill_library_dir(project.id)))
     for raw in [*project.repo_paths(), str(library.root), *context_dirs]:
         path = Path(raw).expanduser()
         if not path.is_dir():
@@ -106,12 +108,11 @@ def _render_guideline_summary(doc: GuidelineDocument, path: Path) -> str:
             f"· 内容版本 `{content_version}` · 全文 `{path}`")
 
 
-def _render_skill(skill: ProjectSkill) -> str:
-    head = skill.name or skill.id
-    body = "\n\n".join(x for x in (
-        skill.description.strip(), skill.instructions.strip(),
-    ) if x)
-    return f"## Skill: {head} (`{skill.id}`)\n{body}".rstrip()
+def _render_skill_summary(skill: ProjectSkill, path: Path, canonical: Path) -> str:
+    description = " ".join(skill.description.split()) or "（未填写 description）"
+    version = skill_directory_version(canonical)
+    return (f"- `{skill.id}` · {skill.name or skill.id} · {description} "
+            f"· 内容版本 `{version}` · 入口 `{path}`")
 
 
 def render_project_context(project: Project, library: DocumentLibrary,
@@ -132,14 +133,20 @@ def render_project_context(project: Project, library: DocumentLibrary,
         _render_guideline_summary(doc, guideline_files[doc.name])
         for doc in project.guidelines if doc.enabled
     ]
-    skills = [
-        _render_skill(skill)
-        for skill in project.skills if skill.enabled
-    ]
     documents_dir = (workspace_dir / "documents" if workspace_dir is not None
                      else library.root)
     tasks_dir = workspace_dir / "tasks" if workspace_dir is not None else None
     skills_dir = workspace_dir / "skills" if workspace_dir is not None else None
+    canonical_skills = project_skill_library_dir(project.id)
+    skill_summaries = [
+        _render_skill_summary(
+            skill,
+            (skills_dir / skill.id / "SKILL.md") if skills_dir is not None
+            else canonical_skills / skill.id / "SKILL.md",
+            canonical_skills / skill.id,
+        )
+        for skill in project.skills if skill.enabled
+    ]
     allowed_dirs = project_allowed_dirs(project, library, workspace_dir)
     dirs_section = "\n".join(f"- {path}" for path in allowed_dirs) or "（无本地目录）"
     return "\n\n".join([
@@ -171,7 +178,10 @@ def render_project_context(project: Project, library: DocumentLibrary,
         + dirs_section,
         ("# 项目 Skills\n"
          + (f"文件目录：{skills_dir}\n\n" if skills_dir is not None else "")
-         + "\n\n".join(skills)) if skills else
+         + "\n".join(skill_summaries)
+         + "\n先根据 description 判断相关性；需要时读取对应 SKILL.md，"
+           "并以 Skill 目录为根解析 scripts/、references/、assets/ 等相对文件。")
+        if skill_summaries else
         "# 项目 Skills\n（未配置）",
         "# 准则与 Skill 使用方式\n结合当前任务自行判断哪些条目适用；"
         "准则先看 description、相关时再读全文，不要机械执行无关条目。",

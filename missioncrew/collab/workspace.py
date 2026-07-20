@@ -20,6 +20,7 @@ import yaml
 
 from ..core.config import mc_home
 from ..core.models import Project, Task, TIER_ORDER, new_id
+from .skills import project_skill_library_dir, sync_project_skill_library
 
 if TYPE_CHECKING:
     from .documents import DocumentLibrary
@@ -208,6 +209,22 @@ def _link_directory(link: Path, target: Path) -> None:
     link.symlink_to(target.resolve(), target_is_directory=True)
 
 
+def _remove_managed_workspace_entry(path: Path) -> None:
+    """仅清理平台拥有的 Agent workspace 条目，不触碰链接目标。"""
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _link_managed_skill(link: Path, target: Path) -> None:
+    if link.is_symlink() and link.resolve() == target.resolve():
+        return
+    if link.exists() or link.is_symlink():
+        _remove_managed_workspace_entry(link)
+    link.symlink_to(target.resolve(), target_is_directory=True)
+
+
 def _render_project_file(project: Project) -> str:
     repos = "\n".join(
         f"- {repo.name or repo.id}: {repo.path or repo.remote or '未配置本地路径'}"
@@ -241,7 +258,7 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 - `documents/`：项目版本化文档库，可直接创建和编辑 Markdown 或其他项目文档；平台会在执行后记录版本。
 - `tasks/`：项目任务的 Markdown 视图。可新建任务文件，也可编辑既有任务的标题、描述、类型、标签、风险和预算字段；平台会在执行后同步。状态、阶段和审批由平台管理。
 - `guidelines/`：项目准则 Markdown 快照；根据 description 判断是否需要读取。
-- `skills/`：项目 Skill 文件；结合当前任务按需读取。
+- `skills/`：已启用项目 Skill 的完整目录；先读 SKILL.md，再按需使用同目录 scripts/、references/、assets/ 等文件。
 - `project.md`：项目简介与资源索引。
 {history}
 ## 新建任务格式
@@ -268,14 +285,6 @@ max_tier: null
 不要把业务源码或交付物写进 `.missioncrew`。只有项目文档、任务、证据和其他 harness
 协作资料属于这里。
 """
-
-
-def _render_skill(skill) -> str:
-    header = yaml.safe_dump(
-        {"name": skill.name or skill.id, "description": skill.description},
-        allow_unicode=True, sort_keys=False, default_flow_style=False).strip()
-    body = skill.instructions.rstrip()
-    return f"---\n{header}\n---\n" + (f"\n{body}\n" if body else "")
 
 
 def _render_task(task: Task) -> str:
@@ -434,6 +443,7 @@ def prepare_agent_workspace(store: Store, project: Project,
     )
     with _workspace_lock(root):
         root.mkdir(parents=True, exist_ok=True)
+        project, _ = sync_project_skill_library(store, project)
         temporary_docs = root / "docs"
         if temporary_docs.is_symlink():
             if workspace.documents.is_symlink() or workspace.documents.exists():
@@ -453,20 +463,17 @@ def prepare_agent_workspace(store: Store, project: Project,
         (root / "guidelines.json").unlink(missing_ok=True)
 
         workspace.skills.mkdir(parents=True, exist_ok=True)
+        skill_library = project_skill_library_dir(project.id)
         enabled_skills = {skill.id: skill for skill in project.skills if skill.enabled}
-        for skill in enabled_skills.values():
-            skill_dir = workspace.skills / _safe_segment(skill.id)
-            skill_dir.mkdir(parents=True, exist_ok=True)
-            _atomic_write_text(skill_dir / "SKILL.md", _render_skill(skill))
+        expected_names = {_safe_segment(skill_id) for skill_id in enabled_skills}
         for stale in workspace.skills.iterdir():
-            if stale.is_dir() and stale.name not in {_safe_segment(v) for v in enabled_skills}:
-                for child in stale.iterdir():
-                    if child.is_file() or child.is_symlink():
-                        child.unlink()
-                try:
-                    stale.rmdir()
-                except OSError:
-                    pass
+            if stale.name not in expected_names:
+                _remove_managed_workspace_entry(stale)
+        for skill_id in enabled_skills:
+            _link_managed_skill(
+                workspace.skills / _safe_segment(skill_id),
+                skill_library / skill_id,
+            )
 
         write_task_files(store, project.id, workspace.tasks)
         _atomic_write_text(root / "project.md", _render_project_file(project))

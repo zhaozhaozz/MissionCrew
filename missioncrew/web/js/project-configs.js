@@ -4,6 +4,8 @@ let selectedSkillId;
 let guidelineMarkdownMode = "preview";
 const GUIDELINE_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
 const configEditorDirty = { guidelines: false, skills: false };
+let skillLibraryInfo = null;
+let skillFolderImportOpen = false;
 const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "docs"]);
 const CONFIG_CHAT_TARGETS = {
   guidelines: { label: "准则文档", action: "save_guideline" },
@@ -510,11 +512,54 @@ function renderSkillsPage(force = false) {
       || (selectedSkillId !== null && !skills.some(item => item.id === selectedSkillId)))
     selectedSkillId = skills[0]?.id ?? null;
   if (force || !configEditorDirty.skills) renderSkillEditor();
+  renderSkillLibraryStatus();
+  if (skillLibraryInfo?.project_id !== currentProject) loadSkillLibraryInfo();
   updateConfigChatContext();
+}
+
+async function loadSkillLibraryInfo() {
+  const projectId = currentProject;
+  if (!projectId) return;
+  try {
+    const info = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/skills/library`);
+    if (projectId !== currentProject) return;
+    skillLibraryInfo = { ...info, project_id: projectId };
+    renderSkillLibraryStatus();
+    if (!configEditorDirty.skills) renderSkillEditor();
+  } catch (_) { /* api() 已显示错误 */ }
+}
+
+function renderSkillLibraryStatus() {
+  const box = document.getElementById("skill-library-info");
+  if (!box) return;
+  if (!skillLibraryInfo || skillLibraryInfo.project_id !== currentProject) {
+    box.innerHTML = `<span class="muted">正在读取项目 Skill 目录…</span>`;
+    return;
+  }
+  const issues = skillLibraryInfo.issues || [];
+  box.innerHTML = `
+    <div><strong>直接投放目录</strong> <code>${esc(skillLibraryInfo.path)}</code></div>
+    <div class="muted">把包含 SKILL.md 的 Skill 文件夹直接复制到此目录；平台会在总览刷新或执行装配时自动发现。</div>
+    ${skillFolderImportOpen ? `<div class="skill-folder-import form">
+      <label>包含一个或多个 Skill 的本地目录</label>
+      <div class="row">
+        <div><input type="text" id="skill-import-path" placeholder="~/skills 或 /path/to/skills"></div>
+        <div style="flex:0 0 90px"><button class="ghost" style="width:100%"
+          onclick="openDirPicker(document.getElementById('skill-import-path').value,'skill-import-path')">浏览…</button></div>
+      </div>
+      <div class="muted">平台会递归检测有效 SKILL.md，并完整复制其所在目录。</div>
+      <div class="form-actions"><button class="action" onclick="importSkillFolder(false)">导入</button>
+        <button class="ghost" onclick="closeSkillFolderImport()">取消</button></div>
+    </div>` : ""}
+    ${issues.length ? `<details class="skill-scan-issues"><summary>${issues.length} 个目录未载入</summary>
+      <ul>${issues.map(issue => `<li>${esc(issue)}</li>`).join("")}</ul></details>` : ""}`;
 }
 
 function renderSkillEditor() {
   const skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
+  const packageInfo = skillLibraryInfo?.project_id === currentProject
+    ? (skillLibraryInfo.skills || []).find(item => item.id === selectedSkillId) : null;
+  const packageFiles = packageInfo?.files || [];
   document.getElementById("skill-editor").innerHTML = `
     <h3>${skill ? "编辑 Skill" : "新建 Skill"}</h3>
     <label>id（保存后不可修改）</label>
@@ -526,7 +571,10 @@ function renderSkillEditor() {
       oninput="markConfigDirty('skills')">
     <label>完整执行说明（Markdown）</label><textarea id="sf-instructions" rows="16"
       oninput="markConfigDirty('skills')">${esc(skill?.instructions || "")}</textarea>
-    <div class="muted">关联项目文档请写成相对 Markdown 链接，例如 [本地 CI](runbooks/local-ci.md)；Agent 会在需要时读取。</div>
+    <div class="muted">此处保存到 Skill 目录的 SKILL.md。脚本和参考资料使用相对路径，Agent 会以该 Skill 目录为根读取。</div>
+    ${skill ? `<div class="skill-package-files"><strong>完整目录</strong>
+      <code>${esc(packageInfo?.path || "正在读取…")}</code>
+      <div class="muted">${packageFiles.length ? `${packageFiles.length} 个文件：${packageFiles.map(esc).join("、")}` : "仅有 SKILL.md 或正在读取文件清单。"}</div></div>` : ""}
     <label>启用</label><span class="switch ${skill?.enabled === false ? "" : "on"}" id="sf-enabled"
       role="switch" onclick="this.classList.toggle('on');markConfigDirty('skills')"></span>
     <div class="form-actions"><button class="action" onclick="saveSkill()">保存</button>
@@ -554,6 +602,8 @@ async function saveSkill() {
   selectedSkillId = id;
   configEditorDirty.skills = false;
   await loadOverview();
+  skillLibraryInfo = null;
+  await loadSkillLibraryInfo();
   renderSkillsPage(true);
   toast("Skill 已保存", "success");
 }
@@ -564,6 +614,92 @@ async function deleteSkill(id) {
   selectedSkillId = undefined;
   configEditorDirty.skills = false;
   await loadOverview();
+  skillLibraryInfo = null;
+  await loadSkillLibraryInfo();
   renderSkillsPage(true);
   toast("Skill 已删除", "success");
+}
+
+async function finishSkillImport(result) {
+  if (result.needs_confirmation) return false;
+  selectedSkillId = result.imported?.[0] || selectedSkillId;
+  configEditorDirty.skills = false;
+  skillLibraryInfo = null;
+  await loadOverview();
+  await loadSkillLibraryInfo();
+  renderSkillsPage(true);
+  const issueText = result.issues?.length ? `；${result.issues.length} 个条目未载入` : "";
+  toast(`已导入 ${result.imported?.length || 0} 个 Skill${issueText}`, "success", 5000);
+  return true;
+}
+
+async function importSkillZip(input) {
+  const file = input.files?.[0];
+  if (!file || !currentProject) return;
+  const run = async overwrite => {
+    const url = `/api/projects/${encodeURIComponent(currentProject)}/skills/import-zip?overwrite=${overwrite}`;
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip", "X-MissionCrew-Filename": file.name },
+      body: file,
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      toast(error.detail || `ZIP 导入失败 (${response.status})`, "error", 6000);
+      return null;
+    }
+    return response.json();
+  };
+  try {
+    let result = await run(false);
+    if (result?.needs_confirmation) {
+      const confirmed = await uiConfirm(
+        `以下 Skill 已存在：${result.conflicts.join("、")}。覆盖时旧目录会移入回收目录，是否继续？`,
+        "覆盖已有 Skill");
+      if (confirmed) result = await run(true);
+    }
+    if (result) await finishSkillImport(result);
+  } catch (error) {
+    toast(`ZIP 导入失败：${error.message || error}`, "error", 6000);
+  } finally {
+    input.value = "";
+  }
+}
+
+function openSkillFolderImport() {
+  skillFolderImportOpen = true;
+  renderSkillLibraryStatus();
+  setTimeout(() => document.getElementById("skill-import-path")?.focus(), 60);
+}
+
+function closeSkillFolderImport() {
+  skillFolderImportOpen = false;
+  renderSkillLibraryStatus();
+}
+
+async function importSkillFolder(overwrite) {
+  const path = document.getElementById("skill-import-path")?.value.trim();
+  if (!path) { uiAlert("请选择本地 Skill 目录"); return; }
+  let result = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills/import-folder`, {
+    path, overwrite,
+  });
+  if (result.needs_confirmation) {
+    const confirmed = await uiConfirm(
+      `以下 Skill 已存在：${result.conflicts.join("、")}。覆盖时旧目录会移入回收目录，是否继续？`,
+      "覆盖已有 Skill");
+    if (!confirmed) return;
+    result = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills/import-folder`, {
+      path, overwrite: true,
+    });
+  }
+  skillFolderImportOpen = false;
+  await finishSkillImport(result);
+}
+
+async function rescanSkillLibrary() {
+  const info = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills/rescan`);
+  skillLibraryInfo = { ...info, project_id: currentProject };
+  await loadOverview();
+  renderSkillsPage(true);
+  toast(`已扫描 ${info.skills?.length || 0} 个 Skill`, "success");
 }

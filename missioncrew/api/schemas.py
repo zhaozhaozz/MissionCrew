@@ -80,6 +80,12 @@ class SkillInput(BaseModel):
     actor_role_id: Optional[str] = None
 
 
+class SkillFolderImport(BaseModel):
+    path: str
+    overwrite: bool = False
+    actor_role_id: Optional[str] = None
+
+
 class ProjectInput(BaseModel):
     id: str
     name: str = ""

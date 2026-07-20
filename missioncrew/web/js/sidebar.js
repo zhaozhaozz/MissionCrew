@@ -49,9 +49,11 @@ function openResourceDialog() {
 
 // 本地目录选择弹窗:逐级浏览,支持显示隐藏目录;确认后回填资源输入框
 let _pickHidden = false;
+let _pickTargetInputId = "res-target";
 
-function openDirPicker(startPath) {
+function openDirPicker(startPath, targetInputId = "res-target") {
   _pickHidden = false;
+  _pickTargetInputId = targetInputId;
   document.getElementById("ddlg-hidden").classList.remove("on");
   ddlg.showModal();
   pickBrowse(startPath || "");
@@ -93,7 +95,7 @@ function togglePickHidden(el) {
 }
 
 function pickDirConfirm() {
-  const input = document.getElementById("res-target");
+  const input = document.getElementById(_pickTargetInputId);
   if (input && window._pickPath) input.value = window._pickPath;
   ddlg.close();
 }

@@ -175,9 +175,17 @@
       <div class="section">
         <div class="content-topbar">
           <div><h2>项目 Skills <span class="muted" id="skill-proj-label"></span></h2>
-            <p class="muted">Skill 列表位于应用左侧栏；Agent 会结合任务选择 Skill，并根据正文中的 Markdown 链接按需读取文档。</p></div>
-          <button class="ghost compact" onclick="editSkill(null)">＋ 新建</button>
+            <p class="muted">支持完整 Skill 目录；Agent 会按需读取 SKILL.md、scripts、references 和其他相对文件。</p></div>
+          <div class="content-topbar-actions">
+            <input id="skill-zip-input" type="file" accept=".zip,application/zip" hidden
+              onchange="importSkillZip(this)">
+            <button class="ghost compact" onclick="document.getElementById('skill-zip-input').click()">上传 ZIP</button>
+            <button class="ghost compact" onclick="openSkillFolderImport()">导入本地目录</button>
+            <button class="ghost compact" onclick="rescanSkillLibrary()">重新扫描</button>
+            <button class="ghost compact" onclick="editSkill(null)">＋ 新建</button>
+          </div>
         </div>
+        <div class="skill-library-box" id="skill-library-info"></div>
         <section class="config-editor-pane form single-pane-editor" id="skill-editor"></section>
       </div>
     </div>

@@ -31,6 +31,7 @@ from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            GuidelineDocument, ProjectSkill, Role)
 from .project_context import (project_allowed_dirs, render_project_context,
                               write_guideline_context)
+from .skills import save_project_skill
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -841,12 +842,8 @@ class ChatEngine:
             instructions=str(action.get("instructions", "")),
             enabled=enabled,
         )
-        project.skills = [s for s in project.skills if s.id != raw_id]
-        project.skills.append(skill)
-        self.store.put_project(project)
-        self.store.audit(role_id, "skill_saved",
-                         detail=f"project={project.id} skill={raw_id}")
-        return f"已保存 Skill {skill.name or raw_id}"
+        saved = save_project_skill(self.store, project, skill, actor=role_id)
+        return f"已保存 Skill {saved.name or raw_id}"
 
     def _action_post_message(self, project_id: str, role_id: str, action: dict,
                              root_id: int, depth: int) -> str:

@@ -10,6 +10,8 @@ from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
 from missioncrew.collab.project_context import guideline_context_dir
+from missioncrew.collab.skills import (materialize_project_skills,
+                                       project_skill_library_dir)
 from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
                                           sync_task_files)
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend,
@@ -141,6 +143,7 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     project.guidelines.append(GuidelineDocument(
         name="disabled-guide", description="停用摘要", content="停用准则正文", enabled=False))
     seeded.put_project(project)
+    materialize_project_skills(project)
     chat = ChatEngine(seeded)
     msg_id = seeded.add_message("general", "human", "human", "@dev 开发", ["dev"])
     chat_cfg = chat._assemble(seeded.get_channel("general"),
@@ -152,7 +155,11 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "开发相关任务准则" not in chat_cfg.prompt
     assert "测试相关任务准则" not in chat_cfg.prompt
     assert "停用摘要" not in chat_cfg.prompt and "停用准则正文" not in chat_cfg.prompt
-    assert "[结算说明](specs/checkout.md)" in chat_cfg.prompt
+    assert "[结算说明](specs/checkout.md)" not in chat_cfg.prompt
+    checkout_skill = (Path(chat_cfg.env["MISSIONCREW_SKILLS_DIR"])
+                      / "checkout-dev" / "SKILL.md")
+    assert "[结算说明](specs/checkout.md)" in checkout_skill.read_text()
+    assert str(checkout_skill) in chat_cfg.prompt
     assert "# Checkout v2" not in chat_cfg.prompt  # 链接文件不再预注入
     assert "仅在任务需要时读取链接文件" in chat_cfg.prompt
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in chat_cfg.prompt
@@ -311,10 +318,11 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
     )
 
     shared = [str(repo_a.resolve()), str(repo_b.resolve()), str(library.root.resolve())]
+    skill_root = str(project_skill_library_dir("webshop").resolve())
     chat_workspace = str(Path(chat_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
     task_workspace = str(Path(task_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
-    assert task_cfg.allowed_dirs == [*shared, task_workspace]
-    assert chat_cfg.allowed_dirs == [*shared, chat_workspace]
+    assert task_cfg.allowed_dirs == [*shared, task_workspace, skill_root]
+    assert chat_cfg.allowed_dirs == [*shared, chat_workspace, skill_root]
     assert all(path in chat_cfg.prompt and path in task_cfg.prompt for path in shared)
     assert chat_workspace in chat_cfg.prompt and task_workspace in task_cfg.prompt
 

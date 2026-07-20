@@ -45,6 +45,8 @@ function setProject(id) {
   selectedGuidelineName = undefined;
   guidelineMarkdownMode = "preview";
   selectedSkillId = undefined;
+  skillLibraryInfo = null;
+  skillFolderImportOpen = false;
   configChatSelection = null;
   configEditorDirty.guidelines = false;
   configEditorDirty.skills = false;

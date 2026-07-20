@@ -1,0 +1,188 @@
+"""完整 Skill 包导入、直接投放与 Runtime 适配。"""
+from __future__ import annotations
+
+import io
+import shutil
+import zipfile
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from missioncrew.api import create_app
+from missioncrew.collab.chat import ChatEngine
+from missioncrew.collab.skills import project_skill_library_dir
+
+
+def _skill_markdown(name: str, description: str, body: str = "") -> str:
+    suffix = f"\n{body.rstrip()}\n" if body else ""
+    return f"---\nname: {name}\ndescription: {description}\n---\n{suffix}"
+
+
+def _zip(files: dict[str, str]) -> bytes:
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        for path, content in files.items():
+            archive.writestr(path, content)
+    return output.getvalue()
+
+
+def test_direct_drop_skill_is_discovered_with_complete_files_and_runtime_access(seeded):
+    client = TestClient(create_app())
+    root = project_skill_library_dir("webshop")
+    skill_dir = root / "browser-check"
+    (skill_dir / "scripts").mkdir(parents=True)
+    (skill_dir / "references").mkdir()
+    (skill_dir / "SKILL.md").write_text(_skill_markdown(
+        "browser-check", "浏览器交互或视觉验证时使用", "运行 scripts/check.sh。"))
+    (skill_dir / "scripts" / "check.sh").write_text("echo first\n")
+    (skill_dir / "references" / "selectors.md").write_text("# Selectors\n")
+
+    project = next(item for item in client.get("/api/overview").json()["projects"]
+                   if item["id"] == "webshop")
+    assert any(skill["id"] == "browser-check" for skill in project["skills"])
+
+    chat = ChatEngine(seeded)
+    message = seeded.add_message("general", "human", "human", "@dev 验证页面", ["dev"])
+    cfg = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), message)
+    exposed = Path(cfg.env["MISSIONCREW_SKILLS_DIR"]) / "browser-check"
+    assert exposed.is_symlink() and exposed.resolve() == skill_dir.resolve()
+    assert (exposed / "scripts" / "check.sh").read_text() == "echo first\n"
+    assert (exposed / "references" / "selectors.md").is_file()
+    assert str(exposed / "SKILL.md") in cfg.prompt
+    assert "浏览器交互或视觉验证时使用" in cfg.prompt
+    assert "运行 scripts/check.sh" not in cfg.prompt
+    assert str(root.resolve()) in cfg.allowed_dirs
+
+    first_version = cfg.context_version
+    (skill_dir / "scripts" / "check.sh").write_text("echo second\n")
+    updated = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), message)
+    assert updated.context_version != first_version
+
+    shutil.rmtree(skill_dir)
+    project = next(item for item in client.get("/api/overview").json()["projects"]
+                   if item["id"] == "webshop")
+    assert all(skill["id"] != "browser-check" for skill in project["skills"])
+
+
+def test_zip_import_detects_skill_packages_preserves_files_and_confirms_overwrite(seeded):
+    client = TestClient(create_app())
+    payload = _zip({
+        "bundle/release/SKILL.md": (
+            "---\nname: release\ndescription: 准备版本发布时使用\n"
+            "allowed-tools:\n  - Bash\n---\n\n参见 references/checklist.md。\n"),
+        "bundle/release/references/checklist.md": "# Checklist\n",
+        "bundle/release/scripts/release.sh": "#!/bin/sh\necho release\n",
+        "bundle/audit/skill.md": _skill_markdown("audit", "进行审计时使用"),
+        "bundle/audit/assets/template.txt": "report\n",
+    })
+    url = "/api/projects/webshop/skills/import-zip"
+    imported = client.post(url, content=payload, headers={"Content-Type": "application/zip"})
+    assert imported.status_code == 200
+    assert imported.json()["imported"] == ["audit", "release"]
+    root = project_skill_library_dir("webshop")
+    assert (root / "release" / "scripts" / "release.sh").is_file()
+    assert (root / "release" / "references" / "checklist.md").is_file()
+    assert (root / "audit" / "SKILL.md").is_file()
+    assert not (root / "audit" / "skill.md").exists()
+
+    edited = client.post("/api/projects/webshop/skills", json={
+        "id": "release", "name": "release", "description": "发布检查",
+        "instructions": "运行 scripts/release.sh", "enabled": True,
+    })
+    assert edited.status_code == 200
+    release_markdown = (root / "release" / "SKILL.md").read_text()
+    assert "allowed-tools:\n- Bash" in release_markdown
+    assert "运行 scripts/release.sh" in release_markdown
+
+    conflict = client.post(url, content=payload, headers={"Content-Type": "application/zip"})
+    assert conflict.status_code == 200
+    assert conflict.json()["needs_confirmation"] is True
+    assert conflict.json()["conflicts"] == ["audit", "release"]
+    overwritten = client.post(
+        url + "?overwrite=true", content=payload,
+        headers={"Content-Type": "application/zip"})
+    assert overwritten.status_code == 200
+    assert overwritten.json()["needs_confirmation"] is False
+    assert any((root.parent / ".skill-trash").rglob("release/SKILL.md"))
+
+    unsafe = _zip({"../escape/SKILL.md": _skill_markdown("escape", "no")})
+    rejected = client.post(url, content=unsafe, headers={"Content-Type": "application/zip"})
+    assert rejected.status_code == 400
+    assert "不安全路径" in rejected.json()["detail"]
+
+    single = _zip({
+        "SKILL.md": _skill_markdown("root-skill", "ZIP 根目录中的单个 Skill"),
+        "scripts/run.sh": "echo root\n",
+    })
+    root_import = client.post(url, content=single, headers={"Content-Type": "application/zip"})
+    assert root_import.status_code == 200
+    assert root_import.json()["imported"] == ["root-skill"]
+    assert (root / "root-skill" / "scripts" / "run.sh").is_file()
+
+
+def test_local_folder_import_and_new_project_skill_directory(seeded, tmp_path):
+    client = TestClient(create_app())
+    source = tmp_path / "skill-collection"
+    tool = source / "api-helper"
+    (tool / "scripts").mkdir(parents=True)
+    (tool / "SKILL.md").write_text(
+        _skill_markdown("api-helper", "开发或检查 API 时使用"))
+    (tool / "scripts" / "inspect.py").write_text("print('ok')\n")
+
+    imported = client.post("/api/projects/webshop/skills/import-folder", json={
+        "path": str(source), "overwrite": False,
+    })
+    assert imported.status_code == 200
+    assert imported.json()["imported"] == ["api-helper"]
+    assert (project_skill_library_dir("webshop") / "api-helper" / "scripts"
+            / "inspect.py").is_file()
+
+    created = client.post("/api/projects", json={"id": "new-project", "name": "New"})
+    assert created.status_code == 200
+    new_root = project_skill_library_dir("new-project")
+    assert new_root.is_dir() and list(new_root.iterdir()) == []
+
+    unsafe_source = tmp_path / "unsafe-skills" / "linked"
+    unsafe_source.mkdir(parents=True)
+    (unsafe_source / "SKILL.md").write_text(
+        _skill_markdown("linked", "包含越界链接的 Skill"))
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret\n")
+    (unsafe_source / "reference.txt").symlink_to(outside)
+    unsafe = client.post("/api/projects/webshop/skills/import-folder", json={
+        "path": str(unsafe_source.parent), "overwrite": False,
+    })
+    assert unsafe.status_code == 400
+    assert "不允许符号链接" in unsafe.json()["detail"]
+
+    managed_root = project_skill_library_dir("webshop")
+    escaped = tmp_path / "escaped"
+    escaped.mkdir()
+    (managed_root / "linked-save").symlink_to(escaped, target_is_directory=True)
+    save_through_link = client.post("/api/projects/webshop/skills", json={
+        "id": "linked-save", "name": "linked-save", "description": "unsafe",
+        "instructions": "must not be written", "enabled": True,
+    })
+    assert save_through_link.status_code == 400
+    assert not (escaped / "SKILL.md").exists()
+
+
+def test_skill_page_exposes_all_import_modes(seeded):
+    client = TestClient(create_app())
+    html = client.get("/").text
+    js = client.get("/assets/js/project-configs.js").text
+    sidebar = client.get("/assets/js/sidebar.js").text
+
+    assert 'id="skill-zip-input"' in html
+    assert "上传 ZIP" in html and "导入本地目录" in html and "重新扫描" in html
+    assert 'id="skill-library-info"' in html
+    for function in ("importSkillZip", "openSkillFolderImport",
+                     "importSkillFolder", "rescanSkillLibrary"):
+        assert f"function {function}" in js
+    assert "直接投放目录" in js and "skillFolderImportOpen" in js
+    assert "openFormDialog" not in js
+    assert 'targetInputId = "res-target"' in sidebar

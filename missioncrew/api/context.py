@@ -10,6 +10,8 @@ from typing import Optional
 from fastapi import HTTPException
 
 from ..collab.chat import ChatEngine
+from ..collab.skills import (sync_all_project_skill_libraries,
+                             sync_project_skill_library)
 from ..collab.workspace import migrate_legacy_workspace_layout
 from ..core import seed as seed_mod
 from ..core.config import db_path
@@ -43,6 +45,7 @@ class ApiContext:
         if migrated_paths:
             store.audit("platform", "agent_workspace_layout_migrated",
                         detail=f"paths={migrated_paths}")
+        sync_all_project_skill_libraries(store)
         ctx = cls(store=store, engine=Engine(store), chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends
         return ctx
@@ -61,6 +64,7 @@ class ApiContext:
         project = self.store.get_project(project_id)
         if project is None:
             raise HTTPException(404, "项目不存在")
+        project, _ = sync_project_skill_library(self.store, project)
         return project
 
     def validate_orchestrator_actor(self, project: Project,

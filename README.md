@@ -117,6 +117,7 @@ uv run mc role list -p default
 - **统一 Agent harness 工作区**:每个聊天角色和结构化任务都会获得一个隔离的 `.missioncrew/`，绝对路径通过 `MISSIONCREW_WORKSPACE` 注入。它位于平台数据根而不是频道绑定的业务代码仓，因此 Agent 在其中创建的任务、文档、证据和诊断文件不会混入业务源码或业务提交。目录内的 `README.md` 说明读写约定，`project.md` 提供项目简介；业务代码仍在执行 `workdir` 或项目资源仓中修改。
 - **频道历史 JSON**:当前角色的完整频道记录位于 `.missioncrew/channel-history.json`，路径同时通过 `MISSIONCREW_CHANNEL_HISTORY` 注入。主控读取原始记录；执行角色读取独立脱敏视图，其他执行角色统一匿名且不含其 runtime/model/effort。每个角色使用不同的 harness 工作区，不会横向看到其他角色视图。
 - **准则与 Skill 文件**:准则编辑器直接编辑完整 Markdown，YAML frontmatter 与后端统一使用 `name` / `description`。公共上下文只列出已启用准则的属性、内容版本和 `.missioncrew/guidelines/<name>.md`，不重复注入正文；项目 Skill 同时物化为 `.missioncrew/skills/<id>/SKILL.md`。Agent 结合任务按需读取；设置变化会刷新文件并改变公共上下文版本，因此复用中的会话也会收到更新。
+- **完整 Skill 目录**:每个项目都有独立 `skills/` 投放目录，支持上传 ZIP、导入服务器本地目录或直接复制 Skill 文件夹后自动扫描。`SKILL.md`、`scripts/`、`references/`、`assets/` 等完整保留，并统一映射到 Agent harness；所有 Runtime 都收到同一份摘要、路径和目录授权。格式、冲突与安全规则见 [项目 Skill 完整目录](docs/skills.md)。
 - **版本化文档库**:`.missioncrew/documents/` 是所有 Runtime 都能直接读写的项目文档入口，路径同时通过 `MISSIONCREW_DOCUMENTS_DIR` 注入。实际文档工作树和独立 Git 历史由平台管理，Agent 可直接创建/编辑，聊天或任务执行后平台自动提交变化。准则与 Skill 使用普通相对 Markdown 链接关联其中的文件；Web/API 仍可创建、删除、查看历史和回读旧版本。
 - **任务 Markdown**:`.missioncrew/tasks/`（`MISSIONCREW_TASKS_DIR`）提供当前项目任务快照。Agent 可新建 Markdown 任务，也可编辑既有任务的标题、描述、类型、标签、风险、密级与成本上限；执行后平台校验并同步数据库。任务状态、阶段、证据门禁和审批属于平台管理字段，文件修改不会绕过它们。
 - **自定义面板**:除内置任务看板外，项目可创建任意 12 列网格面板。组件的类型、位置、尺寸和 JSON 内容都可编辑，内置示例包括需求管理、测试记录、日志分析、任务查询、指标、表格和 Markdown。
