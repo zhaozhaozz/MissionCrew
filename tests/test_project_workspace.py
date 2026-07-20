@@ -467,12 +467,21 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert 'id="config-chat-selection"' in html
     assert 'id="config-chat-thread"' in html
     assert 'id="config-chat-input"' in html
+    assert 'class="content-topbar"' in html
+    assert 'id="skill-file-list"' in html
+    assert 'class="config-editor-pane form single-pane-editor"' in html
+    for removed in ("guideline-page-list", "skill-page-list", "rule-page-list",
+                    "doc-tree", "docs-timeline", "docs-layout"):
+        assert removed not in html
     assert "config-generator" not in html
     assert "project-configs.js" in html
     assert '"guidelines", "skills", "rules"' in router
     assert "openFormDialog" not in js
     assert "uiPrompt" not in documents
     assert 'id="doc-new-path"' in documents
+    assert "documentSidebarHtml" in documents
+    assert "版本历史" in documents
+    assert "documentSidebarHtml()" in router
     assert "sendConfigChat" in js and "pollConfigChat" in js
     assert "currentConfigDraft" in js and "captureConfigChatSelection" in js
     assert "line_start" in js and "selected_text" in js

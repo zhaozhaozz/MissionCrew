@@ -50,11 +50,6 @@ function readFileRefs(id) {
   return [...new Set([...selected, ...extra])];
 }
 
-function configListItem(label, detail, selected, onclick) {
-  return `<div class="config-list-item ${selected ? "selected" : ""}" onclick="${onclick}">
-    <b>${esc(label)}</b><span class="muted">${esc(detail)}</span></div>`;
-}
-
 function renderProjectConfigPage(tab, force = false) {
   if (tab === "guidelines") renderGuidelinesPage(force);
   if (tab === "skills") renderSkillsPage(force);
@@ -385,12 +380,6 @@ function renderGuidelinesPage(force = false) {
   if (selectedGuidelineId === undefined
       || (selectedGuidelineId !== null && !guidelines.some(item => item.id === selectedGuidelineId)))
     selectedGuidelineId = guidelines[0]?.id ?? null;
-  document.getElementById("guideline-page-list").innerHTML = guidelines.map(item =>
-    configListItem(item.title || item.id,
-      `${item.id}${item.enabled === false ? " · 已停用" : ""}`,
-      item.id === selectedGuidelineId,
-      `editGuideline('${esc(item.id)}')`)).join("")
-    || `<div class="empty">暂无准则文档。</div>`;
   if (force || !configEditorDirty.guidelines) renderGuidelineEditor();
   updateConfigChatContext();
 }
@@ -455,12 +444,13 @@ function renderSkillsPage(force = false) {
   if (selectedSkillId === undefined
       || (selectedSkillId !== null && !skills.some(item => item.id === selectedSkillId)))
     selectedSkillId = skills[0]?.id ?? null;
-  document.getElementById("skill-page-list").innerHTML = skills.map(item =>
-    configListItem(item.name || item.id,
-      `${item.id}${item.enabled === false ? " · 已停用" : ""}`,
-      item.id === selectedSkillId,
-      `editSkill('${esc(item.id)}')`)).join("")
-    || `<div class="empty">暂无 Skill。</div>`;
+  const skill = skills.find(item => item.id === selectedSkillId);
+  document.getElementById("skill-file-list").innerHTML = (skill?.file_refs || []).map(path =>
+    `<div class="config-list-item" data-path="${esc(path)}"
+       onclick="openDocFromSidebar(this.dataset.path)" title="${esc(path)}">
+       📄 ${esc(path)}
+     </div>`).join("")
+    || `<div class="empty">${skill ? "此 Skill 未引用项目文档。" : "请先从左侧选择或新建 Skill。"}</div>`;
   if (force || !configEditorDirty.skills) renderSkillEditor();
   updateConfigChatContext();
 }
@@ -571,10 +561,6 @@ function renderRulesPage(force = false) {
   if (selectedRuleIndex === undefined
       || (selectedRuleIndex !== null && !rules[selectedRuleIndex]))
     selectedRuleIndex = rules.length ? 0 : null;
-  document.getElementById("rule-page-list").innerHTML = rules.map((rule, index) =>
-    configListItem(rule.note || `规则 ${index + 1}`, JSON.stringify(rule.match),
-      index === selectedRuleIndex, `editRule(${index})`)).join("")
-    || `<div class="empty">暂无验证规则。</div>`;
   if (force || !configEditorDirty.rules) renderRuleEditor();
   updateConfigChatContext();
 }

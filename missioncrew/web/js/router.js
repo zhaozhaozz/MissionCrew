@@ -51,7 +51,9 @@ function setProject(id) {
   configEditorDirty.rules = false;
   document.getElementById("msgs").innerHTML = "";
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
-  docFiles = []; docSelected = null;
+  docFiles = []; docFilesMeta = []; docSelected = null;
+  docMode = "view"; docViewingRevision = null; docHistoryOpen = false;
+  docCollapsed.clear();
   renderSidebar(); renderBoard(); renderCustomBoards();
   loadDocFiles().then(renderSidebar);
   if (currentTab === "proj") renderProjSettings();
@@ -167,12 +169,7 @@ function renderSidebar() {
       || `<div class="side-item" onclick="switchTab('custom')">＋ 向主控提一个面板需求…</div>`;
   // 文档 -> 文档库视图
   if (!_secState("docs", "doc-list", "cnt-docs", docFiles.length))
-    document.getElementById("doc-list").innerHTML = docFiles.slice(0, 40).map(p =>
-      `<div class="side-item ${p === docSelected && currentTab === "docs" ? "selected" : ""}"
-            data-path="${esc(p)}" onclick="openDocFromSidebar(this.dataset.path)"
-            title="${esc(p)}">📄 ${esc(p)}</div>`).join("")
-      + (docFiles.length > 40 ? `<div class="side-item" onclick="switchTab('docs')">…共 ${docFiles.length} 个文件</div>` : "")
-      || `<div class="side-item" onclick="switchTab('docs')">＋ 新建第一篇文档…</div>`;
+    document.getElementById("doc-list").innerHTML = documentSidebarHtml();
   // 资源 -> 项目设置资源管理;本地 git 仓自动带远程标记
   const res = projObj()?.repos || [];
   if (!_secState("resources", "resource-list", "cnt-resources", res.length))

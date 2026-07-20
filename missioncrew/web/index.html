@@ -179,26 +179,26 @@
 
     <div id="guidelines-view" class="page">
       <div class="section">
-        <h2>准则文档 <span class="muted" id="guide-proj-label"></span></h2>
-        <p class="muted">每篇准则都是注入角色上下文的完整文档。可手工编辑，也可在底部对话栏中针对当前篇目或选中行向项目主控提问、生成或修改。</p>
-        <div class="config-manager">
-          <aside class="config-list-pane">
-            <button class="action" onclick="editGuideline(null)">＋ 新建准则文档</button>
-            <div id="guideline-page-list"></div>
-          </aside>
-          <section class="config-editor-pane form" id="guideline-editor"></section>
+        <div class="content-topbar">
+          <div><h2>准则文档 <span class="muted" id="guide-proj-label"></span></h2>
+            <p class="muted">篇目列表位于应用左侧栏；右侧专注显示当前准则正文和配置。</p></div>
+          <button class="ghost compact" onclick="editGuideline(null)">＋ 新建</button>
         </div>
+        <section class="config-editor-pane form single-pane-editor" id="guideline-editor"></section>
       </div>
     </div>
 
     <div id="skills-view" class="page">
       <div class="section">
-        <h2>项目 Skills <span class="muted" id="skill-proj-label"></span></h2>
-        <p class="muted">Skill 包含完整执行说明、文档引用、Runtime 范围和 Runtime 专用覆盖。可手工编辑，也可在底部对话栏中围绕当前 Skill 和选中行与项目主控交流。</p>
+        <div class="content-topbar">
+          <div><h2>项目 Skills <span class="muted" id="skill-proj-label"></span></h2>
+            <p class="muted">Skill 列表位于应用左侧栏；当前 Skill 可包含多个引用文件，因此保留文件栏和正文编辑区。</p></div>
+          <button class="ghost compact" onclick="editSkill(null)">＋ 新建</button>
+        </div>
         <div class="config-manager">
           <aside class="config-list-pane">
-            <button class="action" onclick="editSkill(null)">＋ 新建 Skill</button>
-            <div id="skill-page-list"></div>
+            <h3>当前 Skill 文件</h3>
+            <div id="skill-file-list"></div>
           </aside>
           <section class="config-editor-pane form" id="skill-editor"></section>
         </div>
@@ -207,31 +207,24 @@
 
     <div id="rules-view" class="page">
       <div class="section">
-        <h2>验证规则 <span class="muted" id="rule-proj-label"></span></h2>
-        <p class="muted">规则按任务类型、标签或风险匹配，并追加证据、门禁和验证能力要求。可逐条编辑，也可在底部对话栏中针对当前规则和选中行与项目主控交流。</p>
-        <div class="config-manager">
-          <aside class="config-list-pane">
-            <button class="action" onclick="editRule(null)">＋ 新建验证规则</button>
-            <div id="rule-page-list"></div>
-          </aside>
-          <section class="config-editor-pane form" id="rule-editor"></section>
+        <div class="content-topbar">
+          <div><h2>验证规则 <span class="muted" id="rule-proj-label"></span></h2>
+            <p class="muted">规则列表位于应用左侧栏；右侧显示当前规则的完整匹配和验证要求。</p></div>
+          <button class="ghost compact" onclick="editRule(null)">＋ 新建</button>
         </div>
+        <section class="config-editor-pane form single-pane-editor" id="rule-editor"></section>
       </div>
     </div>
 
     <div id="docs-view" class="page">
       <div class="section">
-        <h2>版本化文档库 <span class="muted" id="docs-proj-label"></span>
-          <button class="ghost" style="margin-left:8px" onclick="newDocument()">＋ 新建文档</button></h2>
-        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本。左侧是目录树，右侧查看或编辑；底部对话栏会携带当前路径与选中行。</p>
-        <div class="muted" id="docs-root"></div>
-        <div class="docs-layout">
-          <div class="doc-tree">
-            <div id="doc-tree"></div>
-            <div id="docs-timeline"></div>
-          </div>
-          <div class="doc-pane" id="doc-pane"></div>
+        <div class="content-topbar">
+          <div><h2>版本化文档库 <span class="muted" id="docs-proj-label"></span></h2>
+            <p class="muted">目录树位于应用左侧栏；右侧显示当前文档，版本记录通过正文工具栏的按钮展开。</p>
+            <div class="muted" id="docs-root"></div></div>
+          <button class="ghost compact" onclick="newDocument()">＋ 新建</button>
         </div>
+        <div class="doc-pane" id="doc-pane"></div>
       </div>
     </div>
 

@@ -352,11 +352,19 @@
   .danger:hover { background: var(--bad-soft); }
   .section { margin-bottom: 34px; scroll-margin-top: 56px; }
   .section > h2 { font-size: 14.5px; margin: 0 0 10px; display: flex; align-items: center; }
-  /* Skills / 准则 / 规则共用的全页管理器：左侧条目，右侧编辑器。 */
+  .content-topbar { display: flex; align-items: flex-start; gap: 16px;
+                    border-bottom: 1px solid var(--line); padding-bottom: 10px;
+                    margin-bottom: 16px; }
+  .content-topbar > div { min-width: 0; flex: 1; }
+  .content-topbar h2 { margin: 0; font-size: 15px; }
+  .content-topbar p { margin: 4px 0 0; }
+  .ghost.compact { flex: none; padding: 3px 9px; font-size: 12px; }
+  .single-pane-editor { width: 100%; max-width: none; }
+  /* Skill 需要同时呈现其引用文件与编辑器，因此独立保留双栏。 */
   .config-manager { display: grid; grid-template-columns: minmax(210px, 280px) minmax(0, 1fr);
                     gap: 18px; min-height: 440px; }
   .config-list-pane { border-right: 1px solid var(--line); padding-right: 14px; }
-  .config-list-pane > .action { width: 100%; margin-bottom: 10px; }
+  .config-list-pane > h3 { margin: 0 0 10px; font-size: 13px; }
   .config-list-item { padding: 9px 10px; margin-bottom: 4px; border: 1px solid transparent;
                       border-radius: 8px; cursor: pointer; }
   .config-list-item:hover { background: var(--card); border-color: var(--line); }
@@ -427,18 +435,11 @@
   .switch.on::after { left: 19px; }
   .muted { color: var(--muted); font-size: 12px; }
 
-  /* ---- 文档库:目录树 + 阅读/编辑双栏 ---- */
-  .docs-layout { display: flex; gap: 18px; align-items: flex-start; margin-top: 10px; }
-  .doc-tree { width: 280px; flex: none; }
-  .doc-pane { flex: 1; min-width: 0; background: var(--card); border: 1px solid var(--line);
+  /* ---- 文档库:目录树在应用侧栏,主区只呈现当前文档 ---- */
+  .side-tree-dir .caret { display: inline-block; width: 13px; color: var(--muted); }
+  .doc-pane { width: 100%; min-width: 0; background: var(--card); border: 1px solid var(--line);
               border-radius: 12px; padding: 16px 20px; min-height: 300px;
               box-shadow: var(--shadow-sm); }
-  .tree-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px;
-              border-radius: 6px; cursor: pointer; font-size: 13px; transition: all .15s; }
-  .tree-row:hover { background: var(--card); }
-  .tree-row.selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-  .tree-row .caret { width: 15px; flex: none; color: var(--muted); font-size: 12px; }
-  .tree-row .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .doc-pane .doc-head { display: flex; align-items: center; gap: 10px;
                         border-bottom: 1px solid var(--line); padding-bottom: 10px; margin-bottom: 14px; }
   .doc-pane .doc-head b { flex: 1; overflow: hidden; text-overflow: ellipsis; }

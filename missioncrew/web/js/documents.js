@@ -6,11 +6,12 @@ async function loadDocFiles() {
   if (!currentProject) return;
   try {
     const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
+    docFilesMeta = d.files;
     docFiles = d.files.map(f => f.path);
   } catch (e) { /* ignore */ }
 }
 
-// ---- 文档库:目录树 + 阅读/编辑 ----
+// ---- 文档库:应用侧栏目录树 + 主区阅读/编辑 ----
 let docFilesMeta = [];            // [{path,size,modified_at}]
 let docSelected = null;           // 当前选中文件路径
 let docMode = "view";             // view | edit | new
@@ -33,12 +34,7 @@ async function renderDocuments() {
   if (docSelected && !docFiles.includes(docSelected) && docMode !== "new") {
     docSelected = null; docMode = "view";
   }
-  renderDocTree();
-  document.getElementById("docs-timeline").innerHTML = (d.history || []).length
-    ? `<h3>最近变更</h3>` + d.history.slice(0, 8).map(v =>
-        `<div class="muted" style="padding:2px 0" title="${esc(v.message)}">
-          ${new Date(v.created_at * 1000).toLocaleDateString()} ${esc(v.actor)} · ${esc(v.message.slice(0, 24))}</div>`).join("")
-    : "";
+  renderSidebar();
   await renderDocPane();
   updateConfigChatContext();
 }
@@ -55,40 +51,39 @@ function buildDocTree(files) {
   return root;
 }
 
-function renderDocTree() {
+function documentSidebarHtml() {
   const rows = [];
   const walk = (node, prefix, depth) => {
     for (const dir of Object.keys(node.dirs).sort()) {
       const key = prefix ? `${prefix}/${dir}` : dir;
       const closed = docCollapsed.has(key);
-      rows.push(`<div class="tree-row" style="padding-left:${8 + depth * 14}px"
+      rows.push(`<div class="side-item side-tree-dir" style="padding-left:${22 + depth * 14}px"
           data-dir="${esc(key)}" onclick="toggleDocDir(this.dataset.dir)">
-          <span class="caret">${closed ? "▸" : "▾"}</span>
-          <span class="fname">📁 ${esc(dir)}</span></div>`);
+          <span class="caret">${closed ? "▸" : "▾"}</span> 📁 ${esc(dir)}</div>`);
       if (!closed) walk(node.dirs[dir], key, depth + 1);
     }
     for (const f of node.files.sort((a, b) => a.name.localeCompare(b.name))) {
-      rows.push(`<div class="tree-row ${f.path === docSelected ? "selected" : ""}"
-          style="padding-left:${8 + depth * 14}px" data-path="${esc(f.path)}"
-          onclick="selectDocument(this.dataset.path)">
-          <span class="caret"></span><span class="fname">📄 ${esc(f.name)}</span></div>`);
+      rows.push(`<div class="side-item ${f.path === docSelected && currentTab === "docs" ? "selected" : ""}"
+          style="padding-left:${22 + depth * 14}px" data-path="${esc(f.path)}"
+          onclick="openDocFromSidebar(this.dataset.path)" title="${esc(f.path)}">
+          📄 ${esc(f.name)}</div>`);
     }
   };
   walk(buildDocTree(docFilesMeta), "", 0);
-  document.getElementById("doc-tree").innerHTML = rows.join("")
-    || `<div class="empty">文档库为空,点上方「＋ 新建文档」。</div>`;
+  return rows.join("")
+    || `<div class="side-item" onclick="switchTab('docs');newDocument()">＋ 新建第一篇文档…</div>`;
 }
 
 function toggleDocDir(key) {
   docCollapsed.has(key) ? docCollapsed.delete(key) : docCollapsed.add(key);
-  renderDocTree();
+  renderSidebar();
 }
 
 function selectDocument(path) {
   docSelected = path; docMode = "view";
   configChatSelection = null;
   docViewingRevision = null; docHistoryOpen = false;
-  renderDocTree(); renderDocPane();
+  renderSidebar(); renderDocPane();
 }
 
 function newDocument() {
@@ -96,6 +91,7 @@ function newDocument() {
   docSelected = null; docMode = "new";
   configChatSelection = null;
   docViewingRevision = null; docHistoryOpen = false;
+  renderSidebar();
   renderDocPane();
 }
 
@@ -127,7 +123,7 @@ async function renderDocPane() {
   }
   const meta = docFilesMeta.find(f => f.path === docSelected);
   const metaLine = meta ? `${meta.size} B · ${new Date(meta.modified_at * 1000).toLocaleString()}` : "";
-  // 编辑 / 新建:文本编辑器
+  // 编辑模式:文本编辑器
   if (docMode === "edit") {
     let content = "";
     const d = await api("GET",
@@ -164,7 +160,7 @@ async function renderDocPane() {
   pane.innerHTML = `
     <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
       <button class="action" onclick="docMode='edit';renderDocPane()">编辑</button>
-      <button class="ghost" onclick="toggleDocHistory()">历史</button>
+      <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
       <button class="danger" onclick="deleteDocument()">删除</button></div>
     ${revBanner}${body}<div id="doc-history"></div>`;
   if (docHistoryOpen) await showDocumentHistory();
@@ -175,6 +171,7 @@ function cancelDocEdit() {
   if (docMode === "new") { docSelected = null; }
   docMode = "view";
   configChatSelection = null;
+  renderSidebar();
   renderDocPane();
 }
 
@@ -206,8 +203,7 @@ async function deleteDocument() {
 
 async function toggleDocHistory() {
   docHistoryOpen = !docHistoryOpen;
-  if (docHistoryOpen) await showDocumentHistory();
-  else { const el = document.getElementById("doc-history"); if (el) el.innerHTML = ""; }
+  await renderDocPane();
 }
 
 async function showDocumentHistory() {

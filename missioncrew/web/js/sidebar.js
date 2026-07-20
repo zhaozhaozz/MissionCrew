@@ -134,7 +134,7 @@ function openDocFromSidebar(path) {
   docMode = "view";
   docViewingRevision = null;
   docHistoryOpen = false;
-  if (currentTab === "docs") { renderDocTree(); renderDocPane(); renderSidebar(); }
+  if (currentTab === "docs") { renderDocPane(); renderSidebar(); }
   else switchTab("docs");
 }
 
