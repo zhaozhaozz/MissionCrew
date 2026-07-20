@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from . import assembler, resources, router, workflow
 from ..runtime import adapters
 from ..collab.documents import library_for
+from ..collab.workspace import sync_task_files, write_task_files
 from ..core.models import Task, TaskStage, new_id
 from ..core.store import Store
 
@@ -113,7 +115,8 @@ class Engine:
 
         backend = decision.backend
         env, notes = resources.grant_resources(self.store, task, stage, project)
-        cfg = assembler.assemble(task, stage, project, backend, env, notes, decision.trace)
+        cfg = assembler.assemble(
+            task, stage, project, backend, env, notes, decision.trace, self.store)
         self.store.audit("platform", "stage_dispatch", task.id,
                          f"stage={stage.name} backend={backend.id} {decision.reason}")
 
@@ -125,6 +128,22 @@ class Engine:
         if revision:   # 执行中的文档改动进平台审计,与 API 写入口径一致
             self.store.audit(f"task:{task.id}", "documents_committed", task.id,
                              f"stage={stage.name} revision={revision[:10]}")
+        task_sync_errors = sync_task_files(
+            self.store, project.id, Path(cfg.env["MISSIONCREW_TASKS_DIR"]),
+            f"task:{task.id}")
+        write_task_files(
+            self.store, project.id, Path(cfg.env["MISSIONCREW_TASKS_DIR"]))
+        if task_sync_errors:
+            self.store.audit(
+                f"task:{task.id}", "task_workspace_sync_failed", task.id,
+                "; ".join(task_sync_errors))
+        # 任务可在 workspace 中编辑；当前执行仍沿用已派发阶段计划，但保留
+        # Agent 对任务描述和可编辑元数据的更新，避免随后 put_task 覆盖它们。
+        workspace_task = self.store.get_task(task.id)
+        if workspace_task is not None:
+            for field_name in ("title", "description", "task_type", "labels", "risk",
+                               "security_level", "max_tier"):
+                setattr(task, field_name, getattr(workspace_task, field_name))
 
         # 记账:配额扣减(工具级,重取注册表记录,避免模型副本覆盖工具条目)
         stored = self.store.get_backend(backend.id)

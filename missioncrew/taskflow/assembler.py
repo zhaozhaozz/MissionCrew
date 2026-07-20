@@ -11,11 +11,12 @@ from pathlib import Path
 from ..core.config import workspaces_dir
 from ..collab.documents import library_for
 from ..core.models import Backend, ExecutionConfig, Project, Task, TaskStage
-from ..collab.project_context import (guideline_context_dir, project_allowed_dirs,
-                                      render_project_context)
+from ..collab.project_context import project_allowed_dirs, render_project_context
+from ..collab.workspace import prepare_agent_workspace, task_workspace_dir
+from ..core.store import Store
 
 # 证据契约:所有后端(真实或 Mock)统一通过工作区 manifest 提交证据
-MANIFEST = "evidence/manifest.json"
+MANIFEST = ".missioncrew/evidence/manifest.json"
 
 PROMPT_TEMPLATE = """\
 # 任务
@@ -30,8 +31,8 @@ PROMPT_TEMPLATE = """\
 {goal}
 
 # 证据契约(必须遵守)
-完成工作后,把证据文件写入工作区 evidence/ 目录,并在 {manifest} 中追加记录,
-格式为 JSON 数组,每项: {{"type": "...", "path": "evidence/xxx", "summary": "..."}}。
+完成工作后,把证据文件写入 MissionCrew 工作区的 evidence/ 目录,并在 {manifest} 中追加记录,
+格式为 JSON 数组,每项: {{"type": "...", "path": ".missioncrew/evidence/xxx", "summary": "..."}}。
 本阶段必须产出的证据类型: {produces}
 任务是否完成由平台核验证据决定,不要只在回复中声称完成。
 {resources_section}"""
@@ -39,7 +40,7 @@ PROMPT_TEMPLATE = """\
 
 def workspace_for(task_id: str) -> Path:
     ws = workspaces_dir() / task_id
-    (ws / "evidence").mkdir(parents=True, exist_ok=True)
+    (task_workspace_dir(ws) / "evidence").mkdir(parents=True, exist_ok=True)
     return ws
 
 
@@ -55,11 +56,13 @@ def read_manifest(workdir: str | Path) -> list[dict]:
 
 
 def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
-             env: dict, resource_notes: list[str], trace: list[str]) -> ExecutionConfig:
+             env: dict, resource_notes: list[str], trace: list[str],
+             store: Store) -> ExecutionConfig:
     ws = workspace_for(task.id)
 
     library = library_for(project.id)
-    library.link_into(ws)   # 任务工作区是平台自有目录:软链让沙箱内也能读写文档库
+    workspace, _ = prepare_agent_workspace(
+        store, project, library, task_workspace_dir(ws))
     resources_section = ""
     if resource_notes:
         resources_section = "\n# 受控资源(平台已授权,任务结束自动回收)\n" + "\n".join(resource_notes) + "\n"
@@ -70,7 +73,7 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         risk=task.risk,
         labels=", ".join(task.labels) or "无",
         description=task.description or "(无补充描述)",
-        project_context=render_project_context(project, library),
+        project_context=render_project_context(project, library, workspace.root),
         stage_name=stage.name,
         goal=stage.goal,
         manifest=MANIFEST,
@@ -83,11 +86,14 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         backend=backend,
         prompt=prompt,
         workdir=str(ws),
-        allowed_dirs=project_allowed_dirs(project, library),
+        allowed_dirs=project_allowed_dirs(project, library, workspace.root),
         env={
             **env,
-            "MISSIONCREW_DOCUMENTS_DIR": str(library.root),
-            "MISSIONCREW_GUIDELINES_DIR": str(guideline_context_dir(project)),
+            "MISSIONCREW_WORKSPACE": str(workspace.root),
+            "MISSIONCREW_DOCUMENTS_DIR": str(workspace.documents),
+            "MISSIONCREW_GUIDELINES_DIR": str(workspace.guidelines),
+            "MISSIONCREW_SKILLS_DIR": str(workspace.skills),
+            "MISSIONCREW_TASKS_DIR": str(workspace.tasks),
         },
         routing_trace=trace,
     )

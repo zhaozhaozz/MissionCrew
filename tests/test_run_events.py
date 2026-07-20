@@ -105,7 +105,9 @@ def test_cli_adapter_parses_stream_json_events(tmp_path):
     events, emit = _collect()
     backend = Backend(id="c", name="c", adapter="claude_code",
                       command=[sys.executable, FAKE_STREAM, "stream-json"])
-    result = adapters.CliAdapter("claude_code").run(_cfg(tmp_path, backend, emit))
+    cfg = _cfg(tmp_path, backend, emit)
+    cfg.env["MISSIONCREW_WORKSPACE"] = str(tmp_path / "harness" / ".missioncrew")
+    result = adapters.CliAdapter("claude_code").run(cfg)
     assert result.success
     assert result.output == "最终回复:OK"          # 回复取 result 事件,不是原始 JSONL
     kinds = [k for k, _ in events]
@@ -114,6 +116,10 @@ def test_cli_adapter_parses_stream_json_events(tmp_path):
     assert any(k == "tool" and "Bash" in t for k, t in events)
     # thinking_tokens 等 system 子事件不进过程流
     assert not any("thinking_tokens" in t for _, t in events)
+    assert (tmp_path / "harness" / ".missioncrew" / "runtime"
+            / "last-output-claude_code.log").is_file()
+    assert not (tmp_path / ".mc_last_output_claude_code.log").exists()
+    assert not (tmp_path / ".missioncrew").exists()
 
 
 def test_cli_adapter_keeps_full_long_stream_reply(tmp_path):

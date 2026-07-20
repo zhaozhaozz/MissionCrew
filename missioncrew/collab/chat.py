@@ -23,11 +23,14 @@ from typing import Optional
 from ..runtime import adapters
 from ..core.config import mc_home
 from .documents import library_for, safe_relative_path
+from .workspace import (chat_workspace_dir, platform_history_dir,
+                        prepare_agent_workspace, sync_task_files,
+                        write_task_files)
 from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            BoardWidget, Channel, ExecutionConfig,
                            GuidelineDocument, ProjectSkill, Role)
-from .project_context import (guideline_context_dir, project_allowed_dirs,
-                              render_project_context, write_guideline_context)
+from .project_context import (project_allowed_dirs, render_project_context,
+                              write_guideline_context)
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -321,6 +324,16 @@ class ChatEngine:
         if revision:   # Agent 直接写目录的改动也进平台审计,与 API 写入口径一致
             self.store.audit(f"role:{role.id}", "documents_committed",
                              detail=f"project={channel.project_id} revision={revision[:10]}")
+        tasks_dir = cfg.env.get("MISSIONCREW_TASKS_DIR")
+        task_sync_errors = (sync_task_files(
+            self.store, channel.project_id or "", Path(tasks_dir), f"role:{role.id}")
+            if tasks_dir else [])
+        if tasks_dir:
+            write_task_files(self.store, channel.project_id or "", Path(tasks_dir))
+        if task_sync_errors:
+            self.store.audit(
+                f"role:{role.id}", "task_workspace_sync_failed",
+                detail="; ".join(task_sync_errors))
 
         # 配额扣减在工具级记账:重取注册表记录,避免模型副本覆盖工具条目
         stored = self.store.get_backend(backend.id)
@@ -339,6 +352,9 @@ class ChatEngine:
             return
 
         reply = (result.output or result.summary or "(无输出)").strip()
+        if task_sync_errors:
+            reply += ("\n\n(MissionCrew 任务文件同步失败："
+                      + "；".join(task_sync_errors) + ")")
         project = self.store.get_project(channel.project_id or "")
         if project and role.id == project.orchestrator_role_id:
             reply = self._apply_orchestrator_actions(project, role.id, reply,
@@ -385,18 +401,25 @@ class ChatEngine:
         project_section = ""
         orchestrator_section = ""
         project = None
+        workspace = None
         env = {}
         allowed_dirs = []
         if channel.project_id:
             project = self.store.get_project(channel.project_id)
             if project:
                 library = library_for(project.id)
-                project_section = render_project_context(project, library)
-                env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
-                env["MISSIONCREW_GUIDELINES_DIR"] = str(guideline_context_dir(project))
-                allowed_dirs = project_allowed_dirs(project, library)
-                if not channel.workdir:   # 平台自有工作区才建软链,不污染真实代码仓
-                    library.link_into(workdir)
+                workspace, _ = prepare_agent_workspace(
+                    self.store, project, library,
+                    chat_workspace_dir(project.id, channel.id, role.id),
+                    has_history=True)
+                project_section = render_project_context(
+                    project, library, workspace.root)
+                env["MISSIONCREW_WORKSPACE"] = str(workspace.root)
+                env["MISSIONCREW_DOCUMENTS_DIR"] = str(workspace.documents)
+                env["MISSIONCREW_GUIDELINES_DIR"] = str(workspace.guidelines)
+                env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
+                env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
+                allowed_dirs = project_allowed_dirs(project, library, workspace.root)
                 if role.id == project.orchestrator_role_id:
                     orchestrator_section = self._orchestrator_section(project)
 
@@ -606,14 +629,16 @@ class ChatEngine:
     def _write_channel_history(self, channel: Channel,
                                role: Optional[Role] = None, project=None) -> Path:
         """原子更新完整频道历史，并返回当前角色获准读取的 JSON 视图。"""
-        # 历史文件与频道工作目录分开存放；否则平台自有工作区会让执行角色
-        # 顺带获得同级的主控原始历史，只靠 --add-dir 无法维持角色隔离。
-        root = (mc_home() / "channel-history" / channel.id).resolve()
-        canonical = root / "history" / "channel-history.json"
+        # 原始历史保存在平台内部工作区；每个角色只获准读取自己独立
+        # `.missioncrew/channel-history.json`，避免横向看到其他执行角色视图。
+        project = project or self.store.get_project(channel.project_id or "")
+        project_id = channel.project_id or "_unscoped"
+        canonical = platform_history_dir(project_id, channel.id) / "channel-history.json"
         orchestrator_id = project.orchestrator_role_id if project else ""
         scoped = bool(role and project and role.id != orchestrator_id)
-        visible_path = (root / "agents" / role.id / "channel-history.json"
-                        if scoped else canonical)
+        visible_path = (chat_workspace_dir(project.id, channel.id, role.id)
+                        / "channel-history.json"
+                        if role and project else canonical)
 
         with self._history_lock:
             messages = self.store.all_messages(channel.id)
@@ -634,13 +659,29 @@ class ChatEngine:
 
             canonical_records = [self._message_record(m) for m in messages]
             self._atomic_write_json(canonical, _payload(canonical_records))
-            if scoped:
+            if visible_path != canonical:
                 known_roles = {r.id for r in self.store.list_roles(project.id)}
-                visible_records = [
-                    self._message_record(m, role, project, known_roles)
-                    for m in messages
-                ]
+                visible_records = (
+                    [self._message_record(m, role, project, known_roles)
+                     for m in messages]
+                    if scoped else canonical_records)
                 self._atomic_write_json(visible_path, _payload(visible_records))
+            elif project:
+                # 新消息落库时刷新已经建立的角色视图；尚未执行过的角色不提前
+                # 创建 workspace，等首次装配时再生成。
+                known_roles = {r.id for r in self.store.list_roles(project.id)}
+                for target_role in self.store.list_roles(project.id):
+                    target = (chat_workspace_dir(
+                        project.id, channel.id, target_role.id)
+                              / "channel-history.json")
+                    if not target.parent.is_dir():
+                        continue
+                    target_scoped = target_role.id != project.orchestrator_role_id
+                    records = (
+                        [self._message_record(m, target_role, project, known_roles)
+                         for m in messages]
+                        if target_scoped else canonical_records)
+                    self._atomic_write_json(target, _payload(records))
         return visible_path
 
     def _orchestrator_section(self, project) -> str:

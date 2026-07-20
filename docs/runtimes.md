@@ -64,7 +64,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `{allowed_dirs}` — 当前项目全部本地资源目录与文档库；会展开为重复的 `--add-dir <path>`；
 - `{workdir}` — 本次主工作目录，用于需要显式工作根参数的 CLI。
 
-默认模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。Claude、Codex、Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则；Grok/OpenCode 同时显式传主工作目录；Cursor print 模式带 `--force`。诊断输出尾部落盘到工作区 `.mc_last_output_<adapter>.log` 便于回查；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
+默认模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。Claude、Codex、Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则；Grok/OpenCode 同时显式传主工作目录；Cursor print 模式带 `--force`。诊断输出尾部落盘到独立 harness 工作区 `.missioncrew/runtime/last-output-<adapter>.log` 便于回查，不在业务代码仓生成日志；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
 
 ### ACP stdio(`AcpAdapter`,kimi / kiro / qoder / trae)
 
@@ -83,7 +83,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 ### 公共上下文与压缩
 
-聊天 Prompt 分为两部分：MissionCrew 公共上下文（角色、项目准则 description 与 Skills、目录权限、工作目录、协作规则）和本轮任务输入。公共上下文带内容哈希版本及压缩提示，每轮都重新注入，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；准则正文虽然不直接进入 Prompt，但其内容版本会参与公共上下文哈希，因此已有会话下一轮仍会收到更新标记和完整新上下文。后收到的版本整体替换旧版本。最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史可通过 `MISSIONCREW_CHANNEL_HISTORY` 按需读取，完整准则 Markdown 目录可通过 `MISSIONCREW_GUIDELINES_DIR` 按需读取。准则编辑器、后端模型和运行时文件统一使用 `name` / `description` YAML frontmatter，后端直接解析文件头，不从 `id` / `summary` 转换。
+聊天 Prompt 分为两部分：MissionCrew 公共上下文（harness 简介、角色、项目准则 description 与 Skills、独立 `.missioncrew` 工作区、目录权限和协作规则）和本轮任务输入。公共上下文明确 MissionCrew 是 Agent harness 而不是业务代码仓，并说明 harness 文件不会进入业务源码。公共区块带内容哈希版本及压缩提示，每轮都重新注入，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；准则正文虽然不直接进入 Prompt，但其内容版本会参与公共上下文哈希，因此已有会话下一轮仍会收到更新标记和完整新上下文。后收到的版本整体替换旧版本。最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和任务分别位于 `MISSIONCREW_WORKSPACE` 下，并提供 `MISSIONCREW_CHANNEL_HISTORY`、`MISSIONCREW_DOCUMENTS_DIR`、`MISSIONCREW_GUIDELINES_DIR`、`MISSIONCREW_SKILLS_DIR`、`MISSIONCREW_TASKS_DIR` 兼容入口。Agent 可直接创建/编辑文档和任务；平台在执行后版本化文档并校验同步任务 Markdown。准则编辑器、后端模型和运行时文件统一使用 `name` / `description` YAML frontmatter，后端直接解析文件头，不从 `id` / `summary` 转换。
 
 ### Mock(`MockAdapter`)
 
@@ -132,7 +132,7 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 执行环境
 
-每次执行的进程环境:工作目录为频道 workdir(绑定代码仓的用仓路径,否则用平台自有目录并软链文档库)。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、文档库，以及当前角色的频道历史 JSON 所在目录；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。子进程 `PWD` 与实际 `cwd` 强制保持一致，避免 Runtime 从继承环境误判工作根。`MISSIONCREW_DOCUMENTS_DIR` 单独指向文档库，`MISSIONCREW_CHANNEL_HISTORY` 指向平台原子更新、不受消息分页上限影响的完整频道历史；主控获得原始视图，执行角色获得不暴露其他执行角色身份与执行组合的脱敏视图。执行前后平台对文档库做快照提交,Agent 直接写目录的改动进入版本历史与审计。聊天执行超时 900 秒。
+每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`documents/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`，任务执行另有 `evidence/`。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。文档入口可直接读写，执行前后平台做 Git 快照；任务 Markdown 可创建/编辑，执行后按可编辑字段同步，状态、阶段和审批仍由平台控制。聊天执行超时 900 秒。
 
 ## 接入新工具
 

@@ -38,7 +38,7 @@ MissionCrew 是一个**多项目管理器**,项目之间互不相干(类似 Mult
 - **转交语义**:主控消息中 `完成后请 @reviewer` 这类跟在“完成后/然后/之后”后面的 @ 不会立即触发；执行角色回传后，主控再决定是否进入该步骤。
 - **防失控**:不限制主控的调度层级；只保留单条协作链的 Agent 执行总次数兜底，项目级可配置、默认 20 次。主控在预算内自主拆解和协作，达到上限时平台会在频道里说明；主控仍不响应自己 @ 自己。
 
-**调度模型**:角色定位(人格)是“选人”的专长画像，**不是任务描述**。主控根据需求与项目章程对照私有名册拆解分派，为每个执行角色写清背景、要求和验收标准；Prompt 中的最近对话和触发消息使用格式化 JSON，正文、多行内容和消息边界不会混在一起。同一频道内同一角色复用 Runtime 原生会话；最近对话只用于新会话或恢复失败时补齐历史。每轮都会重新注入带版本的项目公共上下文，并要求 Runtime 压缩时完整保留；项目设置更新后，新版本在原会话的下一轮完整替换旧版本。执行角色需要回溯时可读取平台提供的脱敏频道历史 JSON，其中其他执行角色的身份与执行组合不会暴露。平台把结果完整交回主控，由主控核验并决定下一步。
+**调度模型**:角色定位(人格)是“选人”的专长画像，**不是任务描述**。主控根据需求与项目章程对照私有名册拆解分派，为每个执行角色写清背景、要求和验收标准；Prompt 中的最近对话和触发消息使用格式化 JSON，正文、多行内容和消息边界不会混在一起。同一频道内同一角色复用 Runtime 原生会话；最近对话只用于新会话或恢复失败时补齐历史。每轮都会重新注入带版本的项目公共上下文，并要求 Runtime 压缩时完整保留；项目设置更新后，新版本在原会话的下一轮完整替换旧版本。公共上下文会明确说明 MissionCrew 是 Agent harness 而不是业务代码仓，并给出独立 `.missioncrew` 工作区；执行角色可在其中按需读取脱敏频道历史、项目文档、任务、准则和 Skill。平台把结果完整交回主控，由主控核验并决定下一步。
 
 **任务工作流(重量)**:结构化任务走阶段计划(复现→修复→回归→独立评审→合入),证据门禁 + 人工审批 + 全程审计,见下文。
 
@@ -110,9 +110,11 @@ uv run mc role list -p default
 ## 项目工作空间
 
 - **任务频道**:频道记录自己的用途/任务边界和主工作目录。人类可管理频道;主控 Runtime 也可通过受限的 `missioncrew-action` 创建频道，其他角色不能冒用此权限。无论频道绑定哪个主目录，项目资源列表中的全部现存本地目录都会作为额外可读写目录装配给 Runtime。
-- **频道历史 JSON**:平台在 `.missioncrew/channel-history/<channel>/` 原子更新不分页的完整消息记录，并通过 `MISSIONCREW_CHANNEL_HISTORY` 把当前角色可读的文件路径注入执行环境。主控读取原始记录；执行角色读取独立脱敏视图，其他执行角色统一匿名且不含其 runtime/model/effort。历史目录与真实代码仓、频道工作目录分离，不会污染业务仓库。
-- **准则 Markdown 文件**:准则编辑器直接编辑完整 Markdown，YAML frontmatter 与后端统一使用 `name` / `description`，后端从文件头读取属性，不再维护或转换 `id` / `title` / `summary`。公共上下文只列出已启用准则的 `name`、`description`、内容版本和文件路径，不重复注入正文。平台把每篇准则原子写入 `projects/<id>/runtime-context/guidelines/<name>.md`，并通过 `MISSIONCREW_GUIDELINES_DIR` 注入和授权目录；Agent 先根据 `description` 判断相关性，只在任务需要时读取对应 Markdown。文件头或正文变化都会改变公共上下文版本，因此复用中的会话也会收到更新。
-- **版本化文档库**:每项目的 `projects/<id>/documents/` 是所有 Runtime 都能直接读写的普通目录，路径同时通过 `MISSIONCREW_DOCUMENTS_DIR` 注入。Git 元数据独立保存在 `document-history.git`，API/Web 可创建、编辑、删除、查看文件历史和回读旧版本;每次聊天或任务执行后平台自动提交目录变化。准则与 Skill 使用普通相对 Markdown 链接关联其中的文件，Agent 仅在任务需要时主动读取，平台不维护额外引用列表，也不把链接正文预先注入上下文。Web 把文档目录树放在应用左侧栏，右侧主区只显示当前文档，版本历史由正文工具栏按钮展开；底部悬浮主控对话栏可围绕当前路径和选中行提问，明确要求修改时由主控通过受限 `write_document` action 写入新版本。
+- **统一 Agent harness 工作区**:每个聊天角色和结构化任务都会获得一个隔离的 `.missioncrew/`，绝对路径通过 `MISSIONCREW_WORKSPACE` 注入。它位于平台数据根而不是频道绑定的业务代码仓，因此 Agent 在其中创建的任务、文档、证据和诊断文件不会混入业务源码或业务提交。目录内的 `README.md` 说明读写约定，`project.md` 提供项目简介；业务代码仍在执行 `workdir` 或项目资源仓中修改。
+- **频道历史 JSON**:当前角色的完整频道记录位于 `.missioncrew/channel-history.json`，路径同时通过 `MISSIONCREW_CHANNEL_HISTORY` 注入。主控读取原始记录；执行角色读取独立脱敏视图，其他执行角色统一匿名且不含其 runtime/model/effort。每个角色使用不同的 harness 工作区，不会横向看到其他角色视图。
+- **准则与 Skill 文件**:准则编辑器直接编辑完整 Markdown，YAML frontmatter 与后端统一使用 `name` / `description`。公共上下文只列出已启用准则的属性、内容版本和 `.missioncrew/guidelines/<name>.md`，不重复注入正文；项目 Skill 同时物化为 `.missioncrew/skills/<id>/SKILL.md`。Agent 结合任务按需读取；设置变化会刷新文件并改变公共上下文版本，因此复用中的会话也会收到更新。
+- **版本化文档库**:`.missioncrew/documents/` 是所有 Runtime 都能直接读写的项目文档入口，路径同时通过 `MISSIONCREW_DOCUMENTS_DIR` 注入。实际文档工作树和独立 Git 历史由平台管理，Agent 可直接创建/编辑，聊天或任务执行后平台自动提交变化。准则与 Skill 使用普通相对 Markdown 链接关联其中的文件；Web/API 仍可创建、删除、查看历史和回读旧版本。
+- **任务 Markdown**:`.missioncrew/tasks/`（`MISSIONCREW_TASKS_DIR`）提供当前项目任务快照。Agent 可新建 Markdown 任务，也可编辑既有任务的标题、描述、类型、标签、风险、密级与成本上限；执行后平台校验并同步数据库。任务状态、阶段、证据门禁和审批属于平台管理字段，文件修改不会绕过它们。
 - **自定义面板**:除内置任务看板外，项目可创建任意 12 列网格面板。组件的类型、位置、尺寸和 JSON 内容都可编辑，内置示例包括需求管理、测试记录、日志分析、任务查询、指标、表格和 Markdown。
 - **完整准则与 Skills**:项目可保存多篇准则 Markdown 和多个结构化 Skill。验证、审查、安全、审批等项目要求也统一写入准则，由 Agent 结合任务判断是否适用；平台不再维护按任务属性机械匹配的独立验证规则。Web 把准则和 Skill 列表放在应用左侧栏，右侧主区使用单栏编辑。所有执行者都会收到已启用准则的 `description` 和已启用 Skill，准则全文按需读取，不再维护文件、Runtime 或角色绑定列表。各页顶部只有紧凑操作栏，底部共用的悬浮对话栏会显示当前页面、当前条目、选中字段与行号，并把当前草稿和选中文本结构化地交给项目主控；准则页还会明确传递完整 Markdown 及 frontmatter 约定。普通提问只返回回答，明确要求创建或修改时才通过受限 `save_guideline` / `save_skill` action 保存。聊天和结构化任务共用同一套装配逻辑。
 
@@ -125,20 +127,20 @@ uv run mc approve <task_id> --approver alice
 uv run mc audit                       # 全平台审计日志
 ```
 
-平台数据默认在 `./.missioncrew/`(可用 `MISSIONCREW_HOME` 覆盖):数据库、频道/任务工作区、频道历史 JSON、`secrets.yaml`(受控资源密钥,永不进入 Prompt)。
+平台数据默认在 `./.missioncrew/`(可用 `MISSIONCREW_HOME` 覆盖):数据库、项目资料、Agent harness 工作区、频道历史、任务证据、Runtime 诊断输出和 `secrets.yaml`。只有各执行者独立 workspace 中的协作文件会被授权；数据库、文档 Git 元数据、原始历史和密钥不会暴露给执行角色。
 
 ## 核心概念
 
 | 概念 | 说明 |
 |---|---|
 | **Backend(后端)** | Agent CLI + 模型 + 档位 + 能力 + 安全许可 + 成本/配额。只回答"谁有能力干、多贵、可不可信" |
-| **Project(项目)** | 第一层级容器:唯一主控 + 角色/频道/任务/文档库/面板 + 完整准则、项目 Skill、受控资源和验证准则 |
+| **Project(项目)** | 第一层级容器:唯一主控 + 角色/频道/任务/文档库/面板 + 完整准则、项目 Skill 和受控资源 |
 | **Role(角色)** | 项目内可 @ 的身份:固定 runtime/model + 定位 + 能力 + 偏好,项目之间互不可见 |
 | **Channel(频道)** | 项目内面向某类任务的协作场所,记录用途并装配完整项目上下文,可指定真实仓库工作目录 |
 | **Document Library** | 对 Runtime 是普通共享目录,对平台是可查询、可回读的 Git 版本库 |
 | **Board** | 主控可创建和编辑的通用网格面板,动态保存组件类型、布局和内容 |
-| **Task + 阶段计划** | 结构化任务:基础工作流(feature/bug/chore/research)+ 准则修正,证据门禁推进 |
-| **Evidence(证据)** | 任务是否完成由证据决定,执行者通过工作区 `evidence/manifest.json` 提交 |
+| **Task + 阶段计划** | 结构化任务:固定基础工作流(feature/bug/chore/research),结合项目准则执行并由证据门禁推进 |
+| **Evidence(证据)** | 任务是否完成由证据决定,执行者通过 `.missioncrew/evidence/manifest.json` 提交 |
 
 ## 架构
 
@@ -158,7 +160,7 @@ uv run mc audit                       # 全平台审计日志
      │           执行平面           │
      │  本地 Agent CLI 子进程(runtime/adapters.py)
      │  claude / codex / grok / opencode / copilot / cursor-agent / …
-     │  每频道/每任务隔离工作区
+     │  每频道×角色/每任务隔离的 .missioncrew harness 工作区
      └──────────────────────────────┘
 ```
 

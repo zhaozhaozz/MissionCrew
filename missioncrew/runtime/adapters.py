@@ -452,6 +452,15 @@ def _append_manifest(workdir: str, entries: list[dict]) -> None:
     p.write_text(json.dumps(data, ensure_ascii=False, indent=2))
 
 
+def _diagnostic_log_path(cfg: ExecutionConfig, adapter_name: str) -> Path:
+    """把 Runtime 诊断输出放进 harness 工作区，避免污染业务代码仓。"""
+    root = Path(cfg.env.get("MISSIONCREW_WORKSPACE")
+                or Path(cfg.workdir) / ".missioncrew")
+    directory = root / "runtime"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / f"last-output-{adapter_name}.log"
+
+
 class MockAdapter:
     """确定性模拟后端:任务阶段产出证据文件;聊天协作生成可级联的回复。
 
@@ -482,7 +491,7 @@ class MockAdapter:
         produces = _produces_from_prompt(cfg.prompt)
         entries = []
         for ev_type in produces:
-            rel = f"evidence/{cfg.stage_name}_{ev_type}.md"
+            rel = f".missioncrew/evidence/{cfg.stage_name}_{ev_type}.md"
             Path(cfg.workdir, rel).write_text(
                 f"# {ev_type}\n\n[mock] 阶段 {cfg.stage_name} 由 {cfg.backend.id} "
                 f"(tier={cfg.backend.tier}) 产出的模拟证据。\n"
@@ -521,6 +530,21 @@ class MockAdapter:
         if docs_dir and "[写文档]" in trigger:
             Path(docs_dir, "mock-note.md").write_text(f"由 @{me} 在执行中写入。\n")
             reply += "\n已写入文档库 mock-note.md。"
+        tasks_dir = cfg.env.get("MISSIONCREW_TASKS_DIR")
+        if tasks_dir and "[写任务]" in trigger:
+            Path(tasks_dir, "new-task.md").write_text(
+                "---\n"
+                "title: Agent 创建的任务\n"
+                "task_type: chore\n"
+                "labels:\n  - workspace\n"
+                "risk: normal\n"
+                "security_level: 0\n"
+                "max_tier: economy\n"
+                "---\n\n"
+                "通过 MissionCrew workspace 创建。\n",
+                encoding="utf-8",
+            )
+            reply += "\n已在 MissionCrew workspace 创建任务。"
         emit("text", reply)
         if cfg.session_key:
             _save_session(cfg, session_id)
@@ -562,7 +586,7 @@ class AcpAdapter:
             context_version=cfg.context_version,
         )
         try:
-            Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(text)
+            _diagnostic_log_path(cfg, self.adapter_name).write_text(text)
         except OSError:
             pass
         return RunResult(ok, text[-300:], output=text)
@@ -917,7 +941,7 @@ class CliAdapter:
 
         def _write_log():
             try:
-                Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(
+                _diagnostic_log_path(cfg, self.adapter_name).write_text(
                     "\n".join(out_tail) + ("\n--- stderr ---\n" + "\n".join(err_tail)
                                           if err_tail else ""))
             except OSError:

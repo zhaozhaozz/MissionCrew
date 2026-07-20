@@ -10,6 +10,8 @@ from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
 from missioncrew.collab.project_context import guideline_context_dir
+from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
+                                          sync_task_files)
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend,
                                      ExecutionConfig, GuidelineDocument, ProjectResource,
                                      ProjectSkill, Task, TaskStage)
@@ -159,7 +161,7 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     tester_guideline = guideline_dir / "tester-guide.md"
     assert str(guideline_dir) in chat_cfg.prompt
     assert str(dev_guideline) in chat_cfg.prompt
-    assert str(guideline_dir) in chat_cfg.allowed_dirs
+    assert str(guideline_dir.parent) in chat_cfg.allowed_dirs
     assert not (guideline_dir / "disabled-guide.md").exists()
     assert dev_guideline.read_text() == (
         "---\nname: dev-guide\ndescription: 开发代码或 API 时使用\n---\n\n"
@@ -171,7 +173,7 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     task = Task(id="t_context", project_id="webshop", title="context")
     task_cfg = assembler.assemble(
         task, TaskStage(name="develop"), project, seeded.get_backend("exp-1"),
-        {}, [], [],
+        {}, [], [], seeded,
     )
     assert "common" in task_cfg.prompt
     assert "expert-only" in task_cfg.prompt and "checkout-dev" in task_cfg.prompt
@@ -180,8 +182,9 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "结合当前任务自行判断哪些条目适用" in task_cfg.prompt
     assert task_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in task_cfg.prompt
     assert task_cfg.env["MISSIONCREW_GUIDELINES_DIR"] in task_cfg.prompt
-    assert not (guideline_dir / "stale.md").exists()
-    assert not (guideline_dir.parent / "guidelines.json").exists()
+    task_guideline_dir = Path(task_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
+    assert task_guideline_dir != guideline_dir
+    assert not (task_guideline_dir / "stale.md").exists()
 
     # description 不变但正文更新时，内容版本仍会改变公共上下文版本，已有 session
     # 下一轮会收到更新提示；完整文件也会原子刷新为新正文。
@@ -193,6 +196,8 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
         seeded.get_backend("std-1"), msg_id)
     assert updated_cfg.context_version != first_context_version
     updated_dir = Path(updated_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
+    assert not (updated_dir / "stale.md").exists()
+    assert not (updated_dir.parent / "guidelines.json").exists()
     assert (updated_dir / "dev-guide.md").read_text().endswith("\n开发准则第二版\n")
 
 
@@ -302,15 +307,16 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
     task_cfg = assembler.assemble(
         Task(id="multi_repo", project_id="webshop", title="multi"),
         TaskStage(name="develop"), project, seeded.get_backend("std-1"), {}, [], [],
+        seeded,
     )
 
-    guideline_dir = str(Path(task_cfg.env["MISSIONCREW_GUIDELINES_DIR"]).resolve())
-    expected = [str(repo_a.resolve()), str(repo_b.resolve()),
-                str(library.root.resolve()), guideline_dir]
-    history_dir = str(Path(chat_cfg.env["MISSIONCREW_CHANNEL_HISTORY"]).parent.resolve())
-    assert task_cfg.allowed_dirs == expected
-    assert chat_cfg.allowed_dirs == [*expected, history_dir]
-    assert all(path in chat_cfg.prompt and path in task_cfg.prompt for path in expected)
+    shared = [str(repo_a.resolve()), str(repo_b.resolve()), str(library.root.resolve())]
+    chat_workspace = str(Path(chat_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
+    task_workspace = str(Path(task_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
+    assert task_cfg.allowed_dirs == [*shared, task_workspace]
+    assert chat_cfg.allowed_dirs == [*shared, chat_workspace]
+    assert all(path in chat_cfg.prompt and path in task_cfg.prompt for path in shared)
+    assert chat_workspace in chat_cfg.prompt and task_workspace in task_cfg.prompt
 
 
 def test_all_runtime_commands_apply_directory_policy():
@@ -624,28 +630,78 @@ def test_document_restore_creates_new_version(seeded):
         "path": "notes/plan.md", "revision": "deadbeef00"}).status_code == 404
 
 
-def test_document_library_linked_into_platform_workdirs(seeded):
-    """平台自有工作区内 documents/ 软链指向文档库;真实代码仓不被污染。"""
+def test_harness_workspace_contains_documents_without_polluting_source_workdir(seeded):
+    """文档统一从独立 .missioncrew 访问，频道源码目录不产生平台文件。"""
     from missioncrew.core.config import mc_home
     chat = ChatEngine(seeded)
     msg = seeded.add_message("general", "human", "human", "@dev 干活", ["dev"])
     cfg = chat._assemble(seeded.get_channel("general"),
                          seeded.get_role("webshop", "dev"),
                          seeded.get_backend("std-1"), msg)
-    link = __import__("pathlib").Path(cfg.workdir) / "documents"
+    workspace = Path(cfg.env["MISSIONCREW_WORKSPACE"])
+    link = workspace / "documents"
+    assert workspace.name == ".missioncrew"
     assert link.is_symlink()
     assert link.resolve() == library_for("webshop").root.resolve()
-    # 指定了外部 workdir 的频道:不建软链
+    assert "MissionCrew 是本地多 Agent harness" in cfg.prompt
+    assert "不会进入业务源码或业务代码提交" in cfg.prompt
+    assert "MissionCrew 是一个本地 Agent harness" in (
+        workspace / "README.md").read_text(encoding="utf-8")
+    assert (workspace / "project.md").is_file()
+    assert (workspace / "tasks").is_dir()
+    assert (workspace / "guidelines").is_dir()
+    assert (workspace / "skills" / "webshop-local-ci" / "SKILL.md").is_file()
+    assert Path(cfg.env["MISSIONCREW_CHANNEL_HISTORY"]).parent == workspace
+    assert Path(cfg.env["MISSIONCREW_TASKS_DIR"]) == workspace / "tasks"
+    assert not (Path(cfg.workdir) / ".missioncrew").exists()
+    # 指定外部代码仓时，平台入口仍只建在自己的数据根中。
     from missioncrew.core.models import Channel
     ext = mc_home() / "ext-repo"
     ext.mkdir(parents=True, exist_ok=True)
     seeded.put_channel(Channel(id="webshop:ext", name="ext", project_id="webshop",
                                workdir=str(ext)))
     msg2 = seeded.add_message("webshop:ext", "human", "human", "@dev 干活", ["dev"])
-    chat._assemble(seeded.get_channel("webshop:ext"),
-                   seeded.get_role("webshop", "dev"),
-                   seeded.get_backend("std-1"), msg2)
-    assert not (ext / "documents").exists()
+    ext_cfg = chat._assemble(seeded.get_channel("webshop:ext"),
+                             seeded.get_role("webshop", "dev"),
+                             seeded.get_backend("std-1"), msg2)
+    assert not (ext / ".missioncrew").exists()
+    assert Path(ext_cfg.env["MISSIONCREW_WORKSPACE"]).name == ".missioncrew"
+
+
+def test_legacy_runtime_files_migrate_under_harness_directories(seeded):
+    from missioncrew.core.config import mc_home
+
+    home = mc_home()
+    history = home / "channel-history" / "general" / "history"
+    history.mkdir(parents=True)
+    (history / "channel-history.json").write_text("{}", encoding="utf-8")
+    channel_dir = home / "channels" / "general"
+    channel_dir.mkdir(parents=True, exist_ok=True)
+    (channel_dir / "documents").symlink_to(library_for("webshop").root,
+                                             target_is_directory=True)
+    (channel_dir / ".mc_last_output_codex.log").write_text("old log")
+    task_dir = home / "workspaces" / "legacy-task"
+    evidence = task_dir / "evidence"
+    evidence.mkdir(parents=True)
+    (evidence / "manifest.json").write_text(
+        '[{"type":"plan","path":"evidence/plan.md"}]', encoding="utf-8")
+    seeded.add_evidence("legacy-task", "develop", "plan", "evidence/plan.md")
+
+    assert migrate_legacy_workspace_layout() == 4
+    assert not (home / "channel-history").exists()
+    assert not (channel_dir / "documents").exists()
+    assert not (channel_dir / ".mc_last_output_codex.log").exists()
+    assert (home / "agent-workspaces" / "_legacy" / "channels" / "general"
+            / "_platform" / ".missioncrew" / "runtime"
+            / "last-output-codex.log").read_text() == "old log"
+    assert (task_dir / ".missioncrew" / "evidence" / "manifest.json").is_file()
+    assert json.loads((task_dir / ".missioncrew" / "evidence" / "manifest.json")
+                      .read_text())[0]["path"] == ".missioncrew/evidence/plan.md"
+    assert not (task_dir / "evidence").exists()
+    assert seeded._migrate_harness_paths() == 1
+    assert seeded.list_evidence("legacy-task")[0]["path"] \
+        == ".missioncrew/evidence/plan.md"
+    assert migrate_legacy_workspace_layout() == 0
 
 
 def test_binary_document_read_returns_415(seeded):
@@ -668,6 +724,38 @@ def test_agent_document_writes_are_audited(seeded):
     audits = [a for a in seeded.list_audit(limit=50)
               if a["action"] == "documents_committed"]
     assert audits and audits[0]["actor"] == "role:dev"
+
+
+def test_agents_can_create_and_edit_tasks_through_harness_workspace(seeded):
+    """任务 Markdown 不是只读副本：聊天执行后会创建/更新数据库任务。"""
+    from missioncrew.taskflow.engine import Engine
+
+    chat = ChatEngine(seeded)
+    chat.post("general", "human", "@dev [写任务] 新增后续工作")
+    chat.wait_idle()
+    created = next(task for task in seeded.list_tasks()
+                   if task.title == "Agent 创建的任务")
+    assert created.project_id == "webshop"
+    assert created.task_type == "chore" and created.labels == ["workspace"]
+    assert any(row["action"] == "task_workspace_created"
+               and row["task_id"] == created.id
+               for row in seeded.list_audit(limit=50))
+
+    existing = Engine(seeded).create_task("webshop", "原任务", "原描述")
+    message = seeded.add_message("general", "human", "human", "@dev 编辑任务", ["dev"])
+    cfg = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), message)
+    tasks_dir = Path(cfg.env["MISSIONCREW_TASKS_DIR"])
+    task_file = tasks_dir / f"{existing.id}.md"
+    markdown = task_file.read_text(encoding="utf-8")
+    markdown = markdown.replace("title: 原任务", "title: 更新后的任务", 1)
+    markdown = markdown.replace("\n原描述\n", "\n更新后的描述\n", 1)
+    task_file.write_text(markdown, encoding="utf-8")
+    assert sync_task_files(seeded, "webshop", tasks_dir, "role:dev") == []
+    updated = seeded.get_task(existing.id)
+    assert updated.title == "更新后的任务"
+    assert updated.description == "更新后的描述"
 
 
 # ---- 面板卡片:通用展示原语 + 平台数据源(AgentDesk 式) ----

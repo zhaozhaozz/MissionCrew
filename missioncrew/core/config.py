@@ -2,7 +2,9 @@
 
 MC_HOME 布局:
   db.sqlite3        平台数据库
-  workspaces/<task> 每个任务一个隔离工作区(跨阶段共享,证据累积在 evidence/)
+  workspaces/<task> 每个任务一个隔离工作区(跨阶段共享,Agent 文件在 .missioncrew/)
+  agent-workspaces/<project>/channels/<channel>/<role>/.missioncrew
+                    聊天角色隔离的 Agent harness 工作区
   projects/<id>/documents              项目文档库普通目录
   projects/<id>/document-history.git   文档库 Git 版本历史(与工作目录分离)
   projects/<id>/runtime-context/guidelines/*.md  Runtime 按需读取的准则全文

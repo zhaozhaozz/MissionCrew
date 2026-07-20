@@ -397,8 +397,9 @@ def test_channel_history_file_is_complete_and_role_scoped(chat, seeded):
     worker_path = Path(worker_cfg.env["MISSIONCREW_CHANNEL_HISTORY"])
     worker_history = json.loads(worker_path.read_text(encoding="utf-8"))
     assert worker_path.name == "channel-history.json"
-    assert worker_path.parent.name == "dev"
-    assert worker_path.parent.parent.name == "agents"
+    assert worker_path.parent.name == ".missioncrew"
+    assert worker_path.parent.parent.name == "dev"
+    assert worker_path.is_relative_to(Path(worker_cfg.env["MISSIONCREW_WORKSPACE"]))
     assert Path(worker_cfg.workdir).resolve() not in worker_path.parents
     assert str(worker_path.parent.resolve()) in worker_cfg.allowed_dirs
     assert str(worker_path) in worker_cfg.prompt
@@ -415,7 +416,8 @@ def test_channel_history_file_is_complete_and_role_scoped(chat, seeded):
     )
     lead_path = Path(lead_cfg.env["MISSIONCREW_CHANNEL_HISTORY"])
     lead_history = json.loads(lead_path.read_text(encoding="utf-8"))
-    assert lead_path.parent.name == "history"
+    assert lead_path.parent.name == ".missioncrew"
+    assert lead_path.parent.parent.name == "lead"
     assert lead_history["messages"][0]["author"]["id"] == "reviewer"
     assert lead_path.parent != worker_path.parent
 

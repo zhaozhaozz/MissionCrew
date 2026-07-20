@@ -100,7 +100,15 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._migrate_chat_messages()
+        self._migrate_harness_paths()
         self._conn.commit()
+
+    def _migrate_harness_paths(self) -> int:
+        """旧任务证据从工作区根目录迁入 `.missioncrew/evidence/`。"""
+        cursor = self._conn.execute(
+            "UPDATE evidence SET path='.missioncrew/' || path "
+            "WHERE path LIKE 'evidence/%'")
+        return cursor.rowcount
 
     def _migrate_chat_messages(self) -> int:
         """升级聊天消息字段，并修复旧版末尾 4000 字符回复。

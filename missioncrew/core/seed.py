@@ -43,7 +43,7 @@ DEMO_PROJECT = Project(
     guidelines=[GuidelineDocument(
         name="task-validation",
         description="实现、修复或验证 WebShop 任务时使用。",
-        content=("# 任务验证准则\n\n"
+        content=("# 任务验证指导\n\n"
                  "- Bug 必须先复现，并提供修复前失败、修复后通过的回归证据。\n"
                  "- 前端界面变化必须完成浏览器流程测试和视觉检查。\n"
                  "- 认证逻辑变化必须进行安全审查。\n"

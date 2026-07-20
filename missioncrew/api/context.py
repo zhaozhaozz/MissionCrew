@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from ..collab.chat import ChatEngine
+from ..collab.workspace import migrate_legacy_workspace_layout
 from ..core import seed as seed_mod
 from ..core.config import db_path
 from ..core.models import Project
@@ -38,6 +39,10 @@ class ApiContext:
         seed_mod.ensure_role_bindings(store)
         seed_mod.ensure_role_templates(store)
         seed_mod.migrate_project_fields(store)
+        migrated_paths = migrate_legacy_workspace_layout()
+        if migrated_paths:
+            store.audit("platform", "agent_workspace_layout_migrated",
+                        detail=f"paths={migrated_paths}")
         ctx = cls(store=store, engine=Engine(store), chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends
         return ctx

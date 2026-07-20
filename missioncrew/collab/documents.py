@@ -124,17 +124,6 @@ class DocumentLibrary:
             path.write_text(content, encoding="utf-8")
             return self.commit_changes(actor, f"Restore {rel} to {revision[:10]}")
 
-    def link_into(self, workdir: Path) -> None:
-        """在平台自有工作目录内建 documents/ 软链:沙箱只授权 cwd 的
-        Runtime(opencode/copilot/ACP 类)也能把文档库当普通目录读写。"""
-        link = workdir / "documents"
-        try:
-            if link.is_symlink() or link.exists():
-                return
-            link.symlink_to(self.root, target_is_directory=True)
-        except OSError:
-            pass   # 文件系统不支持软链时静默降级,Prompt 中仍有绝对路径
-
     def commit_changes(self, actor: str, message: str, allow_empty: bool = False) -> str:
         """把普通目录中的直接写入快照成一个版本；无变化时返回空字符串。"""
         with self._lock:

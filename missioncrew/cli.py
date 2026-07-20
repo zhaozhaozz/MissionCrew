@@ -15,6 +15,7 @@ from .collab.chat import ChatEngine
 from .core.config import db_path, mc_home
 from .taskflow.engine import Engine
 from .collab.documents import library_for
+from .collab.workspace import migrate_legacy_workspace_layout
 from .core.models import Backend, Channel, Project, Role, Task
 from .core.store import Store
 
@@ -35,6 +36,10 @@ def _store() -> Store:
     store = Store(db_path())
     seed_mod.ensure_role_bindings(store)
     seed_mod.ensure_role_templates(store)
+    migrated_paths = migrate_legacy_workspace_layout()
+    if migrated_paths:
+        store.audit("platform", "agent_workspace_layout_migrated",
+                    detail=f"paths={migrated_paths}")
     return store
 
 
@@ -143,7 +148,7 @@ def audit(task_id: Optional[str] = typer.Argument(None), limit: int = 50):
 
 @project_app.command("add")
 def project_add(file: Path = typer.Option(..., help="项目定义 YAML 文件")):
-    """从 YAML 导入/更新项目(含验证准则)。"""
+    """从 YAML 导入/更新项目（含项目准则）。"""
     data = yaml.safe_load(file.read_text())
     p = Project.from_dict(data)
     store = _store()
