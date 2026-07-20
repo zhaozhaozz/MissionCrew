@@ -198,8 +198,8 @@
   .re-thinking { color: var(--muted); font-style: italic; }
   .re-tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
              font-size: 12px; color: var(--text-2); }
-  .re-stderr { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-               font-size: 12px; color: var(--bad); opacity: .85; }
+  .re-log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 12px; color: var(--muted); }
   .re-status { color: var(--muted); }
 
   #composer { flex: none; border-top: 1px solid var(--line); padding: 12px 24px 14px;

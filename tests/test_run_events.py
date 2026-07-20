@@ -106,6 +106,27 @@ def test_cli_adapter_reaps_pipe_holding_grandchildren(tmp_path):
     assert len(events) == n_before
 
 
+def test_codex_stderr_parsed_into_sections(tmp_path):
+    """codex 的 stderr 过程日志分节归类:头部/思考/命令,提示词回显压缩,
+    回复回显跳过(stdout 已有),tokens used 并入状态。"""
+    events, emit = _collect()
+    backend = Backend(id="cx", name="cx", adapter="codex",
+                      command=[sys.executable, FAKE_STREAM, "codex"])
+    result = adapters.CliAdapter("codex").run(_cfg(tmp_path, backend, emit))
+    assert result.success and result.output == "最终回复正文"
+    joined = {k: "".join(t for kk, t in events if kk == k)
+              for k in ("status", "thinking", "tool", "tool_result", "stdout")}
+    assert "model: gpt-test" in joined["status"]           # 配置头部 -> 状态
+    assert "任务简报" in joined["status"]                   # 提示词回显只留一行摘要
+    assert "很长的提示词回显" not in str(events)             # 不原样铺提示词
+    assert "tokens used: 12,008" in joined["status"]
+    assert "先理解需求再回答" in joined["thinking"]
+    assert "exec bash -lc 'echo hi'" in joined["tool"]
+    assert "hi" in joined["tool_result"]
+    assert "最终回复正文" not in joined["status"]            # codex 节回显被跳过
+    assert not any(k == "stderr" for k, _ in events)        # 全部行都被归了类
+
+
 # ---- ACP 适配器:思考/工具通知与文本块实时上报 ----
 
 def test_acp_adapter_emits_process_events(tmp_path):

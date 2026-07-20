@@ -25,6 +25,30 @@ def main():
         line({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "中断前的部分回复"}]}})
         return
+    if "codex" in sys.argv:
+        # 模仿 codex exec:过程日志全走 stderr(实测 0.144 分节格式),
+        # stdout 只有最终回复
+        err = sys.stderr
+        print("Reading additional input from stdin...", file=err, flush=True)
+        print("OpenAI Codex v0.144.6", file=err)
+        print("--------", file=err)
+        print("workdir: /tmp/x", file=err)
+        print("model: gpt-test", file=err)
+        print("reasoning effort: high", file=err)
+        print("--------", file=err)
+        print("user", file=err)
+        print("# 聊天协作请求", file=err)
+        print("这里是很长的提示词回显", file=err)
+        print("thinking", file=err)
+        print("先理解需求再回答", file=err)
+        print("exec bash -lc 'echo hi'", file=err)
+        print("hi", file=err)
+        print("codex", file=err)
+        print("最终回复正文", file=err)
+        print("tokens used", file=err)
+        print("12,008", file=err, flush=True)
+        print("最终回复正文", flush=True)   # stdout
+        return
     if "grandchild" in sys.argv:
         print("REAL-ANSWER", flush=True)
         # 孙进程继承 stdout 并持续写入;本进程立即退出

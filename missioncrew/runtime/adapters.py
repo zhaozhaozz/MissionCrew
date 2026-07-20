@@ -427,6 +427,63 @@ def _claude_stream_event(line: str, emit) -> Optional[str]:
     return None
 
 
+class _CodexStderrParser:
+    """codex exec 的 stderr 过程日志分节解析(实测 0.144 格式)。
+
+    codex 把全部过程写 stderr、stdout 只留最终回复。stderr 依次是:
+    配置头部块(banner + workdir/model/... 到第二个 "--------"),然后
+    裸标记行分节:user(完整提示词回显)、thinking、exec …、codex
+    (回复回显)、tokens used(数字在下一行)。分类上报:头部按状态、
+    提示词回显压缩成一行(平台自己装配的,不重复展示)、回复回显跳过
+    (stdout 已展示)、token 统计并入状态;识别不了的行兜底 stderr。
+    """
+
+    _MARKERS = {"user", "thinking", "codex", "tokens used"}
+
+    def __init__(self, emit):
+        self.emit = emit
+        self.section = "header"
+        self.user_chars = 0
+
+    def feed(self, line: str) -> None:
+        s = line.strip()
+        if s in self._MARKERS:
+            self._flush_user()
+            self.section = s
+            return
+        if s.startswith("exec ") or s.startswith("tool "):
+            self._flush_user()
+            self.section = "exec"
+            self.emit("tool", s + "\n")
+            return
+        if self.section == "header":
+            if s == "--------" or s.lower().startswith("reading additional input"):
+                return
+            self.emit("status", line + "\n")
+        elif self.section == "user":
+            self.user_chars += len(line) + 1
+        elif self.section == "codex":
+            pass
+        elif self.section == "tokens used":
+            if s:
+                self.emit("status", f"tokens used: {s}\n")
+                self.section = "log"
+        elif self.section == "thinking":
+            self.emit("thinking", line + "\n")
+        elif self.section == "exec":
+            self.emit("tool_result", line + "\n")
+        else:
+            self.emit("stderr", line + "\n")
+
+    def _flush_user(self) -> None:
+        if self.section == "user" and self.user_chars:
+            self.emit("status", f"已接收任务简报({self.user_chars} 字符)\n")
+            self.user_chars = 0
+
+    def close(self) -> None:
+        self._flush_user()
+
+
 class CliAdapter:
     """通用 CLI 适配器:按命令模板在工作目录内启动真实本地 Agent。
 
@@ -478,6 +535,9 @@ class CliAdapter:
                 text_acc.append(text)
             emit(kind, text)
 
+        # codex 的 stderr 是分节的过程日志,解析后再上报;其余 CLI 原样透传
+        codex_err = _CodexStderrParser(emit) if self.adapter_name == "codex" else None
+
         def _drain(pipe, kind):
             for raw in pipe:
                 line = raw.rstrip("\n")
@@ -488,8 +548,12 @@ class CliAdapter:
                     final = _claude_stream_event(line, parse_emit)
                     if final is not None:
                         final_box.append(final)
+                elif kind == "stderr" and codex_err:
+                    codex_err.feed(line)
                 else:
                     emit(kind, line + "\n")
+            if kind == "stderr" and codex_err:
+                codex_err.close()
 
         def _write_log():
             try:

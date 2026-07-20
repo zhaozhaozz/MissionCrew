@@ -205,7 +205,9 @@ const RUN_EVENT_META = {
   tool_result: { label: "结果", cls: "re-tool" },
   text:        { label: "输出", cls: "re-text" },
   stdout:      { label: "输出", cls: "re-tool" },
-  stderr:      { label: "stderr", cls: "re-stderr" },
+  // stderr 是多数 Agent CLI 的进度/日志通道(codex 连思考都走这里),
+  // 不是错误:中性展示,失败与否由卡片头部的状态与错误摘要表达
+  stderr:      { label: "日志", cls: "re-log" },
   status:      { label: "状态", cls: "re-status" },
 };
 
