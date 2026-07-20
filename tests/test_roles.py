@@ -358,6 +358,8 @@ def test_project_role_form_can_import_global_template(client):
     assert "importGlobalRoleTemplate" in js
     assert "globalRoleTemplates().find" in js
     assert "项目中已存在角色" in js
+    assert "确认覆盖角色" in js
+    assert "角色已覆盖" in js
 
 
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----

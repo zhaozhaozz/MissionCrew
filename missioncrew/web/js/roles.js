@@ -95,12 +95,12 @@ function editRole(id, templateId = "") {
       `${esc(b.id)} — ${esc(b.name)}${b.enabled ? "" : "(已停用)"}</option>`).join("");
   window._editingRoleModel = r.model;    // 供模型下拉初始化选中
   window._editingRoleEffort = r.effort;  // 供 effort 下拉初始化选中
-  window._editingProjectRoleId = id || "";  // 新建时防止同 id 静默覆盖已有角色
+  window._editingProjectRoleId = id || "";  // 新建流程遇到同 id 时要求用户确认覆盖
   const existingIds = new Set(projRoles().map(role => role.id));
   const templateOptions = globalRoleTemplates().map(role =>
     `<option value="${esc(role.id)}" ${templateId === role.id ? "selected" : ""}>` +
     `@${esc(role.id)} — ${esc(role.name || role.id)}` +
-    `${existingIds.has(role.id) ? "（项目已有同名角色，导入后请修改 id）" : ""}</option>`
+    `${existingIds.has(role.id) ? "（项目已有同名角色，保存时可确认覆盖）" : ""}</option>`
   ).join("");
   const importControl = id ? "" : `
     <label>从全局角色模板导入（可选）</label>
@@ -108,7 +108,7 @@ function editRole(id, templateId = "") {
       <option value="" ${templateId ? "" : "selected"}>不使用模板，从空白角色开始</option>
       ${templateOptions}
     </select>
-    <p class="muted">导入会把模板配置填入下方表单；保存前可以修改，已有项目和全局模板都不会被改动。</p>`;
+    <p class="muted">导入只会把模板配置填入下方表单，全局模板不会被改动；若 id 与项目现有角色相同，保存时需确认覆盖。</p>`;
   openFormDialog(id ? `编辑角色 @${id}` : "新建角色", `
     ${importControl}
     <div class="row">
@@ -224,15 +224,17 @@ async function saveRole() {
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
   if (!runtime_id) { uiAlert("请为角色选择 runtime(定义时固定执行组合)"); return; }
-  if (!window._editingProjectRoleId && projRoles().some(role => role.id === body.id)) {
-    uiAlert(`项目中已存在角色 @${body.id}；请修改角色 id，或取消后直接编辑已有角色。`);
-    return;
-  }
+  const overwriting = !window._editingProjectRoleId &&
+    projRoles().some(role => role.id === body.id);
+  if (overwriting && !await uiConfirm(
+    `项目中已存在角色 @${body.id}。确认用当前表单配置覆盖它？原角色的排序位置会保留。`,
+    "确认覆盖角色",
+  )) return;
   await api("POST", "/api/roles", body);
   await loadOverview();
   fdlg.close();
   renderRoleTable(); renderSidebar();
-  toast("角色已保存", "success");
+  toast(overwriting ? "角色已覆盖" : "角色已保存", "success");
 }
 
 async function deleteRole(id) {
