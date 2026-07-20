@@ -256,7 +256,9 @@ def migrate_project_fields(store: Store) -> int:
             if not any(g.id == gid for g in project.guidelines):
                 from .models import GuidelineDocument
                 project.guidelines.append(GuidelineDocument(
-                    id=gid, title="开发准则", content=project.dev_guidelines))
+                    id=gid, title="开发准则",
+                    summary="项目开发中的架构、代码与变更约束。",
+                    content=project.dev_guidelines))
             project.dev_guidelines = ""
             changed = True
             migrated += 1

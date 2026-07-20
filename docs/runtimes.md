@@ -83,7 +83,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 ### 公共上下文与压缩
 
-聊天 Prompt 分为两部分：MissionCrew 公共上下文（角色、项目准则与 Skills、目录权限、工作目录、协作规则）和本轮任务输入。公共上下文带内容哈希版本及压缩提示，每轮都重新注入，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；已有会话下一轮收到更新标记和完整新上下文，后收到的版本整体替换旧版本。最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史仍可通过 `MISSIONCREW_CHANNEL_HISTORY` 按需读取。
+聊天 Prompt 分为两部分：MissionCrew 公共上下文（角色、项目准则摘要与 Skills、目录权限、工作目录、协作规则）和本轮任务输入。公共上下文带内容哈希版本及压缩提示，每轮都重新注入，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；准则正文虽然不直接进入 Prompt，但其内容版本会参与公共上下文哈希，因此已有会话下一轮仍会收到更新标记和完整新上下文。后收到的版本整体替换旧版本。最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史可通过 `MISSIONCREW_CHANNEL_HISTORY` 按需读取，完整准则可通过 `MISSIONCREW_GUIDELINES_FILE` 按需读取。
 
 ### Mock(`MockAdapter`)
 

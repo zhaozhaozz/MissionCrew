@@ -11,7 +11,8 @@ from pathlib import Path
 from ..core.config import workspaces_dir
 from ..collab.documents import library_for
 from ..core.models import Backend, ExecutionConfig, Project, Task, TaskStage
-from ..collab.project_context import project_allowed_dirs, render_project_context
+from ..collab.project_context import (guideline_context_path, project_allowed_dirs,
+                                      render_project_context)
 
 # 证据契约:所有后端(真实或 Mock)统一通过工作区 manifest 提交证据
 MANIFEST = "evidence/manifest.json"
@@ -83,6 +84,10 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         prompt=prompt,
         workdir=str(ws),
         allowed_dirs=project_allowed_dirs(project, library),
-        env={**env, "MISSIONCREW_DOCUMENTS_DIR": str(library.root)},
+        env={
+            **env,
+            "MISSIONCREW_DOCUMENTS_DIR": str(library.root),
+            "MISSIONCREW_GUIDELINES_FILE": str(guideline_context_path(project)),
+        },
         routing_trace=trace,
     )

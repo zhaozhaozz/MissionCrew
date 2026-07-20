@@ -134,9 +134,11 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     ))
     project.skills.append(ProjectSkill(id="common", instructions="所有角色通用"))
     project.guidelines.append(GuidelineDocument(
-        id="dev-guide", content="开发相关任务准则"))
+        id="dev-guide", summary="开发代码或 API 时使用", content="开发相关任务准则"))
     project.guidelines.append(GuidelineDocument(
-        id="tester-guide", content="测试相关任务准则"))
+        id="tester-guide", summary="设计或执行测试时使用", content="测试相关任务准则"))
+    project.guidelines.append(GuidelineDocument(
+        id="disabled-guide", summary="停用摘要", content="停用准则正文", enabled=False))
     seeded.put_project(project)
     chat = ChatEngine(seeded)
     msg_id = seeded.add_message("general", "human", "human", "@dev 开发", ["dev"])
@@ -144,11 +146,23 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
                               seeded.get_role("webshop", "dev"),
                               seeded.get_backend("std-1"), msg_id)
     assert "checkout-dev" in chat_cfg.prompt and "expert-only" in chat_cfg.prompt
-    assert "开发相关任务准则" in chat_cfg.prompt and "测试相关任务准则" in chat_cfg.prompt
+    assert "开发代码或 API 时使用" in chat_cfg.prompt
+    assert "设计或执行测试时使用" in chat_cfg.prompt
+    assert "开发相关任务准则" not in chat_cfg.prompt
+    assert "测试相关任务准则" not in chat_cfg.prompt
+    assert "停用摘要" not in chat_cfg.prompt and "停用准则正文" not in chat_cfg.prompt
     assert "[结算说明](specs/checkout.md)" in chat_cfg.prompt
     assert "# Checkout v2" not in chat_cfg.prompt  # 链接文件不再预注入
     assert "仅在任务需要时读取链接文件" in chat_cfg.prompt
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in chat_cfg.prompt
+    guideline_file = Path(chat_cfg.env["MISSIONCREW_GUIDELINES_FILE"])
+    assert str(guideline_file) in chat_cfg.prompt
+    assert str(guideline_file.parent) in chat_cfg.allowed_dirs
+    guideline_payload = json.loads(guideline_file.read_text())
+    guideline_rows = {row["id"]: row for row in guideline_payload["guidelines"]}
+    assert "disabled-guide" not in guideline_rows
+    assert guideline_rows["dev-guide"]["content"] == "开发相关任务准则"
+    assert guideline_rows["tester-guide"]["content"] == "测试相关任务准则"
 
     task = Task(id="t_context", project_id="webshop", title="context")
     task_cfg = assembler.assemble(
@@ -157,18 +171,36 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     )
     assert "common" in task_cfg.prompt
     assert "expert-only" in task_cfg.prompt and "checkout-dev" in task_cfg.prompt
-    assert "开发相关任务准则" in task_cfg.prompt and "测试相关任务准则" in task_cfg.prompt
+    assert "开发代码或 API 时使用" in task_cfg.prompt
+    assert "开发相关任务准则" not in task_cfg.prompt
     assert "结合当前任务自行判断哪些条目适用" in task_cfg.prompt
     assert task_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in task_cfg.prompt
+    assert task_cfg.env["MISSIONCREW_GUIDELINES_FILE"] in task_cfg.prompt
+
+    # 摘要不变但正文更新时，内容版本仍会改变公共上下文版本，已有 session
+    # 下一轮会收到更新提示；完整文件也会原子刷新为新正文。
+    first_context_version = chat_cfg.context_version
+    next(row for row in project.guidelines if row.id == "dev-guide").content = "开发准则第二版"
+    seeded.put_project(project)
+    updated_cfg = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), msg_id)
+    assert updated_cfg.context_version != first_context_version
+    updated_payload = json.loads(Path(
+        updated_cfg.env["MISSIONCREW_GUIDELINES_FILE"]).read_text())
+    assert any(row["content"] == "开发准则第二版"
+               for row in updated_payload["guidelines"])
 
 
 def test_guideline_and_skill_management_have_no_binding_fields(seeded):
     client = _client(seeded)
     guideline = client.post("/api/projects/webshop/guidelines", json={
-        "id": "testing", "title": "测试规范", "content": "所有修复必须回归。",
+        "id": "testing", "title": "测试规范", "summary": "修改行为时使用",
+        "content": "所有修复必须回归。",
         "actor_role_id": "lead",
     })
     assert guideline.status_code == 200
+    assert guideline.json()["summary"] == "修改行为时使用"
     assert all(key not in guideline.json() for key in ("file_refs", "role_ids"))
     assert client.post("/api/projects/webshop/guidelines", json={
         "id": "forbidden", "actor_role_id": "tester",
@@ -191,6 +223,7 @@ def test_guideline_and_skill_management_have_no_binding_fields(seeded):
         "runtime_instructions": {"std-1": "旧覆盖"},
     })
     assert "[specs/testing.md](specs/testing.md)" in legacy_guideline.content
+    assert legacy_guideline.summary == "相关文档"
     assert "[specs/testing.md](specs/testing.md)" in legacy_skill.instructions
     assert "旧覆盖" in legacy_skill.instructions
     assert not hasattr(legacy_guideline, "role_ids") and not hasattr(legacy_skill, "role_ids")
@@ -220,7 +253,6 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
     ]
     seeded.put_project(project)
     library = library_for("webshop")
-    expected = [str(repo_a.resolve()), str(repo_b.resolve()), str(library.root.resolve())]
 
     chat = ChatEngine(seeded)
     message = seeded.add_message("general", "human", "human", "@dev 检查两个仓库", ["dev"])
@@ -233,6 +265,10 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
         TaskStage(name="develop"), project, seeded.get_backend("std-1"), {}, [], [],
     )
 
+    guideline_dir = str(Path(
+        task_cfg.env["MISSIONCREW_GUIDELINES_FILE"]).parent.resolve())
+    expected = [str(repo_a.resolve()), str(repo_b.resolve()),
+                str(library.root.resolve()), guideline_dir]
     history_dir = str(Path(chat_cfg.env["MISSIONCREW_CHANNEL_HISTORY"]).parent.resolve())
     assert task_cfg.allowed_dirs == expected
     assert chat_cfg.allowed_dirs == [*expected, history_dir]
@@ -418,7 +454,8 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
         seeded.get_project("webshop"), "lead",
         '配置已生成。'
         '<missioncrew-action>{"action":"save_guideline","id":"api-style",'
-        '"title":"API 规范","content":"保持兼容","enabled":true}'
+        '"title":"API 规范","summary":"修改 API 时使用",'
+        '"content":"保持兼容","enabled":true}'
         '</missioncrew-action>'
         '<missioncrew-action>{"action":"save_skill","id":"local-ci",'
         '"name":"本地 CI","instructions":"运行 [CI](runbooks/local-ci.md)",'
@@ -433,6 +470,7 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     )
     project = seeded.get_project("webshop")
     assert next(g for g in project.guidelines if g.id == "api-style").content == "保持兼容"
+    assert next(g for g in project.guidelines if g.id == "api-style").summary == "修改 API 时使用"
     assert next(s for s in project.skills if s.id == "local-ci").instructions == \
         "运行 [CI](runbooks/local-ci.md)"
     assert next(r for r in project.rules if r.match == {"labels": ["auth"]}).require_gates == [
@@ -467,7 +505,8 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     assert all(action in prompt for action in (
         "save_guideline", "save_skill", "save_rule", "write_document"))
     assert "original_match" in prompt and "只提问或讨论时直接回答" in prompt
-    assert "api-style(API 规范)" in prompt and "local-ci(本地 CI)" in prompt
+    assert "api-style(API 规范):修改 API 时使用" in prompt
+    assert "local-ci(本地 CI)" in prompt
     assert "## 现有 Runtime" in prompt and "std-1: adapter=" in prompt
 
 
@@ -514,6 +553,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "CONFIG_CHAT_HEIGHT_KEY" in js and "CONFIG_CHAT_COLLAPSED_KEY" in js
     assert "guideline-markdown-preview markdown-body" in js
     assert "setGuidelineMarkdownMode" in js
+    assert 'id="gf-summary"' in js and 'summary: valueOf("gf-summary")' in js
     assert "roleBindingPicker" not in js and "role_ids" not in js
     assert "fileRefPicker" not in js and "runtime_instructions" not in js
     assert "line_start" in js and "selected_text" in js
@@ -704,6 +744,7 @@ def test_dev_guidelines_migrated_into_guideline_doc(seeded):
     assert p2.dev_guidelines == ""
     doc = next(g for g in p2.guidelines if g.id == "dev-guidelines")
     assert "旧开发准则内容" in doc.content and doc.title == "开发准则"
+    assert doc.summary == "项目开发中的架构、代码与变更约束。"
     assert seed_mod.migrate_project_fields(seeded) == 0   # 幂等
 
 

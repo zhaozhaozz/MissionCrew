@@ -117,13 +117,14 @@ class GuidelineDocument:
 
     id: str
     title: str = ""
+    summary: str = ""
     content: str = ""
     enabled: bool = True
 
     @classmethod
     def from_dict(cls, value: dict | str) -> "GuidelineDocument":
         if isinstance(value, str):
-            return cls(id=value, title=value)
+            return cls(id=value, title=value, summary=value)
         data = dict(value)
         refs = data.pop("file_refs", [])  # 旧引用迁移成普通 Markdown 链接
         if refs:
@@ -134,6 +135,13 @@ class GuidelineDocument:
                 data["content"] = "\n\n".join(
                     part for part in (content, "## 相关文档\n" + "\n".join(links)) if part)
         data.pop("role_ids", None)  # 短期版本曾支持角色绑定，现统一由执行者判断
+        if "summary" not in data:
+            # 旧条目没有摘要；取正文首个非空行作为一次性兼容摘要，避免升级后
+            # 公共上下文只剩无法判断用途的 id。之后可在 Web 中独立编辑摘要。
+            first_line = next((line.strip().lstrip("# ").strip()
+                               for line in str(data.get("content", "")).splitlines()
+                               if line.strip()), "")
+            data["summary"] = first_line[:240]
         return cls(**data)
 
 

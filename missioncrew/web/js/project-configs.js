@@ -12,7 +12,7 @@ const CONFIG_CHAT_TARGETS = {
   docs: { label: "版本化文档", action: "write_document" },
 };
 const CONFIG_FIELD_LABELS = {
-  "gf-id": "准则 id", "gf-title": "标题", "gf-content": "正文",
+  "gf-id": "准则 id", "gf-title": "标题", "gf-summary": "摘要", "gf-content": "正文",
   "sf-id": "Skill id", "sf-name": "名称", "sf-desc": "简介",
   "sf-instructions": "完整执行说明",
   "rf-match": "匹配条件", "rf-evidence": "所需证据", "rf-gates": "所需门禁",
@@ -143,6 +143,7 @@ function clippedDraftText(value) {
 function currentConfigDraft(context) {
   if (context.tab === "guidelines") return {
     id: valueOf("gf-id"), title: valueOf("gf-title"),
+    summary: valueOf("gf-summary"),
     content: clippedDraftText(valueOf("gf-content")),
     enabled: document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.guidelines,
@@ -423,6 +424,9 @@ function renderGuidelineEditor() {
       <label class="guideline-toolbar-field guideline-title"><span>标题</span>
         <input id="gf-title" value="${esc(guideline?.title || "")}"
           placeholder="准则标题" oninput="markConfigDirty('guidelines')"></label>
+      <label class="guideline-toolbar-field guideline-summary"><span>摘要</span>
+        <input id="gf-summary" value="${esc(guideline?.summary || "")}"
+          placeholder="帮助 Agent 判断何时需要读取全文" oninput="markConfigDirty('guidelines')"></label>
       <label class="guideline-enabled"><span>启用</span>
         <span class="switch ${guideline?.enabled === false ? "" : "on"}" id="gf-enabled"
           role="switch" tabindex="0" onclick="this.classList.toggle('on');markConfigDirty('guidelines')"></span></label>
@@ -481,6 +485,7 @@ async function saveGuideline() {
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
     id,
     title: document.getElementById("gf-title").value.trim(),
+    summary: document.getElementById("gf-summary").value.trim(),
     content: document.getElementById("gf-content").value,
     enabled: document.getElementById("gf-enabled").classList.contains("on"),
   });

@@ -67,6 +67,7 @@ class RoleTemplateReorder(BaseModel):
 class GuidelineInput(BaseModel):
     id: str
     title: str = ""
+    summary: str = ""
     content: str = ""
     enabled: bool = True
     actor_role_id: Optional[str] = None

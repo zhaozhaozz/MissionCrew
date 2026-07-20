@@ -380,8 +380,10 @@
                                          background: var(--card); }
   .guideline-toolbar-field.guideline-id { width: min(210px, 22vw); }
   .guideline-toolbar-field.guideline-title { flex: 1 1 240px; }
+  .guideline-toolbar-field.guideline-summary { flex: 2 1 360px; }
   .guideline-toolbar-field.guideline-id input,
-  .guideline-toolbar-field.guideline-title input { flex: 1; }
+  .guideline-toolbar-field.guideline-title input,
+  .guideline-toolbar-field.guideline-summary input { flex: 1; }
   .guideline-enabled { padding: 0 3px; }
   .guideline-toolbar-spacer { flex: 1 1 10px; }
   .guideline-view-toggle { display: flex; padding: 2px; border: 1px solid var(--line);

@@ -26,7 +26,8 @@ from .documents import library_for, safe_relative_path
 from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            BoardWidget, Channel, ExecutionConfig,
                            GuidelineDocument, ProjectSkill, Role, Rule)
-from .project_context import project_allowed_dirs, render_project_context
+from .project_context import (guideline_context_path, project_allowed_dirs,
+                              render_project_context)
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -100,7 +101,7 @@ ORCHESTRATOR_TEMPLATE = """\
 <missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
 <missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_guideline","id":"dev-spec","title":"开发规范","content":"Markdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_guideline","id":"dev-spec","title":"开发规范","summary":"涉及代码实现、API 或数据库变更时使用","content":"Markdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_skill","id":"local-ci","name":"本地 CI","description":"用途","instructions":"完整执行说明，可用 [本地 CI](runbooks/local-ci.md) 链接项目文档","enabled":true}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_rule","match":{{"task_type":"bug"}},"require_evidence":["reproduction","regression_test"],"require_gates":[],"require_capabilities":[],"note":"Bug 验证要求"}}</missioncrew-action>
 <missioncrew-action>{{"action":"write_document","path":"specs/design.md","content":"Markdown 正文","message":"新增设计文档"}}</missioncrew-action>
@@ -122,8 +123,9 @@ ORCHESTRATOR_TEMPLATE = """\
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
 - save_guideline / save_skill 按 id 新建或覆盖。不要建立文件、Runtime 或角色绑定列表；
-  需要关联项目文档时，在正文中写标准相对 Markdown 链接。所有执行者都会收到已启用的
-  准则和 Skill，并结合当前任务自行判断是否适用、是否需要读取链接文件。
+  需要关联项目文档时，在正文中写标准相对 Markdown 链接。准则 summary 应简洁说明适用场景；
+  所有执行者只会收到已启用准则的摘要，并在相关时从准则 JSON 文件读取完整正文。
+  Skill 仍结合当前任务自行判断是否适用、是否需要读取链接文件。
 - save_rule 默认以 match 对象作为规则身份；修改现有规则的 match 时，可额外传
   original_match 定位旧规则，平台会在原位置更新，避免留下重复规则。
   write_document 写入项目版本化文档库并立即生成 Git 版本。
@@ -392,6 +394,7 @@ class ChatEngine:
                 library = library_for(project.id)
                 project_section = render_project_context(project, library)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
+                env["MISSIONCREW_GUIDELINES_FILE"] = str(guideline_context_path(project))
                 allowed_dirs = project_allowed_dirs(project, library)
                 if not channel.workdir:   # 平台自有工作区才建软链,不污染真实代码仓
                     library.link_into(workdir)
@@ -663,7 +666,8 @@ class ChatEngine:
             + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
             for b in self.store.list_boards(project.id)) or "(无)"
         guidelines = "\n".join(
-            f"- {g.id}({g.title or g.id}){'[停用]' if not g.enabled else ''}"
+            f"- {g.id}({g.title or g.id}):{g.summary or '未填写摘要'}"
+            f"{'[停用]' if not g.enabled else ''}"
             for g in project.guidelines) or "(无)"
         skills = "\n".join(
             f"- {s.id}({s.name or s.id}){'[停用]' if not s.enabled else ''}"
@@ -813,6 +817,7 @@ class ChatEngine:
         if kind == "save_guideline":
             guideline = GuidelineDocument(
                 id=raw_id, title=str(action.get("title", "")),
+                summary=str(action.get("summary", "")),
                 content=str(action.get("content", "")), enabled=enabled,
             )
             project.guidelines = [g for g in project.guidelines if g.id != raw_id]
