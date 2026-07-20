@@ -84,8 +84,10 @@ uv run mc demo
 # 方式二:接入真实本地 Agent
 uv run mc backend detect      # 扫描注册本机 CLI;自动创建 default 项目(含角色/频道)
 
-uv run mc serve               # http://127.0.0.1:8321(聊天 / 看板 / 项目 / 设置)
+uv run mc serve               # 默认监听 0.0.0.0:8321，访问 http://<本机IP>:8321
 ```
+
+`mc serve` 默认监听所有 IPv4 网络接口，方便局域网设备访问。服务当前不提供公网身份验证；请只在可信网络中使用，或通过主机防火墙、反向代理限制来源。需要只允许本机访问时，运行 `uv run mc serve --host 127.0.0.1`。
 
 聊天也可以走 CLI(频道按项目命名空间,`-p` 限定项目):
 

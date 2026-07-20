@@ -31,6 +31,9 @@ app.add_typer(task_app, name="task")
 app.add_typer(chat_app, name="chat")
 app.add_typer(role_app, name="role")
 
+DEFAULT_SERVE_HOST = "0.0.0.0"
+DEFAULT_SERVE_PORT = 8321
+
 
 def _store() -> Store:
     store = Store(db_path())
@@ -106,12 +109,14 @@ def demo(run: bool = typer.Option(True, help="是否顺带演示典型流程")):
     for m in store.list_messages("general"):
         who = f"@{m['author']}" if m["author_type"] == "agent" else m["author"]
         typer.echo(f"  [{who}] {m['content'].splitlines()[0]}")
-    typer.echo("\n打开看板与聊天: mc serve  ->  http://127.0.0.1:8321")
+    typer.echo(
+        f"\n打开看板与聊天: mc serve  ->  http://<本机IP>:{DEFAULT_SERVE_PORT}"
+    )
     typer.echo("接入真实本地 Agent: mc backend detect")
 
 
 @app.command()
-def serve(host: str = "127.0.0.1", port: int = 8321):
+def serve(host: str = DEFAULT_SERVE_HOST, port: int = DEFAULT_SERVE_PORT):
     """启动 Web 服务(REST API + 看板)。"""
     import uvicorn
     from .api import create_app
