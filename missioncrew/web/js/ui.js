@@ -112,3 +112,10 @@ const globalRoleTemplates = () => overview.role_templates || [];
 const projChannels = () => overview.channels.filter(c => c.project_id === currentProject);
 const projTasks = () => overview.tasks.filter(t => t.project_id === currentProject);
 const projBoards = () => (overview.boards || []).filter(b => b.project_id === currentProject);
+// 任务看板是平台内置面板：参与面板导航，但不进入自定义 Board 的 CRUD。
+const BUILTIN_TASK_PANEL = Object.freeze({
+  id: "__missioncrew_tasks__", name: "任务看板", kind: "tasks", builtin: true,
+  description: "平台内置任务流程面板，由任务状态自动维护",
+});
+const projPanels = () => currentProject ? [BUILTIN_TASK_PANEL,
+  ...projBoards().map(board => ({ ...board, kind: "custom", builtin: false }))] : [];

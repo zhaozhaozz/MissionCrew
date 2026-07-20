@@ -75,13 +75,13 @@ function switchTab(tab) {
   document.getElementById("skills-view").style.display = tab === "skills" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
   document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
-  // 侧栏导航:任务看板/全局设置是导航项,项目设置是 ⚙;
-  // 频道/面板/文档/角色是并列可折叠分区,激活态落在分区标题上
-  document.getElementById("nav-board").classList.toggle("active", tab === "board");
+  // 全局设置是独立导航项；项目设置是 ⚙；项目内容位于可折叠分区。
+  // 任务看板是面板分区中的内置项，因此 board/custom 都激活面板标题。
   document.getElementById("nav-settings").classList.toggle("active", tab === "settings");
   document.getElementById("proj-cfg").classList.toggle("active", tab === "proj");
   document.getElementById("sec-channels").classList.toggle("active", tab === "chat");
-  document.getElementById("sec-boards").classList.toggle("active", tab === "custom");
+  document.getElementById("sec-boards").classList.toggle(
+    "active", tab === "board" || tab === "custom");
   document.getElementById("sec-docs").classList.toggle("active", tab === "docs");
   document.getElementById("sec-guides").classList.toggle("active", tab === "guidelines");
   document.getElementById("sec-skills").classList.toggle("active", tab === "skills");
@@ -128,7 +128,7 @@ async function loadOverview() {
   }
 }
 
-// 侧栏四个并列分区(频道/面板/文档/角色)的折叠状态,跨会话记忆
+// 侧栏各可折叠分区的状态跨会话记忆。
 const sideCollapsed = new Set(JSON.parse(localStorage.getItem("mc.sideCollapsed") || "[]"));
 
 function toggleSection(sec) {
@@ -156,14 +156,25 @@ function renderSidebar() {
       `<div class="side-item ${c.id === currentChan && currentTab === "chat" ? "selected" : ""}"
             onclick="selectChannel('${c.id}')" title="${esc(c.purpose || "")}"># ${esc(c.name || c.id)}</div>`).join("")
       || `<div class="empty" style="padding-left:20px">暂无频道</div>`;
-  // 面板 -> 自定义面板视图
-  const boards = projBoards();
-  if (!_secState("boards", "board-list", "cnt-boards", boards.length))
-    document.getElementById("board-list").innerHTML = boards.map(b =>
-      `<div class="side-item ${b.id === currentCustomBoard && currentTab === "custom" ? "selected" : ""}"
-            data-id="${esc(b.id)}" onclick="openBoardFromSidebar(this.dataset.id)"
-            title="${esc(b.description || "")}">▦ ${esc(b.name || b.id)}</div>`).join("")
-      || `<div class="side-item" onclick="switchTab('custom')">＋ 向主控提一个面板需求…</div>`;
+  // 面板 -> 内置任务看板 + 项目自定义面板。
+  const panels = projPanels();
+  if (!_secState("boards", "board-list", "cnt-boards", panels.length)) {
+    const panelItems = panels.map(panel => panel.builtin
+      ? `<div class="side-item panel-item ${currentTab === "board" ? "selected" : ""}"
+              data-kind="tasks" data-id="${esc(panel.id)}"
+              onclick="openPanelFromSidebar(this.dataset.kind,this.dataset.id)"
+              title="${esc(panel.description)}">▦ ${esc(panel.name)}<span class="builtin-badge">内置</span></div>`
+      : `<div class="side-item panel-item ${panel.id === currentCustomBoard && currentTab === "custom" ? "selected" : ""}"
+              data-kind="custom" data-id="${esc(panel.id)}"
+              onclick="openPanelFromSidebar(this.dataset.kind,this.dataset.id)"
+              title="${esc(panel.description || "")}">▦ ${esc(panel.name || panel.id)}</div>`
+    ).join("");
+    const emptyAction = !currentProject
+      ? `<div class="empty" style="padding-left:20px">暂无面板</div>`
+      : projBoards().length ? ""
+      : `<div class="side-item" onclick="requestBoardFocus()">＋ 向主控提一个面板需求…</div>`;
+    document.getElementById("board-list").innerHTML = panelItems + emptyAction;
+  }
   // 文档 -> 文档库视图
   if (!_secState("docs", "doc-list", "cnt-docs", docFiles.length))
     document.getElementById("doc-list").innerHTML = documentSidebarHtml();

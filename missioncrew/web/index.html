@@ -22,9 +22,6 @@
       <button class="proj-btn" id="proj-add" onclick="openNewProject()" title="新建项目">＋</button>
     </div>
     <div id="side-scroll">
-      <div class="side-nav" id="nav-board" onclick="switchTab('board')">▦ 任务看板
-        <span class="sec-act"><button class="icon-btn" title="新建任务"
-          onclick="event.stopPropagation();openNewTask()">＋</button></span></div>
       <div class="side-sec">
         <h2 class="sec-head" id="sec-channels" onclick="toggleSection('channels')">
           <span class="caret">▾</span>频道<span class="count" id="cnt-channels"></span>
@@ -38,6 +35,7 @@
         <h2 class="sec-head" id="sec-boards" onclick="toggleSection('boards')">
           <span class="caret">▾</span>面板<span class="count" id="cnt-boards"></span>
           <span class="sec-act">
+            <button class="icon-btn" title="新建任务" onclick="event.stopPropagation();openNewTask()">✓</button>
             <button class="icon-btn" title="新建面板(向主控提需求)" onclick="event.stopPropagation();requestBoardFocus()">＋</button>
           </span></h2>
         <div id="board-list"></div>

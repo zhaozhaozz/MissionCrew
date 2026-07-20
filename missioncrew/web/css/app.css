@@ -112,7 +112,7 @@
   #side-bottom .side-nav { margin: 0; }
   #sidebar h2 { font-size: 11px; color: var(--muted); text-transform: uppercase;
                 letter-spacing: .07em; margin: 12px 0 4px; font-weight: 600; }
-  /* 并列可折叠分区:频道/面板/文档/角色 */
+  /* 项目内容的并列可折叠分区 */
   .sec-head { display: flex; align-items: center; gap: 5px; cursor: pointer;
               user-select: none; border-radius: 6px; padding: 4px 6px; transition: all .15s; }
   .sec-head:hover { background: var(--card-2); color: var(--text); }
@@ -131,6 +131,10 @@
                text-overflow: ellipsis; white-space: nowrap; transition: all .15s; }
   .side-item:hover { background: var(--card-2); color: var(--text); }
   .side-item.selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .panel-item .builtin-badge { float: right; margin-top: 1px; padding: 0 6px;
+                               border: 1px solid var(--line); border-radius: 999px;
+                               color: var(--muted); font-size: 10px; font-weight: 500; }
+  .panel-item.selected .builtin-badge { border-color: var(--accent); color: var(--accent); }
   .crumb { cursor: pointer; }
   .crumb:hover { color: var(--accent); text-decoration: underline; }
   .chan { padding: 6px 10px; border-radius: 8px; cursor: pointer; color: var(--muted); }

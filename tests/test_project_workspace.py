@@ -565,6 +565,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert 'id="config-chat-input"' in html
     assert 'id="config-chat-resize"' in html
     assert 'id="config-chat-toggle"' in html
+    assert 'id="nav-board"' not in html
+    assert 'id="sec-boards"' in html and 'id="board-list"' in html
     assert 'class="content-topbar"' in html
     assert 'class="config-editor-pane form single-pane-editor"' in html
     assert "篇目列表位于应用左侧栏" not in html
@@ -578,6 +580,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "config-generator" not in html
     assert "project-configs.js" in html
     assert '"guidelines", "skills"' in router and '"rules"' not in router
+    assert "projPanels()" in router and "builtin-badge" in router
+    assert 'tab === "board" || tab === "custom"' in router
     assert "openFormDialog" not in js
     assert "uiPrompt" not in documents
     assert 'id="doc-new-path"' in documents

@@ -121,6 +121,14 @@ function openBoardFromSidebar(id) {
   switchTab("custom");
 }
 
+function openPanelFromSidebar(kind, id) {
+  if (kind === "tasks") {
+    switchTab("board");
+    return;
+  }
+  openBoardFromSidebar(id);
+}
+
 function openDocFromSidebar(path) {
   docSelected = path;
   docMode = "view";
