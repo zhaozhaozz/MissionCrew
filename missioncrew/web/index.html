@@ -65,7 +65,7 @@
           <span class="caret">▾</span>准则<span class="count" id="cnt-guides"></span>
           <span class="sec-act">
             <button class="icon-btn" title="新建准则文档" onclick="event.stopPropagation();quickNewGuideline()">＋</button>
-            <button class="icon-btn" title="管理准则" onclick="event.stopPropagation();gotoProjSection('guide-table')">⚙</button>
+            <button class="icon-btn" title="管理准则" onclick="event.stopPropagation();switchTab('guidelines')">⚙</button>
           </span></h2>
         <div id="guide-list"></div>
       </div>
@@ -74,9 +74,18 @@
           <span class="caret">▾</span>Skill<span class="count" id="cnt-skills"></span>
           <span class="sec-act">
             <button class="icon-btn" title="新建 Skill" onclick="event.stopPropagation();quickNewSkill()">＋</button>
-            <button class="icon-btn" title="管理 Skill" onclick="event.stopPropagation();gotoProjSection('skill-table')">⚙</button>
+            <button class="icon-btn" title="管理 Skill" onclick="event.stopPropagation();switchTab('skills')">⚙</button>
           </span></h2>
         <div id="skill-list"></div>
+      </div>
+      <div class="side-sec">
+        <h2 class="sec-head" id="sec-rules" onclick="toggleSection('rules')">
+          <span class="caret">▾</span>验证规则<span class="count" id="cnt-rules"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建验证规则" onclick="event.stopPropagation();quickNewRule()">＋</button>
+            <button class="icon-btn" title="管理验证规则" onclick="event.stopPropagation();switchTab('rules')">⚙</button>
+          </span></h2>
+        <div id="rule-list"></div>
       </div>
       <div class="side-sec">
         <h2 class="sec-head" id="sec-roles" onclick="toggleSection('roles')">
@@ -140,8 +149,9 @@
         <a onclick="scrollToSec('sec-proj-res')">资源</a>
         <a onclick="scrollToSec('sec-proj-roles')">角色</a>
         <a onclick="scrollToSec('sec-proj-chans')">频道</a>
-        <a onclick="scrollToSec('sec-proj-guides')">准则文档</a>
-        <a onclick="scrollToSec('sec-proj-skills')">Skills</a>
+        <a onclick="switchTab('guidelines')">准则文档 ↗</a>
+        <a onclick="switchTab('skills')">Skills ↗</a>
+        <a onclick="switchTab('rules')">验证规则 ↗</a>
       </div>
       <div class="section" id="sec-proj-info">
         <h2>项目信息 <span class="muted" id="proj-label"></span></h2>
@@ -165,17 +175,71 @@
           <button class="ghost" style="margin-left:8px" onclick="openChannelDialog()">+ 新建频道</button></h2>
         <table class="mgr" id="chan-table"></table>
       </div>
-      <div class="section" id="sec-proj-guides">
-        <h2>准则文档 <span class="muted" id="guide-proj-label"></span>
-          <button class="ghost" style="margin-left:8px" onclick="editGuideline(null)">+ 新建准则文档</button></h2>
-        <p class="muted">项目准则以完整文档管理:每篇有标题、正文章节和文档库文件引用,启用的篇目会按顺序注入所有角色的执行上下文(开发规范、测试规范、部署说明等各成一篇)。</p>
-        <table class="mgr" id="guide-table"></table>
+    </div>
+
+    <div id="guidelines-view" class="page">
+      <div class="section">
+        <h2>准则文档 <span class="muted" id="guide-proj-label"></span></h2>
+        <p class="muted">每篇准则都是注入角色上下文的完整文档。可手工编辑，也可描述需求交给项目主控生成或修改。</p>
+        <div class="config-generator">
+          <div class="config-request-row">
+            <textarea id="config-request-guidelines" placeholder="例如：生成一份 Python 开发规范，要求公共 API 向后兼容并包含测试要求…"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('guidelines')}"></textarea>
+            <button class="send" onclick="requestProjectConfig('guidelines')">交给主控</button>
+          </div>
+          <div class="muted" id="config-request-guidelines-status"></div>
+        </div>
+        <div class="config-manager">
+          <aside class="config-list-pane">
+            <button class="action" onclick="editGuideline(null)">＋ 新建准则文档</button>
+            <div id="guideline-page-list"></div>
+          </aside>
+          <section class="config-editor-pane form" id="guideline-editor"></section>
+        </div>
       </div>
-      <div class="section" id="sec-proj-skills">
-        <h2>项目 Skills <span class="muted" id="skill-proj-label"></span>
-          <button class="ghost" style="margin-left:8px" onclick="editSkill(null)">+ 新建 Skill</button></h2>
-        <p class="muted">Skill = 完整说明 + 文档库文件引用 + Runtime 适用范围;执行时按角色的 Runtime 注入,可用"按 Runtime 覆盖说明"给不同工具写不同指令(key 用 runtime id、adapter 名或 default)。</p>
-        <table class="mgr" id="skill-table"></table>
+    </div>
+
+    <div id="skills-view" class="page">
+      <div class="section">
+        <h2>项目 Skills <span class="muted" id="skill-proj-label"></span></h2>
+        <p class="muted">Skill 包含完整执行说明、文档引用、Runtime 范围和 Runtime 专用覆盖。可手工编辑，也可交给项目主控生成。</p>
+        <div class="config-generator">
+          <div class="config-request-row">
+            <textarea id="config-request-skills" placeholder="例如：生成一个本地 CI Skill，适用于 Codex，先跑单测再跑类型检查…"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('skills')}"></textarea>
+            <button class="send" onclick="requestProjectConfig('skills')">交给主控</button>
+          </div>
+          <div class="muted" id="config-request-skills-status"></div>
+        </div>
+        <div class="config-manager">
+          <aside class="config-list-pane">
+            <button class="action" onclick="editSkill(null)">＋ 新建 Skill</button>
+            <div id="skill-page-list"></div>
+          </aside>
+          <section class="config-editor-pane form" id="skill-editor"></section>
+        </div>
+      </div>
+    </div>
+
+    <div id="rules-view" class="page">
+      <div class="section">
+        <h2>验证规则 <span class="muted" id="rule-proj-label"></span></h2>
+        <p class="muted">规则按任务类型、标签或风险匹配，并追加证据、门禁和验证能力要求。可逐条编辑，也可交给项目主控生成。</p>
+        <div class="config-generator">
+          <div class="config-request-row">
+            <textarea id="config-request-rules" placeholder="例如：所有 auth 标签任务必须经过安全审查，高风险任务还需要人工批准…"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('rules')}"></textarea>
+            <button class="send" onclick="requestProjectConfig('rules')">交给主控</button>
+          </div>
+          <div class="muted" id="config-request-rules-status"></div>
+        </div>
+        <div class="config-manager">
+          <aside class="config-list-pane">
+            <button class="action" onclick="editRule(null)">＋ 新建验证规则</button>
+            <div id="rule-page-list"></div>
+          </aside>
+          <section class="config-editor-pane form" id="rule-editor"></section>
+        </div>
       </div>
     </div>
 
@@ -184,6 +248,14 @@
         <h2>版本化文档库 <span class="muted" id="docs-proj-label"></span>
           <button class="ghost" style="margin-left:8px" onclick="newDocument()">＋ 新建文档</button></h2>
         <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本。左侧是目录树,点开查看文档,右上角可编辑。</p>
+        <div class="config-generator">
+          <div class="config-request-row">
+            <textarea id="config-request-documents" placeholder="例如：在 specs/checkout.md 生成结算流程设计文档，包含异常处理和测试场景…"
+              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('documents')}"></textarea>
+            <button class="send" onclick="requestProjectConfig('documents')">交给主控</button>
+          </div>
+          <div class="muted" id="config-request-documents-status"></div>
+        </div>
         <div class="muted" id="docs-root"></div>
         <div class="docs-layout">
           <div class="doc-tree">
@@ -289,6 +361,7 @@
 <script src="/assets/js/api.js"></script>
 <script src="/assets/js/projects.js"></script>
 <script src="/assets/js/settings-project.js"></script>
+<script src="/assets/js/project-configs.js"></script>
 <script src="/assets/js/documents.js"></script>
 <script src="/assets/js/roles.js"></script>
 <script src="/assets/js/channels.js"></script>

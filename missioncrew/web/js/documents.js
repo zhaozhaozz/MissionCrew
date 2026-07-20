@@ -89,11 +89,9 @@ function selectDocument(path) {
   renderDocTree(); renderDocPane();
 }
 
-async function newDocument() {
+function newDocument() {
   if (!currentProject) return;
-  const path = await uiPrompt("新文档相对路径:", { placeholder: "specs/design.md", title: "新建文档" });
-  if (!path) return;
-  docSelected = path.trim(); docMode = "new";
+  docSelected = null; docMode = "new";
   docViewingRevision = null; docHistoryOpen = false;
   renderDocPane();
 }
@@ -105,6 +103,18 @@ function isMarkdownDoc(path) {
 async function renderDocPane() {
   const pane = document.getElementById("doc-pane");
   if (!pane) return;
+  if (docMode === "new") {
+    pane.innerHTML = `
+      <div class="doc-head"><b>新建文档</b>
+        <button class="action" onclick="saveDocument()">保存新版本</button>
+        <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
+      <label>文档库内相对路径</label>
+      <input type="text" id="doc-new-path" value="" placeholder="specs/design.md" autofocus>
+      <label>正文</label>
+      <textarea id="doc-content" rows="20" style="width:100%;height:auto"></textarea>`;
+    document.getElementById("doc-new-path")?.focus();
+    return;
+  }
   if (!docSelected) {
     pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看。</div>`;
     return;
@@ -112,15 +122,13 @@ async function renderDocPane() {
   const meta = docFilesMeta.find(f => f.path === docSelected);
   const metaLine = meta ? `${meta.size} B · ${new Date(meta.modified_at * 1000).toLocaleString()}` : "";
   // 编辑 / 新建:文本编辑器
-  if (docMode === "edit" || docMode === "new") {
+  if (docMode === "edit") {
     let content = "";
-    if (docMode === "edit") {
-      const d = await api("GET",
-        `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
-      content = d.content;
-    }
+    const d = await api("GET",
+      `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
+    content = d.content;
     pane.innerHTML = `
-      <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${docMode === "new" ? "新建" : "编辑中"}</span>
+      <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">编辑中</span>
         <button class="action" onclick="saveDocument()">保存新版本</button>
         <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
       <textarea id="doc-content" rows="20" style="width:100%;height:auto">${esc(content)}</textarea>`;
@@ -161,11 +169,15 @@ function cancelDocEdit() {
 }
 
 async function saveDocument() {
-  if (!docSelected) return;
+  const path = docMode === "new"
+    ? document.getElementById("doc-new-path").value.trim()
+    : docSelected;
+  if (!path) { uiAlert("请输入文档库内相对路径"); return; }
+  docSelected = path;
   await api("PUT",
-    `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`, {
+    `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(path)}`, {
     content: document.getElementById("doc-content").value,
-    message: `Update ${docSelected} from project document editor`,
+    message: `Update ${path} from project document editor`,
   });
   docMode = "view";
   await renderDocuments();
@@ -209,4 +221,3 @@ async function restoreDocumentVersion(revision) {
   docViewingRevision = null;
   await renderDocuments();
 }
-

@@ -393,6 +393,84 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
     assert "协作链预算" in cfg.prompt and "post_message" in cfg.prompt
 
 
+def test_orchestrator_can_generate_project_config_and_documents(seeded):
+    """配置生成复用主控执行链，并通过受限 action 真正写入项目。"""
+    chat = ChatEngine(seeded)
+    reply = chat._apply_orchestrator_actions(
+        seeded.get_project("webshop"), "lead",
+        '配置已生成。'
+        '<missioncrew-action>{"action":"save_guideline","id":"api-style",'
+        '"title":"API 规范","content":"保持兼容","file_refs":[],"enabled":true}'
+        '</missioncrew-action>'
+        '<missioncrew-action>{"action":"save_skill","id":"local-ci",'
+        '"name":"本地 CI","instructions":"运行测试","file_refs":[],"runtime_ids":["std-1"],'
+        '"adapters":[],"runtime_instructions":{"std-1":"使用 uv"},"enabled":true}'
+        '</missioncrew-action>'
+        '<missioncrew-action>{"action":"save_rule","match":{"labels":["auth"]},'
+        '"require_evidence":["regression_test"],"require_gates":["security_review"],'
+        '"require_capabilities":["security"],"note":"认证变更"}</missioncrew-action>'
+        '<missioncrew-action>{"action":"write_document","path":"specs/generated.md",'
+        '"content":"# Generated\\n","message":"Generate spec"}</missioncrew-action>',
+        root_id=1, depth=0,
+    )
+    project = seeded.get_project("webshop")
+    assert next(g for g in project.guidelines if g.id == "api-style").content == "保持兼容"
+    assert next(s for s in project.skills if s.id == "local-ci").runtime_ids == ["std-1"]
+    assert next(r for r in project.rules if r.match == {"labels": ["auth"]}).require_gates == [
+        "security_review"]
+    assert library_for("webshop").read("specs/generated.md") == "# Generated\n"
+    assert "missioncrew-action" not in reply
+    assert "已保存准则文档" in reply and "已保存文档 specs/generated.md" in reply
+
+    # 相同 match 更新而不是产生重复规则；不存在的 Runtime 被拒绝。
+    update = chat._apply_orchestrator_actions(
+        project, "lead",
+        '<missioncrew-action>{"action":"save_rule","match":{"labels":["auth"]},'
+        '"require_evidence":["security_test"],"require_gates":[],'
+        '"require_capabilities":[],"note":"更新"}</missioncrew-action>'
+        '<missioncrew-action>{"action":"save_skill","id":"bad-runtime",'
+        '"runtime_ids":["missing"],"file_refs":[]}</missioncrew-action>',
+        root_id=1, depth=0,
+    )
+    project = seeded.get_project("webshop")
+    matching = [r for r in project.rules if r.match == {"labels": ["auth"]}]
+    assert len(matching) == 1 and matching[0].require_evidence == ["security_test"]
+    assert all(skill.id != "bad-runtime" for skill in project.skills)
+    assert "控制动作未执行" in update and "不存在的 Runtime" in update
+
+    msg = seeded.add_message("general", "human", "human", "@lead 生成配置", ["lead"])
+    prompt = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "lead"),
+        seeded.get_backend("std-1"), msg,
+    ).prompt
+    assert all(action in prompt for action in (
+        "save_guideline", "save_skill", "save_rule", "write_document"))
+    assert "api-style(API 规范)" in prompt and "local-ci(本地 CI)" in prompt
+    assert "## 现有 Runtime" in prompt and "std-1: adapter=" in prompt
+
+
+def test_project_config_managers_are_full_pages_with_orchestrator_requests(seeded):
+    client = _client(seeded)
+    html = client.get("/").text
+    js = client.get("/assets/js/project-configs.js").text
+    router = client.get("/assets/js/router.js").text
+    documents = client.get("/assets/js/documents.js").text
+
+    for view in ("guidelines-view", "skills-view", "rules-view", "docs-view"):
+        assert f'id="{view}"' in html
+    for kind in ("guidelines", "skills", "rules", "documents"):
+        assert f'id="config-request-{kind}"' in html
+        assert f"requestProjectConfig('{kind}')" in html
+    assert "project-configs.js" in html
+    assert '"guidelines", "skills", "rules"' in router
+    assert "openFormDialog" not in js
+    assert "uiPrompt" not in documents
+    assert 'id="doc-new-path"' in documents
+    assert "missioncrew control action" in js
+    assert all(action in js for action in (
+        "save_guideline", "save_skill", "save_rule", "write_document"))
+
+
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----
 
 def test_document_restore_creates_new_version(seeded):

@@ -22,9 +22,10 @@ from typing import Optional
 
 from ..runtime import adapters
 from ..core.config import mc_home
-from .documents import library_for
+from .documents import library_for, safe_relative_path
 from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
-                           BoardWidget, Channel, ExecutionConfig, Role)
+                           BoardWidget, Channel, ExecutionConfig,
+                           GuidelineDocument, ProjectSkill, Role, Rule)
 from .project_context import project_allowed_dirs, render_project_context
 from ..core.store import Store
 
@@ -99,6 +100,10 @@ ORCHESTRATOR_TEMPLATE = """\
 <missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
 <missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_guideline","id":"dev-spec","title":"开发规范","content":"Markdown 正文","file_refs":[],"enabled":true}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_skill","id":"local-ci","name":"本地 CI","description":"用途","instructions":"完整执行说明","file_refs":[],"runtime_ids":[],"adapters":[],"runtime_instructions":{{}},"enabled":true}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_rule","match":{{"task_type":"bug"}},"require_evidence":["reproduction","regression_test"],"require_gates":[],"require_capabilities":[],"note":"Bug 验证要求"}}</missioncrew-action>
+<missioncrew-action>{{"action":"write_document","path":"specs/design.md","content":"Markdown 正文","message":"新增设计文档"}}</missioncrew-action>
 要点：
 - create_channel 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
   不填时若项目只配了一个代码仓则自动使用它。新频道创建后是空的，
@@ -116,6 +121,12 @@ ORCHESTRATOR_TEMPLATE = """\
     {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
+- save_guideline / save_skill 按 id 新建或覆盖；只能引用项目文档库内的相对路径。
+  save_skill.runtime_ids 只能填写下方现有 Runtime 的 id。
+- save_rule 以 match 对象作为规则身份：match 完全相同时覆盖原规则，否则追加。
+  write_document 写入项目版本化文档库并立即生成 Git 版本。
+- 从配置页面收到生成请求时，必须使用对应的 save_guideline / save_skill /
+  save_rule / write_document 控制动作实际落库，不能只在回复中给示例文本。
 - 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
   最合适的角色，@ 它并写清任务简报。
@@ -130,6 +141,18 @@ ORCHESTRATOR_TEMPLATE = """\
 
 ## 现有面板
 {boards}
+
+## 现有准则文档
+{guidelines}
+
+## 现有 Skills
+{skills}
+
+## 现有 Runtime
+{runtimes}
+
+## 现有验证规则
+{rules}
 """
 
 
@@ -636,9 +659,24 @@ class ChatEngine:
             f"- {_short(b.id)}({b.name}):{b.description or '无描述'};组件 "
             + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
             for b in self.store.list_boards(project.id)) or "(无)"
+        guidelines = "\n".join(
+            f"- {g.id}({g.title or g.id}){'[停用]' if not g.enabled else ''}"
+            for g in project.guidelines) or "(无)"
+        skills = "\n".join(
+            f"- {s.id}({s.name or s.id}){'[停用]' if not s.enabled else ''};Runtime="
+            + (",".join([*s.runtime_ids, *s.adapters]) or "全部")
+            for s in project.skills) or "(无)"
+        runtimes = "\n".join(
+            f"- {backend.id}: adapter={backend.adapter};"
+            f"{'启用' if backend.enabled else '停用'}"
+            for backend in self.store.list_backends()) or "(无)"
+        rules = "\n".join(
+            f"- {json.dumps(rule.__dict__, ensure_ascii=False)}"
+            for rule in project.rules) or "(无)"
         return ORCHESTRATOR_TEMPLATE.format(
             max_runs=project.max_chain_runs,
-            repos=repos, channels=channels, boards=boards)
+            repos=repos, channels=channels, boards=boards,
+            guidelines=guidelines, skills=skills, runtimes=runtimes, rules=rules)
 
     def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
                                     root_id: int, depth: int) -> str:
@@ -652,6 +690,11 @@ class ChatEngine:
                 if kind == "post_message":
                     reports.append(self._action_post_message(
                         project_id, role_id, action, root_id, depth))
+                    continue
+                if kind in ("save_guideline", "save_skill", "save_rule",
+                            "write_document"):
+                    reports.append(self._apply_project_config_action(
+                        project, role_id, action))
                     continue
                 if kind not in ("create_channel", "create_board",
                                 "update_board", "delete_board"):
@@ -705,6 +748,102 @@ class ChatEngine:
         if reports:
             cleaned = "\n\n".join(x for x in (cleaned, "平台操作：" + "；".join(reports)) if x)
         return cleaned or "(主控动作已处理)"
+
+    @staticmethod
+    def _action_string_list(action: dict, field: str) -> list[str]:
+        value = action.get(field, [])
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ValueError(f"{field} 必须是字符串列表")
+        return value
+
+    def _apply_project_config_action(self, project, role_id: str,
+                                     action: dict) -> str:
+        """校验并执行主控生成的项目配置；所有写入都限定在当前项目。"""
+        kind = action.get("action")
+        if kind == "write_document":
+            path = safe_relative_path(str(action.get("path", "")))
+            content = action.get("content", "")
+            if not isinstance(content, str):
+                raise ValueError("document content 必须是字符串")
+            revision = library_for(project.id).write(
+                path, content, actor=f"role:{role_id}",
+                message=str(action.get("message") or f"Generate {path}"),
+            )
+            self.store.audit(role_id, "document_saved",
+                             detail=f"project={project.id} path={path} revision={revision}")
+            return f"已保存文档 {path}"
+
+        if kind == "save_rule":
+            match = action.get("match")
+            if not isinstance(match, dict):
+                raise ValueError("save_rule.match 必须是对象")
+            rule = Rule(
+                match=match,
+                require_evidence=self._action_string_list(action, "require_evidence"),
+                require_gates=self._action_string_list(action, "require_gates"),
+                require_capabilities=self._action_string_list(
+                    action, "require_capabilities"),
+                note=str(action.get("note", "")),
+            )
+            replaced = False
+            for index, existing in enumerate(project.rules):
+                if existing.match == rule.match:
+                    project.rules[index] = rule
+                    replaced = True
+                    break
+            if not replaced:
+                project.rules.append(rule)
+            self.store.put_project(project)
+            self.store.audit(role_id, "rule_saved",
+                             detail=f"project={project.id} match={rule.match}")
+            return f"已{'更新' if replaced else '新增'}验证规则 {rule.match}"
+
+        raw_id = str(action.get("id", "")).strip()
+        if not CONTROL_ID_RE.fullmatch(raw_id):
+            raise ValueError("id 只能包含字母、数字、下划线、连字符")
+        enabled = action.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled 必须是布尔值")
+        file_refs = self._action_string_list(action, "file_refs")
+        file_refs = [safe_relative_path(ref) for ref in file_refs]
+
+        if kind == "save_guideline":
+            guideline = GuidelineDocument(
+                id=raw_id, title=str(action.get("title", "")),
+                content=str(action.get("content", "")), file_refs=file_refs,
+                enabled=enabled,
+            )
+            project.guidelines = [g for g in project.guidelines if g.id != raw_id]
+            project.guidelines.append(guideline)
+            self.store.put_project(project)
+            self.store.audit(role_id, "guideline_saved",
+                             detail=f"project={project.id} guideline={raw_id}")
+            return f"已保存准则文档 {guideline.title or raw_id}"
+
+        runtime_ids = self._action_string_list(action, "runtime_ids")
+        unknown = [runtime_id for runtime_id in runtime_ids
+                   if self.store.get_backend(runtime_id) is None]
+        if unknown:
+            raise ValueError(f"Skill 引用了不存在的 Runtime: {unknown}")
+        runtime_instructions = action.get("runtime_instructions", {})
+        if (not isinstance(runtime_instructions, dict)
+                or any(not isinstance(key, str) or not isinstance(value, str)
+                       for key, value in runtime_instructions.items())):
+            raise ValueError("runtime_instructions 必须是字符串映射")
+        skill = ProjectSkill(
+            id=raw_id, name=str(action.get("name", "")),
+            description=str(action.get("description", "")),
+            instructions=str(action.get("instructions", "")),
+            file_refs=file_refs, runtime_ids=runtime_ids,
+            adapters=self._action_string_list(action, "adapters"),
+            runtime_instructions=runtime_instructions, enabled=enabled,
+        )
+        project.skills = [s for s in project.skills if s.id != raw_id]
+        project.skills.append(skill)
+        self.store.put_project(project)
+        self.store.audit(role_id, "skill_saved",
+                         detail=f"project={project.id} skill={raw_id}")
+        return f"已保存 Skill {skill.name or raw_id}"
 
     def _action_post_message(self, project_id: str, role_id: str, action: dict,
                              root_id: int, depth: int) -> str:

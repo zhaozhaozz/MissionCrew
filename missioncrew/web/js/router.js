@@ -1,6 +1,7 @@
 /* ---- URL 路由:/<项目>/<视图>[/<频道>](History API,干净 URL),
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
-const TABS = ["chat", "board", "custom", "docs", "proj", "settings"];
+const TABS = ["chat", "board", "custom", "docs", "guidelines", "skills", "rules",
+              "proj", "settings"];
 
 function parsePath() {
   // 兼容旧的 hash 链接(/#/default/settings):路径为根时读 hash
@@ -41,6 +42,12 @@ function setProject(id) {
   localStorage.setItem("mc.project", id);
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
   currentCustomBoard = null; customBoardEditing = false;
+  selectedGuidelineId = undefined;
+  selectedSkillId = undefined;
+  selectedRuleIndex = undefined;
+  configEditorDirty.guidelines = false;
+  configEditorDirty.skills = false;
+  configEditorDirty.rules = false;
   document.getElementById("msgs").innerHTML = "";
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   docFiles = []; docSelected = null;
@@ -48,6 +55,7 @@ function setProject(id) {
   loadDocFiles().then(renderSidebar);
   if (currentTab === "proj") renderProjSettings();
   if (currentTab === "docs") renderDocuments();
+  renderProjectConfigPage(currentTab, true);
   const chans = projChannels();
   if (chans.length) selectChannel(chans[0].id, false);
   syncUrl();
@@ -59,6 +67,9 @@ function switchTab(tab) {
   document.getElementById("board-view").style.display = tab === "board" ? "block" : "none";
   document.getElementById("custom-view").style.display = tab === "custom" ? "block" : "none";
   document.getElementById("docs-view").style.display = tab === "docs" ? "block" : "none";
+  document.getElementById("guidelines-view").style.display = tab === "guidelines" ? "block" : "none";
+  document.getElementById("skills-view").style.display = tab === "skills" ? "block" : "none";
+  document.getElementById("rules-view").style.display = tab === "rules" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
   document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
   // 侧栏导航:任务看板/全局设置是导航项,项目设置是 ⚙;
@@ -69,10 +80,14 @@ function switchTab(tab) {
   document.getElementById("sec-channels").classList.toggle("active", tab === "chat");
   document.getElementById("sec-boards").classList.toggle("active", tab === "custom");
   document.getElementById("sec-docs").classList.toggle("active", tab === "docs");
-  renderSidebar();
+  document.getElementById("sec-guides").classList.toggle("active", tab === "guidelines");
+  document.getElementById("sec-skills").classList.toggle("active", tab === "skills");
+  document.getElementById("sec-rules").classList.toggle("active", tab === "rules");
   if (tab === "proj") renderProjSettings();
   if (tab === "custom") renderCustomBoards(true);
   if (tab === "docs") renderDocuments();
+  renderProjectConfigPage(tab);
+  renderSidebar();
   if (tab === "settings") renderGlobalSettings();
   syncUrl();
 }
@@ -97,6 +112,8 @@ async function loadOverview() {
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   renderSidebar(); renderBoard(); renderCustomBoards();
   loadDocFiles().then(renderSidebar);   // 文档分区的文件清单异步补齐
+  renderProjectConfigPage(currentTab);
+  if (currentTab === "docs" && docMode === "view") renderDocuments();
   const chans = projChannels();
   if ((!currentChan || !chans.some(c => c.id === currentChan)) && chans.length)
     selectChannel(chans[0].id, false);
@@ -158,22 +175,30 @@ function renderSidebar() {
             title="${esc(r.path || "")}${r.remote ? "\n远程: " + esc(r.remote) : ""}">
          ${r.kind === "git" ? "🔗" : "📁"} ${esc(r.name || r.id)}</div>`).join("")
       || `<div class="side-item" onclick="quickAddResource()">＋ 添加本地路径或 git 仓…</div>`;
-  // 准则 -> 逐篇编辑
+  // 准则 -> 全页逐篇编辑
   const guides = projObj()?.guidelines || [];
   if (!_secState("guides", "guide-list", "cnt-guides", guides.length))
     document.getElementById("guide-list").innerHTML = guides.map(g =>
-      `<div class="side-item ${g.enabled === false ? "" : ""}" data-id="${esc(g.id)}"
+      `<div class="side-item ${g.id === selectedGuidelineId && currentTab === "guidelines" ? "selected" : ""}" data-id="${esc(g.id)}"
             onclick="openGuidelineFromSidebar(this.dataset.id)" title="${esc(g.id)}">
          📜 ${esc(g.title || g.id)}${g.enabled === false ? " (停用)" : ""}</div>`).join("")
       || `<div class="side-item" onclick="quickNewGuideline()">＋ 写第一篇项目准则…</div>`;
-  // Skill -> 逐个编辑
+  // Skill -> 全页逐个编辑
   const skills = projObj()?.skills || [];
   if (!_secState("skills", "skill-list", "cnt-skills", skills.length))
     document.getElementById("skill-list").innerHTML = skills.map(s =>
-      `<div class="side-item" data-id="${esc(s.id)}"
+      `<div class="side-item ${s.id === selectedSkillId && currentTab === "skills" ? "selected" : ""}" data-id="${esc(s.id)}"
             onclick="openSkillFromSidebar(this.dataset.id)" title="${esc(s.description || s.id)}">
          ⚡ ${esc(s.name || s.id)}${s.enabled === false ? " (停用)" : ""}</div>`).join("")
       || `<div class="side-item" onclick="quickNewSkill()">＋ 添加第一个 Skill…</div>`;
+  // 验证规则 -> 全页逐条编辑
+  const rules = projObj()?.rules || [];
+  if (!_secState("rules", "rule-list", "cnt-rules", rules.length))
+    document.getElementById("rule-list").innerHTML = rules.map((rule, index) =>
+      `<div class="side-item ${index === selectedRuleIndex && currentTab === "rules" ? "selected" : ""}"
+            onclick="openRuleFromSidebar(${index})" title="${esc(JSON.stringify(rule.match))}">
+         ✓ ${esc(rule.note || JSON.stringify(rule.match))}</div>`).join("")
+      || `<div class="side-item" onclick="quickNewRule()">＋ 添加第一条验证规则…</div>`;
   // 角色 -> 聊天 @(主控带标记)
   const orch = projObj()?.orchestrator_role_id;
   if (!_secState("roles", "role-list", "cnt-roles", projRoles().length))
@@ -186,4 +211,3 @@ function renderSidebar() {
     `<button onclick="insertMention('${r.id}')" title="${esc(r.description || "")}">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}</button>`).join("");
 }
-

@@ -99,23 +99,27 @@ function pickDirConfirm() {
 }
 
 function openGuidelineFromSidebar(id) {
-  switchTab("proj");
-  setTimeout(() => editGuideline(id), 300);
+  editGuideline(id);
 }
 
 function openSkillFromSidebar(id) {
-  switchTab("proj");
-  setTimeout(() => editSkill(id), 300);
+  editSkill(id);
+}
+
+function openRuleFromSidebar(index) {
+  editRule(index);
 }
 
 function quickNewGuideline() {
-  switchTab("proj");
-  setTimeout(() => editGuideline(null), 300);
+  editGuideline(null);
 }
 
 function quickNewSkill() {
-  switchTab("proj");
-  setTimeout(() => editSkill(null), 300);
+  editSkill(null);
+}
+
+function quickNewRule() {
+  editRule(null);
 }
 
 function openBoardFromSidebar(id) {
