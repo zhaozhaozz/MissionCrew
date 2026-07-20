@@ -269,6 +269,8 @@ def test_tools_endpoint_merges_registration_state(client):
     # 内置工具矩阵全部列出;种子里的 mock 工具作为已注册项附加
     assert "claude" in by_id and "eco-1" in by_id
     assert by_id["eco-1"]["registered"] is True
+    assert [r["installed"] for r in rows] == sorted(
+        (r["installed"] for r in rows), reverse=True)
     for r in rows:  # 运行时页不暴露档位/成本/能力
         assert "tier" not in r and "cost_per_run" not in r and "capabilities" not in r
 

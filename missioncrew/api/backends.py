@@ -95,6 +95,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "updatable": bool(adapters.update_plan(b)),
                 **usage(b.id),
             })
+        # API 也保证已安装项优先，避免已打开页面仍运行旧版前端渲染逻辑时
+        # 把支持矩阵末尾的已安装工具（例如 traecli）留在表格底部。
+        rows.sort(key=lambda row: row["installed"], reverse=True)
         return rows
 
     @app.get("/api/backends/{backend_id}/models")
