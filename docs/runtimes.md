@@ -27,6 +27,30 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 ## 接入技术
 
+### 逐 Runtime 会话复用矩阵
+
+聊天会话统一以 `channel::role` 为键，但每个 Runtime 的原生接口不同。下表中的“后续轮次”都只发送最新 MissionCrew 公共上下文和当前触发消息，不再重复回放最近对话；只有新建会话、原会话无法恢复或没有可靠原生接口时，才发送包含最近对话 JSON 的恢复输入。
+
+| Runtime / adapter | 首轮如何创建 | 后续轮次如何复用 | 会话 ID 来源与进程生命周期 |
+|---|---|---|---|
+| Claude / `claude_code` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
+| Codex / `codex` | 执行 `codex exec`，从输出头部捕获原生 session/thread id | 新进程执行 `codex … exec resume <id> <prompt>` | Runtime 返回 ID；每轮一个 CLI 进程。首轮未返回 ID 时不保存，下一轮用恢复输入新建 |
+| Grok / `grok_build` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
+| OpenCode / `opencode` | 使用 `--format json` 启动，并从 JSON 事件捕获 session id | 新进程使用 `--session <id>`，继续保持 JSON 输出 | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
+| GitHub Copilot / `copilot` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程继续传同一个 `--session-id <id>` | 固定 ID；每轮一个 CLI 进程 |
+| Cursor / `cursor` | 使用 `--output-format json` 启动，并从 JSON 结果捕获 session/chat id | 新进程使用 `--resume <id>` | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
+| CodeBuddy / `codebuddy` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
+| Pi / `pi` | 为 `channel::role` 计算稳定目录，首轮传 `--session-dir <dir>` | 在同一目录启动新进程并传 `--continue` | SQLite 保存 `pi-dir:<dir>`；每轮一个 CLI 进程，会话文件位于 `runtime-sessions/pi/` |
+| Kimi / `kimi` | 启动 ACP serve 进程并调用 `session/new` | 服务存活时直接在同一进程、同一 `sessionId` 调用 `session/prompt`；MissionCrew 重启后仅在 Runtime 声明 `loadSession` 时调用 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
+| Kiro / `kiro` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
+| Qoder / `qoder` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
+| Trae / `trae` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
+| Mock / `mock` | 使用 `mock:<channel::role>` 作为确定性会话 ID | 在同一会话锁内复用该 ID | 无外部进程，仅用于测试和演示 |
+
+会话元数据保存在 SQLite `chat_sessions`：除原生 ID 外，还记录 backend id、adapter、解析后的 workdir 和最后成功接收的公共上下文版本。只有 backend、adapter、workdir 均兼容时才恢复；角色、频道或 backend 删除时同步清理。模型、effort 或项目设置变化不会换 session，而是在下一轮把新执行参数和完整新版公共上下文注入原会话。若 Runtime 明确报告 session/thread 不存在或无效，平台删除旧记录，下一轮用恢复输入新建。
+
+`Backend.command` 的处理取决于接入方式：ACP 自定义命令仍遵循统一协议，因此可以正常复用；打印模式自定义命令可能是任意 wrapper，平台无法安全猜测其 session 参数，所以不追加原生 resume 标志，也不沿用旧 ID，而是每轮发送完整恢复输入。若新增打印 Runtime，必须在 `DEFAULT_COMMANDS` 和会话策略集合中同时登记，并补首轮、续接和缺失 ID 的测试。
+
 ### 打印模式 CLI(`CliAdapter`)
 
 一次执行 = 一个子进程:按命令模板渲染参数,在频道工作目录内启动,收集 stdout/stderr,退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板在 `DEFAULT_COMMANDS` 中定义,`Backend.command` 可整体覆盖；自定义打印命令的参数语义未知，平台不会猜测其 resume 标志，而是每轮发送带最近对话的完整恢复 Prompt。
@@ -40,7 +64,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `{allowed_dirs}` — 当前项目全部本地资源目录与文档库；会展开为重复的 `--add-dir <path>`；
 - `{workdir}` — 本次主工作目录，用于需要显式工作根参数的 CLI。
 
-默认模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。Claude、Codex、Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则；Grok/OpenCode 同时显式传主工作目录；Cursor print 模式带 `--force`。完整输出落盘到工作区 `.mc_last_output_<adapter>.log` 便于回查,聊天回复取输出尾部。
+默认模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。Claude、Codex、Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则；Grok/OpenCode 同时显式传主工作目录；Cursor print 模式带 `--force`。诊断输出尾部落盘到工作区 `.mc_last_output_<adapter>.log` 便于回查；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
 
 ### ACP stdio(`AcpAdapter`,kimi / kiro / qoder / trae)
 
