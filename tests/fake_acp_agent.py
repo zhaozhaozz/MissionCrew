@@ -42,6 +42,9 @@ def _session_new_result(shape):
 def main():
     shape = sys.argv[1] if len(sys.argv) > 1 else "config"
     model = ""
+    new_count = 0
+    load_count = 0
+    prompt_count = 0
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -49,14 +52,23 @@ def main():
         msg = json.loads(line)
         mid, method = msg.get("id"), msg.get("method")
         if method == "initialize":
-            send({"jsonrpc": "2.0", "id": mid, "result": {"protocolVersion": 1}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "protocolVersion": 1,
+                "agentCapabilities": {"loadSession": shape != "noload"},
+            }})
         elif method == "session/new":
+            new_count += 1
             send({"jsonrpc": "2.0", "id": mid,
                   "result": _session_new_result(shape)})
+        elif method == "session/load":
+            load_count += 1
+            send({"jsonrpc": "2.0", "id": mid,
+                  "result": {"sessionId": msg["params"]["sessionId"]}})
         elif method == "session/set_model":
             model = msg["params"]["modelId"]
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/prompt":
+            prompt_count += 1
             text = msg["params"]["prompt"][0]["text"]
             # 思考与工具调用通知:验证客户端把运行过程实时上报
             send({"jsonrpc": "2.0", "method": "session/update", "params": {
@@ -67,12 +79,14 @@ def main():
                 "sessionId": "s-test",
                 "update": {"sessionUpdate": "tool_call", "toolCallId": "t1",
                            "title": "read_file", "status": "completed"}}})
-            chunk(f"ACP 收到任务({len(text)} 字符)")
+            chunk(f"ACP 收到任务({len(text)} 字符);轮次={prompt_count};"
+                  f"new={new_count};load={load_count}")
             # 反向权限请求:客户端必须从 options 里选安全项,否则本进程会卡住
             send({"jsonrpc": "2.0", "id": 900, "method": "session/request_permission",
                   "params": {"sessionId": "s-test", "options": [
                       {"optionId": "no", "kind": "reject_once"},
                       {"optionId": "yes-once", "kind": "allow_once"}]}})
+            opt = ""
             for line2 in sys.stdin:
                 resp = json.loads(line2.strip())
                 if resp.get("id") == 900:

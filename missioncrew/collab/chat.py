@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -40,7 +41,7 @@ DEFER_WINDOW = 8       # 顺序词与 @ 之间允许的最大字符距离
 
 # 提示词结构约定:人格(role_desc)是"选人用的专长画像",不是任务;
 # 任务只来自触发消息(由发起者——人类或调度角色——撰写的简报)
-CHAT_PROMPT = """\
+CHAT_COMMON_BODY = """\
 # 聊天协作请求
 你是角色 @{role_id}({role_name})。
 角色定位(这是你的专长画像,供协作方选人参考;它不是任务,不要据此自行发挥):
@@ -58,17 +59,35 @@ CHAT_PROMPT = """\
 完整频道历史文件:{channel_history_path}
 也可以通过环境变量 MISSIONCREW_CHANNEL_HISTORY 获取该路径。仅在最近对话不足以完成任务时按需读取。
 
-# 最近对话(JSON,按消息边界格式化)
-{history}
-
-# 触发消息(JSON,你的任务简报由发起者撰写)
-{trigger}
-
 # 回复要求
 - 只完成触发消息交代的工作;信息不足时在回复中提出,不要臆测扩大范围。
 - 你的最终回复会被完整、原样发布到聊天频道,人类可以看到。
 - 回复用中文,先说结论,再简述做了什么;不要贴大段日志。
 {collaboration_section}
+"""
+
+DURABLE_CONTEXT_TEMPLATE = """\
+# MissionCrew 持久公共上下文
+上下文版本:{context_version}
+
+# 会话压缩规则
+- 本区块是 MissionCrew 提供的权威公共输入，包含角色、项目、权限、工作目录和协作规则。
+- Runtime 执行 compact/上下文压缩时，只压缩普通对话、工具过程和任务细节；必须完整保留本区块，不得摘要、删减或改写。
+- 同一会话后续收到版本不同的本区块时，后收到的版本完整取代旧版本；不得继续沿用或合并旧项目设置。
+
+{common_body}
+"""
+
+TURN_PROMPT = """\
+# 触发消息(JSON,你的任务简报由发起者撰写)
+{trigger}
+"""
+
+RECOVERY_PROMPT = """\
+# 最近对话(JSON,按消息边界格式化)
+{history}
+
+{turn_prompt}
 """
 
 ORCHESTRATOR_TEMPLATE = """\
@@ -397,7 +416,7 @@ class ChatEngine:
                 "- 只提交本次任务的完整结果；完成或失败后，平台会自动把结果交回"
                 "项目主控，由主控检查并继续后续流程。"
             )
-        prompt = CHAT_PROMPT.format(
+        common_body = CHAT_COMMON_BODY.format(
             role_id=role.id, role_name=role.name, role_desc=role.description,
             role_capabilities=", ".join(role.capabilities) or "无特别标注",
             role_traits=role.preference or "无特别标注",
@@ -409,15 +428,78 @@ class ChatEngine:
             project_section=project_section,
             orchestrator_section=orchestrator_section,
             channel_history_path=channel_history_path,
-            history=json.dumps(history_records, ensure_ascii=False, indent=2),
-            trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2),
             collaboration_section=collaboration_section,
         )
+        context_version = hashlib.sha256(common_body.encode("utf-8")).hexdigest()[:16]
+        common_prompt = DURABLE_CONTEXT_TEMPLATE.format(
+            context_version=context_version, common_body=common_body)
+        turn_prompt = TURN_PROMPT.format(
+            trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2))
+        recovery_prompt = RECOVERY_PROMPT.format(
+            history=json.dumps(history_records, ensure_ascii=False, indent=2),
+            turn_prompt=turn_prompt,
+        )
+        prompt = common_prompt + "\n" + recovery_prompt
+
+        session_key = f"{channel.id}::{role.id}"
+
+        def _compatible_session(value: Optional[dict]) -> bool:
+            return bool(
+                value
+                and value["backend_id"] == backend.id
+                and value["adapter"] == backend.adapter
+                and Path(value["workdir"]).resolve() == workdir.resolve()
+            )
+
+        saved_session = self.store.get_chat_session(session_key)
+        # 自定义打印命令的参数语义未知，不能猜测 resume 标志；若从默认命令
+        # 切到自定义模板，先丢弃旧原生 id，避免以后切回时恢复一段缺轮次的历史。
+        native_session_supported = (
+            not backend.command or backend.adapter in adapters.ACP_SERVE_COMMANDS)
+        if saved_session and not native_session_supported:
+            self.store.delete_chat_session(session_key)
+            saved_session = None
+        compatible = _compatible_session(saved_session)
+        if saved_session and not compatible:
+            self.store.delete_chat_session(session_key)
+            saved_session = None
+        session_id = (saved_session["runtime_session_id"]
+                      if saved_session and compatible else "")
+        previous_context = (saved_session["context_version"]
+                            if saved_session and compatible else "")
+
+        def _load_session() -> tuple[str, str]:
+            latest = self.store.get_chat_session(session_key)
+            if not _compatible_session(latest):
+                if latest:
+                    self.store.delete_chat_session(session_key)
+                return "", ""
+            assert latest is not None
+            return (str(latest["runtime_session_id"]),
+                    str(latest["context_version"]))
+
+        def _save_session(runtime_session_id: str, accepted_context: str) -> None:
+            if not runtime_session_id:
+                self.store.delete_chat_session(session_key)
+                return
+            self.store.put_chat_session(
+                session_key, channel.id, role.id, backend.id, backend.adapter,
+                str(workdir.resolve()), runtime_session_id,
+                accepted_context or previous_context,
+            )
+
+        env["MISSIONCREW_SESSION_KEY"] = session_key
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
             prompt=prompt, workdir=str(workdir), allowed_dirs=allowed_dirs,
             env=env, timeout=CHAT_TIMEOUT,
             effort=role.effort,
+            session_key=session_key, session_id=session_id,
+            common_prompt=common_prompt, turn_prompt=turn_prompt,
+            recovery_prompt=recovery_prompt, context_version=context_version,
+            context_changed=bool(session_id and previous_context != context_version),
+            load_session=_load_session,
+            save_session=_save_session,
         )
 
     @staticmethod

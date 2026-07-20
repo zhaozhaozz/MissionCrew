@@ -504,6 +504,20 @@ class ExecutionConfig:
     timeout: int = 3600
     effort: str = ""      # 推理力度(聊天执行由角色填入;任务阶段暂不使用)
     routing_trace: list[str] = field(default_factory=list)
+    # 聊天 Runtime 会话按 channel×role 复用。common_prompt 每轮重注入，确保
+    # Runtime 压缩历史时仍拿到最新 MissionCrew 公共输入；recovery_prompt 只在
+    # 新建/无法恢复原生会话时使用，包含最近消息用于恢复上下文。
+    session_key: str = ""
+    session_id: str = ""
+    common_prompt: str = ""
+    turn_prompt: str = ""
+    recovery_prompt: str = ""
+    context_version: str = ""
+    context_changed: bool = False
+    # 执行可能在线程池中排队；真正拿到会话锁后重读一次，避免两个连续触发都
+    # 使用装配时看到的空 id 而各自新建会话。
+    load_session: Optional[Callable[[], tuple[str, str]]] = None
+    save_session: Optional[Callable[[str, str], None]] = None
     # 运行过程回调 (kind, text):适配器在执行期间实时上报思考/工具/输出等
     # 事件,None 表示调用方不关心过程(如结构化任务阶段)
     emit: Optional[Callable[[str, str], None]] = None

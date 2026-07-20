@@ -29,7 +29,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 ### 打印模式 CLI(`CliAdapter`)
 
-一次执行 = 一个子进程:按命令模板渲染参数,在频道工作目录内启动,收集 stdout/stderr,退出码判定成败。模板在 `DEFAULT_COMMANDS` 中定义,`Backend.command` 可整体覆盖。
+一次执行 = 一个子进程:按命令模板渲染参数,在频道工作目录内启动,收集 stdout/stderr,退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板在 `DEFAULT_COMMANDS` 中定义,`Backend.command` 可整体覆盖；自定义打印命令的参数语义未知，平台不会猜测其 resume 标志，而是每轮发送带最近对话的完整恢复 Prompt。
 
 模板占位符(`render_command`):
 
@@ -47,13 +47,19 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 这类 CLI 不接受"命令行传 prompt"的调用方式,而是作为 JSON-RPC 2.0 服务挂在 stdio 上(换行分隔)。serve 命令在 `ACP_SERVE_COMMANDS` 中定义；Kimi、Qoder、Trae 会在启动 ACP 服务前逐个传入项目额外目录，Kiro 使用其 trust-all-tools 模式并由 ACP 权限请求应答完成外部访问。`Backend.command` 同样可覆盖，也可使用 `{allowed_dirs}` / `{workdir}` 占位符。协议流程(`acp.py`):
 
 ```text
-initialize → session/new → [session/set_model] → session/prompt
+initialize → session/new|session/load → [session/set_model] → session/prompt
 ```
 
 - 回复文本来自 `session/update` 通知中的 `agent_message_chunk`,拼接为最终输出;
 - Agent 反向发来的 `session/request_permission` 必须应答,否则 Agent 阻塞到内部超时、任务假死。平台无头运行,自动从 Agent 提供的选项里挑安全项:单次允许 > 会话允许 > 单次拒绝;都没有时返回协议错误(不能回 cancelled,那会取消整轮);
 - 其余未知的 agent→client 请求返回空结果,避免阻塞;
 - 整轮共享一个截止时间,进程 EOF 时让所有等待方立刻失败,不悬挂。
+
+聊天场景中，同一“频道 × 角色”的 ACP serve 进程和 `sessionId` 会在 MissionCrew 服务进程内长驻复用；空闲 30 分钟后回收。MissionCrew 重启或进程退出后，平台读取 SQLite 中的会话 id，并且仅当 `initialize.agentCapabilities.loadSession=true` 时调用 `session/load`。Runtime 不支持或无法恢复时，平台明确降级为 `session/new`，并把格式化最近对话随新会话首轮输入补回。
+
+### 公共上下文与压缩
+
+聊天 Prompt 分为两部分：MissionCrew 公共上下文（角色、项目准则与 Skills、目录权限、工作目录、协作规则）和本轮任务输入。公共上下文带内容哈希版本及压缩提示，每轮都重新注入，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；已有会话下一轮收到更新标记和完整新上下文，后收到的版本整体替换旧版本。最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史仍可通过 `MISSIONCREW_CHANNEL_HISTORY` 按需读取。
 
 ### Mock(`MockAdapter`)
 

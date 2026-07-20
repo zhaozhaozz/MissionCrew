@@ -6,7 +6,8 @@ from pathlib import Path
 import pytest
 
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.core.models import DEFAULT_MAX_CHAIN_RUNS, Project
+from missioncrew.core.models import Channel, DEFAULT_MAX_CHAIN_RUNS, Project
+from missioncrew.runtime import adapters
 
 
 @pytest.fixture()
@@ -266,6 +267,115 @@ def test_prompt_json_preserves_multiline_content_and_message_boundaries(chat, se
     }
     assert current["id"] == trigger
     assert current["content"] == "请检查上述两条\n并给结论"
+
+
+def test_runtime_session_is_reused_per_channel_and_role(chat, seeded):
+    """同一 channel×role 复用；换角色或频道必须得到独立会话。"""
+    channel = seeded.get_channel("general")
+    backend = seeded.get_backend("std-1")
+    dev = seeded.get_role("webshop", "dev")
+
+    first_message = seeded.add_message(
+        "general", "human", "human", "@dev 第一轮", ["dev"])
+    first = chat._assemble(channel, dev, backend, first_message)
+    first_events = []
+    first.emit = lambda kind, text: first_events.append((kind, text))
+    assert adapters.get_adapter("mock").run(first).success
+    saved = seeded.get_chat_session("general::dev")
+    assert saved and saved["runtime_session_id"] == "mock:general::dev"
+    assert "# 最近对话(JSON,按消息边界格式化)" in dict(first_events)["input"]
+
+    second_message = seeded.add_message(
+        "general", "human", "human", "@dev 第二轮", ["dev"])
+    second = chat._assemble(channel, dev, backend, second_message)
+    second_events = []
+    second.emit = lambda kind, text: second_events.append((kind, text))
+    assert second.session_id == saved["runtime_session_id"]
+    assert adapters.get_adapter("mock").run(second).success
+    assert "# 最近对话(JSON,按消息边界格式化)" not in dict(second_events)["input"]
+
+    reviewer = seeded.get_role("webshop", "reviewer")
+    reviewer_message = seeded.add_message(
+        "general", "human", "human", "@reviewer 看一下", ["reviewer"])
+    reviewer_cfg = chat._assemble(channel, reviewer, backend, reviewer_message)
+    adapters.get_adapter("mock").run(reviewer_cfg)
+    assert seeded.get_chat_session("general::reviewer")["runtime_session_id"] \
+        == "mock:general::reviewer"
+
+    seeded.put_channel(Channel(
+        id="webshop:other", name="other", project_id="webshop",
+        workdir=channel.workdir,
+    ))
+    other_message = seeded.add_message(
+        "webshop:other", "human", "human", "@dev 新频道", ["dev"])
+    other_cfg = chat._assemble(
+        seeded.get_channel("webshop:other"), dev, backend, other_message)
+    adapters.get_adapter("mock").run(other_cfg)
+    assert seeded.get_chat_session("webshop:other::dev")["runtime_session_id"] \
+        == "mock:webshop:other::dev"
+
+
+def test_project_context_update_replaces_context_in_existing_session(chat, seeded):
+    channel = seeded.get_channel("general")
+    role = seeded.get_role("webshop", "dev")
+    backend = seeded.get_backend("std-1")
+    project = seeded.get_project("webshop")
+    project.charter = "旧版项目设置：结算只处理人民币。"
+    seeded.put_project(project)
+    old_charter = project.charter
+
+    first_message = seeded.add_message(
+        "general", "human", "human", "@dev 建立会话", ["dev"])
+    first = chat._assemble(channel, role, backend, first_message)
+    adapters.get_adapter("mock").run(first)
+    saved_id = seeded.get_chat_session("general::dev")["runtime_session_id"]
+
+    project = seeded.get_project("webshop")
+    project.charter = "新版项目设置：结算必须支持多币种。"
+    seeded.put_project(project)
+    second_message = seeded.add_message(
+        "general", "human", "human", "@dev 按新设置继续", ["dev"])
+    second = chat._assemble(channel, role, backend, second_message)
+    events = []
+    second.emit = lambda kind, text: events.append((kind, text))
+    assert second.session_id == saved_id
+    assert second.context_changed
+    assert second.context_version != first.context_version
+    assert adapters.get_adapter("mock").run(second).success
+
+    sent = dict(events)["input"]
+    assert "# MissionCrew 公共上下文更新" in sent
+    assert project.charter in sent
+    assert old_charter not in sent
+    assert "必须完整保留本区块，不得摘要、删减或改写" in sent
+    assert seeded.get_chat_session("general::dev")["context_version"] \
+        == second.context_version
+
+
+def test_queued_turn_refreshes_session_created_by_previous_turn(chat, seeded):
+    """两个配置都在首轮完成前装配，第二轮执行时仍应重读并复用首轮 id。"""
+    original = seeded.get_channel("general")
+    seeded.put_channel(Channel(
+        id="webshop:queued", name="queued", project_id="webshop",
+        workdir=original.workdir,
+    ))
+    channel = seeded.get_channel("webshop:queued")
+    role = seeded.get_role("webshop", "dev")
+    backend = seeded.get_backend("std-1")
+    first_id = seeded.add_message(
+        channel.id, "human", "human", "@dev 排队第一轮", ["dev"])
+    second_id = seeded.add_message(
+        channel.id, "human", "human", "@dev 排队第二轮", ["dev"])
+    first = chat._assemble(channel, role, backend, first_id)
+    second = chat._assemble(channel, role, backend, second_id)
+    assert not first.session_id and not second.session_id
+
+    adapters.get_adapter("mock").run(first)
+    events = []
+    second.emit = lambda kind, text: events.append((kind, text))
+    adapters.get_adapter("mock").run(second)
+    assert second.session_id == "mock:webshop:queued::dev"
+    assert "# 最近对话(JSON,按消息边界格式化)" not in dict(events)["input"]
 
 
 def test_channel_history_file_is_complete_and_role_scoped(chat, seeded):

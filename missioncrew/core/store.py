@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS chat_runs (
   depth INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued',
   error TEXT DEFAULT '', created_at REAL NOT NULL, finished_at REAL
 );
+CREATE TABLE IF NOT EXISTS chat_sessions (
+  session_key TEXT PRIMARY KEY,
+  channel TEXT NOT NULL, role_id TEXT NOT NULL,
+  backend_id TEXT NOT NULL, adapter TEXT NOT NULL,
+  workdir TEXT NOT NULL, runtime_session_id TEXT DEFAULT '',
+  context_version TEXT DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
@@ -203,9 +210,17 @@ class Store:
         self._execute(f"DELETE FROM {table} WHERE id=?", (id,))
 
     def delete_role(self, project_id: str, id: str) -> None:
+        self._execute(
+            "DELETE FROM chat_sessions WHERE role_id=? AND channel IN ("
+            "SELECT id FROM channels WHERE json_extract(data, '$.project_id')=?"
+            ")", (id, project_id))
         self._delete("roles", f"{project_id}:{id}")
-    def delete_backend(self, id: str) -> None: self._delete("backends", id)
-    def delete_channel(self, id: str) -> None: self._delete("channels", id)
+    def delete_backend(self, id: str) -> None:
+        self._execute("DELETE FROM chat_sessions WHERE backend_id=?", (id,))
+        self._delete("backends", id)
+    def delete_channel(self, id: str) -> None:
+        self._execute("DELETE FROM chat_sessions WHERE channel=?", (id,))
+        self._delete("channels", id)
 
     def delete_project(self, id: str) -> None:
         """删除项目并级联其角色、频道与面板(消息记录保留,便于审计追溯)。"""
@@ -440,6 +455,31 @@ class Store:
         """一条协作链(同一 root 消息)累计触发的执行数,用于防爆炸。"""
         rows = self._query("SELECT COUNT(*) AS n FROM chat_runs WHERE root_id=?", (root_id,))
         return rows[0]["n"]
+
+    # ---- 聊天:Runtime 持久会话 ----
+    def get_chat_session(self, session_key: str) -> Optional[dict]:
+        rows = self._query(
+            "SELECT * FROM chat_sessions WHERE session_key=?", (session_key,))
+        return dict(rows[0]) if rows else None
+
+    def put_chat_session(self, session_key: str, channel: str, role_id: str,
+                         backend_id: str, adapter: str, workdir: str,
+                         runtime_session_id: str, context_version: str) -> None:
+        now = time.time()
+        self._execute(
+            "INSERT INTO chat_sessions(session_key,channel,role_id,backend_id,adapter,"
+            "workdir,runtime_session_id,context_version,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_key) DO UPDATE SET "
+            "channel=excluded.channel,role_id=excluded.role_id,"
+            "backend_id=excluded.backend_id,adapter=excluded.adapter,"
+            "workdir=excluded.workdir,runtime_session_id=excluded.runtime_session_id,"
+            "context_version=excluded.context_version,updated_at=excluded.updated_at",
+            (session_key, channel, role_id, backend_id, adapter, workdir,
+             runtime_session_id, context_version, now, now),
+        )
+
+    def delete_chat_session(self, session_key: str) -> None:
+        self._execute("DELETE FROM chat_sessions WHERE session_key=?", (session_key,))
 
     # ---- 聊天:执行过程事件(实时运行输出) ----
     # 同类连续事件合并进同一行(追加文本),避免逐 chunk/逐行插入把表撑爆;

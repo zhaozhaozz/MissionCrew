@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from missioncrew.runtime import adapters
+from missioncrew.runtime import acp
 from missioncrew.runtime.acp import _pick_permission_option
 from missioncrew.core.models import Backend, ExecutionConfig
 
@@ -68,3 +69,75 @@ def test_acp_list_models_from_trae_models_block():
     from missioncrew.runtime import acp
     models = acp.list_models([sys.executable, FAKE, "trae"], timeout=15)
     assert models == ["GLM-5.2", "Kimi-K2.6"]
+
+
+def _chat_cfg(tmp_path, saved, emit=None, shape="config"):
+    backend = Backend(id="kimi", name="k", adapter="kimi",
+                      command=[sys.executable, FAKE, shape])
+    return ExecutionConfig(
+        task_id="chat", stage_name="chat", backend=backend,
+        prompt="公共\n恢复历史\n当前任务", workdir=str(tmp_path), timeout=30,
+        session_key="channel::role", session_id=saved.get("id", ""),
+        common_prompt="公共上下文", turn_prompt="当前任务",
+        recovery_prompt="最近对话\n当前任务", context_version="v1",
+        save_session=lambda session_id, context: saved.update(
+            id=session_id, context=context), emit=emit,
+    )
+
+
+def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
+    saved = {}
+    first_events = []
+    try:
+        first = adapters.AcpAdapter("kimi").run(
+            _chat_cfg(tmp_path, saved,
+                      lambda kind, text: first_events.append((kind, text))))
+        assert first.success
+        assert "轮次=1;new=1;load=0" in first.output
+        assert saved["id"] == "s-test"
+        assert ("input", "公共上下文\n最近对话\n当前任务") in first_events
+        second_events = []
+        second = adapters.AcpAdapter("kimi").run(
+            _chat_cfg(tmp_path, saved,
+                      lambda kind, text: second_events.append((kind, text))))
+        assert second.success
+        assert "轮次=2;new=1;load=0" in second.output
+        assert ("input", "公共上下文\n当前任务") in second_events
+        assert all("最近对话" not in text for kind, text in second_events
+                   if kind == "input")
+    finally:
+        acp.close_sessions()
+
+
+def test_acp_loads_persisted_session_after_process_restart(tmp_path):
+    saved = {}
+    try:
+        first = adapters.AcpAdapter("kimi").run(_chat_cfg(tmp_path, saved))
+        assert first.success and saved["id"] == "s-test"
+        acp.close_sessions()  # 模拟 MissionCrew 服务进程重启后内存会话消失
+        events = []
+        second = adapters.AcpAdapter("kimi").run(
+            _chat_cfg(tmp_path, saved,
+                      lambda kind, text: events.append((kind, text))))
+        assert second.success
+        assert "轮次=1;new=0;load=1" in second.output
+        assert ("input", "公共上下文\n当前任务") in events
+    finally:
+        acp.close_sessions()
+
+
+def test_acp_without_load_capability_starts_recovery_session(tmp_path):
+    saved = {"id": "persisted-session", "context": "v1"}
+    events = []
+    try:
+        result = adapters.AcpAdapter("kimi").run(
+            _chat_cfg(tmp_path, saved,
+                      lambda kind, text: events.append((kind, text)),
+                      shape="noload"))
+        assert result.success
+        assert "轮次=1;new=1;load=0" in result.output
+        assert ("input", "公共上下文\n最近对话\n当前任务") in events
+        assert any(kind == "status" and "未声明 session/load" in text
+                   for kind, text in events)
+    finally:
+        acp.close_sessions()

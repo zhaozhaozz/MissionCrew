@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -18,13 +19,81 @@ import shlex
 import shutil
 import subprocess
 import threading
+import uuid
 from collections import deque
 from pathlib import Path
 from typing import Optional
 
 from . import acp
 from ..taskflow.assembler import MANIFEST
+from ..core.config import mc_home
 from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
+
+_CLI_SESSION_LOCKS: dict[str, threading.Lock] = {}
+_CLI_SESSION_LOCKS_GUARD = threading.Lock()
+
+# 默认命令中能够可靠恢复原生会话的打印模式 Runtime。Backend.command 是
+# 完整命令覆盖，平台不会猜测其参数语义；自定义模板暂走完整恢复 Prompt。
+_FIXED_ID_SESSIONS = {"claude_code", "grok_build", "copilot", "codebuddy"}
+_CAPTURED_ID_SESSIONS = {"codex", "opencode", "cursor"}
+_DIRECTORY_SESSIONS = {"pi"}
+_CLI_SESSION_ADAPTERS = (_FIXED_ID_SESSIONS | _CAPTURED_ID_SESSIONS
+                         | _DIRECTORY_SESSIONS)
+
+
+def _named_session_lock(key: str) -> threading.Lock:
+    with _CLI_SESSION_LOCKS_GUARD:
+        return _CLI_SESSION_LOCKS.setdefault(key, threading.Lock())
+
+
+def _session_input(cfg: ExecutionConfig, recovery: bool) -> str:
+    """每轮重注入公共上下文；仅新会话附带最近对话用于恢复。"""
+    if not cfg.common_prompt:
+        return cfg.prompt
+    dynamic = cfg.recovery_prompt if recovery else cfg.turn_prompt
+    update = ""
+    if cfg.context_changed and not recovery:
+        update = (
+            "# MissionCrew 公共上下文更新\n"
+            "本轮公共上下文版本已经变化。立即以新版本完整替换会话中的旧版本，"
+            "不要继续引用旧项目设置。\n\n"
+        )
+    return cfg.common_prompt + "\n" + update + dynamic
+
+
+def _save_session(cfg: ExecutionConfig, session_id: str) -> None:
+    if cfg.save_session:
+        try:
+            cfg.save_session(session_id, cfg.context_version)
+        except Exception:
+            pass
+
+
+def _clear_session(cfg: ExecutionConfig) -> None:
+    if cfg.save_session:
+        try:
+            cfg.save_session("", "")
+        except Exception:
+            pass
+
+
+def _refresh_session(cfg: ExecutionConfig) -> None:
+    """会话锁内重读持久状态，覆盖线程池排队期间形成的陈旧快照。"""
+    if not cfg.load_session:
+        return
+    try:
+        session_id, accepted_context = cfg.load_session()
+    except Exception:
+        return
+    cfg.session_id = session_id
+    cfg.context_changed = bool(
+        session_id and accepted_context != cfg.context_version)
+
+
+def _session_missing(text: str) -> bool:
+    return bool(re.search(
+        r"(?:session|conversation|thread).{0,40}(?:not found|不存在|invalid|unknown)",
+        text, re.I | re.S))
 
 # 各适配器的默认命令模板；除 prompt/model/effort 外，workdir 与
 # allowed_dirs 由平台按本次项目动态渲染。
@@ -395,6 +464,10 @@ class MockAdapter:
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
         if "# 聊天协作请求" in cfg.prompt:
+            if cfg.session_key:
+                with _named_session_lock(cfg.session_key):
+                    _refresh_session(cfg)
+                    return self._chat(cfg)
             return self._chat(cfg)
         return self._task_stage(cfg)
 
@@ -422,10 +495,14 @@ class MockAdapter:
                                f"产出证据: {', '.join(produces) or '无'}")
 
     def _chat(self, cfg: ExecutionConfig) -> RunResult:
-        me = _role_from_prompt(cfg.prompt)
-        trigger = _trigger_from_prompt(cfg.prompt)
+        reused = bool(cfg.session_id)
+        prompt = _session_input(cfg, recovery=not reused)
+        session_id = cfg.session_id or f"mock:{cfg.session_key}"
+        me = _role_from_prompt(prompt)
+        trigger = _trigger_from_prompt(prompt)
         # 模拟运行过程事件,让事件管道可测试/可演示
         emit = cfg.emit or (lambda kind, text: None)
+        emit("input", prompt)
         emit("thinking", f"[mock] 理解触发消息({len(trigger)} 字符),对照角色定位准备回复。\n")
         emit("tool", "workspace.inspect .\n")
         # 遵循触发消息中的协作指令:"请 @x ..." -> 回复中 @x 发起协作
@@ -445,6 +522,8 @@ class MockAdapter:
             Path(docs_dir, "mock-note.md").write_text(f"由 @{me} 在执行中写入。\n")
             reply += "\n已写入文档库 mock-note.md。"
         emit("text", reply)
+        if cfg.session_key:
+            _save_session(cfg, session_id)
         return RunResult(True, reply[:120], output=reply)
 
 
@@ -465,10 +544,22 @@ class AcpAdapter:
             allowed_dirs=_additional_allowed_dirs(workdir, cfg.allowed_dirs),
             workdir=workdir,
         )
-        _emit_execution_start(cfg.emit, cmd, cfg.prompt)
+        # ACP 的真实输入由协议层在确定“复用 / load / 新建恢复”后上报；这里
+        # 只打印 serve 命令，避免先展示一个最终没有发送的 Prompt。
+        if cfg.emit is not None:
+            try:
+                cfg.emit("command", "$ " + shlex.join(cmd) + "\n")
+            except Exception:
+                pass
+        _refresh_session(cfg)
+        current_prompt = _session_input(cfg, recovery=False)
+        recovery_prompt = _session_input(cfg, recovery=True)
         ok, text = acp.run_prompt(
-            cmd, cfg.prompt, workdir, _runtime_env(cfg, self.adapter_name),
+            cmd, current_prompt, workdir, _runtime_env(cfg, self.adapter_name),
             model=cfg.backend.model, timeout=cfg.timeout, emit=cfg.emit,
+            session_key=cfg.session_key, session_id=cfg.session_id,
+            recovery_prompt=recovery_prompt, save_session=cfg.save_session,
+            context_version=cfg.context_version,
         )
         try:
             Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(text)
@@ -587,6 +678,130 @@ class _CodexStderrParser:
         pass
 
 
+_SESSION_ID_KEYS = {
+    "session_id", "sessionId", "sessionID", "thread_id", "threadId", "chatId",
+}
+
+
+def _extract_session_id(line: str) -> str:
+    """从 CLI 的 JSON 事件或可读头部提取原生会话 id。"""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        match = re.search(
+            r"(?:session|thread|conversation)(?:\s+id)?\s*[:=]\s*"
+            r"([A-Za-z0-9][A-Za-z0-9._:-]{5,})", line, re.I)
+        return match.group(1) if match else ""
+
+    def _walk(value) -> str:
+        if isinstance(value, dict):
+            for key in _SESSION_ID_KEYS:
+                found = value.get(key)
+                if isinstance(found, str) and found:
+                    return found
+            for nested in value.values():
+                found = _walk(nested)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for nested in value:
+                found = _walk(nested)
+                if found:
+                    return found
+        return ""
+
+    return _walk(data)
+
+
+def _generic_json_event(line: str, emit) -> Optional[str]:
+    """解析 OpenCode/Cursor 的 JSON 输出，返回明确的最终回复（若有）。"""
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        emit("stdout", line + "\n")
+        return None
+    kind = str(data.get("type") or data.get("event") or "")
+    part = data.get("part") if isinstance(data.get("part"), dict) else {}
+    final = data.get("result") or data.get("output")
+    if isinstance(final, str) and (not kind or kind in ("result", "final", "completed")):
+        return final
+    text = data.get("text")
+    if not isinstance(text, str):
+        text = part.get("text") if isinstance(part.get("text"), str) else ""
+    if not text and isinstance(data.get("message"), dict):
+        content = data["message"].get("content")
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "".join(
+                str(block.get("text", "")) for block in content
+                if isinstance(block, dict) and block.get("type") == "text"
+            )
+    if text and (kind in ("text", "message", "assistant", "assistant_message")
+                 or part.get("type") == "text"):
+        emit("text", text)
+    return None
+
+
+def _new_session_id() -> str:
+    return str(uuid.uuid4())
+
+
+def _prepare_cli_session(adapter_name: str, cfg: ExecutionConfig,
+                         using_default: bool) -> tuple[str, str, bool]:
+    """返回 (本轮输入,原生会话 id,是否恢复既有会话)。"""
+    supported = bool(cfg.session_key and using_default
+                     and adapter_name in _CLI_SESSION_ADAPTERS)
+    if not supported:
+        return cfg.prompt, "", False
+    reused = bool(cfg.session_id)
+    if adapter_name in _FIXED_ID_SESSIONS:
+        session_id = cfg.session_id or _new_session_id()
+    elif adapter_name == "pi":
+        digest = hashlib.sha256(cfg.session_key.encode("utf-8")).hexdigest()[:20]
+        session_id = cfg.session_id or f"pi-dir:{mc_home() / 'runtime-sessions' / 'pi' / digest}"
+    else:
+        session_id = cfg.session_id
+    return _session_input(cfg, recovery=not reused), session_id, reused
+
+
+def _apply_cli_session_args(adapter_name: str, cmd: list[str], session_id: str,
+                            reused: bool) -> tuple[list[str], bool]:
+    """把各 CLI 不同的 create/resume 参数翻译到已渲染命令。"""
+    if adapter_name == "claude_code":
+        return [*cmd, "--resume" if reused else "--session-id", session_id], False
+    if adapter_name == "grok_build":
+        return [*cmd, "--resume" if reused else "--session-id", session_id], False
+    if adapter_name == "codebuddy":
+        return [*cmd, "--resume" if reused else "--session-id", session_id], False
+    if adapter_name == "copilot":
+        return [*cmd, "--session-id", session_id], False
+    if adapter_name == "codex":
+        if not reused:
+            return cmd, False
+        # resume 子命令不接受 exec 的局部参数；把安全/目录/模型选项放到
+        # codex 全局参数区，再调用 `exec resume ID PROMPT`。
+        return [cmd[0], *cmd[2:-1], "exec", "resume", session_id, cmd[-1]], False
+    if adapter_name == "opencode":
+        args = ["--format", "json"]
+        if reused:
+            args += ["--session", session_id]
+        return [*cmd[:-1], *args, cmd[-1]], True
+    if adapter_name == "cursor":
+        args = ["--output-format", "json"]
+        if reused:
+            args += ["--resume", session_id]
+        return [*cmd, *args], True
+    if adapter_name == "pi":
+        session_dir = session_id.removeprefix("pi-dir:")
+        Path(session_dir).mkdir(parents=True, exist_ok=True)
+        args = ["--session-dir", session_dir]
+        if reused:
+            args.append("--continue")
+        return [cmd[0], *args, *cmd[1:]], False
+    return cmd, False
+
+
 class CliAdapter:
     """通用 CLI 适配器:按命令模板在工作目录内启动真实本地 Agent。
 
@@ -598,14 +813,25 @@ class CliAdapter:
         self.adapter_name = adapter_name
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
+        using_default = not cfg.backend.command
+        if (cfg.session_key and using_default
+                and self.adapter_name in _CLI_SESSION_ADAPTERS):
+            with _named_session_lock(cfg.session_key):
+                _refresh_session(cfg)
+                return self._run(cfg, using_default=True)
+        return self._run(cfg, using_default=using_default)
+
+    def _run(self, cfg: ExecutionConfig, using_default: bool) -> RunResult:
         template = cfg.backend.command or DEFAULT_COMMANDS.get(self.adapter_name)
         if not template:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置命令模板"
                                     f"(ACP 类 CLI 请在 Backend.command 中配置)")
         workdir = str(Path(cfg.workdir).expanduser().resolve())
         extra_dirs = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
+        input_prompt, native_session_id, reused = _prepare_cli_session(
+            self.adapter_name, cfg, using_default)
         cmd = render_command(
-            template, cfg.prompt, cfg.backend.model,
+            template, input_prompt, cfg.backend.model,
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
             allowed_dirs=extra_dirs, workdir=workdir,
         )
@@ -616,6 +842,12 @@ class CliAdapter:
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
             allowed_dirs=extra_dirs, workdir=workdir,
         )
+        structured_json = False
+        if cfg.session_key and using_default and self.adapter_name in _CLI_SESSION_ADAPTERS:
+            cmd, structured_json = _apply_cli_session_args(
+                self.adapter_name, cmd, native_session_id, reused)
+            command_preview, _ = _apply_cli_session_args(
+                self.adapter_name, command_preview, native_session_id, reused)
         raw_emit = cfg.emit or (lambda kind, text: None)
 
         def emit(kind: str, text: str) -> None:
@@ -627,7 +859,7 @@ class CliAdapter:
                 pass
 
         stream_json = any("stream-json" in tok for tok in cmd)
-        _emit_execution_start(raw_emit, command_preview, cfg.prompt)
+        _emit_execution_start(raw_emit, command_preview, input_prompt)
         try:
             # start_new_session:CLI 可能派生孙进程并继承管道,结束时按
             # 进程组整体清理;errors=replace 防非法字节炸死读线程
@@ -645,6 +877,7 @@ class CliAdapter:
         err_full: list[str] = []               # stdout 为空时的完整错误通道兜底
         final_box: list[str] = []             # stream-json 的 result 最终回复
         text_acc: list[str] = []              # stream-json 的文本块(无 result 时兜底)
+        captured_sessions: list[str] = []
 
         def parse_emit(kind, text):
             if kind == "text":
@@ -659,13 +892,20 @@ class CliAdapter:
                 line = raw.rstrip("\n")
                 if not line.strip():
                     continue
+                found_session = _extract_session_id(line)
+                if found_session:
+                    captured_sessions.append(found_session)
                 (out_tail if kind == "stdout" else err_tail).append(line)
-                if kind == "stdout" and not stream_json:
+                if kind == "stdout" and not stream_json and not structured_json:
                     out_full.append(line)
                 elif kind == "stderr":
                     err_full.append(line)
                 if kind == "stdout" and stream_json:
                     final = _claude_stream_event(line, parse_emit)
+                    if final is not None:
+                        final_box.append(final)
+                elif kind == "stdout" and structured_json:
+                    final = _generic_json_event(line, parse_emit)
                     if final is not None:
                         final_box.append(final)
                 elif kind == "stderr" and codex_err:
@@ -708,9 +948,18 @@ class CliAdapter:
         # stream-json:回复取 result 事件;异常中断没等到 result 时退回已解析
         # 的文本块或 stderr,不把原始 JSONL 发进频道
         out = (final_box[-1].strip() if final_box else "")
-        if not out and stream_json:
+        if not out and (stream_json or structured_json):
             out = "\n".join(text_acc).strip() or "\n".join(err_full).strip()
         out = out or raw_out
+        if proc.returncode == 0 and cfg.session_key and using_default:
+            saved_id = native_session_id or (
+                captured_sessions[-1] if captured_sessions else "")
+            if saved_id:
+                _save_session(cfg, saved_id)
+            else:
+                emit("status", "Runtime 未返回可恢复的会话 id；下一轮将使用恢复上下文新建会话。\n")
+        elif reused and _session_missing(out + "\n" + "\n".join(err_full)):
+            _clear_session(cfg)
         return RunResult(proc.returncode == 0, out[-300:], output=out)
 
 
