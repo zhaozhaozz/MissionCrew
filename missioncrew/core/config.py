@@ -5,7 +5,7 @@ MC_HOME 布局:
   workspaces/<task> 每个任务一个隔离工作区(跨阶段共享,证据累积在 evidence/)
   projects/<id>/documents              项目文档库普通目录
   projects/<id>/document-history.git   文档库 Git 版本历史(与工作目录分离)
-  projects/<id>/runtime-context/guidelines.json  Runtime 按需读取的准则全文
+  projects/<id>/runtime-context/guidelines/*.md  Runtime 按需读取的准则全文
   secrets.yaml      受控资源的密钥(secret_ref -> value),不进入任何 Prompt
 """
 from __future__ import annotations

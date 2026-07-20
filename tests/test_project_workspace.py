@@ -155,14 +155,19 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "# Checkout v2" not in chat_cfg.prompt  # 链接文件不再预注入
     assert "仅在任务需要时读取链接文件" in chat_cfg.prompt
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in chat_cfg.prompt
-    guideline_file = Path(chat_cfg.env["MISSIONCREW_GUIDELINES_FILE"])
-    assert str(guideline_file) in chat_cfg.prompt
-    assert str(guideline_file.parent) in chat_cfg.allowed_dirs
-    guideline_payload = json.loads(guideline_file.read_text())
-    guideline_rows = {row["id"]: row for row in guideline_payload["guidelines"]}
-    assert "disabled-guide" not in guideline_rows
-    assert guideline_rows["dev-guide"]["content"] == "开发相关任务准则"
-    assert guideline_rows["tester-guide"]["content"] == "测试相关任务准则"
+    guideline_dir = Path(chat_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
+    dev_guideline = guideline_dir / "dev-guide.md"
+    tester_guideline = guideline_dir / "tester-guide.md"
+    assert str(guideline_dir) in chat_cfg.prompt
+    assert str(dev_guideline) in chat_cfg.prompt
+    assert str(guideline_dir) in chat_cfg.allowed_dirs
+    assert not (guideline_dir / "disabled-guide.md").exists()
+    assert dev_guideline.read_text() == (
+        "---\nname: dev-guide\ndescription: 开发代码或 API 时使用\n---\n\n"
+        "开发相关任务准则\n")
+    assert tester_guideline.read_text().endswith("\n测试相关任务准则\n")
+    (guideline_dir / "stale.md").write_text("stale")
+    (guideline_dir.parent / "guidelines.json").write_text("{}")
 
     task = Task(id="t_context", project_id="webshop", title="context")
     task_cfg = assembler.assemble(
@@ -175,7 +180,9 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "开发相关任务准则" not in task_cfg.prompt
     assert "结合当前任务自行判断哪些条目适用" in task_cfg.prompt
     assert task_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in task_cfg.prompt
-    assert task_cfg.env["MISSIONCREW_GUIDELINES_FILE"] in task_cfg.prompt
+    assert task_cfg.env["MISSIONCREW_GUIDELINES_DIR"] in task_cfg.prompt
+    assert not (guideline_dir / "stale.md").exists()
+    assert not (guideline_dir.parent / "guidelines.json").exists()
 
     # 摘要不变但正文更新时，内容版本仍会改变公共上下文版本，已有 session
     # 下一轮会收到更新提示；完整文件也会原子刷新为新正文。
@@ -186,10 +193,8 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
         seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
         seeded.get_backend("std-1"), msg_id)
     assert updated_cfg.context_version != first_context_version
-    updated_payload = json.loads(Path(
-        updated_cfg.env["MISSIONCREW_GUIDELINES_FILE"]).read_text())
-    assert any(row["content"] == "开发准则第二版"
-               for row in updated_payload["guidelines"])
+    updated_dir = Path(updated_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
+    assert (updated_dir / "dev-guide.md").read_text().endswith("\n开发准则第二版\n")
 
 
 def test_guideline_and_skill_management_have_no_binding_fields(seeded):
@@ -265,8 +270,7 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
         TaskStage(name="develop"), project, seeded.get_backend("std-1"), {}, [], [],
     )
 
-    guideline_dir = str(Path(
-        task_cfg.env["MISSIONCREW_GUIDELINES_FILE"]).parent.resolve())
+    guideline_dir = str(Path(task_cfg.env["MISSIONCREW_GUIDELINES_DIR"]).resolve())
     expected = [str(repo_a.resolve()), str(repo_b.resolve()),
                 str(library.root.resolve()), guideline_dir]
     history_dir = str(Path(chat_cfg.env["MISSIONCREW_CHANNEL_HISTORY"]).parent.resolve())

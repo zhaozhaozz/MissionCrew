@@ -26,7 +26,7 @@ from .documents import library_for, safe_relative_path
 from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            BoardWidget, Channel, ExecutionConfig,
                            GuidelineDocument, ProjectSkill, Role, Rule)
-from .project_context import (guideline_context_path, project_allowed_dirs,
+from .project_context import (guideline_context_dir, project_allowed_dirs,
                               render_project_context)
 from ..core.store import Store
 
@@ -124,7 +124,7 @@ ORCHESTRATOR_TEMPLATE = """\
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
 - save_guideline / save_skill 按 id 新建或覆盖。不要建立文件、Runtime 或角色绑定列表；
   需要关联项目文档时，在正文中写标准相对 Markdown 链接。准则 summary 应简洁说明适用场景；
-  所有执行者只会收到已启用准则的摘要，并在相关时从准则 JSON 文件读取完整正文。
+  所有执行者只会收到已启用准则的摘要，并在相关时从对应准则 Markdown 文件读取完整正文。
   Skill 仍结合当前任务自行判断是否适用、是否需要读取链接文件。
 - save_rule 默认以 match 对象作为规则身份；修改现有规则的 match 时，可额外传
   original_match 定位旧规则，平台会在原位置更新，避免留下重复规则。
@@ -394,7 +394,7 @@ class ChatEngine:
                 library = library_for(project.id)
                 project_section = render_project_context(project, library)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
-                env["MISSIONCREW_GUIDELINES_FILE"] = str(guideline_context_path(project))
+                env["MISSIONCREW_GUIDELINES_DIR"] = str(guideline_context_dir(project))
                 allowed_dirs = project_allowed_dirs(project, library)
                 if not channel.workdir:   # 平台自有工作区才建软链,不污染真实代码仓
                     library.link_into(workdir)

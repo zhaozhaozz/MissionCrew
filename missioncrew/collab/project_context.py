@@ -2,60 +2,100 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from pathlib import Path
+import re
 import tempfile
+import threading
+
+import yaml
 
 from .documents import DocumentLibrary
 from ..core.config import projects_dir
 from ..core.models import GuidelineDocument, Project, ProjectSkill
 
 
-def guideline_context_path(project: Project) -> Path:
-    """返回 Runtime 按需读取的准则全文 JSON 路径。"""
-    return (projects_dir() / project.id / "runtime-context" / "guidelines.json").resolve()
+_GUIDELINE_FILE_ID_RE = re.compile(r"[\w-]+")
+_GUIDELINE_CONTEXT_LOCKS: dict[str, threading.RLock] = {}
+_GUIDELINE_CONTEXT_LOCKS_GUARD = threading.Lock()
 
 
-def write_guideline_context(project: Project) -> Path:
-    """原子物化已启用准则全文；公共 Prompt 只携带摘要和内容版本。"""
-    path = guideline_context_path(project)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rows = []
-    for doc in project.guidelines:
-        if not doc.enabled:
-            continue
-        rows.append({
-            "id": doc.id,
-            "title": doc.title,
-            "summary": doc.summary,
-            "content_version": hashlib.sha256(doc.content.encode("utf-8")).hexdigest()[:16],
-            "content": doc.content,
-        })
-    serialized = json.dumps({
-        "schema_version": 1,
-        "project_id": project.id,
-        "guideline_count": len(rows),
-        "guidelines": rows,
-    }, ensure_ascii=False, indent=2) + "\n"
+def _guideline_context_lock(project_id: str) -> threading.RLock:
+    with _GUIDELINE_CONTEXT_LOCKS_GUARD:
+        return _GUIDELINE_CONTEXT_LOCKS.setdefault(project_id, threading.RLock())
+
+
+def guideline_context_dir(project: Project) -> Path:
+    """返回 Runtime 按需读取的准则 Markdown 目录。"""
+    return (projects_dir() / project.id / "runtime-context" / "guidelines").resolve()
+
+
+def _guideline_file_path(project: Project, doc: GuidelineDocument) -> Path:
+    # API 会校验 id；哈希兜底旧持久化中的异常 id，避免生成路径逃逸。
+    filename = (doc.id if _GUIDELINE_FILE_ID_RE.fullmatch(doc.id)
+                else hashlib.sha256(doc.id.encode("utf-8")).hexdigest()[:16])
+    return guideline_context_dir(project) / f"{filename}.md"
+
+
+def _guideline_markdown(doc: GuidelineDocument) -> str:
+    frontmatter = yaml.safe_dump(
+        {"name": doc.id, "description": doc.summary},
+        allow_unicode=True, sort_keys=False, default_flow_style=False,
+    ).strip()
+    body = doc.content.rstrip()
+    return f"---\n{frontmatter}\n---\n" + (f"\n{body}\n" if body else "")
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
     try:
-        if path.read_text(encoding="utf-8") == serialized:
-            return path
+        if path.read_text(encoding="utf-8") == content:
+            return
     except FileNotFoundError:
         pass
-    with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent,
-            prefix=".guidelines.", suffix=".tmp", delete=False) as handle:
-        handle.write(serialized)
-        temporary = Path(handle.name)
-    temporary.replace(path)
-    return path
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent,
+                prefix=".guideline.", suffix=".tmp", delete=False) as handle:
+            handle.write(content)
+            temporary = Path(handle.name)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def write_guideline_context(project: Project) -> dict[str, Path]:
+    """把每篇已启用准则原子物化为带 Skill 风格 frontmatter 的 Markdown。"""
+    directory = guideline_context_dir(project)
+    directory.mkdir(parents=True, exist_ok=True)
+    with _guideline_context_lock(project.id):
+        paths = {
+            doc.id: _guideline_file_path(project, doc)
+            for doc in project.guidelines if doc.enabled
+        }
+        for doc in project.guidelines:
+            if doc.enabled:
+                _atomic_write_text(paths[doc.id], _guideline_markdown(doc))
+
+        expected = {path.resolve() for path in paths.values()}
+        for stale in directory.glob("*.md"):
+            if stale.resolve() not in expected:
+                stale.unlink()
+        for temporary in directory.glob(".guideline.*.tmp"):
+            temporary.unlink()
+
+        # f77c010 的短期 JSON 物化格式不再使用；目录只保留 Markdown。
+        obsolete_json = directory.parent / "guidelines.json"
+        obsolete_json.unlink(missing_ok=True)
+        return paths
 
 
 def project_allowed_dirs(project: Project, library: DocumentLibrary) -> list[str]:
     """返回项目显式授权给 Runtime 的现存本地目录，解析后去重。"""
     found = []
     seen = set()
-    guideline_dir = write_guideline_context(project).parent
+    write_guideline_context(project)
+    guideline_dir = guideline_context_dir(project)
     for raw in [*project.repo_paths(), str(library.root), str(guideline_dir)]:
         path = Path(raw).expanduser()
         if not path.is_dir():
@@ -67,11 +107,11 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary) -> list[str
     return found
 
 
-def _render_guideline_summary(doc: GuidelineDocument) -> str:
+def _render_guideline_summary(doc: GuidelineDocument, path: Path) -> str:
     content_version = hashlib.sha256(doc.content.encode("utf-8")).hexdigest()[:16]
     summary = " ".join(doc.summary.split()) or "（未填写摘要）"
     return (f"- `{doc.id}` · {doc.title or doc.id} · {summary} "
-            f"· 内容版本 `{content_version}`")
+            f"· 内容版本 `{content_version}` · 全文 `{path}`")
 
 
 def _render_skill(skill: ProjectSkill) -> str:
@@ -84,14 +124,14 @@ def _render_skill(skill: ProjectSkill) -> str:
 
 def render_project_context(project: Project, library: DocumentLibrary) -> str:
     """生成聊天与结构化任务共用的项目上下文。"""
-    guideline_file = write_guideline_context(project)
+    guideline_files = write_guideline_context(project)
     legacy_guidelines = []
     if project.charter:
         legacy_guidelines.append(f"## 项目章程（兼容字段）\n{project.charter}")
     if project.dev_guidelines:
         legacy_guidelines.append(f"## 开发准则（兼容字段）\n{project.dev_guidelines}")
     guideline_summaries = [
-        _render_guideline_summary(doc)
+        _render_guideline_summary(doc, guideline_files[doc.id])
         for doc in project.guidelines if doc.enabled
     ]
     skills = [
@@ -106,9 +146,9 @@ def render_project_context(project: Project, library: DocumentLibrary) -> str:
         if legacy_guidelines else "# 项目兼容准则\n（未配置）",
         "# 项目准则摘要\n"
         + ("\n".join(guideline_summaries) if guideline_summaries else "（未配置）")
-        + f"\n完整准则 JSON：{guideline_file}\n"
-        "也可通过环境变量 MISSIONCREW_GUIDELINES_FILE 获取该路径。"
-        "先根据摘要判断相关性，仅在任务需要时读取对应条目的 content；不要预加载全部正文。",
+        + f"\n准则 Markdown 目录：{guideline_context_dir(project)}\n"
+        "也可通过环境变量 MISSIONCREW_GUIDELINES_DIR 获取该目录。"
+        "先根据摘要判断相关性，仅在任务需要时读取对应的 Markdown 文件；不要预加载全部正文。",
         f"# 项目文档库\n目录：{library.root}\n"
         "所有角色可在该普通目录中读写文档；平台会在每次执行后记录 Git 版本。\n"
         "准则和 Skill 正文中的相对 Markdown 链接均以此目录为根；仅在任务需要时读取链接文件，不要预加载。",
