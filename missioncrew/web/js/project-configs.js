@@ -1,12 +1,31 @@
-/* ---- 项目准则 / Skills / 验证规则全页管理与主控生成入口 ---- */
+/* ---- 项目准则 / Skills / 验证规则全页管理与底部主控对话 ---- */
 let selectedGuidelineId;
 let selectedSkillId;
 let selectedRuleIndex;
 let skillRuntimeInstructions = [];
 const configEditorDirty = { guidelines: false, skills: false, rules: false };
+const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "rules", "docs"]);
+const CONFIG_CHAT_TARGETS = {
+  guidelines: { label: "准则文档", action: "save_guideline" },
+  skills: { label: "Skill", action: "save_skill" },
+  rules: { label: "验证规则", action: "save_rule" },
+  docs: { label: "版本化文档", action: "write_document" },
+};
+const CONFIG_FIELD_LABELS = {
+  "gf-id": "准则 id", "gf-title": "标题", "gf-content": "正文",
+  "sf-id": "Skill id", "sf-name": "名称", "sf-desc": "简介",
+  "sf-instructions": "完整执行说明", "sf-adapters": "适用适配器",
+  "rf-match": "匹配条件", "rf-evidence": "所需证据", "rf-gates": "所需门禁",
+  "rf-capabilities": "验证能力", "rf-note": "说明",
+  "doc-new-path": "文档路径", "doc-content": "文档正文",
+};
+let configChatSelection = null;
+let configChatPolling = false;
+const configChatThreads = new Map();
 
 function markConfigDirty(kind) {
   configEditorDirty[kind] = true;
+  updateConfigChatContext();
 }
 
 function projectConfigLabel(id) {
@@ -42,46 +61,322 @@ function renderProjectConfigPage(tab, force = false) {
   if (tab === "rules") renderRulesPage(force);
 }
 
-async function requestProjectConfig(kind) {
+function configChatContext() {
   const project = projObj();
-  const input = document.getElementById(`config-request-${kind}`);
-  const status = document.getElementById(`config-request-${kind}-status`);
-  const request = input?.value.trim();
-  if (!project || !request) {
-    if (status) status.textContent = project ? "请先描述要生成或修改的内容。" : "请先选择项目。";
-    return;
+  const target = CONFIG_CHAT_TARGETS[currentTab];
+  if (!project || !CONFIG_CHAT_TABS.has(currentTab) || !target) return null;
+  let item = "未选择条目";
+  let itemKey = "none";
+  if (currentTab === "guidelines") {
+    const guideline = project.guidelines?.find(value => value.id === selectedGuidelineId);
+    const draftTitle = valueOf("gf-title").trim();
+    const draftId = valueOf("gf-id").trim();
+    item = guideline ? `${draftTitle || guideline.title || guideline.id}（id: ${guideline.id}）`
+                     : `新建准则（${draftTitle || draftId || "未命名"}，未保存）`;
+    itemKey = guideline?.id || "new";
+  } else if (currentTab === "skills") {
+    const skill = project.skills?.find(value => value.id === selectedSkillId);
+    const draftName = valueOf("sf-name").trim();
+    const draftId = valueOf("sf-id").trim();
+    item = skill ? `${draftName || skill.name || skill.id}（id: ${skill.id}）`
+                 : `新建 Skill（${draftName || draftId || "未命名"}，未保存）`;
+    itemKey = skill?.id || "new";
+  } else if (currentTab === "rules") {
+    const rule = selectedRuleIndex === null ? null : project.rules?.[selectedRuleIndex];
+    const draftMatch = valueOf("rf-match").replace(/\s+/g, " ").trim().slice(0, 200);
+    item = rule ? `规则 ${selectedRuleIndex + 1}（match: ${draftMatch || JSON.stringify(rule.match)}）`
+                : "新建验证规则（未保存）";
+    itemKey = rule ? `index-${selectedRuleIndex}` : "new";
+  } else if (currentTab === "docs") {
+    const draftPath = document.getElementById("doc-new-path")?.value.trim();
+    item = docMode === "new" ? `新建文档（${draftPath || "路径未填写"}）`
+                             : (docSelected || "未选择文档");
+    itemKey = docMode === "new" ? "new" : (docSelected || "none");
   }
-  const channel = projChannels().find(item => item.id === `${project.id}:general` || item.id === "general")
-    || projChannels()[0];
-  if (!channel) {
-    status.textContent = "当前项目没有频道，无法把请求交给主控。";
-    return;
-  }
-  const targets = {
-    guidelines: { label: "准则文档", action: "save_guideline" },
-    skills: { label: "Skill", action: "save_skill" },
-    rules: { label: "验证规则", action: "save_rule" },
-    documents: { label: "版本化文档", action: "write_document" },
+  return {
+    ...target, tab: currentTab, item,
+    key: `${project.id}:${currentTab}:${itemKey}`,
   };
-  const target = targets[kind];
-  if (!target) return;
+}
+
+function valueOf(id) {
+  return document.getElementById(id)?.value ?? "";
+}
+
+function selectedOptionsOf(id) {
+  const element = document.getElementById(id);
+  return element ? [...element.selectedOptions].map(option => option.value) : [];
+}
+
+function clippedDraftText(value) {
+  const clipped = clippedConfigText(value);
+  return clipped.truncated ? `${clipped.text}\n…（草稿过长，已截断）` : clipped.text;
+}
+
+function currentConfigDraft(context) {
+  if (context.tab === "guidelines") return {
+    id: valueOf("gf-id"), title: valueOf("gf-title"),
+    content: clippedDraftText(valueOf("gf-content")),
+    file_refs: [...new Set([...selectedOptionsOf("gf-refs"),
+      ...valueOf("gf-refs-extra").split(",").map(value => value.trim()).filter(Boolean)])],
+    enabled: document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
+    unsaved_changes: configEditorDirty.guidelines,
+  };
+  if (context.tab === "skills") return {
+    id: valueOf("sf-id"), name: valueOf("sf-name"), description: valueOf("sf-desc"),
+    instructions: clippedDraftText(valueOf("sf-instructions")), adapters: valueOf("sf-adapters"),
+    file_refs: [...new Set([...selectedOptionsOf("sf-refs"),
+      ...valueOf("sf-refs-extra").split(",").map(value => value.trim()).filter(Boolean)])],
+    runtime_ids: [...document.querySelectorAll("#sf-runtimes .chip.on")]
+      .map(element => element.dataset.runtime),
+    runtime_instructions: Object.fromEntries(
+      skillRuntimeInstructions.filter(([key]) => key.trim())),
+    enabled: document.getElementById("sf-enabled")?.classList.contains("on") ?? true,
+    unsaved_changes: configEditorDirty.skills,
+  };
+  if (context.tab === "rules") return {
+    original_match: selectedRuleIndex === null ? null : projObj()?.rules?.[selectedRuleIndex]?.match,
+    match_json: valueOf("rf-match"), require_evidence: valueOf("rf-evidence"),
+    require_gates: valueOf("rf-gates"), require_capabilities: valueOf("rf-capabilities"),
+    note: valueOf("rf-note"), unsaved_changes: configEditorDirty.rules,
+  };
+  return {
+    path: docMode === "new" ? valueOf("doc-new-path") : docSelected,
+    mode: docMode, viewing_revision: docViewingRevision,
+    content: document.getElementById("doc-content")
+      ? clippedDraftText(valueOf("doc-content")) : null,
+  };
+}
+
+function clippedConfigText(value, limit = 30000) {
+  const text = String(value ?? "");
+  return text.length <= limit ? { text, truncated: false }
+                              : { text: text.slice(0, limit), truncated: true };
+}
+
+function selectedLineRange(value, start, end) {
+  const first = value.slice(0, start).split("\n").length;
+  const inclusiveEnd = end > start ? end - 1 : end;
+  const last = value.slice(0, inclusiveEnd).split("\n").length;
+  return { first, last };
+}
+
+function setConfigChatSelection(selection) {
+  configChatSelection = selection;
+  updateConfigChatContext();
+}
+
+function clearConfigChatSelection() {
+  setConfigChatSelection(null);
+}
+
+function configFieldLabel(element) {
+  if (CONFIG_FIELD_LABELS[element.id]) return CONFIG_FIELD_LABELS[element.id];
+  if (element.id?.endsWith("-extra")) return "额外引用路径";
+  const direct = element.previousElementSibling;
+  if (direct?.tagName === "LABEL") return direct.textContent.trim();
+  return element.getAttribute("aria-label") || element.placeholder || element.name
+    || element.id || "当前字段";
+}
+
+function captureConfigChatSelection() {
+  const context = configChatContext();
+  if (!context) return;
+  const active = document.activeElement;
+  const currentView = document.getElementById(`${currentTab}-view`);
+  if (active && currentView?.contains(active)
+      && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")
+      && typeof active.selectionStart === "number") {
+    const start = active.selectionStart;
+    const end = active.selectionEnd;
+    if (start === end) { clearConfigChatSelection(); return; }
+    const lines = selectedLineRange(active.value, start, end);
+    setConfigChatSelection({
+      context_key: context.key, field: configFieldLabel(active),
+      line_start: lines.first, line_end: lines.last,
+      basis: "source", ...clippedConfigText(active.value.slice(start, end), 12000),
+    });
+    return;
+  }
+  const browserSelection = window.getSelection();
+  if (!browserSelection || browserSelection.rangeCount === 0) return;
+  const range = browserSelection.getRangeAt(0);
+  const node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
+    ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
+  const source = node?.closest?.(".doc-body, .doc-pane > pre");
+  if (!source) return;
+  if (browserSelection.isCollapsed) { clearConfigChatSelection(); return; }
+  const prefix = document.createRange();
+  prefix.selectNodeContents(source);
+  prefix.setEnd(range.startContainer, range.startOffset);
+  const selected = browserSelection.toString();
+  const first = prefix.toString().split("\n").length;
+  const last = first + selected.split("\n").length - 1;
+  setConfigChatSelection({
+    context_key: context.key, field: "文档阅读视图", line_start: first,
+    line_end: last, basis: "rendered", ...clippedConfigText(selected, 12000),
+  });
+}
+
+function configChatThread(context, create = false) {
+  let thread = configChatThreads.get(context.key);
+  if (!thread && create) {
+    thread = { channelId: null, roots: new Set(), cursor: 0, entries: [],
+               running: false, refreshedAfterReply: false };
+    configChatThreads.set(context.key, thread);
+  }
+  return thread;
+}
+
+function renderConfigChatThread(context) {
+  const root = document.getElementById("config-chat-thread");
+  if (!root) return;
+  const thread = configChatThread(context);
+  const entries = thread?.entries.slice(-16) || [];
+  root.classList.toggle("has-messages", Boolean(entries.length));
+  root.innerHTML = entries.map(entry => {
+    const long = entry.content.length > 1200;
+    const body = long
+      ? `<details><summary>展开完整回复（${entry.content.length} 字符）</summary>` +
+        `<div class="content">${esc(entry.content)}</div></details>`
+      : `<div class="content">${esc(entry.content)}</div>`;
+    return `<div class="config-chat-message ${entry.author_type}">
+      <span class="who">${entry.author_type === "human" ? "你" : "@" + esc(entry.author)}</span>${body}</div>`;
+  }).join("");
+  if (entries.length) root.scrollTop = root.scrollHeight;
+}
+
+function updateConfigChatContext() {
+  const panel = document.getElementById("config-chat");
+  if (!panel) return;
+  const context = configChatContext();
+  panel.classList.toggle("visible", Boolean(context));
+  if (!context) return;
+  if (configChatSelection?.context_key !== context.key) configChatSelection = null;
+  document.getElementById("config-chat-context").textContent =
+    `当前页面：${context.label} · 当前对象：${context.item}`;
+  const selection = document.getElementById("config-chat-selection");
+  const clear = document.getElementById("config-chat-clear-selection");
+  if (configChatSelection) {
+    const end = configChatSelection.line_end === configChatSelection.line_start
+      ? `${configChatSelection.line_start}`
+      : `${configChatSelection.line_start}–${configChatSelection.line_end}`;
+    const preview = configChatSelection.text.replace(/\s+/g, " ").slice(0, 150);
+    selection.textContent = `已选择：${configChatSelection.field} 第 ${end} 行 · ${preview}`;
+    selection.classList.add("has-selection");
+    clear.style.display = "inline-block";
+  } else {
+    selection.textContent = "未选择文本；主控仍会收到当前页面与当前对象。";
+    selection.classList.remove("has-selection");
+    clear.style.display = "none";
+  }
+  document.getElementById("config-chat-input").placeholder =
+    `询问或修改${context.label}「${context.item}」…（Enter 发送）`;
+  const thread = configChatThread(context);
+  if (thread) document.getElementById("config-chat-status").textContent = thread.running
+    ? "项目主控正在处理…"
+    : (thread.entries.some(entry => entry.author_type === "agent") ? "项目主控已回复。" : "");
+  renderConfigChatThread(context);
+}
+
+async function sendConfigChat() {
+  const project = projObj();
+  const context = configChatContext();
+  const input = document.getElementById("config-chat-input");
+  const status = document.getElementById("config-chat-status");
+  const request = input.value.trim();
+  if (!project || !context || !request) {
+    status.textContent = project ? "请输入要询问或修改的内容。" : "请先选择项目。";
+    return;
+  }
+  const channel = projChannels().find(item =>
+    item.id === `${project.id}:general` || item.id === "general" || item.id.endsWith(":general"))
+    || projChannels()[0];
+  if (!channel) { status.textContent = "当前项目没有频道，无法联系主控。"; return; }
+  const selection = configChatSelection?.context_key === context.key
+    ? configChatSelection : null;
+  const payload = {
+    page_kind: context.tab, page_label: context.label, current_item: context.item,
+    current_draft: currentConfigDraft(context),
+    selection: selection ? {
+      field: selection.field, line_start: selection.line_start,
+      line_end: selection.line_end, line_basis: selection.basis,
+      selected_text: selection.text, selected_text_truncated: selection.truncated,
+    } : null,
+    user_message: request,
+  };
+  // 草稿或选区中的 @role 只是正文，转成 JSON Unicode 转义，避免聊天提及解析器
+  // 把它误当成额外调度；整条消息只应触发开头显式指定的项目主控。
+  const serializedPayload = JSON.stringify(payload, null, 2).replace(/@/g, "\\u0040");
+  const content = `@${project.orchestrator_role_id} 项目配置页协作消息（JSON）：\n` +
+    `${serializedPayload}\n\n` +
+    `这是围绕当前页面的对话：若用户只是提问、解释或讨论，只需回答，不要写入；` +
+    `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
+    `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 id、match 或路径。`;
   input.value = "";
-  status.textContent = `正在把${target.label}请求交给 @${project.orchestrator_role_id}…`;
-  const content = `@${project.orchestrator_role_id} 项目${target.label}生成请求：\n${request}\n\n` +
-    `请结合当前项目配置完成请求，并必须使用 missioncrew control action ` +
-    `${target.action} 实际保存结果。修改现有条目时沿用它的 id、match 或路径；` +
-    `若请求包含多个独立条目，可使用多个对应 action。不要只回复示例文本。`;
+  status.textContent = `正在发送给 @${project.orchestrator_role_id}…`;
   try {
-    await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
+    const response = await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
       author: "human", content,
     });
-    status.textContent = `已交给 @${project.orchestrator_role_id}；执行过程和结果可在 #${channel.name || channel.id} 查看。`;
+    const thread = configChatThread(context, true);
+    thread.channelId = channel.id;
+    thread.roots.add(response.id);
+    thread.cursor = Math.max(thread.cursor, response.id);
+    thread.running = true;
+    thread.refreshedAfterReply = false;
+    thread.entries.push({ id: response.id, author: "human", author_type: "human", content: request });
+    renderConfigChatThread(context);
+    status.textContent = `@${project.orchestrator_role_id} 正在处理；回复会显示在此处。`;
     if (currentChan === channel.id) pollMessages();
+    pollConfigChat();
   } catch (error) {
     input.value = request;
     status.textContent = "发送失败，请重试。";
   }
 }
+
+async function pollConfigChat() {
+  if (configChatPolling) return;
+  const context = configChatContext();
+  if (!context) return;
+  const thread = configChatThread(context);
+  if (!thread?.channelId || !thread.roots.size) return;
+  configChatPolling = true;
+  try {
+    const response = await fetch(`/api/chat/${encodeURIComponent(thread.channelId)}/messages?after_id=${thread.cursor}`);
+    if (!response.ok) return;
+    const data = await response.json();
+    for (const message of data.messages || []) {
+      thread.cursor = Math.max(thread.cursor, message.id);
+      if (!thread.roots.has(message.root_id) || thread.entries.some(entry => entry.id === message.id)) continue;
+      thread.entries.push(message);
+    }
+    thread.running = (data.active_runs || []).some(run => thread.roots.has(run.root_id));
+    const stillCurrent = configChatContext()?.key === context.key;
+    if (stillCurrent) {
+      const status = document.getElementById("config-chat-status");
+      status.textContent = thread.running ? "项目主控正在处理…"
+        : (thread.entries.some(entry => entry.author_type === "agent") ? "项目主控已回复。" : status.textContent);
+      renderConfigChatThread(context);
+    }
+    if (!thread.running && !thread.refreshedAfterReply
+        && thread.entries.some(entry => entry.author_type === "agent")) {
+      thread.refreshedAfterReply = true;
+      loadOverview().catch(() => {});
+    }
+  } catch (error) { /* 服务重启或瞬时网络错误，下轮继续 */ }
+  finally { configChatPolling = false; }
+}
+
+document.addEventListener("selectionchange", captureConfigChatSelection);
+document.addEventListener("select", captureConfigChatSelection, true);
+document.getElementById("config-chat-input").addEventListener("keydown", event => {
+  if (event.key === "Enter" && !event.shiftKey && !imeComposing(event)) {
+    event.preventDefault();
+    sendConfigChat();
+  }
+});
 
 /* ---- 准则文档 ---- */
 function renderGuidelinesPage(force = false) {
@@ -97,6 +392,7 @@ function renderGuidelinesPage(force = false) {
       `editGuideline('${esc(item.id)}')`)).join("")
     || `<div class="empty">暂无准则文档。</div>`;
   if (force || !configEditorDirty.guidelines) renderGuidelineEditor();
+  updateConfigChatContext();
 }
 
 function renderGuidelineEditor() {
@@ -119,6 +415,7 @@ function renderGuidelineEditor() {
 
 function editGuideline(id) {
   selectedGuidelineId = id;
+  configChatSelection = null;
   configEditorDirty.guidelines = false;
   if (currentTab !== "guidelines") switchTab("guidelines");
   else renderGuidelinesPage(true);
@@ -165,6 +462,7 @@ function renderSkillsPage(force = false) {
       `editSkill('${esc(item.id)}')`)).join("")
     || `<div class="empty">暂无 Skill。</div>`;
   if (force || !configEditorDirty.skills) renderSkillEditor();
+  updateConfigChatContext();
 }
 
 function renderSkillEditor() {
@@ -224,6 +522,7 @@ function removeSkillRuntimeInstruction(index) {
 
 function editSkill(id) {
   selectedSkillId = id;
+  configChatSelection = null;
   configEditorDirty.skills = false;
   if (currentTab !== "skills") switchTab("skills");
   else renderSkillsPage(true);
@@ -277,6 +576,7 @@ function renderRulesPage(force = false) {
       index === selectedRuleIndex, `editRule(${index})`)).join("")
     || `<div class="empty">暂无验证规则。</div>`;
   if (force || !configEditorDirty.rules) renderRuleEditor();
+  updateConfigChatContext();
 }
 
 function renderRuleEditor() {
@@ -304,6 +604,7 @@ function renderRuleEditor() {
 
 function editRule(index) {
   selectedRuleIndex = index;
+  configChatSelection = null;
   configEditorDirty.rules = false;
   if (currentTab !== "rules") switchTab("rules");
   else renderRulesPage(true);

@@ -425,7 +425,8 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     # 相同 match 更新而不是产生重复规则；不存在的 Runtime 被拒绝。
     update = chat._apply_orchestrator_actions(
         project, "lead",
-        '<missioncrew-action>{"action":"save_rule","match":{"labels":["auth"]},'
+        '<missioncrew-action>{"action":"save_rule","original_match":{"labels":["auth"]},'
+        '"match":{"labels":["authentication"]},'
         '"require_evidence":["security_test"],"require_gates":[],'
         '"require_capabilities":[],"note":"更新"}</missioncrew-action>'
         '<missioncrew-action>{"action":"save_skill","id":"bad-runtime",'
@@ -433,8 +434,9 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
         root_id=1, depth=0,
     )
     project = seeded.get_project("webshop")
-    matching = [r for r in project.rules if r.match == {"labels": ["auth"]}]
+    matching = [r for r in project.rules if r.match == {"labels": ["authentication"]}]
     assert len(matching) == 1 and matching[0].require_evidence == ["security_test"]
+    assert all(r.match != {"labels": ["auth"]} for r in project.rules)
     assert all(skill.id != "bad-runtime" for skill in project.skills)
     assert "控制动作未执行" in update and "不存在的 Runtime" in update
 
@@ -445,6 +447,7 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     ).prompt
     assert all(action in prompt for action in (
         "save_guideline", "save_skill", "save_rule", "write_document"))
+    assert "original_match" in prompt and "只提问或讨论时直接回答" in prompt
     assert "api-style(API 规范)" in prompt and "local-ci(本地 CI)" in prompt
     assert "## 现有 Runtime" in prompt and "std-1: adapter=" in prompt
 
@@ -455,18 +458,27 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     js = client.get("/assets/js/project-configs.js").text
     router = client.get("/assets/js/router.js").text
     documents = client.get("/assets/js/documents.js").text
+    main = client.get("/assets/js/main.js").text
 
     for view in ("guidelines-view", "skills-view", "rules-view", "docs-view"):
         assert f'id="{view}"' in html
-    for kind in ("guidelines", "skills", "rules", "documents"):
-        assert f'id="config-request-{kind}"' in html
-        assert f"requestProjectConfig('{kind}')" in html
+    assert 'id="config-chat"' in html
+    assert 'id="config-chat-context"' in html
+    assert 'id="config-chat-selection"' in html
+    assert 'id="config-chat-thread"' in html
+    assert 'id="config-chat-input"' in html
+    assert "config-generator" not in html
     assert "project-configs.js" in html
     assert '"guidelines", "skills", "rules"' in router
     assert "openFormDialog" not in js
     assert "uiPrompt" not in documents
     assert 'id="doc-new-path"' in documents
-    assert "missioncrew control action" in js
+    assert "sendConfigChat" in js and "pollConfigChat" in js
+    assert "currentConfigDraft" in js and "captureConfigChatSelection" in js
+    assert "line_start" in js and "selected_text" in js
+    assert 'replace(/@/g, "\\\\u0040")' in js
+    assert "只需回答，不要写入" in js
+    assert "setInterval(pollConfigChat, 2000)" in main
     assert all(action in js for action in (
         "save_guideline", "save_skill", "save_rule", "write_document"))
 

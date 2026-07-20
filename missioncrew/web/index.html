@@ -180,15 +180,7 @@
     <div id="guidelines-view" class="page">
       <div class="section">
         <h2>准则文档 <span class="muted" id="guide-proj-label"></span></h2>
-        <p class="muted">每篇准则都是注入角色上下文的完整文档。可手工编辑，也可描述需求交给项目主控生成或修改。</p>
-        <div class="config-generator">
-          <div class="config-request-row">
-            <textarea id="config-request-guidelines" placeholder="例如：生成一份 Python 开发规范，要求公共 API 向后兼容并包含测试要求…"
-              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('guidelines')}"></textarea>
-            <button class="send" onclick="requestProjectConfig('guidelines')">交给主控</button>
-          </div>
-          <div class="muted" id="config-request-guidelines-status"></div>
-        </div>
+        <p class="muted">每篇准则都是注入角色上下文的完整文档。可手工编辑，也可在底部对话栏中针对当前篇目或选中行向项目主控提问、生成或修改。</p>
         <div class="config-manager">
           <aside class="config-list-pane">
             <button class="action" onclick="editGuideline(null)">＋ 新建准则文档</button>
@@ -202,15 +194,7 @@
     <div id="skills-view" class="page">
       <div class="section">
         <h2>项目 Skills <span class="muted" id="skill-proj-label"></span></h2>
-        <p class="muted">Skill 包含完整执行说明、文档引用、Runtime 范围和 Runtime 专用覆盖。可手工编辑，也可交给项目主控生成。</p>
-        <div class="config-generator">
-          <div class="config-request-row">
-            <textarea id="config-request-skills" placeholder="例如：生成一个本地 CI Skill，适用于 Codex，先跑单测再跑类型检查…"
-              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('skills')}"></textarea>
-            <button class="send" onclick="requestProjectConfig('skills')">交给主控</button>
-          </div>
-          <div class="muted" id="config-request-skills-status"></div>
-        </div>
+        <p class="muted">Skill 包含完整执行说明、文档引用、Runtime 范围和 Runtime 专用覆盖。可手工编辑，也可在底部对话栏中围绕当前 Skill 和选中行与项目主控交流。</p>
         <div class="config-manager">
           <aside class="config-list-pane">
             <button class="action" onclick="editSkill(null)">＋ 新建 Skill</button>
@@ -224,15 +208,7 @@
     <div id="rules-view" class="page">
       <div class="section">
         <h2>验证规则 <span class="muted" id="rule-proj-label"></span></h2>
-        <p class="muted">规则按任务类型、标签或风险匹配，并追加证据、门禁和验证能力要求。可逐条编辑，也可交给项目主控生成。</p>
-        <div class="config-generator">
-          <div class="config-request-row">
-            <textarea id="config-request-rules" placeholder="例如：所有 auth 标签任务必须经过安全审查，高风险任务还需要人工批准…"
-              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('rules')}"></textarea>
-            <button class="send" onclick="requestProjectConfig('rules')">交给主控</button>
-          </div>
-          <div class="muted" id="config-request-rules-status"></div>
-        </div>
+        <p class="muted">规则按任务类型、标签或风险匹配，并追加证据、门禁和验证能力要求。可逐条编辑，也可在底部对话栏中针对当前规则和选中行与项目主控交流。</p>
         <div class="config-manager">
           <aside class="config-list-pane">
             <button class="action" onclick="editRule(null)">＋ 新建验证规则</button>
@@ -247,15 +223,7 @@
       <div class="section">
         <h2>版本化文档库 <span class="muted" id="docs-proj-label"></span>
           <button class="ghost" style="margin-left:8px" onclick="newDocument()">＋ 新建文档</button></h2>
-        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本。左侧是目录树,点开查看文档,右上角可编辑。</p>
-        <div class="config-generator">
-          <div class="config-request-row">
-            <textarea id="config-request-documents" placeholder="例如：在 specs/checkout.md 生成结算流程设计文档，包含异常处理和测试场景…"
-              onkeydown="if(event.key==='Enter'&&!event.shiftKey&&!imeComposing(event)){event.preventDefault();requestProjectConfig('documents')}"></textarea>
-            <button class="send" onclick="requestProjectConfig('documents')">交给主控</button>
-          </div>
-          <div class="muted" id="config-request-documents-status"></div>
-        </div>
+        <p class="muted">所有角色都能把它当普通目录读写；平台在执行后自动记录版本。左侧是目录树，右侧查看或编辑；底部对话栏会携带当前路径与选中行。</p>
         <div class="muted" id="docs-root"></div>
         <div class="docs-layout">
           <div class="doc-tree">
@@ -282,6 +250,23 @@
         <table class="mgr" id="backend-table"></table>
       </div>
     </div>
+
+    <section id="config-chat" class="config-chat" aria-label="当前配置页主控对话">
+      <div class="config-chat-head">
+        <strong>与项目主控交流</strong>
+        <span id="config-chat-context">当前页面：—</span>
+        <button class="ghost" id="config-chat-clear-selection" type="button"
+          onclick="clearConfigChatSelection()" style="display:none">清除选区</button>
+      </div>
+      <div class="config-chat-selection" id="config-chat-selection">未选择文本</div>
+      <div class="config-chat-thread" id="config-chat-thread"></div>
+      <div class="config-chat-compose">
+        <textarea id="config-chat-input"
+          placeholder="询问当前内容，或要求主控创建、修改当前条目…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <button class="send" onclick="sendConfigChat()">发送</button>
+      </div>
+      <div class="muted" id="config-chat-status"></div>
+    </section>
   </div>
 </div>
 

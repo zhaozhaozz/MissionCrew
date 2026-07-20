@@ -111,9 +111,9 @@ uv run mc role list -p default
 
 - **任务频道**:频道记录自己的用途/任务边界和主工作目录。人类可管理频道;主控 Runtime 也可通过受限的 `missioncrew-action` 创建频道，其他角色不能冒用此权限。无论频道绑定哪个主目录，项目资源列表中的全部现存本地目录都会作为额外可读写目录装配给 Runtime。
 - **频道历史 JSON**:平台在 `.missioncrew/channel-history/<channel>/` 原子更新不分页的完整消息记录，并通过 `MISSIONCREW_CHANNEL_HISTORY` 把当前角色可读的文件路径注入执行环境。主控读取原始记录；执行角色读取独立脱敏视图，其他执行角色统一匿名且不含其 runtime/model/effort。历史目录与真实代码仓、频道工作目录分离，不会污染业务仓库。
-- **版本化文档库**:每项目的 `projects/<id>/documents/` 是所有 Runtime 都能直接读写的普通目录，路径同时通过 `MISSIONCREW_DOCUMENTS_DIR` 注入。Git 元数据独立保存在 `document-history.git`，API/Web 可创建、编辑、删除、查看文件历史和回读旧版本;每次聊天或任务执行后平台自动提交目录变化。Web 文档页还可输入生成要求，由项目主控通过受限 `write_document` action 写入新版本。
+- **版本化文档库**:每项目的 `projects/<id>/documents/` 是所有 Runtime 都能直接读写的普通目录，路径同时通过 `MISSIONCREW_DOCUMENTS_DIR` 注入。Git 元数据独立保存在 `document-history.git`，API/Web 可创建、编辑、删除、查看文件历史和回读旧版本;每次聊天或任务执行后平台自动提交目录变化。Web 文档页底部有悬浮主控对话栏，可围绕当前路径和选中行提问；明确要求修改时由主控通过受限 `write_document` action 写入新版本。
 - **自定义面板**:除内置任务看板外，项目可创建任意 12 列网格面板。组件的类型、位置、尺寸和 JSON 内容都可编辑，内置示例包括需求管理、测试记录、日志分析、任务查询、指标、表格和 Markdown。
-- **完整准则、Skills 与验证规则**:项目可保存多篇准则文档、多个结构化 Skill 和逐条验证规则。Web 中三者使用独立全页管理器，不再嵌在项目设置弹窗或 YAML 文本框中；每页都可输入自然语言要求，交给项目主控通过受限 `save_guideline` / `save_skill` / `save_rule` action 实际保存。准则和 Skill 支持正文与文档库文件引用；Skill 还能通过 `runtime_ids` / `adapters` 限定 Runtime，并用 `runtime_instructions` 追加后端专用说明。聊天和结构化任务共用同一套装配逻辑。
+- **完整准则、Skills 与验证规则**:项目可保存多篇准则文档、多个结构化 Skill 和逐条验证规则。Web 中三者使用独立全页管理器，不再嵌在项目设置弹窗或 YAML 文本框中；共用的底部悬浮对话栏会显示当前页面、当前条目、选中字段与行号，并把当前草稿和选中文本结构化地交给项目主控。普通提问只返回回答，明确要求创建或修改时才通过受限 `save_guideline` / `save_skill` / `save_rule` action 保存。准则和 Skill 支持正文与文档库文件引用；Skill 还能通过 `runtime_ids` / `adapters` 限定 Runtime，并用 `runtime_instructions` 追加后端专用说明。聊天和结构化任务共用同一套装配逻辑。
 
 任务工作流:
 

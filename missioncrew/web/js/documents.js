@@ -40,6 +40,7 @@ async function renderDocuments() {
           ${new Date(v.created_at * 1000).toLocaleDateString()} ${esc(v.actor)} · ${esc(v.message.slice(0, 24))}</div>`).join("")
     : "";
   await renderDocPane();
+  updateConfigChatContext();
 }
 
 function buildDocTree(files) {
@@ -85,6 +86,7 @@ function toggleDocDir(key) {
 
 function selectDocument(path) {
   docSelected = path; docMode = "view";
+  configChatSelection = null;
   docViewingRevision = null; docHistoryOpen = false;
   renderDocTree(); renderDocPane();
 }
@@ -92,6 +94,7 @@ function selectDocument(path) {
 function newDocument() {
   if (!currentProject) return;
   docSelected = null; docMode = "new";
+  configChatSelection = null;
   docViewingRevision = null; docHistoryOpen = false;
   renderDocPane();
 }
@@ -109,14 +112,17 @@ async function renderDocPane() {
         <button class="action" onclick="saveDocument()">保存新版本</button>
         <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
       <label>文档库内相对路径</label>
-      <input type="text" id="doc-new-path" value="" placeholder="specs/design.md" autofocus>
+      <input type="text" id="doc-new-path" value="" placeholder="specs/design.md" autofocus
+        oninput="updateConfigChatContext()">
       <label>正文</label>
       <textarea id="doc-content" rows="20" style="width:100%;height:auto"></textarea>`;
     document.getElementById("doc-new-path")?.focus();
+    updateConfigChatContext();
     return;
   }
   if (!docSelected) {
     pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看。</div>`;
+    updateConfigChatContext();
     return;
   }
   const meta = docFilesMeta.find(f => f.path === docSelected);
@@ -132,6 +138,7 @@ async function renderDocPane() {
         <button class="action" onclick="saveDocument()">保存新版本</button>
         <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
       <textarea id="doc-content" rows="20" style="width:100%;height:auto">${esc(content)}</textarea>`;
+    updateConfigChatContext();
     return;
   }
   // 查看:渲染 markdown / 纯文本;支持查看历史版本
@@ -143,6 +150,7 @@ async function renderDocPane() {
   } catch (e) {
     pane.innerHTML = `<div class="doc-head"><b>${esc(docSelected)}</b></div>
       <div class="empty">无法在线查看(可能是二进制文件),可直接在文档库目录中操作。</div>`;
+    updateConfigChatContext();
     return;
   }
   const revBanner = docViewingRevision
@@ -160,11 +168,13 @@ async function renderDocPane() {
       <button class="danger" onclick="deleteDocument()">删除</button></div>
     ${revBanner}${body}<div id="doc-history"></div>`;
   if (docHistoryOpen) await showDocumentHistory();
+  updateConfigChatContext();
 }
 
 function cancelDocEdit() {
   if (docMode === "new") { docSelected = null; }
   docMode = "view";
+  configChatSelection = null;
   renderDocPane();
 }
 
@@ -189,6 +199,7 @@ async function deleteDocument() {
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
   docSelected = null; docMode = "view";
+  configChatSelection = null;
   await renderDocuments();
   toast("文档已删除", "success");
 }

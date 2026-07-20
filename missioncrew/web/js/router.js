@@ -45,6 +45,7 @@ function setProject(id) {
   selectedGuidelineId = undefined;
   selectedSkillId = undefined;
   selectedRuleIndex = undefined;
+  configChatSelection = null;
   configEditorDirty.guidelines = false;
   configEditorDirty.skills = false;
   configEditorDirty.rules = false;
@@ -62,7 +63,9 @@ function setProject(id) {
 }
 
 function switchTab(tab) {
+  const previousTab = currentTab;
   currentTab = tab;
+  if (previousTab !== tab) configChatSelection = null;
   document.getElementById("chat-view").style.display = tab === "chat" ? "flex" : "none";
   document.getElementById("board-view").style.display = tab === "board" ? "block" : "none";
   document.getElementById("custom-view").style.display = tab === "custom" ? "block" : "none";
@@ -89,6 +92,7 @@ function switchTab(tab) {
   renderProjectConfigPage(tab);
   renderSidebar();
   if (tab === "settings") renderGlobalSettings();
+  updateConfigChatContext();
   syncUrl();
 }
 
@@ -99,6 +103,7 @@ async function loadOverview() {
     sel.innerHTML = `<option>(无项目)</option>`;
     currentProject = null;
     renderSidebar(); renderBoard(); renderCustomBoards();
+    updateConfigChatContext();
     return;
   }
   // 项目优先级:URL hash > localStorage > 第一个项目
@@ -114,6 +119,7 @@ async function loadOverview() {
   loadDocFiles().then(renderSidebar);   // 文档分区的文件清单异步补齐
   renderProjectConfigPage(currentTab);
   if (currentTab === "docs" && docMode === "view") renderDocuments();
+  updateConfigChatContext();
   const chans = projChannels();
   if ((!currentChan || !chans.some(c => c.id === currentChan)) && chans.length)
     selectChannel(chans[0].id, false);

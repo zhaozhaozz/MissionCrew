@@ -123,10 +123,12 @@ ORCHESTRATOR_TEMPLATE = """\
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
 - save_guideline / save_skill 按 id 新建或覆盖；只能引用项目文档库内的相对路径。
   save_skill.runtime_ids 只能填写下方现有 Runtime 的 id。
-- save_rule 以 match 对象作为规则身份：match 完全相同时覆盖原规则，否则追加。
+- save_rule 默认以 match 对象作为规则身份；修改现有规则的 match 时，可额外传
+  original_match 定位旧规则，平台会在原位置更新，避免留下重复规则。
   write_document 写入项目版本化文档库并立即生成 Git 版本。
-- 从配置页面收到生成请求时，必须使用对应的 save_guideline / save_skill /
-  save_rule / write_document 控制动作实际落库，不能只在回复中给示例文本。
+- 配置页面协作消息会明确给出当前页面、当前条目、未保存草稿，以及用户选中的
+  字段、行号和原文。只提问或讨论时直接回答，不要改配置；明确要求创建或修改时，
+  必须使用对应的 save_guideline / save_skill / save_rule / write_document 动作实际落库。
 - 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
   最合适的角色，@ 它并写清任务简报。
@@ -777,6 +779,9 @@ class ChatEngine:
             match = action.get("match")
             if not isinstance(match, dict):
                 raise ValueError("save_rule.match 必须是对象")
+            original_match = action.get("original_match", match)
+            if not isinstance(original_match, dict):
+                raise ValueError("save_rule.original_match 必须是对象")
             rule = Rule(
                 match=match,
                 require_evidence=self._action_string_list(action, "require_evidence"),
@@ -787,7 +792,7 @@ class ChatEngine:
             )
             replaced = False
             for index, existing in enumerate(project.rules):
-                if existing.match == rule.match:
+                if existing.match == original_match:
                     project.rules[index] = rule
                     replaced = True
                     break
