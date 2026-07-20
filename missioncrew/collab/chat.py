@@ -263,6 +263,9 @@ class ChatEngine:
             # 非主控回复中的控制动作:剥离并明示未执行,避免读者误以为已生效
             reply = ACTION_RE.sub("", reply).strip()
             reply += "\n\n(检测到平台控制动作,但只有项目主控可以执行,未生效)"
+        # 运行中先实时展示模型输出；最终回复确定后，如果 text/stdout 与即将
+        # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
+        self.store.remove_duplicate_reply_output(run_id, reply)
         self.store.update_chat_run(run_id, "done", backend_id=backend.id)
         # Agent 回复作为该角色的消息发布;其中的 @ 会继续级联(深度 +1)
         self.post(channel.id, role_id, reply, author_type="agent",

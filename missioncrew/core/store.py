@@ -387,6 +387,27 @@ class Store:
             "WHERE run_id=? ORDER BY id DESC LIMIT ?", (run_id, limit))
         return [dict(r) for r in reversed(rows)]
 
+    def remove_duplicate_reply_output(self, run_id: int, reply: str) -> int:
+        """删除与最终 Agent 回复完全相同的 text/stdout 事件，避免聊天流重复。"""
+        expected = reply.strip()
+        if not expected:
+            return 0
+        removed = 0
+        with self._lock:
+            rows = self._query(
+                "SELECT kind, content FROM run_events WHERE run_id=? ORDER BY id",
+                (run_id,))
+            for kind in ("text", "stdout"):
+                output_rows = [row for row in rows if row["kind"] == kind]
+                if (output_rows
+                        and "".join(row["content"] for row in output_rows).strip()
+                        == expected):
+                    self._execute(
+                        "DELETE FROM run_events WHERE run_id=? AND kind=?",
+                        (run_id, kind))
+                    removed += len(output_rows)
+        return removed
+
     def chat_runs_for_channel(self, channel: str, limit: int = 30) -> list[dict]:
         """频道最近的执行记录(含已结束)。
 

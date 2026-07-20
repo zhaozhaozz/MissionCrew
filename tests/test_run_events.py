@@ -46,6 +46,19 @@ def test_run_event_coalescing(store):
     assert "".join(e["content"] for e in saved) == long_input
 
 
+def test_duplicate_reply_output_is_removed_exactly(store):
+    store.append_run_event(10, "thinking", "先思考\n")
+    store.append_run_event(10, "text", "最终回复")
+    store.append_run_event(10, "text", "正文\n")
+    assert store.remove_duplicate_reply_output(10, "最终回复正文") == 1
+    assert [(e["kind"], e["content"]) for e in store.run_events(10)] == [
+        ("thinking", "先思考\n")]
+
+    store.append_run_event(11, "stdout", "过程输出\n最终回复\n")
+    assert store.remove_duplicate_reply_output(11, "最终回复") == 0
+    assert store.run_events(11)[0]["kind"] == "stdout"
+
+
 # ---- CLI 适配器:stream-json 解析出思考/工具/文本,普通 CLI 按行透传 ----
 
 def test_cli_adapter_parses_stream_json_events(tmp_path):
@@ -169,4 +182,8 @@ def test_chat_run_events_flow_to_api(seeded):
     assert run["trigger_message_id"] == d["messages"][0]["id"]
     events = client.get(f"/api/chat/runs/{run['id']}/events").json()["events"]
     kinds = {e["kind"] for e in events}
-    assert {"thinking", "tool", "text"} <= kinds     # mock 全链路产生过程事件
+    assert {"thinking", "tool"} <= kinds
+    assert "text" not in kinds       # 与最终 Agent 回复完全一致，不在过程流重复展示
+    agent_reply = next(m["content"] for m in d["messages"]
+                       if m["author_type"] == "agent")
+    assert agent_reply and all(e["content"].strip() != agent_reply for e in events)
