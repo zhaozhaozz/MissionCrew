@@ -320,7 +320,7 @@ async function send() {
 
 const inputBox = document.getElementById("input");
 inputBox.addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  if (e.key === "Enter" && !e.shiftKey && !imeComposing(e)) { e.preventDefault(); send(); }
 });
 // 输入框随内容自动增高(上限 160px),发送后复位
 inputBox.addEventListener("input", () => {
@@ -328,6 +328,6 @@ inputBox.addEventListener("input", () => {
   inputBox.style.height = Math.min(inputBox.scrollHeight, 160) + "px";
 });
 document.getElementById("board-request").addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); requestBoard(); }
+  if (e.key === "Enter" && !e.shiftKey && !imeComposing(e)) { e.preventDefault(); requestBoard(); }
 });
 

@@ -5,6 +5,13 @@ const udlg = document.getElementById("udlg");
 const fdlg = document.getElementById("fdlg");   // 设置页各类新增/编辑表单的弹窗容器
 const ddlg = document.getElementById("ddlg");   // 本地目录选择弹窗
 
+// 输入法(IME)组合期间按下的 Enter 是"候选上屏确认",不是提交:
+// 所有 Enter 触发提交的输入框都要先经过这个守卫,面板消失后的回车才生效。
+// isComposing 覆盖标准浏览器;keyCode 229 兜底部分输入法引擎。
+function imeComposing(e) {
+  return e.isComposing || e.keyCode === 229;
+}
+
 /* ---- 页面内弹窗控件:替代浏览器原生 alert / confirm / prompt ---- */
 let _udlgResolve = null;
 function _udlgClose(value) {
@@ -41,7 +48,7 @@ function uiPrompt(message, { value = "", placeholder = "", title = "请输入" }
     _udlgOpen(title,
       `<div style="white-space:pre-wrap;margin-bottom:8px">${esc(String(message))}</div>
        <input type="text" id="udlg-input" value="${esc(value)}" placeholder="${esc(placeholder)}"
-         onkeydown="if(event.key==='Enter')_udlgClose(this.value)">`,
+         onkeydown="if(event.key==='Enter'&&!imeComposing(event))_udlgClose(this.value)">`,
       `<button class="action" onclick="_udlgClose(document.getElementById('udlg-input').value)">确定</button>
        <button class="ghost" onclick="_udlgClose(null)">取消</button>`);
     setTimeout(() => document.getElementById("udlg-input")?.focus(), 60);
