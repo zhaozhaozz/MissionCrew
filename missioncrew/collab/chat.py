@@ -7,7 +7,7 @@
   完成后由平台自动把完整结果交回主控继续调度;
 - 所有主控调度与执行结果都对人类完全可见,全程审计。
 
-防失控:级联深度上限 + 单条协作链的执行总数上限 + 不响应自己 @ 自己。
+防失控:项目可配置的单条协作链执行总数上限 + 不响应自己 @ 自己。
 """
 from __future__ import annotations
 
@@ -22,14 +22,12 @@ from typing import Optional
 from ..runtime import adapters
 from ..core.config import mc_home
 from .documents import library_for
-from ..core.models import (BOARD_WIDGET_TYPES, Board, BoardWidget, Channel,
-                     ExecutionConfig, Role)
+from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
+                           BoardWidget, Channel, ExecutionConfig, Role)
 from .project_context import project_allowed_dirs, render_project_context
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
-MAX_DEPTH = 10         # 自动回主控也计一层;与执行总数上限配合，允许多轮调度闭环
-MAX_CHAIN_RUNS = 10    # 单条协作链(同一条人类消息引发)的执行总数上限
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
 CHAT_TIMEOUT = 900     # 单次聊天执行超时(秒)
 ACTION_RE = re.compile(r"<missioncrew-action>(.*?)</missioncrew-action>", re.S)
@@ -102,8 +100,8 @@ ORCHESTRATOR_TEMPLATE = """\
 - 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
   最合适的角色，@ 它并写清任务简报。
-- 调度预算：@ 级联深度上限 {max_depth} 层、单条协作链最多 {max_runs} 次执行。
-  复杂任务分批派发；执行角色完成后平台会把完整结果自动交回你，再派下一批。
+- 协作链预算：本项目单条协作链最多 {max_runs} 次 Agent 执行。这只是防止失控循环的
+  总次数兜底，不限制调度层级；请在预算内自主拆解、分派、验收并推进任务。
 
 ## 项目代码仓
 {repos}
@@ -124,6 +122,7 @@ class ChatEngine:
         self._futures: list[Future] = []
         self._futures_lock = threading.Lock()
         self._history_lock = threading.Lock()
+        self._chain_run_lock = threading.Lock()
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
@@ -202,19 +201,20 @@ class ChatEngine:
 
     def _trigger(self, channel: Channel, role_id: str, msg_id: int,
                  root_id: int, depth: int) -> None:
-        if depth >= MAX_DEPTH:
+        project = self.store.get_project(channel.project_id or "")
+        max_runs = project.max_chain_runs if project else DEFAULT_MAX_CHAIN_RUNS
+        # count + insert 必须串行，否则并行分支可能同时看到剩余额度并突破上限。
+        with self._chain_run_lock:
+            budget_exhausted = self.store.count_chain_runs(root_id) >= max_runs
+            run_id = (0 if budget_exhausted else
+                      self.store.add_chat_run(
+                          channel.id, role_id, msg_id, root_id, depth))
+        if budget_exhausted:
             self.store.add_message(channel.id, "platform", "platform",
-                                   f"已达级联深度上限({MAX_DEPTH}),不再触发 @{role_id}。",
-                                   [], msg_id, root_id, depth)
-            self._write_channel_history(channel)
-            return
-        if self.store.count_chain_runs(root_id) >= MAX_CHAIN_RUNS:
-            self.store.add_message(channel.id, "platform", "platform",
-                                   f"本条协作链执行数已达上限({MAX_CHAIN_RUNS}),"
+                                   f"本条协作链执行数已达上限({max_runs}),"
                                    f"不再触发 @{role_id}。", [], msg_id, root_id, depth)
             self._write_channel_history(channel)
             return
-        run_id = self.store.add_chat_run(channel.id, role_id, msg_id, root_id, depth)
         future = self._pool.submit(self._execute, run_id, channel, role_id,
                                    msg_id, root_id, depth)
         with self._futures_lock:
@@ -555,7 +555,7 @@ class ChatEngine:
             + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
             for b in self.store.list_boards(project.id)) or "(无)"
         return ORCHESTRATOR_TEMPLATE.format(
-            max_depth=MAX_DEPTH, max_runs=MAX_CHAIN_RUNS,
+            max_runs=project.max_chain_runs,
             repos=repos, channels=channels, boards=boards)
 
     def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
@@ -627,7 +627,7 @@ class ChatEngine:
     def _action_post_message(self, project_id: str, role_id: str, action: dict,
                              root_id: int, depth: int) -> str:
         """主控向本项目任意频道发消息(调度闭环):@ 正常触发级联,
-        共享同一条协作链的深度/执行数预算,防止跨频道绕开防爆炸限制。"""
+        共享同一条协作链的执行次数预算,防止跨频道绕开防爆炸限制。"""
         raw = str(action.get("channel", "")).strip()
         content = str(action.get("content", "")).strip()
         if not raw or not content:

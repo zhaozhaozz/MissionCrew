@@ -14,6 +14,7 @@ from typing import Callable, Optional
 
 # 成本档位从低到高,路由优先低档,失败后逐级升级
 TIER_ORDER = ["economy", "standard", "expert"]
+DEFAULT_MAX_CHAIN_RUNS = 20
 
 # 能力约定(自由字符串,以下为内置约定):
 #   coding / reasoning / review / multimodal / web_search / sub_agents / security
@@ -195,6 +196,7 @@ class Project:
     charter: str = ""            # 项目准则:目标、范围、业务边界
     dev_guidelines: str = ""     # 开发准则:架构原则、代码要求、变更约束
     orchestrator_role_id: str = "lead"  # 负责整个项目和其他角色调度的唯一角色
+    max_chain_runs: int = DEFAULT_MAX_CHAIN_RUNS  # 单条人类消息最多触发的 Agent 执行数
     guidelines: list[GuidelineDocument] = field(default_factory=list)
     skills: list[ProjectSkill] = field(default_factory=list)
     resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
@@ -205,6 +207,10 @@ class Project:
         # 资源条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
         self.repos = [r if isinstance(r, ProjectResource) else ProjectResource.from_dict(r)
                       for r in self.repos]
+        if (isinstance(self.max_chain_runs, bool)
+                or not isinstance(self.max_chain_runs, int)
+                or self.max_chain_runs < 1):
+            raise ValueError("max_chain_runs 必须是正整数")
 
     def repo_paths(self) -> list[str]:
         """有本地路径的资源(供频道工作目录校验等使用)。"""
@@ -221,6 +227,7 @@ class Project:
                            for v in d.get("guidelines", [])]
         d["skills"] = [ProjectSkill.from_dict(v) for v in d.get("skills", [])]
         d.setdefault("orchestrator_role_id", "lead")
+        d.setdefault("max_chain_runs", DEFAULT_MAX_CHAIN_RUNS)
         return cls(**d)
 
 

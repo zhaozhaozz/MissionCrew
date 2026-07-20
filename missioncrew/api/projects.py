@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import archive_library, library_for, safe_relative_path
 from ..core import seed as seed_mod
-from ..core.models import Project, Rule
+from ..core.models import DEFAULT_MAX_CHAIN_RUNS, Project, Rule
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import ProjectInput
 
@@ -42,6 +42,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if is_new and orchestrator != "lead":
             raise HTTPException(400, "新项目请先创建角色，再修改主控角色")
         data["orchestrator_role_id"] = orchestrator
+        data["max_chain_runs"] = (body.max_chain_runs if body.max_chain_runs is not None
+                                  else (existing.max_chain_runs if existing
+                                        else DEFAULT_MAX_CHAIN_RUNS))
         data["repos"] = (body.repos if body.repos is not None else
                          ([r.__dict__ for r in existing.repos] if existing else []))
         data["dev_guidelines"] = (body.dev_guidelines if body.dev_guidelines is not None
@@ -57,7 +60,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         data["rules"] = [r.__dict__ for r in rules]
         try:
             project = Project.from_dict(data)
-        except TypeError as exc:
+        except (TypeError, ValueError) as exc:
             raise HTTPException(400, f"项目准则或 Skill 格式不合法: {exc}")
         for doc in project.guidelines:
             if not MENTION_ID_RE.fullmatch(doc.id):

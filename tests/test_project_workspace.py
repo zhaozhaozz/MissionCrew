@@ -9,7 +9,8 @@ from missioncrew.runtime import adapters
 from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
-from missioncrew.core.models import (Backend, ExecutionConfig, ProjectResource,
+from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend,
+                                     ExecutionConfig, ProjectResource,
                                      ProjectSkill, Task, TaskStage)
 from missioncrew.api import create_app
 
@@ -23,12 +24,15 @@ def test_project_has_one_configurable_orchestrator_and_protects_it(seeded):
     project = next(p for p in client.get("/api/overview").json()["projects"]
                    if p["id"] == "webshop")
     assert project["orchestrator_role_id"] == "lead"
+    assert project["max_chain_runs"] == DEFAULT_MAX_CHAIN_RUNS == 20
 
-    project.update({"orchestrator_role_id": "expert", "rules_yaml": ""})
+    project.update({"orchestrator_role_id": "expert", "max_chain_runs": 1000,
+                    "rules_yaml": ""})
     project.pop("rules", None)
     response = client.post("/api/projects", json=project)
     assert response.status_code == 200
     assert response.json()["orchestrator_role_id"] == "expert"
+    assert response.json()["max_chain_runs"] == 1000
     assert client.delete("/api/roles/expert?project_id=webshop").status_code == 409
 
     chat = ChatEngine(seeded)
@@ -37,10 +41,14 @@ def test_project_has_one_configurable_orchestrator_and_protects_it(seeded):
                          seeded.get_role("webshop", "expert"),
                          seeded.get_backend("exp-1"), msg_id)
     assert "项目主控权限" in cfg.prompt
+    assert "单条协作链最多 1000 次 Agent 执行" in cfg.prompt
     dev_cfg = chat._assemble(seeded.get_channel("general"),
                              seeded.get_role("webshop", "dev"),
                              seeded.get_backend("std-1"), msg_id)
     assert "项目主控权限" not in dev_cfg.prompt
+
+    project["max_chain_runs"] = 0
+    assert client.post("/api/projects", json=project).status_code == 422
 
 
 def test_orchestrator_can_create_task_channel_and_dynamic_board(seeded):
@@ -382,7 +390,7 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
                          seeded.get_backend("std-1"), msg)
     assert "## 现有频道" in cfg.prompt and "general" in cfg.prompt
     assert "## 现有面板" in cfg.prompt and "quality" in cfg.prompt
-    assert "调度预算" in cfg.prompt and "post_message" in cfg.prompt
+    assert "协作链预算" in cfg.prompt and "post_message" in cfg.prompt
 
 
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----

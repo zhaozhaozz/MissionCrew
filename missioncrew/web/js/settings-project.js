@@ -30,6 +30,8 @@ async function renderProjSettings() {
     <label>一句话描述</label><input type="text" id="pf-desc" value="${esc(p.description)}">
     <label>项目主控角色（唯一；其固定 Runtime / 模型负责项目与其他角色调度）</label>
     <select id="pf-orchestrator">${orchestratorOptions}</select>
+    <label>单条协作链最大 Agent 执行次数（仅作失控兜底，不限制调度层级）</label>
+    <input type="number" id="pf-max-chain-runs" min="1" step="1" value="${esc(p.max_chain_runs || 20)}">
     <label>项目章程(目标、范围、业务边界;开发/测试/部署等完整规范写成下方"准则文档")</label>
     <textarea id="pf-charter" rows="4">${esc(p.charter)}</textarea>
     <label>验证准则(YAML 列表:match / require_evidence / require_gates / require_capabilities / note)</label>
@@ -271,6 +273,7 @@ async function saveProject() {
     name: document.getElementById("pf-name").value.trim(),
     description: document.getElementById("pf-desc").value.trim(),
     orchestrator_role_id: document.getElementById("pf-orchestrator").value,
+    max_chain_runs: Number(document.getElementById("pf-max-chain-runs").value),
     charter: document.getElementById("pf-charter").value,
     rules_yaml: document.getElementById("pf-rules").value,
   };
@@ -285,4 +288,3 @@ async function deleteProject(id) {
   await loadOverview();
   renderProjSettings();
 }
-

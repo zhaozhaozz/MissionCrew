@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class TaskCreate(BaseModel):
@@ -87,6 +87,7 @@ class ProjectInput(BaseModel):
     charter: str = ""
     dev_guidelines: Optional[str] = None       # 已由准则文档替代;None = 保留
     orchestrator_role_id: Optional[str] = None
+    max_chain_runs: Optional[int] = Field(None, ge=1)
     guidelines: Optional[list[dict]] = None
     skills: Optional[list[dict | str]] = None
     resources: Optional[list[str]] = None

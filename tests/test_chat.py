@@ -1,10 +1,12 @@
 """聊天协作:@ 触发、级联、防环、失败可见性。"""
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
-from missioncrew.collab.chat import MAX_CHAIN_RUNS, MAX_DEPTH, ChatEngine
+from missioncrew.collab.chat import ChatEngine
+from missioncrew.core.models import DEFAULT_MAX_CHAIN_RUNS, Project
 
 
 @pytest.fixture()
@@ -134,30 +136,59 @@ def test_expert_role_uses_fixed_expert_runtime(chat, seeded):
     assert runs and runs[0]["backend_id"] == "exp-1"  # 默认专家角色已固定到 expert runtime
 
 
-def test_depth_limit_stops_cascade(chat, seeded):
-    """执行角色在深度上限回主控时必须截断且不再触发执行。"""
+def test_high_message_depth_does_not_stop_orchestrator_return(chat, seeded):
+    """depth 只记录消息层级，不再作为主控协作的硬限制。"""
     root = seeded.add_message("general", "human", "human", "起始", [])
     chat.post("general", "reviewer", "@dev 继续接力。", author_type="agent",
-              reply_to=root, root_id=root, depth=MAX_DEPTH)
+              reply_to=root, root_id=root, depth=10_000)
     chat.wait_idle()
     msgs = _log(seeded)
-    assert any("级联深度上限" in m["content"] for m in msgs
-               if m["author_type"] == "platform")
-    assert not seeded._query("SELECT id FROM chat_runs")
+    assert not any("深度上限" in m["content"] for m in msgs)
+    assert [r["role_id"] for r in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")] == ["lead"]
 
 
 def test_chain_run_budget(chat, seeded):
     """同一协作链累计执行数达到上限后,执行结果不再触发主控。"""
+    project = seeded.get_project("webshop")
+    project.max_chain_runs = 3
+    seeded.put_project(project)
     root = seeded.add_message("general", "human", "human", "起始", [])
-    for _ in range(MAX_CHAIN_RUNS):
+    for _ in range(project.max_chain_runs):
         seeded.add_chat_run("general", "dev", root, root, 1)
     chat.post("general", "reviewer", "@dev 再来一轮。", author_type="agent",
               reply_to=root, root_id=root, depth=1)
     chat.wait_idle()
     msgs = _log(seeded)
-    assert any("执行数已达上限" in m["content"] for m in msgs
+    assert any("执行数已达上限(3)" in m["content"] for m in msgs
                if m["author_type"] == "platform")
-    assert seeded.count_chain_runs(root) == MAX_CHAIN_RUNS
+    assert seeded.count_chain_runs(root) == project.max_chain_runs
+
+
+def test_default_chain_run_budget_is_twenty(seeded):
+    assert seeded.get_project("webshop").max_chain_runs == DEFAULT_MAX_CHAIN_RUNS == 20
+    assert Project.from_dict({"id": "legacy", "name": "旧项目"}).max_chain_runs == 20
+
+
+def test_parallel_dispatch_cannot_exceed_chain_run_budget(chat, seeded):
+    project = seeded.get_project("webshop")
+    project.max_chain_runs = 1
+    seeded.put_project(project)
+    root = seeded.add_message("general", "human", "human", "并发起始", [])
+    channel = seeded.get_channel("general")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [
+            pool.submit(chat._trigger, channel, role_id, root, root, 0)
+            for role_id in ("dev", "reviewer")
+        ]
+        for future in futures:
+            future.result()
+    chat.wait_idle()
+
+    assert seeded.count_chain_runs(root) == 1
+    assert any("执行数已达上限(1)" in message["content"]
+               for message in _log(seeded))
 
 
 def test_agent_failure_posted_to_channel(chat, seeded):
