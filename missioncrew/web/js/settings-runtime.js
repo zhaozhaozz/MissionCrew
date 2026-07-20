@@ -73,6 +73,8 @@ function updateCell(t) {
 
 async function renderBackendTable() {
   const tools = await (await fetch("/api/backends/tools")).json();
+  // 已安装工具优先；稳定排序会保留每组在支持矩阵中的原始顺序。
+  tools.sort((a, b) => Number(b.installed) - Number(a.installed));
   closeRuntimeRolePopovers();
   const rows = tools.map((t, rowIndex) => {
     const status = !t.installed
@@ -88,13 +90,12 @@ async function renderBackendTable() {
       <td><b>${esc(t.binary)}</b><br><span class="muted">${esc(t.adapter)}</span></td>
       <td>${status}</td>
       <td class="muted">${esc(t.path || "—")}</td>
-      <td>${(t.models || []).map(m => `<span class="pill">${esc(m)}</span>`).join("") || `<span class="muted">—</span>`}</td>
       <td>${roleUsageCell(t, rowIndex)}</td>
       <td>${updateCell(t)}</td>
       <td>${toggle}</td></tr>`;
   }).join("");
   document.getElementById("backend-table").innerHTML =
-    `<tr><th>工具</th><th>状态</th><th>路径</th><th>可用模型</th>` +
+    `<tr><th>工具</th><th>状态</th><th>路径</th>` +
     `<th title="仅统计固定到此运行时的角色">使用角色</th><th>更新</th><th></th></tr>` + rows;
 }
 
@@ -153,4 +154,3 @@ async function detectBackends() {
   await renderBackendTable();
   checkUpdates(true);      // 用新版本静默重新比对
 }
-
