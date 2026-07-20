@@ -7,14 +7,12 @@ import re
 import tempfile
 import threading
 
-import yaml
-
 from .documents import DocumentLibrary
 from ..core.config import projects_dir
 from ..core.models import GuidelineDocument, Project, ProjectSkill
 
 
-_GUIDELINE_FILE_ID_RE = re.compile(r"[\w-]+")
+_GUIDELINE_FILE_NAME_RE = re.compile(r"[\w-]+")
 _GUIDELINE_CONTEXT_LOCKS: dict[str, threading.RLock] = {}
 _GUIDELINE_CONTEXT_LOCKS_GUARD = threading.Lock()
 
@@ -30,19 +28,10 @@ def guideline_context_dir(project: Project) -> Path:
 
 
 def _guideline_file_path(project: Project, doc: GuidelineDocument) -> Path:
-    # API 会校验 id；哈希兜底旧持久化中的异常 id，避免生成路径逃逸。
-    filename = (doc.id if _GUIDELINE_FILE_ID_RE.fullmatch(doc.id)
-                else hashlib.sha256(doc.id.encode("utf-8")).hexdigest()[:16])
+    # API 会校验 name；哈希兜底旧持久化中的异常值，避免生成路径逃逸。
+    filename = (doc.name if _GUIDELINE_FILE_NAME_RE.fullmatch(doc.name)
+                else hashlib.sha256(doc.name.encode("utf-8")).hexdigest()[:16])
     return guideline_context_dir(project) / f"{filename}.md"
-
-
-def _guideline_markdown(doc: GuidelineDocument) -> str:
-    frontmatter = yaml.safe_dump(
-        {"name": doc.id, "description": doc.summary},
-        allow_unicode=True, sort_keys=False, default_flow_style=False,
-    ).strip()
-    body = doc.content.rstrip()
-    return f"---\n{frontmatter}\n---\n" + (f"\n{body}\n" if body else "")
 
 
 def _atomic_write_text(path: Path, content: str) -> None:
@@ -70,12 +59,12 @@ def write_guideline_context(project: Project) -> dict[str, Path]:
     directory.mkdir(parents=True, exist_ok=True)
     with _guideline_context_lock(project.id):
         paths = {
-            doc.id: _guideline_file_path(project, doc)
+            doc.name: _guideline_file_path(project, doc)
             for doc in project.guidelines if doc.enabled
         }
         for doc in project.guidelines:
             if doc.enabled:
-                _atomic_write_text(paths[doc.id], _guideline_markdown(doc))
+                _atomic_write_text(paths[doc.name], doc.render_markdown())
 
         expected = {path.resolve() for path in paths.values()}
         for stale in directory.glob("*.md"):
@@ -108,9 +97,10 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary) -> list[str
 
 
 def _render_guideline_summary(doc: GuidelineDocument, path: Path) -> str:
-    content_version = hashlib.sha256(doc.content.encode("utf-8")).hexdigest()[:16]
-    summary = " ".join(doc.summary.split()) or "（未填写摘要）"
-    return (f"- `{doc.id}` · {doc.title or doc.id} · {summary} "
+    content_version = hashlib.sha256(
+        doc.render_markdown().encode("utf-8")).hexdigest()[:16]
+    description = " ".join(doc.description.split()) or "（未填写 description）"
+    return (f"- `{doc.name}` · {description} "
             f"· 内容版本 `{content_version}` · 全文 `{path}`")
 
 
@@ -131,7 +121,7 @@ def render_project_context(project: Project, library: DocumentLibrary) -> str:
     if project.dev_guidelines:
         legacy_guidelines.append(f"## 开发准则（兼容字段）\n{project.dev_guidelines}")
     guideline_summaries = [
-        _render_guideline_summary(doc, guideline_files[doc.id])
+        _render_guideline_summary(doc, guideline_files[doc.name])
         for doc in project.guidelines if doc.enabled
     ]
     skills = [
@@ -144,11 +134,11 @@ def render_project_context(project: Project, library: DocumentLibrary) -> str:
         f"# 项目上下文：{project.name}",
         ("# 项目兼容准则\n" + "\n\n".join(legacy_guidelines))
         if legacy_guidelines else "# 项目兼容准则\n（未配置）",
-        "# 项目准则摘要\n"
+        "# 项目准则索引\n"
         + ("\n".join(guideline_summaries) if guideline_summaries else "（未配置）")
         + f"\n准则 Markdown 目录：{guideline_context_dir(project)}\n"
         "也可通过环境变量 MISSIONCREW_GUIDELINES_DIR 获取该目录。"
-        "先根据摘要判断相关性，仅在任务需要时读取对应的 Markdown 文件；不要预加载全部正文。",
+        "先根据 description 判断相关性，仅在任务需要时读取对应的 Markdown 文件；不要预加载全部正文。",
         f"# 项目文档库\n目录：{library.root}\n"
         "所有角色可在该普通目录中读写文档；平台会在每次执行后记录 Git 版本。\n"
         "准则和 Skill 正文中的相对 Markdown 链接均以此目录为根；仅在任务需要时读取链接文件，不要预加载。",
@@ -157,5 +147,5 @@ def render_project_context(project: Project, library: DocumentLibrary) -> str:
          + "\n\n".join(skills)) if skills else
         "# 项目 Skills\n（未配置）",
         "# 准则与 Skill 使用方式\n结合当前任务自行判断哪些条目适用；"
-        "准则先看摘要、相关时再读全文，不要机械执行无关条目。",
+        "准则先看 description、相关时再读全文，不要机械执行无关条目。",
     ])

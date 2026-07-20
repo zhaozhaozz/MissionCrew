@@ -5,6 +5,7 @@ import yaml
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import archive_library, library_for
+from ..collab.project_context import write_guideline_context
 from ..core import seed as seed_mod
 from ..core.models import DEFAULT_MAX_CHAIN_RUNS, Project, Rule
 from .context import MENTION_ID_RE, ApiContext
@@ -54,7 +55,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         data["dev_guidelines"] = (body.dev_guidelines if body.dev_guidelines is not None
                                   else (existing.dev_guidelines if existing else ""))
         data["guidelines"] = (body.guidelines if body.guidelines is not None else
-                              ([g.__dict__ for g in existing.guidelines] if existing else []))
+                              ([g.to_dict() for g in existing.guidelines] if existing else []))
         data["skills"] = (body.skills if body.skills is not None else
                           ([s.__dict__ for s in existing.skills] if existing else []))
         data["resources"] = (body.resources if body.resources is not None else
@@ -67,12 +68,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, f"项目准则或 Skill 格式不合法: {exc}")
         for doc in project.guidelines:
-            if not MENTION_ID_RE.fullmatch(doc.id):
-                raise HTTPException(400, f"准则 id 不合法: {doc.id}")
+            if not MENTION_ID_RE.fullmatch(doc.name):
+                raise HTTPException(400, f"准则 name 不合法: {doc.name}")
         for skill in project.skills:
             if not MENTION_ID_RE.fullmatch(skill.id):
                 raise HTTPException(400, f"Skill id 不合法: {skill.id}")
         store.put_project(project)
+        write_guideline_context(project)
         if is_new:  # 新项目复制当前全局角色模板并获得自己的 general 频道
             seed_mod.init_project(store, project.id, new_roles)
             library_for(project.id)

@@ -42,7 +42,7 @@ function setProject(id) {
   localStorage.setItem("mc.project", id);
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
   currentCustomBoard = null; customBoardEditing = false;
-  selectedGuidelineId = undefined;
+  selectedGuidelineName = undefined;
   guidelineMarkdownMode = "preview";
   selectedSkillId = undefined;
   selectedRuleIndex = undefined;
@@ -183,9 +183,9 @@ function renderSidebar() {
   const guides = projObj()?.guidelines || [];
   if (!_secState("guides", "guide-list", "cnt-guides", guides.length))
     document.getElementById("guide-list").innerHTML = guides.map(g =>
-      `<div class="side-item ${g.id === selectedGuidelineId && currentTab === "guidelines" ? "selected" : ""}" data-id="${esc(g.id)}"
-            onclick="openGuidelineFromSidebar(this.dataset.id)" title="${esc(g.id)}">
-         📜 ${esc(g.title || g.id)}${g.enabled === false ? " (停用)" : ""}</div>`).join("")
+      `<div class="side-item ${g.name === selectedGuidelineName && currentTab === "guidelines" ? "selected" : ""}" data-name="${esc(g.name)}"
+            onclick="openGuidelineFromSidebar(this.dataset.name)" title="${esc(g.description || g.name)}">
+         📜 ${esc(g.name)}${g.enabled === false ? " (停用)" : ""}</div>`).join("")
       || `<div class="side-item" onclick="quickNewGuideline()">＋ 写第一篇项目准则…</div>`;
   // Skill -> 全页逐个编辑
   const skills = projObj()?.skills || [];

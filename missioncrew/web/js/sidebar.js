@@ -98,8 +98,8 @@ function pickDirConfirm() {
   ddlg.close();
 }
 
-function openGuidelineFromSidebar(id) {
-  editGuideline(id);
+function openGuidelineFromSidebar(name) {
+  editGuideline(name);
 }
 
 function openSkillFromSidebar(id) {

@@ -252,12 +252,12 @@ def migrate_project_fields(store: Store) -> int:
     for project in store.list_projects():
         changed = False
         if project.dev_guidelines.strip():
-            gid = "dev-guidelines"
-            if not any(g.id == gid for g in project.guidelines):
+            guideline_name = "dev-guidelines"
+            if not any(g.name == guideline_name for g in project.guidelines):
                 from .models import GuidelineDocument
                 project.guidelines.append(GuidelineDocument(
-                    id=gid, title="开发准则",
-                    summary="项目开发中的架构、代码与变更约束。",
+                    name=guideline_name,
+                    description="项目开发中的架构、代码与变更约束。",
                     content=project.dev_guidelines))
             project.dev_guidelines = ""
             changed = True

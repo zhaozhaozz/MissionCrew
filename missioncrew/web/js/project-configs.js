@@ -1,8 +1,9 @@
 /* ---- 项目准则 / Skills / 验证规则全页管理与底部主控对话 ---- */
-let selectedGuidelineId;
+let selectedGuidelineName;
 let selectedSkillId;
 let selectedRuleIndex;
 let guidelineMarkdownMode = "preview";
+const GUIDELINE_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
 const configEditorDirty = { guidelines: false, skills: false, rules: false };
 const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "rules", "docs"]);
 const CONFIG_CHAT_TARGETS = {
@@ -12,7 +13,7 @@ const CONFIG_CHAT_TARGETS = {
   docs: { label: "版本化文档", action: "write_document" },
 };
 const CONFIG_FIELD_LABELS = {
-  "gf-id": "准则 id", "gf-title": "标题", "gf-summary": "摘要", "gf-content": "正文",
+  "gf-content": "准则 Markdown 文件",
   "sf-id": "Skill id", "sf-name": "名称", "sf-desc": "简介",
   "sf-instructions": "完整执行说明",
   "rf-match": "匹配条件", "rf-evidence": "所需证据", "rf-gates": "所需门禁",
@@ -100,12 +101,11 @@ function configChatContext() {
   let item = "未选择条目";
   let itemKey = "none";
   if (currentTab === "guidelines") {
-    const guideline = project.guidelines?.find(value => value.id === selectedGuidelineId);
-    const draftTitle = valueOf("gf-title").trim();
-    const draftId = valueOf("gf-id").trim();
-    item = guideline ? `${draftTitle || guideline.title || guideline.id}（id: ${guideline.id}）`
-                     : `新建准则（${draftTitle || draftId || "未命名"}，未保存）`;
-    itemKey = guideline?.id || "new";
+    const guideline = project.guidelines?.find(value => value.name === selectedGuidelineName);
+    const draftName = guidelineFrontmatterValue(valueOf("gf-content"), "name");
+    item = guideline ? `${guideline.name}（Markdown 文件）`
+                     : `新建准则（${draftName || "name 未填写"}，未保存）`;
+    itemKey = guideline?.name || "new";
   } else if (currentTab === "skills") {
     const skill = project.skills?.find(value => value.id === selectedSkillId);
     const draftName = valueOf("sf-name").trim();
@@ -135,6 +135,14 @@ function valueOf(id) {
   return document.getElementById(id)?.value ?? "";
 }
 
+function guidelineFrontmatterValue(markdown, key) {
+  const end = markdown.indexOf("\n---", 4);
+  if (!markdown.startsWith("---\n") || end < 0) return "";
+  const line = markdown.slice(4, end).split("\n")
+    .find(value => value.trimStart().startsWith(`${key}:`));
+  return line ? line.slice(line.indexOf(":") + 1).trim().replace(/^(['"])(.*)\1$/, "$2") : "";
+}
+
 function clippedDraftText(value) {
   const clipped = clippedConfigText(value);
   return clipped.truncated ? `${clipped.text}\n…（草稿过长，已截断）` : clipped.text;
@@ -142,9 +150,12 @@ function clippedDraftText(value) {
 
 function currentConfigDraft(context) {
   if (context.tab === "guidelines") return {
-    id: valueOf("gf-id"), title: valueOf("gf-title"),
-    summary: valueOf("gf-summary"),
-    content: clippedDraftText(valueOf("gf-content")),
+    original_name: selectedGuidelineName,
+    markdown: clippedDraftText(valueOf("gf-content")),
+    frontmatter_contract: {
+      allowed_attributes: ["name", "description"],
+      source_of_truth: "后端直接从这份 Markdown frontmatter 读取，不使用 id/title/summary",
+    },
     enabled: document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.guidelines,
   };
@@ -331,11 +342,17 @@ async function sendConfigChat() {
   // 草稿或选区中的 @role 只是正文，转成 JSON Unicode 转义，避免聊天提及解析器
   // 把它误当成额外调度；整条消息只应触发开头显式指定的项目主控。
   const serializedPayload = JSON.stringify(payload, null, 2).replace(/@/g, "\\u0040");
+  const guidelineEditingTip = context.tab === "guidelines"
+    ? `当前编辑对象是一份完整准则 Markdown 文件。current_draft.markdown 包含 YAML frontmatter 和正文；` +
+      `frontmatter 只使用 name、description，后端直接读取这两个属性。保存时把修改后的完整文件放入 ` +
+      `${context.action}.markdown，并在修改现有文件时传 original_name；不要使用 id、title、summary。`
+    : "";
   const content = `@${project.orchestrator_role_id} 项目配置页协作消息（JSON）：\n` +
     `${serializedPayload}\n\n` +
     `这是围绕当前页面的对话：若用户只是提问、解释或讨论，只需回答，不要写入；` +
     `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
-    `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 id、match 或路径。`;
+    `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
+    guidelineEditingTip;
   input.value = "";
   status.textContent = `正在发送给 @${project.orchestrator_role_id}…`;
   try {
@@ -406,27 +423,23 @@ applyConfigChatLayout();
 /* ---- 准则文档 ---- */
 function renderGuidelinesPage(force = false) {
   const guidelines = projObj()?.guidelines || [];
-  if (selectedGuidelineId === undefined
-      || (selectedGuidelineId !== null && !guidelines.some(item => item.id === selectedGuidelineId)))
-    selectedGuidelineId = guidelines[0]?.id ?? null;
+  if (selectedGuidelineName === undefined
+      || (selectedGuidelineName !== null
+          && !guidelines.some(item => item.name === selectedGuidelineName)))
+    selectedGuidelineName = guidelines[0]?.name ?? null;
   if (force || !configEditorDirty.guidelines) renderGuidelineEditor();
   updateConfigChatContext();
 }
 
 function renderGuidelineEditor() {
-  const guideline = (projObj()?.guidelines || []).find(item => item.id === selectedGuidelineId);
+  const guideline = (projObj()?.guidelines || []).find(
+    item => item.name === selectedGuidelineName);
   if (!guideline) guidelineMarkdownMode = "edit";
+  const markdown = guideline?.markdown || GUIDELINE_MARKDOWN_PLACEHOLDER;
   document.getElementById("guideline-editor").innerHTML = `
     <div class="guideline-toolbar">
-      <label class="guideline-toolbar-field guideline-id"><span>ID</span>
-        <input id="gf-id" value="${esc(guideline?.id || "")}" ${guideline ? "disabled" : ""}
-          placeholder="development" oninput="markConfigDirty('guidelines')"></label>
-      <label class="guideline-toolbar-field guideline-title"><span>标题</span>
-        <input id="gf-title" value="${esc(guideline?.title || "")}"
-          placeholder="准则标题" oninput="markConfigDirty('guidelines')"></label>
-      <label class="guideline-toolbar-field guideline-summary"><span>摘要</span>
-        <input id="gf-summary" value="${esc(guideline?.summary || "")}"
-          placeholder="帮助 Agent 判断何时需要读取全文" oninput="markConfigDirty('guidelines')"></label>
+      <div class="guideline-current-name"><span>名称</span>
+        <code>${esc(guideline?.name || "在 frontmatter 中填写")}</code></div>
       <label class="guideline-enabled"><span>启用</span>
         <span class="switch ${guideline?.enabled === false ? "" : "on"}" id="gf-enabled"
           role="switch" tabindex="0" onclick="this.classList.toggle('on');markConfigDirty('guidelines')"></span></label>
@@ -438,11 +451,12 @@ function renderGuidelineEditor() {
           onclick="setGuidelineMarkdownMode('preview')">预览</button>
       </div>
       <button class="action" type="button" onclick="saveGuideline()">保存</button>
-      ${guideline ? `<button class="danger" type="button" onclick="deleteGuideline('${esc(guideline.id)}')">删除</button>` : ""}
+      ${guideline ? `<button class="danger" type="button" data-name="${esc(guideline.name)}"
+        onclick="deleteGuideline(this.dataset.name)">删除</button>` : ""}
     </div>
     <div class="guideline-markdown-surface">
-      <textarea id="gf-content" class="guideline-markdown-editor" aria-label="准则正文（Markdown）"
-        spellcheck="false" oninput="markConfigDirty('guidelines');updateGuidelineMarkdownPreview()">${esc(guideline?.content || "")}</textarea>
+      <textarea id="gf-content" class="guideline-markdown-editor" aria-label="完整准则 Markdown 文件"
+        spellcheck="false" oninput="markConfigDirty('guidelines');updateGuidelineMarkdownPreview()">${esc(markdown)}</textarea>
       <article class="guideline-markdown-preview markdown-body" id="guideline-markdown-preview"></article>
     </div>`;
   updateGuidelineMarkdownPreview();
@@ -452,7 +466,9 @@ function renderGuidelineEditor() {
 function updateGuidelineMarkdownPreview() {
   const preview = document.getElementById("guideline-markdown-preview");
   if (!preview) return;
-  const content = valueOf("gf-content");
+  const markdown = valueOf("gf-content");
+  const marker = markdown.startsWith("---\n") ? markdown.indexOf("\n---", 4) : -1;
+  const content = marker >= 0 ? markdown.slice(marker + 4).replace(/^\r?\n/, "") : markdown;
   preview.innerHTML = content.trim() ? miniMarkdown(content)
     : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
 }
@@ -470,9 +486,9 @@ function setGuidelineMarkdownMode(mode) {
   if (!editing) updateGuidelineMarkdownPreview();
 }
 
-function editGuideline(id) {
-  selectedGuidelineId = id;
-  guidelineMarkdownMode = id ? "preview" : "edit";
+function editGuideline(name) {
+  selectedGuidelineName = name;
+  guidelineMarkdownMode = name ? "preview" : "edit";
   configChatSelection = null;
   configEditorDirty.guidelines = false;
   if (currentTab !== "guidelines") switchTab("guidelines");
@@ -480,16 +496,12 @@ function editGuideline(id) {
 }
 
 async function saveGuideline() {
-  const id = document.getElementById("gf-id").value.trim();
-  if (!id) { uiAlert("请输入准则 id"); return; }
-  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
-    id,
-    title: document.getElementById("gf-title").value.trim(),
-    summary: document.getElementById("gf-summary").value.trim(),
-    content: document.getElementById("gf-content").value,
+  const saved = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
+    original_name: selectedGuidelineName,
+    markdown: document.getElementById("gf-content").value,
     enabled: document.getElementById("gf-enabled").classList.contains("on"),
   });
-  selectedGuidelineId = id;
+  selectedGuidelineName = saved.name;
   guidelineMarkdownMode = "preview";
   configEditorDirty.guidelines = false;
   await loadOverview();
@@ -497,10 +509,10 @@ async function saveGuideline() {
   toast("准则文档已保存", "success");
 }
 
-async function deleteGuideline(id) {
-  if (!await uiConfirm(`删除准则文档「${id}」？`)) return;
-  await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(id)}`);
-  selectedGuidelineId = undefined;
+async function deleteGuideline(name) {
+  if (!await uiConfirm(`删除准则文档「${name}」？`)) return;
+  await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(name)}`);
+  selectedGuidelineName = undefined;
   configEditorDirty.guidelines = false;
   await loadOverview();
   renderGuidelinesPage(true);

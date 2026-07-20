@@ -9,6 +9,7 @@ from missioncrew.runtime import adapters
 from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
+from missioncrew.collab.project_context import guideline_context_dir
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend,
                                      ExecutionConfig, GuidelineDocument, ProjectResource,
                                      ProjectSkill, Task, TaskStage)
@@ -134,11 +135,11 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     ))
     project.skills.append(ProjectSkill(id="common", instructions="所有角色通用"))
     project.guidelines.append(GuidelineDocument(
-        id="dev-guide", summary="开发代码或 API 时使用", content="开发相关任务准则"))
+        name="dev-guide", description="开发代码或 API 时使用", content="开发相关任务准则"))
     project.guidelines.append(GuidelineDocument(
-        id="tester-guide", summary="设计或执行测试时使用", content="测试相关任务准则"))
+        name="tester-guide", description="设计或执行测试时使用", content="测试相关任务准则"))
     project.guidelines.append(GuidelineDocument(
-        id="disabled-guide", summary="停用摘要", content="停用准则正文", enabled=False))
+        name="disabled-guide", description="停用摘要", content="停用准则正文", enabled=False))
     seeded.put_project(project)
     chat = ChatEngine(seeded)
     msg_id = seeded.add_message("general", "human", "human", "@dev 开发", ["dev"])
@@ -184,10 +185,10 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert not (guideline_dir / "stale.md").exists()
     assert not (guideline_dir.parent / "guidelines.json").exists()
 
-    # 摘要不变但正文更新时，内容版本仍会改变公共上下文版本，已有 session
+    # description 不变但正文更新时，内容版本仍会改变公共上下文版本，已有 session
     # 下一轮会收到更新提示；完整文件也会原子刷新为新正文。
     first_context_version = chat_cfg.context_version
-    next(row for row in project.guidelines if row.id == "dev-guide").content = "开发准则第二版"
+    next(row for row in project.guidelines if row.name == "dev-guide").content = "开发准则第二版"
     seeded.put_project(project)
     updated_cfg = chat._assemble(
         seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
@@ -200,16 +201,41 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
 def test_guideline_and_skill_management_have_no_binding_fields(seeded):
     client = _client(seeded)
     guideline = client.post("/api/projects/webshop/guidelines", json={
-        "id": "testing", "title": "测试规范", "summary": "修改行为时使用",
-        "content": "所有修复必须回归。",
+        "markdown": "---\nname: testing\ndescription: 修改行为时使用\n---\n\n"
+                    "# 测试规范\n\n所有修复必须回归。\n",
         "actor_role_id": "lead",
     })
     assert guideline.status_code == 200
-    assert guideline.json()["summary"] == "修改行为时使用"
+    assert guideline.json()["name"] == "testing"
+    assert guideline.json()["description"] == "修改行为时使用"
+    assert guideline.json()["markdown"].startswith(
+        "---\nname: testing\ndescription: 修改行为时使用\n---\n")
     assert all(key not in guideline.json() for key in ("file_refs", "role_ids"))
+    materialized_dir = guideline_context_dir(seeded.get_project("webshop"))
+    assert (materialized_dir / "testing.md").read_text() == guideline.json()["markdown"]
+
+    renamed = client.post("/api/projects/webshop/guidelines", json={
+        "original_name": "testing",
+        "markdown": "---\nname: regression-testing\n"
+                    "description: 从 Markdown 文件头直接读取的新说明\n---\n\n正文\n",
+        "actor_role_id": "lead",
+    })
+    assert renamed.status_code == 200
+    assert renamed.json()["description"] == "从 Markdown 文件头直接读取的新说明"
+    assert not (materialized_dir / "testing.md").exists()
+    assert (materialized_dir / "regression-testing.md").read_text() == renamed.json()["markdown"]
+    persisted = seeded.get_project("webshop")
+    assert [g.name for g in persisted.guidelines].count("regression-testing") == 1
+    assert all(g.name != "testing" for g in persisted.guidelines)
     assert client.post("/api/projects/webshop/guidelines", json={
-        "id": "forbidden", "actor_role_id": "tester",
+        "markdown": "---\nname: forbidden\ndescription: no\n---\n",
+        "actor_role_id": "tester",
     }).status_code == 403
+    wrong_attributes = client.post("/api/projects/webshop/guidelines", json={
+        "markdown": "---\nid: wrong\nsummary: old\n---\n", "actor_role_id": "lead",
+    })
+    assert wrong_attributes.status_code == 400
+    assert "id, summary" in wrong_attributes.json()["detail"]
     skill = client.post("/api/projects/webshop/skills", json={
         "id": "local-ci", "name": "本地 CI", "instructions": "运行完整测试",
         "actor_role_id": "lead",
@@ -228,10 +254,20 @@ def test_guideline_and_skill_management_have_no_binding_fields(seeded):
         "runtime_instructions": {"std-1": "旧覆盖"},
     })
     assert "[specs/testing.md](specs/testing.md)" in legacy_guideline.content
-    assert legacy_guideline.summary == "相关文档"
+    assert legacy_guideline.description == "相关文档"
     assert "[specs/testing.md](specs/testing.md)" in legacy_skill.instructions
     assert "旧覆盖" in legacy_skill.instructions
     assert not hasattr(legacy_guideline, "role_ids") and not hasattr(legacy_skill, "role_ids")
+
+    # 兼容清理曾误写入正文的旧 frontmatter，避免运行时生成两层文件头。
+    migrated_header = GuidelineDocument.from_dict({
+        "id": "outer-name", "summary": "outer description",
+        "content": "---\nid: legacy-name\ntitle: 旧标题\nsummary: 正文文件头摘要\n---\n\n正文",
+    })
+    assert migrated_header.name == "legacy-name"
+    assert migrated_header.description == "正文文件头摘要"
+    assert migrated_header.content == "正文"
+    assert migrated_header.render_markdown().count("---") == 2
 
 
 def test_sandboxed_cli_commands_allow_the_document_library():
@@ -457,9 +493,9 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     reply = chat._apply_orchestrator_actions(
         seeded.get_project("webshop"), "lead",
         '配置已生成。'
-        '<missioncrew-action>{"action":"save_guideline","id":"api-style",'
-        '"title":"API 规范","summary":"修改 API 时使用",'
-        '"content":"保持兼容","enabled":true}'
+        '<missioncrew-action>{"action":"save_guideline",'
+        '"markdown":"---\\nname: api-style\\ndescription: 修改 API 时使用\\n---\\n\\n'
+        '# API 规范\\n\\n保持兼容","enabled":true}'
         '</missioncrew-action>'
         '<missioncrew-action>{"action":"save_skill","id":"local-ci",'
         '"name":"本地 CI","instructions":"运行 [CI](runbooks/local-ci.md)",'
@@ -473,8 +509,9 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
         root_id=1, depth=0,
     )
     project = seeded.get_project("webshop")
-    assert next(g for g in project.guidelines if g.id == "api-style").content == "保持兼容"
-    assert next(g for g in project.guidelines if g.id == "api-style").summary == "修改 API 时使用"
+    guideline = next(g for g in project.guidelines if g.name == "api-style")
+    assert guideline.content == "# API 规范\n\n保持兼容"
+    assert guideline.description == "修改 API 时使用"
     assert next(s for s in project.skills if s.id == "local-ci").instructions == \
         "运行 [CI](runbooks/local-ci.md)"
     assert next(r for r in project.rules if r.match == {"labels": ["auth"]}).require_gates == [
@@ -509,7 +546,7 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     assert all(action in prompt for action in (
         "save_guideline", "save_skill", "save_rule", "write_document"))
     assert "original_match" in prompt and "只提问或讨论时直接回答" in prompt
-    assert "api-style(API 规范):修改 API 时使用" in prompt
+    assert "api-style:修改 API 时使用" in prompt
     assert "local-ci(本地 CI)" in prompt
     assert "## 现有 Runtime" in prompt and "std-1: adapter=" in prompt
 
@@ -557,7 +594,10 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "CONFIG_CHAT_HEIGHT_KEY" in js and "CONFIG_CHAT_COLLAPSED_KEY" in js
     assert "guideline-markdown-preview markdown-body" in js
     assert "setGuidelineMarkdownMode" in js
-    assert 'id="gf-summary"' in js and 'summary: valueOf("gf-summary")' in js
+    assert 'GUIDELINE_MARKDOWN_PLACEHOLDER = "---\\nname: \\ndescription: \\n---' in js
+    assert "frontmatter_contract" in js and "current_draft.markdown" in js
+    assert "original_name: selectedGuidelineName" in js
+    assert all(old not in js for old in ('id="gf-id"', 'id="gf-title"', 'id="gf-summary"'))
     assert "roleBindingPicker" not in js and "role_ids" not in js
     assert "fileRefPicker" not in js and "runtime_instructions" not in js
     assert "line_start" in js and "selected_text" in js
@@ -746,9 +786,9 @@ def test_dev_guidelines_migrated_into_guideline_doc(seeded):
     assert seed_mod.migrate_project_fields(seeded) == 1
     p2 = seeded.get_project("webshop")
     assert p2.dev_guidelines == ""
-    doc = next(g for g in p2.guidelines if g.id == "dev-guidelines")
-    assert "旧开发准则内容" in doc.content and doc.title == "开发准则"
-    assert doc.summary == "项目开发中的架构、代码与变更约束。"
+    doc = next(g for g in p2.guidelines if g.name == "dev-guidelines")
+    assert "旧开发准则内容" in doc.content
+    assert doc.description == "项目开发中的架构、代码与变更约束。"
     assert seed_mod.migrate_project_fields(seeded) == 0   # 幂等
 
 

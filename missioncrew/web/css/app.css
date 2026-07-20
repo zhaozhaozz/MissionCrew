@@ -372,18 +372,14 @@
   .guideline-workspace { display: flex; flex-direction: column; height: 100%; min-height: 0; }
   .guideline-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
                        flex: none; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-  .form .guideline-toolbar-field, .form .guideline-enabled {
+  .form .guideline-toolbar-field, .form .guideline-enabled,
+  .form .guideline-current-name {
     display: flex; align-items: center; gap: 6px; margin: 0; color: var(--muted);
     font-size: 11.5px; white-space: nowrap;
   }
   .form .guideline-toolbar-field input { width: auto; min-width: 0; padding: 5px 8px;
                                          background: var(--card); }
-  .guideline-toolbar-field.guideline-id { width: min(210px, 22vw); }
-  .guideline-toolbar-field.guideline-title { flex: 1 1 240px; }
-  .guideline-toolbar-field.guideline-summary { flex: 2 1 360px; }
-  .guideline-toolbar-field.guideline-id input,
-  .guideline-toolbar-field.guideline-title input,
-  .guideline-toolbar-field.guideline-summary input { flex: 1; }
+  .guideline-current-name code { font-size: 12px; color: var(--text); }
   .guideline-enabled { padding: 0 3px; }
   .guideline-toolbar-spacer { flex: 1 1 10px; }
   .guideline-view-toggle { display: flex; padding: 2px; border: 1px solid var(--line);
@@ -454,7 +450,8 @@
     .config-chat { left: 10px; right: 10px; bottom: 10px; }
     .config-chat-head strong { display: none; }
     .config-chat.collapsed { left: auto; right: 10px; }
-    .guideline-toolbar-field.guideline-id { width: 100%; }
+    .guideline-current-name { max-width: 100%; overflow: hidden; }
+    .guideline-current-name code { overflow: hidden; text-overflow: ellipsis; }
     #guidelines-view, #skills-view, #rules-view, #docs-view {
       padding-bottom: var(--config-chat-space, 308px);
     }

@@ -12,6 +12,8 @@ import time
 from dataclasses import dataclass, field, asdict
 from typing import Callable, Optional
 
+import yaml as _yaml
+
 # 成本档位从低到高,路由优先低档,失败后逐级升级
 TIER_ORDER = ["economy", "standard", "expert"]
 DEFAULT_MAX_CHAIN_RUNS = 20
@@ -113,19 +115,86 @@ class Rule:
 
 @dataclass
 class GuidelineDocument:
-    """一篇项目准则文档；由执行者结合当前任务判断是否适用。"""
+    """一篇项目准则；name/description 与 Markdown frontmatter 同源。"""
 
-    id: str
-    title: str = ""
-    summary: str = ""
+    name: str
+    description: str = ""
     content: str = ""
     enabled: bool = True
+
+    _FRONTMATTER_RE = _re.compile(
+        r"\A---[ \t]*\r?\n(?P<header>.*?)\r?\n---[ \t]*(?:\r?\n|\Z)",
+        _re.DOTALL,
+    )
+
+    @classmethod
+    def _split_markdown(cls, markdown: str, *, legacy: bool = False) -> tuple[dict, str]:
+        match = cls._FRONTMATTER_RE.match(markdown)
+        if not match:
+            raise ValueError("准则 Markdown 必须以 YAML frontmatter 开头")
+        try:
+            attributes = _yaml.safe_load(match.group("header")) or {}
+        except _yaml.YAMLError as exc:
+            raise ValueError(f"准则 frontmatter 不是有效 YAML：{exc}") from exc
+        if not isinstance(attributes, dict):
+            raise ValueError("准则 frontmatter 必须是属性对象")
+        allowed = {"name", "description"}
+        if legacy:
+            allowed |= {"id", "title", "summary"}
+        unexpected = sorted(set(attributes) - allowed)
+        if unexpected:
+            raise ValueError("准则 frontmatter 不支持属性：" + ", ".join(unexpected))
+        content = markdown[match.end():]
+        # frontmatter 与正文之间的一个空行属于文件结构，不作为正文内容保存。
+        if content.startswith("\r\n"):
+            content = content[2:]
+        elif content.startswith("\n"):
+            content = content[1:]
+        return attributes, content
+
+    @classmethod
+    def from_markdown(cls, markdown: str, enabled: bool = True) -> "GuidelineDocument":
+        """从用户编辑的完整 Markdown 读取 name/description，不维护字段映射。"""
+        if not isinstance(markdown, str):
+            raise ValueError("准则 Markdown 必须是字符串")
+        attributes, content = cls._split_markdown(markdown)
+        name = attributes.get("name")
+        description = attributes.get("description")
+        if name is None:
+            name = ""
+        if description is None:
+            description = ""
+        if not isinstance(name, str) or not isinstance(description, str):
+            raise ValueError("准则 frontmatter 的 name 和 description 必须是字符串")
+        return cls(name=name.strip(), description=description.strip(),
+                   content=content.rstrip(), enabled=enabled)
+
+    def render_markdown(self) -> str:
+        frontmatter = _yaml.safe_dump(
+            {"name": self.name, "description": self.description},
+            allow_unicode=True, sort_keys=False, default_flow_style=False,
+        ).strip()
+        body = self.content.rstrip()
+        return f"---\n{frontmatter}\n---\n" + (f"\n{body}\n" if body else "")
+
+    def to_dict(self) -> dict:
+        # markdown 是持久化事实源；name/description 便于 API 消费，并在读取时由
+        # markdown 重新解析，避免两套属性发生漂移。
+        return {
+            "name": self.name,
+            "description": self.description,
+            "markdown": self.render_markdown(),
+            "enabled": self.enabled,
+        }
 
     @classmethod
     def from_dict(cls, value: dict | str) -> "GuidelineDocument":
         if isinstance(value, str):
-            return cls(id=value, title=value, summary=value)
+            return cls(name=value, description=value)
         data = dict(value)
+        if "markdown" in data:
+            return cls.from_markdown(str(data["markdown"]), bool(data.get("enabled", True)))
+
         refs = data.pop("file_refs", [])  # 旧引用迁移成普通 Markdown 链接
         if refs:
             content = str(data.get("content", ""))
@@ -135,13 +204,35 @@ class GuidelineDocument:
                 data["content"] = "\n\n".join(
                     part for part in (content, "## 相关文档\n" + "\n".join(links)) if part)
         data.pop("role_ids", None)  # 短期版本曾支持角色绑定，现统一由执行者判断
-        if "summary" not in data:
+        data.pop("title", None)
+
+        # 兼容曾被保存进正文的 id/title/summary frontmatter；迁移后只输出
+        # name/description，正文不会再套一层 frontmatter。
+        raw_content = str(data.get("content", ""))
+        if cls._FRONTMATTER_RE.match(raw_content):
+            try:
+                attributes, raw_content = cls._split_markdown(raw_content, legacy=True)
+            except ValueError:
+                attributes = {}
+            else:
+                data["content"] = raw_content.rstrip()
+                data["name"] = attributes.get("name", attributes.get("id", ""))
+                data["description"] = attributes.get(
+                    "description", attributes.get("summary", ""))
+
+        legacy_id = data.pop("id", "")
+        data["name"] = str(data.get("name") or legacy_id).strip()
+        if "description" not in data and "summary" in data:
+            data["description"] = data["summary"]
+        data.pop("summary", None)
+        if "description" not in data:
             # 旧条目没有摘要；取正文首个非空行作为一次性兼容摘要，避免升级后
             # 公共上下文只剩无法判断用途的 id。之后可在 Web 中独立编辑摘要。
             first_line = next((line.strip().lstrip("# ").strip()
                                for line in str(data.get("content", "")).splitlines()
                                if line.strip()), "")
-            data["summary"] = first_line[:240]
+            data["description"] = first_line[:240]
+        data["description"] = str(data.get("description", "")).strip()
         return cls(**data)
 
 
@@ -238,7 +329,9 @@ class Project:
         return [r.path for r in self.repos if r.path]
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        data["guidelines"] = [guideline.to_dict() for guideline in self.guidelines]
+        return data
 
     @classmethod
     def from_dict(cls, d: dict) -> "Project":

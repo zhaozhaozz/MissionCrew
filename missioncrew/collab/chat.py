@@ -27,7 +27,7 @@ from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            BoardWidget, Channel, ExecutionConfig,
                            GuidelineDocument, ProjectSkill, Role, Rule)
 from .project_context import (guideline_context_dir, project_allowed_dirs,
-                              render_project_context)
+                              render_project_context, write_guideline_context)
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -101,7 +101,7 @@ ORCHESTRATOR_TEMPLATE = """\
 <missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
 <missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_guideline","id":"dev-spec","title":"开发规范","summary":"涉及代码实现、API 或数据库变更时使用","content":"Markdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_guideline","markdown":"---\\nname: dev-spec\\ndescription: 涉及代码实现、API 或数据库变更时使用\\n---\\n\\n# 开发规范\\n\\nMarkdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_skill","id":"local-ci","name":"本地 CI","description":"用途","instructions":"完整执行说明，可用 [本地 CI](runbooks/local-ci.md) 链接项目文档","enabled":true}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_rule","match":{{"task_type":"bug"}},"require_evidence":["reproduction","regression_test"],"require_gates":[],"require_capabilities":[],"note":"Bug 验证要求"}}</missioncrew-action>
 <missioncrew-action>{{"action":"write_document","path":"specs/design.md","content":"Markdown 正文","message":"新增设计文档"}}</missioncrew-action>
@@ -122,9 +122,12 @@ ORCHESTRATOR_TEMPLATE = """\
     {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
-- save_guideline / save_skill 按 id 新建或覆盖。不要建立文件、Runtime 或角色绑定列表；
-  需要关联项目文档时，在正文中写标准相对 Markdown 链接。准则 summary 应简洁说明适用场景；
-  所有执行者只会收到已启用准则的摘要，并在相关时从对应准则 Markdown 文件读取完整正文。
+- save_guideline 接收完整 markdown，文件必须以只含 name、description 的 YAML
+  frontmatter 开头；后端直接读取这两个属性，不使用 id/title/summary，也不做字段转换。
+  修改并重命名现有准则时传 original_name。save_skill 仍按 id 新建或覆盖。
+  不要建立文件、Runtime 或角色绑定列表；需要关联项目文档时，在正文中写标准相对
+  Markdown 链接。description 应简洁说明适用场景；所有执行者只会收到已启用准则的
+  description，并在相关时从对应准则 Markdown 文件读取完整正文。
   Skill 仍结合当前任务自行判断是否适用、是否需要读取链接文件。
 - save_rule 默认以 match 对象作为规则身份；修改现有规则的 match 时，可额外传
   original_match 定位旧规则，平台会在原位置更新，避免留下重复规则。
@@ -666,7 +669,7 @@ class ChatEngine:
             + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
             for b in self.store.list_boards(project.id)) or "(无)"
         guidelines = "\n".join(
-            f"- {g.id}({g.title or g.id}):{g.summary or '未填写摘要'}"
+            f"- {g.name}:{g.description or '未填写 description'}"
             f"{'[停用]' if not g.enabled else ''}"
             for g in project.guidelines) or "(无)"
         skills = "\n".join(
@@ -807,26 +810,33 @@ class ChatEngine:
                              detail=f"project={project.id} match={rule.match}")
             return f"已{'更新' if replaced else '新增'}验证规则 {rule.match}"
 
-        raw_id = str(action.get("id", "")).strip()
-        if not CONTROL_ID_RE.fullmatch(raw_id):
-            raise ValueError("id 只能包含字母、数字、下划线、连字符")
         enabled = action.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ValueError("enabled 必须是布尔值")
 
         if kind == "save_guideline":
-            guideline = GuidelineDocument(
-                id=raw_id, title=str(action.get("title", "")),
-                summary=str(action.get("summary", "")),
-                content=str(action.get("content", "")), enabled=enabled,
-            )
-            project.guidelines = [g for g in project.guidelines if g.id != raw_id]
+            markdown = action.get("markdown", "")
+            if not isinstance(markdown, str):
+                raise ValueError("save_guideline.markdown 必须是字符串")
+            guideline = GuidelineDocument.from_markdown(markdown, enabled)
+            if not CONTROL_ID_RE.fullmatch(guideline.name):
+                raise ValueError("准则 name 只能包含字母、数字、下划线、连字符")
+            original_name = str(action.get("original_name", "")).strip()
+            if original_name and not CONTROL_ID_RE.fullmatch(original_name):
+                raise ValueError("original_name 只能包含字母、数字、下划线、连字符")
+            replaced_names = {guideline.name, original_name} - {""}
+            project.guidelines = [
+                g for g in project.guidelines if g.name not in replaced_names]
             project.guidelines.append(guideline)
             self.store.put_project(project)
+            write_guideline_context(project)
             self.store.audit(role_id, "guideline_saved",
-                             detail=f"project={project.id} guideline={raw_id}")
-            return f"已保存准则文档 {guideline.title or raw_id}"
+                             detail=f"project={project.id} guideline={guideline.name}")
+            return f"已保存准则文档 {guideline.name}"
 
+        raw_id = str(action.get("id", "")).strip()
+        if not CONTROL_ID_RE.fullmatch(raw_id):
+            raise ValueError("id 只能包含字母、数字、下划线、连字符")
         skill = ProjectSkill(
             id=raw_id, name=str(action.get("name", "")),
             description=str(action.get("description", "")),

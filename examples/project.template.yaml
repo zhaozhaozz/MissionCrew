@@ -23,18 +23,26 @@ charter: |
 dev_guidelines: |
   技术栈、分层约定、API 兼容性要求、禁止事项。
 
-# 多篇完整准则文档；公共上下文只注入摘要，Agent 判断相关后按需读取全文。
-# 关联项目文档时直接使用普通相对 Markdown 链接，Agent 会按需读取。
+# 多篇完整准则 Markdown；后端直接读取 name/description frontmatter。
+# 公共上下文只注入 description；关联项目文档时使用普通相对 Markdown 链接。
 guidelines:
-  - id: testing
-    title: 测试规范
-    summary: 修改行为、修复缺陷或设计测试时使用。
-    content: |
+  - markdown: |
+      ---
+      name: testing
+      description: 修改行为、修复缺陷或设计测试时使用。
+      ---
+
+      # 测试规范
+
       修复缺陷必须提供回归测试；测试失败必须保留可复现输入和关键输出。执行方式见[本地 CI](runbooks/local-ci.md)。
-  - id: deployment
-    title: 部署说明
-    summary: 涉及部署、数据库迁移或生产配置时使用。
-    content: |
+  - markdown: |
+      ---
+      name: deployment
+      description: 涉及部署、数据库迁移或生产配置时使用。
+      ---
+
+      # 部署说明
+
       部署前完成数据库迁移检查、配置检查和回滚演练，具体步骤见[部署手册](runbooks/deploy.md)。
 
 # 项目 Skill 是完整说明文档；所有 Agent 都会收到已启用条目并自行判断是否适用。
