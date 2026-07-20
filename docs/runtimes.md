@@ -36,13 +36,15 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `{prompt}` — 装配好的完整提示词(角色定位、项目上下文、最近对话、触发消息);
 - `{model}` — 角色固定的模型;为空时该 token 连同紧邻的 `--model`/`-m` 标志一起移除,即显式使用 CLI 默认模型;
 - `{effort}` — 角色固定的推理力度(见下方 Effort 一节);为空时连同紧邻的 `--effort`/`-c` 标志一起移除;
-- `{documents_dir}` — 项目文档库路径;为空时连同 `--add-dir` 一起移除。
+- `{documents_dir}` — 项目文档库路径的兼容占位符；新模板应使用 `{allowed_dirs}`；
+- `{allowed_dirs}` — 当前项目全部本地资源目录与文档库；会展开为重复的 `--add-dir <path>`；
+- `{workdir}` — 本次主工作目录，用于需要显式工作根参数的 CLI。
 
-模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。完整输出落盘到工作区 `.mc_last_output_<adapter>.log` 便于回查,聊天回复取输出尾部。
+默认模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。Claude、Codex、Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则；Grok/OpenCode 同时显式传主工作目录；Cursor print 模式带 `--force`。完整输出落盘到工作区 `.mc_last_output_<adapter>.log` 便于回查,聊天回复取输出尾部。
 
 ### ACP stdio(`AcpAdapter`,kimi / kiro / qoder / trae)
 
-这类 CLI 不接受"命令行传 prompt"的调用方式,而是作为 JSON-RPC 2.0 服务挂在 stdio 上(换行分隔)。serve 命令在 `ACP_SERVE_COMMANDS` 中定义(如 `kimi acp`、`qodercli --yolo --acp`),`Backend.command` 同样可覆盖。协议流程(`acp.py`):
+这类 CLI 不接受"命令行传 prompt"的调用方式,而是作为 JSON-RPC 2.0 服务挂在 stdio 上(换行分隔)。serve 命令在 `ACP_SERVE_COMMANDS` 中定义；Kimi、Qoder、Trae 会在启动 ACP 服务前逐个传入项目额外目录，Kiro 使用其 trust-all-tools 模式并由 ACP 权限请求应答完成外部访问。`Backend.command` 同样可覆盖，也可使用 `{allowed_dirs}` / `{workdir}` 占位符。协议流程(`acp.py`):
 
 ```text
 initialize → session/new → [session/set_model] → session/prompt
@@ -100,7 +102,7 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 执行环境
 
-每次执行的进程环境:工作目录为频道 workdir(绑定代码仓的用仓路径,否则用平台自有目录并软链文档库);环境变量注入 `MISSIONCREW_DOCUMENTS_DIR` 指向项目文档库,claude/codex 模板同时用 `--add-dir` 授权访问;执行前后平台对文档库做快照提交,Agent 直接写目录的改动进入版本历史与审计。聊天执行超时 900 秒。
+每次执行的进程环境:工作目录为频道 workdir(绑定代码仓的用仓路径,否则用平台自有目录并软链文档库)。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录与文档库；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。子进程 `PWD` 与实际 `cwd` 强制保持一致，避免 Runtime 从继承环境误判工作根。`MISSIONCREW_DOCUMENTS_DIR` 继续单独指向文档库；执行前后平台对文档库做快照提交,Agent 直接写目录的改动进入版本历史与审计。聊天执行超时 900 秒。
 
 ## 接入新工具
 

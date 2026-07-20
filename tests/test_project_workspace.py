@@ -1,4 +1,6 @@
 """项目主控、频道、文档库、自定义面板和结构化上下文的集成测试。"""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -6,7 +8,8 @@ from missioncrew.runtime import adapters
 from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
-from missioncrew.core.models import ProjectSkill, Task, TaskStage
+from missioncrew.core.models import (Backend, ExecutionConfig, ProjectResource,
+                                     ProjectSkill, Task, TaskStage)
 from missioncrew.api import create_app
 
 
@@ -174,6 +177,94 @@ def test_sandboxed_cli_commands_allow_the_document_library():
         adapters.DEFAULT_COMMANDS["claude_code"], "work", "sonnet", docs)
     assert codex[codex.index("--add-dir") + 1] == docs
     assert claude[claude.index("--add-dir") + 1] == docs
+
+
+def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_path):
+    repo_a, repo_b = tmp_path / "repo-a", tmp_path / "repo-b"
+    repo_a.mkdir()
+    repo_b.mkdir()
+    project = seeded.get_project("webshop")
+    project.repos = [
+        ProjectResource(id="a", kind="path", path=str(repo_a)),
+        ProjectResource(id="b", kind="path", path=str(repo_b)),
+        # 同一路径的重复资源只应授权一次。
+        ProjectResource(id="b-copy", kind="path", path=str(repo_b)),
+        ProjectResource(id="remote", kind="git", remote="https://example.com/x.git"),
+    ]
+    seeded.put_project(project)
+    library = library_for("webshop")
+    expected = [str(repo_a.resolve()), str(repo_b.resolve()), str(library.root.resolve())]
+
+    chat = ChatEngine(seeded)
+    message = seeded.add_message("general", "human", "human", "@dev 检查两个仓库", ["dev"])
+    chat_cfg = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), message,
+    )
+    task_cfg = assembler.assemble(
+        Task(id="multi_repo", project_id="webshop", title="multi"),
+        TaskStage(name="develop"), project, seeded.get_backend("std-1"), {}, [], [],
+    )
+
+    assert chat_cfg.allowed_dirs == task_cfg.allowed_dirs == expected
+    assert all(path in chat_cfg.prompt and path in task_cfg.prompt for path in expected)
+
+
+def test_all_runtime_commands_apply_directory_policy():
+    dirs = ["/projects/a", "/projects/b"]
+    workdir = "/workspace"
+
+    rendered = {
+        name: adapters.render_command(template, "work", "model",
+                                      allowed_dirs=dirs, workdir=workdir)
+        for name, template in adapters.DEFAULT_COMMANDS.items()
+    }
+    for name in ("claude_code", "codex", "codebuddy"):
+        assert rendered[name].count("--add-dir") == len(dirs)
+        assert all(path in rendered[name] for path in dirs)
+    assert [arg for arg in rendered["copilot"] if arg.startswith("--add-dir=")] == [
+        f"--add-dir={path}" for path in dirs]
+    assert rendered["grok_build"][rendered["grok_build"].index("--cwd") + 1] == workdir
+    assert rendered["opencode"][rendered["opencode"].index("--dir") + 1] == workdir
+    assert "--force" in rendered["cursor"]
+    assert rendered["pi"][:2] == ["pi", "-p"]
+
+    acp_commands = {
+        name: adapters.render_command(template, "", "", allowed_dirs=dirs)
+        for name, template in adapters.ACP_SERVE_COMMANDS.items()
+    }
+    for name in ("kimi", "qoder", "trae"):
+        assert acp_commands[name].count("--add-dir") == len(dirs)
+        assert all(path in acp_commands[name] for path in dirs)
+    assert "--trust-all-tools" in acp_commands["kiro"]
+
+
+def test_runtime_environment_syncs_pwd_and_scopes_opencode_external_dirs(tmp_path):
+    workspace = tmp_path / "workspace"
+    external = tmp_path / "shared"
+    workspace.mkdir()
+    external.mkdir()
+    backend = Backend(id="oc", name="OpenCode", adapter="opencode")
+    cfg = ExecutionConfig(
+        task_id="t", stage_name="chat", backend=backend, prompt="work",
+        workdir=str(workspace),
+        allowed_dirs=[str(workspace), str(external)],
+        env={"OPENCODE_CONFIG_CONTENT": json.dumps({
+            "permission": {"bash": "ask", "external_directory": {"*": "deny"}}
+        })},
+    )
+
+    for name in [*adapters.DEFAULT_COMMANDS, *adapters.ACP_SERVE_COMMANDS]:
+        env = adapters._runtime_env(cfg, name)
+        assert env["PWD"] == str(workspace.resolve())
+        assert json.loads(env["MISSIONCREW_ALLOWED_DIRS"]) == cfg.allowed_dirs
+
+    config = json.loads(adapters._runtime_env(cfg, "opencode")["OPENCODE_CONFIG_CONTENT"])
+    assert config["permission"]["bash"] == "ask"
+    rules = config["permission"]["external_directory"]
+    assert rules["*"] == "deny"
+    assert rules[f"{external.resolve()}/**"] == "allow"
+    assert f"{workspace.resolve()}/**" not in rules
 
 
 # ---- 主控调度闭环:post_message / workdir / 布局保留 / 权限门 ----

@@ -490,6 +490,9 @@ class ExecutionConfig:
     backend: Backend
     prompt: str
     workdir: str
+    # 项目显式登记、允许 Runtime 读写的本地目录。workdir 是主工作根，
+    # allowed_dirs 是额外的多仓/文档库边界，由各适配器翻译成原生参数。
+    allowed_dirs: list[str] = field(default_factory=list)
     env: dict = field(default_factory=dict)
     timeout: int = 3600
     effort: str = ""      # 推理力度(聊天执行由角色填入;任务阶段暂不使用)

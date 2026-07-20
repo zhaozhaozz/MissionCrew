@@ -1,11 +1,28 @@
 """统一装配项目准则、文档库和按 Runtime 过滤的 Skills。"""
 from __future__ import annotations
 
+from pathlib import Path
+
 from .documents import DocumentLibrary
 from ..core.models import Backend, GuidelineDocument, Project, ProjectSkill
 
 _MAX_REF_CHARS = 32_000
 _MAX_CONTEXT_REF_CHARS = 96_000
+
+
+def project_allowed_dirs(project: Project, library: DocumentLibrary) -> list[str]:
+    """返回项目显式授权给 Runtime 的现存本地目录，解析后去重。"""
+    found = []
+    seen = set()
+    for raw in [*project.repo_paths(), str(library.root)]:
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            continue
+        resolved = str(path.resolve())
+        if resolved not in seen:
+            seen.add(resolved)
+            found.append(resolved)
+    return found
 
 
 def _render_refs(refs: list[str], library: DocumentLibrary, budget: list[int]) -> str:
@@ -60,12 +77,15 @@ def render_project_context(project: Project, backend: Backend,
         _render_skill(skill, backend, library, budget)
         for skill in project.skills if skill.applies_to(backend)
     ]
+    allowed_dirs = project_allowed_dirs(project, library)
+    dirs_section = "\n".join(f"- {path}" for path in allowed_dirs) or "（无本地目录）"
     return "\n\n".join([
         f"# 项目上下文：{project.name}",
         ("# 项目准则文档\n" + "\n\n".join(guidelines))
         if guidelines else "# 项目准则文档\n（未配置）",
         f"# 项目文档库\n目录：{library.root}\n"
         "所有角色可在该普通目录中读写文档；平台会在每次执行后记录 Git 版本。",
+        "# 项目可读写目录\n以下目录由项目资源列表显式授权，可直接读写：\n" + dirs_section,
         (f"# 当前 Runtime 可用 Skills（{backend.id}/{backend.adapter}）\n"
          + "\n\n".join(skills)) if skills else
         f"# 当前 Runtime 可用 Skills（{backend.id}/{backend.adapter}）\n（无匹配 Skill）",

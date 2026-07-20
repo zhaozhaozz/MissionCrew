@@ -23,7 +23,7 @@ from ..core.config import mc_home
 from .documents import library_for
 from ..core.models import (BOARD_WIDGET_TYPES, Board, BoardWidget, Channel,
                      ExecutionConfig, Role)
-from .project_context import render_project_context
+from .project_context import project_allowed_dirs, render_project_context
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -300,12 +300,14 @@ class ChatEngine:
         project_section = ""
         orchestrator_section = ""
         env = {}
+        allowed_dirs = []
         if channel.project_id:
             project = self.store.get_project(channel.project_id)
             if project:
                 library = library_for(project.id)
                 project_section = render_project_context(project, backend, library)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
+                allowed_dirs = project_allowed_dirs(project, library)
                 if not channel.workdir:   # 平台自有工作区才建软链,不污染真实代码仓
                     library.link_into(workdir)
                 if role.id == project.orchestrator_role_id:
@@ -346,7 +348,8 @@ class ChatEngine:
         )
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
-            prompt=prompt, workdir=str(workdir), env=env, timeout=CHAT_TIMEOUT,
+            prompt=prompt, workdir=str(workdir), allowed_dirs=allowed_dirs,
+            env=env, timeout=CHAT_TIMEOUT,
             effort=role.effort,
         )
 

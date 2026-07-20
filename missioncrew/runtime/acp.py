@@ -25,6 +25,7 @@ class AcpError(Exception):
 class _AcpClient:
     def __init__(self, cmd: list[str], cwd: str, env: dict, timeout: int,
                  emit: Optional[Callable[[str, str], None]] = None):
+        env = {**env, "PWD": cwd}
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, cwd=cwd, env=env,

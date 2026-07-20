@@ -26,34 +26,40 @@ from . import acp
 from ..taskflow.assembler import MANIFEST
 from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 
-# 各适配器的默认命令模板,{prompt}/{model}/{effort} 在运行时替换;
-# model/effort 为空时对应 token 及其前面的参数标志会被移除。
+# 各适配器的默认命令模板；除 prompt/model/effort 外，workdir 与
+# allowed_dirs 由平台按本次项目动态渲染。
 DEFAULT_COMMANDS = {
     # claude 用 stream-json 输出:逐事件拿到思考/工具调用/文本,实时上报
     # 运行过程;最终回复取 result 事件(CliAdapter 检测到 stream-json 才解析)
     "claude_code": ["claude", "-p", "{prompt}", "--model", "{model}",
                     "--effort", "{effort}",
                     "--output-format", "stream-json", "--verbose",
-                    "--permission-mode", "acceptEdits", "--add-dir", "{documents_dir}"],
+                    "--permission-mode", "acceptEdits", "--add-dir", "{allowed_dirs}"],
     "codex": ["codex", "exec", "--sandbox", "workspace-write", "--add-dir",
-              "{documents_dir}", "-m", "{model}",
+              "{allowed_dirs}", "-m", "{model}",
               "-c", "model_reasoning_effort={effort}", "{prompt}"],
     "grok_build": ["grok", "-p", "{prompt}", "--model", "{model}",
-                   "--always-approve", "--no-auto-update"],
-    "opencode": ["opencode", "run", "--model", "{model}", "{prompt}"],
-    "copilot": ["copilot", "-p", "{prompt}", "--model", "{model}", "--allow-all-tools"],
-    "cursor": ["cursor-agent", "-p", "{prompt}", "--model", "{model}"],
-    "codebuddy": ["codebuddy", "-p", "{prompt}", "--model", "{model}"],
+                   "--cwd", "{workdir}", "--always-approve", "--no-auto-update"],
+    "opencode": ["opencode", "run", "--dir", "{workdir}",
+                 "--model", "{model}", "{prompt}"],
+    "copilot": ["copilot", "-p", "{prompt}", "--model", "{model}",
+                "--allow-all-tools", "--add-dir={allowed_dirs}"],
+    # Cursor print 模式需 --force 才会实际落盘；该 CLI 没有多根目录参数，
+    # 额外资源通过绝对路径上下文访问，进程本身不设文件系统沙箱。
+    "cursor": ["cursor-agent", "-p", "--force", "{prompt}", "--model", "{model}"],
+    "codebuddy": ["codebuddy", "-p", "{prompt}", "--model", "{model}",
+                  "--permission-mode", "acceptEdits", "--add-dir", "{allowed_dirs}"],
     "pi": ["pi", "-p", "{prompt}", "--model", "{model}"],
 }
 
 # ACP 协议工具的 serve 命令(来自 Multica 各后端的实际调用参数);
 # Backend.command 可整体覆盖(ACP 命令没有 {prompt} 占位符,prompt 走协议)
 ACP_SERVE_COMMANDS = {
-    "kimi": ["kimi", "acp"],
+    "kimi": ["kimi", "--add-dir", "{allowed_dirs}", "acp"],
     "kiro": ["kiro-cli", "acp", "--trust-all-tools"],
-    "qoder": ["qodercli", "--yolo", "--acp"],
-    "trae": ["traecli", "acp", "serve", "--yolo"],
+    "qoder": ["qodercli", "--add-dir", "{allowed_dirs}", "--yolo", "--acp"],
+    "trae": ["traecli", "--add-dir", "{allowed_dirs}",
+             "acp", "serve", "--yolo"],
 }
 
 # 本地 CLI 检测表:binary -> (adapter, 默认能力, 默认档位, 成本估算)
@@ -242,8 +248,12 @@ def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
 
 
 def render_command(template: list[str], prompt: str, model: str,
-                   documents_dir: str = "", effort: str = "") -> list[str]:
-    """渲染命令模板；空模型/effort/文档目录会连同紧邻的参数标志一起移除。"""
+                   documents_dir: str = "", effort: str = "",
+                   allowed_dirs: Optional[list[str]] = None,
+                   workdir: str = "") -> list[str]:
+    """渲染命令模板，支持把一个 allowed_dirs 占位符展开为重复参数。"""
+    dirs = ([documents_dir] if allowed_dirs is None and documents_dir else
+            list(allowed_dirs or []))
     cmd: list[str] = []
     for tok in template:
         if "{model}" in tok:
@@ -264,8 +274,87 @@ def render_command(template: list[str], prompt: str, model: str,
                     cmd.pop()
                 continue
             tok = tok.replace("{documents_dir}", documents_dir)
+        if "{workdir}" in tok:
+            if not workdir:
+                if cmd and cmd[-1] in ("--cwd", "--dir", "-C", "--cd"):
+                    cmd.pop()
+                continue
+            tok = tok.replace("{workdir}", workdir)
+        if "{allowed_dirs}" in tok:
+            if not dirs:
+                if cmd and cmd[-1] == "--add-dir":
+                    cmd.pop()
+                continue
+            if tok == "{allowed_dirs}":
+                # `--add-dir {allowed_dirs}` 展开为每个目录一组参数，兼容
+                # 只接受重复 flag、不接受一个 flag 后跟多个值的 CLI。
+                flag = cmd.pop() if cmd and cmd[-1] == "--add-dir" else ""
+                for path in dirs:
+                    if flag:
+                        cmd.extend([flag, path])
+                    else:
+                        cmd.append(path)
+                continue
+            for path in dirs:
+                cmd.append(tok.replace("{allowed_dirs}", path))
+            continue
         cmd.append(tok.replace("{prompt}", prompt))
     return cmd
+
+
+def _additional_allowed_dirs(workdir: str, allowed_dirs: list[str]) -> list[str]:
+    """去掉已位于主工作根内的目录，其余目录需要 Runtime 显式授权。"""
+    root = Path(workdir).expanduser().resolve()
+    found = []
+    seen = set()
+    for raw in allowed_dirs:
+        path = Path(raw).expanduser().resolve()
+        try:
+            path.relative_to(root)
+            continue
+        except ValueError:
+            pass
+        value = str(path)
+        if value not in seen:
+            seen.add(value)
+            found.append(value)
+    return found
+
+
+def _runtime_env(cfg: ExecutionConfig, adapter_name: str) -> dict:
+    """构造子进程环境，并为需要配置式多目录授权的 Runtime 注入策略。"""
+    workdir = str(Path(cfg.workdir).expanduser().resolve())
+    env = {**os.environ, **cfg.env, "PWD": workdir}
+    env["MISSIONCREW_ALLOWED_DIRS"] = json.dumps(cfg.allowed_dirs, ensure_ascii=False)
+    if adapter_name != "opencode":
+        return env
+
+    external = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
+    if not external:
+        return env
+    config = {}
+    try:
+        parsed = json.loads(env.get("OPENCODE_CONFIG_CONTENT", "{}"))
+        if isinstance(parsed, dict):
+            config = parsed
+    except json.JSONDecodeError:
+        # 无效的既有 inline 配置本就无法被 OpenCode 使用；本次生成最小有效配置。
+        pass
+    permission = config.get("permission")
+    permission = dict(permission) if isinstance(permission, dict) else {}
+    current = permission.get("external_directory")
+    if isinstance(current, dict):
+        rules = dict(current)
+    elif isinstance(current, str):
+        rules = {"*": current}
+    else:
+        rules = {}
+    for path in external:
+        rules[f"{path.rstrip('/')}/**"] = "allow"
+    permission["external_directory"] = rules
+    config["permission"] = permission
+    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config, ensure_ascii=False)
+    return env
 
 
 def _emit_execution_start(emit, command: list[str], prompt: str) -> None:
@@ -366,12 +455,19 @@ class AcpAdapter:
         self.adapter_name = adapter_name
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
-        cmd = cfg.backend.command or ACP_SERVE_COMMANDS.get(self.adapter_name)
-        if not cmd:
+        template = cfg.backend.command or ACP_SERVE_COMMANDS.get(self.adapter_name)
+        if not template:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置 ACP serve 命令")
+        workdir = str(Path(cfg.workdir).expanduser().resolve())
+        cmd = render_command(
+            template, "", cfg.backend.model,
+            cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
+            allowed_dirs=_additional_allowed_dirs(workdir, cfg.allowed_dirs),
+            workdir=workdir,
+        )
         _emit_execution_start(cfg.emit, cmd, cfg.prompt)
         ok, text = acp.run_prompt(
-            cmd, cfg.prompt, cfg.workdir, {**os.environ, **cfg.env},
+            cmd, cfg.prompt, workdir, _runtime_env(cfg, self.adapter_name),
             model=cfg.backend.model, timeout=cfg.timeout, emit=cfg.emit,
         )
         try:
@@ -506,15 +602,19 @@ class CliAdapter:
         if not template:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置命令模板"
                                     f"(ACP 类 CLI 请在 Backend.command 中配置)")
+        workdir = str(Path(cfg.workdir).expanduser().resolve())
+        extra_dirs = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
         cmd = render_command(
             template, cfg.prompt, cfg.backend.model,
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
+            allowed_dirs=extra_dirs, workdir=workdir,
         )
         # prompt 在打印模式下通常是一个命令行参数；命令预览用「<输入>」
         # 代替正文，正文紧随其后单独展示，避免同一份长上下文打印两遍。
         command_preview = render_command(
             template, "<输入>", cfg.backend.model,
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
+            allowed_dirs=extra_dirs, workdir=workdir,
         )
         raw_emit = cfg.emit or (lambda kind, text: None)
 
@@ -532,7 +632,7 @@ class CliAdapter:
             # start_new_session:CLI 可能派生孙进程并继承管道,结束时按
             # 进程组整体清理;errors=replace 防非法字节炸死读线程
             proc = subprocess.Popen(
-                cmd, cwd=cfg.workdir, env={**os.environ, **cfg.env},
+                cmd, cwd=workdir, env=_runtime_env(cfg, self.adapter_name),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 encoding="utf-8", errors="replace", bufsize=1,
                 stdin=subprocess.DEVNULL, start_new_session=True,
@@ -708,6 +808,7 @@ def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
     except (OSError, subprocess.TimeoutExpired):
         return []
     if adapter in ACP_SERVE_COMMANDS:
-        cmd = backend.command or ACP_SERVE_COMMANDS[adapter]
+        template = backend.command or ACP_SERVE_COMMANDS[adapter]
+        cmd = render_command(template, "", backend.model, allowed_dirs=[])
         return acp.list_models(cmd, timeout=timeout)
     return []
