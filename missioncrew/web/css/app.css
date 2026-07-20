@@ -178,11 +178,11 @@
   .run-card { margin: -8px 0 16px 40px; max-width: 840px; font-size: 12.5px;
               border: 1px dashed var(--line); border-radius: 10px;
               background: var(--bg-soft); animation: fadeUp .18s ease; }
-  .run-card summary { cursor: pointer; padding: 6px 12px; color: var(--muted);
-                      user-select: none; display: flex; align-items: center; gap: 8px; }
-  .run-card summary::-webkit-details-marker { display: none; }
-  .run-card summary::before { content: "▸"; font-size: 10px; transition: transform .15s; }
-  .run-card[open] summary::before { transform: rotate(90deg); }
+  .run-card > summary { cursor: pointer; padding: 6px 12px; color: var(--muted);
+                        user-select: none; display: flex; align-items: center; gap: 8px; }
+  .run-card > summary::-webkit-details-marker { display: none; }
+  .run-card > summary::before { content: "▸"; font-size: 10px; transition: transform .15s; }
+  .run-card[open] > summary::before { transform: rotate(90deg); }
   .rc-dot { font-size: 9px; }
   .rc-dot.live { color: var(--accent); animation: blink 1.2s infinite; }
   .rc-dot.done { color: var(--ok); }
@@ -195,6 +195,18 @@
   .re .re-k { display: inline-block; font-size: 10.5px; color: var(--muted);
               border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
               margin-right: 7px; vertical-align: 1px; }
+  .re-command, .re-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                           font-size: 12px; color: var(--text-2); }
+  .re-fold { border: 1px solid var(--line); border-radius: 6px; padding: 0 8px 8px; }
+  .re-fold > summary { cursor: pointer; user-select: none; list-style: none;
+                       display: flex; align-items: center; gap: 7px; padding-top: 7px;
+                       white-space: normal; }
+  .re-fold > summary::-webkit-details-marker { display: none; }
+  .re-fold > summary::after { content: "展开"; margin-left: auto; color: var(--accent); }
+  .re-fold[open] > summary::after { content: "收起"; }
+  .re-fold-size { color: var(--muted); font-family: inherit; }
+  .re-fold .re-content { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
+                         white-space: pre-wrap; word-break: break-word; }
   .re-thinking { color: var(--muted); font-style: italic; }
   .re-tool { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
              font-size: 12px; color: var(--text-2); }

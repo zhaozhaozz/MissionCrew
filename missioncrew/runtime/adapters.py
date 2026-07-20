@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -267,6 +268,19 @@ def render_command(template: list[str], prompt: str, model: str,
     return cmd
 
 
+def _emit_execution_start(emit, command: list[str], prompt: str) -> None:
+    """上报启动参数预览与输入；命令中的长 prompt 用占位符避免重复展示。"""
+    if emit is None:
+        return
+    for kind, text in (("command", "$ " + shlex.join(command) + "\n"),
+                       ("input", prompt)):
+        try:
+            emit(kind, text)
+        except Exception:
+            # 展示元数据失败不能阻止 runtime 启动。
+            pass
+
+
 def _append_manifest(workdir: str, entries: list[dict]) -> None:
     p = Path(workdir) / MANIFEST
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -355,6 +369,7 @@ class AcpAdapter:
         cmd = cfg.backend.command or ACP_SERVE_COMMANDS.get(self.adapter_name)
         if not cmd:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置 ACP serve 命令")
+        _emit_execution_start(cfg.emit, cmd, cfg.prompt)
         ok, text = acp.run_prompt(
             cmd, cfg.prompt, cfg.workdir, {**os.environ, **cfg.env},
             model=cfg.backend.model, timeout=cfg.timeout, emit=cfg.emit,
@@ -434,8 +449,8 @@ class _CodexStderrParser:
     配置头部块(banner + workdir/model/... 到第二个 "--------"),然后
     裸标记行分节:user(完整提示词回显)、thinking、exec …、codex
     (回复回显)、tokens used(数字在下一行)。分类上报:头部按状态、
-    提示词回显压缩成一行(平台自己装配的,不重复展示)、回复回显跳过
-    (stdout 已展示)、token 统计并入状态;识别不了的行兜底 stderr。
+    提示词回显跳过(完整输入已由 input 事件展示)、回复回显跳过(stdout
+    已展示)、token 统计并入状态;识别不了的行兜底 stderr。
     """
 
     _MARKERS = {"user", "thinking", "codex", "tokens used"}
@@ -443,16 +458,13 @@ class _CodexStderrParser:
     def __init__(self, emit):
         self.emit = emit
         self.section = "header"
-        self.user_chars = 0
 
     def feed(self, line: str) -> None:
         s = line.strip()
         if s in self._MARKERS:
-            self._flush_user()
             self.section = s
             return
         if s.startswith("exec ") or s.startswith("tool "):
-            self._flush_user()
             self.section = "exec"
             self.emit("tool", s + "\n")
             return
@@ -461,7 +473,7 @@ class _CodexStderrParser:
                 return
             self.emit("status", line + "\n")
         elif self.section == "user":
-            self.user_chars += len(line) + 1
+            pass
         elif self.section == "codex":
             pass
         elif self.section == "tokens used":
@@ -475,13 +487,8 @@ class _CodexStderrParser:
         else:
             self.emit("stderr", line + "\n")
 
-    def _flush_user(self) -> None:
-        if self.section == "user" and self.user_chars:
-            self.emit("status", f"已接收任务简报({self.user_chars} 字符)\n")
-            self.user_chars = 0
-
     def close(self) -> None:
-        self._flush_user()
+        pass
 
 
 class CliAdapter:
@@ -503,6 +510,12 @@ class CliAdapter:
             template, cfg.prompt, cfg.backend.model,
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
         )
+        # prompt 在打印模式下通常是一个命令行参数；命令预览用「<输入>」
+        # 代替正文，正文紧随其后单独展示，避免同一份长上下文打印两遍。
+        command_preview = render_command(
+            template, "<输入>", cfg.backend.model,
+            cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
+        )
         raw_emit = cfg.emit or (lambda kind, text: None)
 
         def emit(kind: str, text: str) -> None:
@@ -514,6 +527,7 @@ class CliAdapter:
                 pass
 
         stream_json = any("stream-json" in tok for tok in cmd)
+        _emit_execution_start(raw_emit, command_preview, cfg.prompt)
         try:
             # start_new_session:CLI 可能派生孙进程并继承管道,结束时按
             # 进程组整体清理;errors=replace 防非法字节炸死读线程

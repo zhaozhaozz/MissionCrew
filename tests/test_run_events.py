@@ -38,6 +38,12 @@ def test_run_event_coalescing(store):
     store.append_run_event(8, "stdout", "x" * store.RUN_EVENT_MAX)
     store.append_run_event(8, "stdout", "y")
     assert len(store.run_events(8)) == 2
+    # 长输入完整分段保存，不能因单行上限只留下前 8000 字符。
+    long_input = "输" * (store.RUN_EVENT_MAX + 17)
+    store.append_run_event(9, "input", long_input)
+    saved = store.run_events(9)
+    assert len(saved) == 2
+    assert "".join(e["content"] for e in saved) == long_input
 
 
 # ---- CLI 适配器:stream-json 解析出思考/工具/文本,普通 CLI 按行透传 ----
@@ -60,9 +66,12 @@ def test_cli_adapter_parses_stream_json_events(tmp_path):
 def test_cli_adapter_streams_plain_lines(tmp_path):
     events, emit = _collect()
     backend = Backend(id="p", name="p", adapter="pi",
-                      command=[sys.executable, FAKE_STREAM, "plain"])
+                      command=[sys.executable, FAKE_STREAM, "plain", "{prompt}"])
     result = adapters.CliAdapter("pi").run(_cfg(tmp_path, backend, emit))
     assert result.success and "最终回复" in result.output
+    command = next(t for k, t in events if k == "command")
+    assert "<输入>" in command and "# 聊天协作请求" not in command
+    assert ("input", "# 聊天协作请求\n测试") in events
     assert ("stdout", "第一行进度\n") in events
     assert ("stderr", "警告:示例 stderr\n") in events
 
@@ -107,7 +116,7 @@ def test_cli_adapter_reaps_pipe_holding_grandchildren(tmp_path):
 
 
 def test_codex_stderr_parsed_into_sections(tmp_path):
-    """codex 的 stderr 过程日志分节归类:头部/思考/命令,提示词回显压缩,
+    """codex 的 stderr 过程日志分节归类:头部/思考/命令,提示词回显去重,
     回复回显跳过(stdout 已有),tokens used 并入状态。"""
     events, emit = _collect()
     backend = Backend(id="cx", name="cx", adapter="codex",
@@ -115,10 +124,11 @@ def test_codex_stderr_parsed_into_sections(tmp_path):
     result = adapters.CliAdapter("codex").run(_cfg(tmp_path, backend, emit))
     assert result.success and result.output == "最终回复正文"
     joined = {k: "".join(t for kk, t in events if kk == k)
-              for k in ("status", "thinking", "tool", "tool_result", "stdout")}
+              for k in ("input", "status", "thinking", "tool", "tool_result", "stdout")}
     assert "model: gpt-test" in joined["status"]           # 配置头部 -> 状态
-    assert "任务简报" in joined["status"]                   # 提示词回显只留一行摘要
-    assert "很长的提示词回显" not in str(events)             # 不原样铺提示词
+    assert joined["input"] == "# 聊天协作请求\n测试"         # 完整输入单独展示
+    assert "任务简报" not in str(events)                    # 不用字符数简报替代输入
+    assert "很长的提示词回显" not in str(events)             # stderr 回显不重复展示
     assert "tokens used: 12,008" in joined["status"]
     assert "先理解需求再回答" in joined["thinking"]
     assert "exec bash -lc 'echo hi'" in joined["tool"]
@@ -136,7 +146,9 @@ def test_acp_adapter_emits_process_events(tmp_path):
     result = adapters.get_adapter("kimi").run(_cfg(tmp_path, backend, emit))
     assert result.success
     kinds = [k for k, _ in events]
-    assert "thinking" in kinds and "tool" in kinds and "text" in kinds
+    assert {"command", "input", "thinking", "tool", "text"} <= set(kinds)
+    assert FAKE_ACP in next(t for k, t in events if k == "command")
+    assert ("input", "# 聊天协作请求\n测试") in events
     assert ("thinking", "思考中…") in events
     assert any(k == "tool" and "read_file" in t for k, t in events)
     assert any(k == "status" and "权限请求" in t for k, t in events)

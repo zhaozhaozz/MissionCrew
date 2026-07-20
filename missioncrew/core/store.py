@@ -361,19 +361,25 @@ class Store:
         if not text:
             return
         with self._lock:
-            rows = self._query(
-                "SELECT id, kind, LENGTH(content) AS n FROM run_events "
-                "WHERE run_id=? ORDER BY id DESC LIMIT 1", (run_id,))
-            last = rows[0] if rows else None
-            if last and last["kind"] == kind and last["n"] < self.RUN_EVENT_MAX:
-                self._execute(
-                    "UPDATE run_events SET content = content || ? WHERE id=?",
-                    (text[: self.RUN_EVENT_MAX], last["id"]))
-            else:
-                self._execute(
-                    "INSERT INTO run_events(run_id, kind, content, created_at) "
-                    "VALUES(?,?,?,?)",
-                    (run_id, kind, text[: self.RUN_EVENT_MAX], time.time()))
+            remaining = text
+            while remaining:
+                rows = self._query(
+                    "SELECT id, kind, LENGTH(content) AS n FROM run_events "
+                    "WHERE run_id=? ORDER BY id DESC LIMIT 1", (run_id,))
+                last = rows[0] if rows else None
+                if last and last["kind"] == kind and last["n"] < self.RUN_EVENT_MAX:
+                    capacity = self.RUN_EVENT_MAX - last["n"]
+                    chunk, remaining = remaining[:capacity], remaining[capacity:]
+                    self._execute(
+                        "UPDATE run_events SET content = content || ? WHERE id=?",
+                        (chunk, last["id"]))
+                else:
+                    chunk, remaining = (remaining[: self.RUN_EVENT_MAX],
+                                        remaining[self.RUN_EVENT_MAX:])
+                    self._execute(
+                        "INSERT INTO run_events(run_id, kind, content, created_at) "
+                        "VALUES(?,?,?,?)",
+                        (run_id, kind, chunk, time.time()))
 
     def run_events(self, run_id: int, limit: int = 200) -> list[dict]:
         rows = self._query(

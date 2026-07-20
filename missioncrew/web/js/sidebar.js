@@ -200,6 +200,8 @@ function appendMessages(list) {
 /* ---- 运行过程卡片:内联在触发消息之后,可折叠,实时刷新 ---- */
 const runCards = new Map();   // run_id -> {el, key, userToggled}
 const RUN_EVENT_META = {
+  command:     { label: "命令", cls: "re-command" },
+  input:       { label: "输入", cls: "re-input" },
   thinking:    { label: "思考", cls: "re-thinking" },
   tool:        { label: "工具", cls: "re-tool" },
   tool_result: { label: "结果", cls: "re-tool" },
@@ -210,6 +212,22 @@ const RUN_EVENT_META = {
   stderr:      { label: "日志", cls: "re-log" },
   status:      { label: "状态", cls: "re-status" },
 };
+const RUN_INPUT_FOLD_AT = 2000;
+
+function mergeRunInputEvents(events) {
+  // 存储层会把超 8000 字符的输入分段；展示时重新合并，避免一个 prompt
+  // 出现多个「输入」块，也让折叠/展开控制的是完整原文。
+  const merged = [];
+  for (const event of events) {
+    const previous = merged[merged.length - 1];
+    if (event.kind === "input" && previous?.kind === "input") {
+      previous.content += event.content;
+    } else {
+      merged.push({ ...event });
+    }
+  }
+  return merged;
+}
 
 function runSummary(run) {
   const st = { queued: "排队中", running: "运行中", done: "已完成", failed: "失败" }[run.status] || run.status;
@@ -233,8 +251,17 @@ async function renderRunEvents(run, card) {
     const body = card.el.querySelector(".rc-events");
     const innerNear = !body.childElementCount ||
       body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    body.innerHTML = d.events.map(e => {
+    const openInputs = new Set([...body.querySelectorAll(".re-fold[open]")]
+      .map(el => el.dataset.eventId));
+    body.innerHTML = mergeRunInputEvents(d.events).map(e => {
       const meta = RUN_EVENT_META[e.kind] || { label: e.kind, cls: "re-status" };
+      if (e.kind === "input" && e.content.length > RUN_INPUT_FOLD_AT) {
+        const open = openInputs.has(String(e.id)) ? " open" : "";
+        return `<details class="re re-fold ${meta.cls}" data-event-id="${e.id}"${open}>
+          <summary><span class="re-k">${esc(meta.label)}</span>
+            <span class="re-fold-size">${e.content.length.toLocaleString()} 字符 · 完整原文</span></summary>
+          <div class="re-content">${esc(e.content)}</div></details>`;
+      }
       return `<div class="re ${meta.cls}"><span class="re-k">${esc(meta.label)}</span>${esc(e.content)}</div>`;
     }).join("") || `<div class="re re-status">(暂无过程输出)</div>`;
     // 内外滚动都只在原本贴底时跟随,不打断正在回看历史的读者
@@ -332,4 +359,3 @@ inputBox.addEventListener("input", () => {
 document.getElementById("board-request").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey && !imeComposing(e)) { e.preventDefault(); requestBoard(); }
 });
-
