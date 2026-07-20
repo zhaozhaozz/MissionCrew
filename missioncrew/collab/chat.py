@@ -138,6 +138,15 @@ class ChatEngine:
         # @ 提及只在频道所属项目的角色中生效:项目之间互不相干
         mentions = self._valid_mentions(content, channel.project_id or "",
                                         exclude=author if author_type == "agent" else None)
+        # 人类消息没 @ 任何角色时默认交给项目主控调度;Agent 消息不适用——
+        # 不 @ 人正是级联的自然终点,默认转发会让协作链失控。
+        # 作者就是主控本人时也不补(否则自己触发自己)。
+        if not mentions and author_type == "human" and channel.project_id:
+            project = self.store.get_project(channel.project_id)
+            orchestrator = project.orchestrator_role_id if project else ""
+            if (orchestrator and author != orchestrator
+                    and self.store.get_role(channel.project_id, orchestrator)):
+                mentions = [orchestrator]
         msg_id = self.store.add_message(channel_id, author, author_type, content,
                                         mentions, reply_to, root_id, depth)
         root = root_id if root_id is not None else msg_id

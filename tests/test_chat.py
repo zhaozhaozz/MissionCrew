@@ -1,4 +1,6 @@
 """聊天协作:@ 触发、级联、防环、失败可见性。"""
+import json
+
 import pytest
 
 from missioncrew.collab.chat import MAX_CHAIN_RUNS, MAX_DEPTH, ChatEngine
@@ -29,6 +31,59 @@ def test_unknown_role_not_triggered(chat, seeded):
     chat.wait_idle()
     agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
     assert agents == {"dev"}
+
+
+# ---- 人类不 @ 任何角色时默认交给项目主控 ----
+
+def test_human_message_without_mention_goes_to_orchestrator(chat, seeded):
+    chat.post("general", "human", "这个项目的支付流程现在怎么样了?")
+    chat.wait_idle()
+    msgs = _log(seeded)
+    assert json.loads(msgs[0]["mentions"]) == ["lead"]   # 落库的提及即默认主控
+    agents = [m for m in msgs if m["author_type"] == "agent"]
+    assert [m["author"] for m in agents] == ["lead"]
+    assert agents[0]["reply_to"] == msgs[0]["id"]
+
+
+def test_unrecognized_mention_still_falls_back_to_orchestrator(chat, seeded):
+    """@ 了不存在的角色 = 没有有效提及,同样交给主控,不至于没人响应。"""
+    chat.post("general", "human", "@nobody 帮我看看")
+    chat.wait_idle()
+    agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
+    assert agents == {"lead"}
+
+
+def test_agent_reply_without_mention_does_not_reach_orchestrator(chat, seeded):
+    """Agent 回复不 @ 人是级联的自然终点,不能默认转发给主控。"""
+    chat.post("general", "human", "@dev 简单看一下就行,不用找别人。")
+    chat.wait_idle()
+    authors = [m["author"] for m in _log(seeded) if m["author_type"] == "agent"]
+    assert authors == ["dev"]                   # 到 dev 为止,没有续发给 lead
+
+
+def test_orchestrator_self_message_not_looped_back(chat, seeded):
+    """主控自己发言(Agent 回复与以主控身份调用接口)都不触发自己。"""
+    chat.post("general", "lead", "我先梳理一下需求。", author_type="agent")
+    chat.wait_idle()
+    assert [m["author"] for m in _log(seeded) if m["author_type"] == "agent"] == ["lead"]
+    # 以主控身份调接口(author=lead,类型默认 human)同样不自我补 @
+    chat.post("general", "lead", "继续跟进。")
+    chat.wait_idle()
+    msgs = _log(seeded)
+    assert json.loads(msgs[-1]["mentions"]) == []
+    assert [m["author"] for m in msgs if m["author_type"] == "agent"] == ["lead"]
+
+
+def test_channel_without_project_has_no_default_target(seeded):
+    """无项目归属的频道没有主控可默认;不补 @,也不该报错。"""
+    from missioncrew.core.models import Channel
+    seeded.put_channel(Channel(id="orphan", name="孤儿频道", project_id=None))
+    engine = ChatEngine(seeded, max_workers=2)
+    engine.post("orphan", "human", "有人吗")
+    engine.wait_idle()
+    msgs = seeded.list_messages("orphan")
+    assert json.loads(msgs[0]["mentions"]) == []
+    assert not [m for m in msgs if m["author_type"] == "agent"]
 
 
 def test_cascade_dev_to_reviewer(chat, seeded):
