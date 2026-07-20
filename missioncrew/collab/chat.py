@@ -415,7 +415,7 @@ class ChatEngine:
                 project_section = render_project_context(
                     project, library, workspace.root)
                 env["MISSIONCREW_WORKSPACE"] = str(workspace.root)
-                env["MISSIONCREW_DOCUMENTS_DIR"] = str(workspace.documents)
+                env["MISSIONCREW_DOCUMENTS_DIR"] = str(workspace.docs)
                 env["MISSIONCREW_GUIDELINES_DIR"] = str(workspace.guidelines)
                 env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)

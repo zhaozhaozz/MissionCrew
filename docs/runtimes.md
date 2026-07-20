@@ -132,7 +132,7 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 执行环境
 
-每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`documents/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`，任务执行另有 `evidence/`。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。文档入口可直接读写，执行前后平台做 Git 快照；任务 Markdown 可创建/编辑，执行后按可编辑字段同步，状态、阶段和审批仍由平台控制。聊天执行超时 900 秒。
+每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`docs/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`，任务执行另有 `evidence/`。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。`MISSIONCREW_DOCUMENTS_DIR` 作为兼容变量指向 `.missioncrew/docs/`。文档入口可直接读写，执行前后平台做 Git 快照；任务 Markdown 可创建/编辑，执行后按可编辑字段同步，状态、阶段和审批仍由平台控制。聊天执行超时 900 秒。
 
 ## 接入新工具
 

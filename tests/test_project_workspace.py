@@ -639,10 +639,12 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
                          seeded.get_role("webshop", "dev"),
                          seeded.get_backend("std-1"), msg)
     workspace = Path(cfg.env["MISSIONCREW_WORKSPACE"])
-    link = workspace / "documents"
+    link = workspace / "docs"
     assert workspace.name == ".missioncrew"
     assert link.is_symlink()
     assert link.resolve() == library_for("webshop").root.resolve()
+    assert Path(cfg.env["MISSIONCREW_DOCUMENTS_DIR"]) == workspace / "docs"
+    assert not (workspace / "documents").exists()
     assert "MissionCrew 是本地多 Agent harness" in cfg.prompt
     assert "不会进入业务源码或业务代码提交" in cfg.prompt
     assert "MissionCrew 是一个本地 Agent harness" in (
@@ -686,8 +688,13 @@ def test_legacy_runtime_files_migrate_under_harness_directories(seeded):
     (evidence / "manifest.json").write_text(
         '[{"type":"plan","path":"evidence/plan.md"}]', encoding="utf-8")
     seeded.add_evidence("legacy-task", "develop", "plan", "evidence/plan.md")
+    agent_harness = (home / "agent-workspaces" / "webshop" / "channels"
+                     / "general" / "dev" / ".missioncrew")
+    agent_harness.mkdir(parents=True)
+    (agent_harness / "documents").symlink_to(library_for("webshop").root,
+                                                target_is_directory=True)
 
-    assert migrate_legacy_workspace_layout() == 4
+    assert migrate_legacy_workspace_layout() == 5
     assert not (home / "channel-history").exists()
     assert not (channel_dir / "documents").exists()
     assert not (channel_dir / ".mc_last_output_codex.log").exists()
@@ -701,6 +708,9 @@ def test_legacy_runtime_files_migrate_under_harness_directories(seeded):
     assert seeded._migrate_harness_paths() == 1
     assert seeded.list_evidence("legacy-task")[0]["path"] \
         == ".missioncrew/evidence/plan.md"
+    assert not (agent_harness / "documents").exists()
+    assert (agent_harness / "docs").is_symlink()
+    assert (agent_harness / "docs").resolve() == library_for("webshop").root.resolve()
     assert migrate_legacy_workspace_layout() == 0
 
 
