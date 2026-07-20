@@ -18,6 +18,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             "backends": [b.to_dict() for b in store.list_backends()],
             "tasks": [t.to_dict() for t in store.list_tasks()],
             "roles": [r.to_dict() for r in store.list_roles()],
+            "role_templates": [r.to_dict() for r in store.list_role_templates()],
             "channels": [c.to_dict() for c in store.list_channels()],
             "boards": [b.to_dict() for b in store.list_boards()],
         }

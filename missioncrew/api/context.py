@@ -36,6 +36,7 @@ class ApiContext:
     def build(cls) -> "ApiContext":
         store = Store(db_path())
         seed_mod.ensure_role_bindings(store)
+        seed_mod.ensure_role_templates(store)
         seed_mod.migrate_project_fields(store)
         ctx = cls(store=store, engine=Engine(store), chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends

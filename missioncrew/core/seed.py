@@ -110,48 +110,83 @@ def has_enabled_runtime(store: Store) -> bool:
     return any(b.enabled for b in store.list_backends())
 
 
-# 默认角色模板:人格(description)是"选人用的专长画像",供调度方(人类或
-# @lead)挑选协作对象;任务简报由调度方结合项目章程撰写,人格不承担任务描述。
-# 每个角色在创建时按能力与目标档位一次性绑定 runtime/model,之后不再自动路由。
-def default_roles(store: Store, project_id: str) -> list[Role]:
-    roles = [
-        Role(id="lead", project_id=project_id, name="主管", color="#d97706",
+# 内置角色只用于首次初始化全局模板。之后全局模板由用户维护，新项目复制当前
+# 模板快照；模板或项目角色的后续修改互不联动。
+def _builtin_role_templates() -> list[Role]:
+    return [
+        Role(id="lead", name="主管", color="#d97706",
              description="调度者,不亲自实现。接到需求先结合项目章程理解目标,必要时拆解;"
                          "对照名册按各角色定位挑选人选,@分派时为每个子任务写清背景、要求、"
                          "验收标准,并要求完成后向你汇报;收到汇报后核对验收标准再汇总结论。",
              capabilities=["reasoning"], preference="统筹与调度,重质量"),
-        Role(id="dev", project_id=project_id, name="开发", color="#3564d7",
+        Role(id="dev", name="开发", color="#3564d7",
              description="全栈开发工程师,负责实现需求、修复缺陷。动手前先看清现有代码约定。",
              capabilities=["coding"], preference="全栈"),
-        Role(id="reviewer", project_id=project_id, name="评审", color="#2e9e5b",
+        Role(id="reviewer", name="评审", color="#2e9e5b",
              description="独立代码评审员,只审查不改代码:正确性、可维护性、边界条件。",
              capabilities=[], preference="代码评审,严谨,只审不改"),
-        Role(id="expert", project_id=project_id, name="专家", color="#8b5cf6",
+        Role(id="expert", name="专家", color="#8b5cf6",
              description="资深架构师,处理疑难问题、复杂分析和大型重构方案。",
              capabilities=["coding", "reasoning"], preference="深度攻坚,高质量"),
-        Role(id="vision", project_id=project_id, name="视觉验证", color="#c98a1b",
+        Role(id="vision", name="视觉验证", color="#c98a1b",
              description="多模态验证员,负责页面截图、浏览器流程测试和视觉回归确认。",
              capabilities=["multimodal"], preference="页面与视觉验证"),
-        Role(id="secure", project_id=project_id, name="安全", color="#c94b3c",
+        Role(id="secure", name="安全", color="#c94b3c",
              description="安全工程师,从注入、越权、凭据泄露等角度审查变更与配置。",
              capabilities=[], preference="安全审查,代码评审视角"),
-        Role(id="tester", project_id=project_id, name="测试", color="#0e9488",
+        Role(id="tester", name="测试", color="#0e9488",
              description="测试工程师,写用例、跑回归、构造边界输入,报告只讲事实与复现步骤。",
              capabilities=["coding"], preference="适合测试,快速反馈"),
-        Role(id="scribe", project_id=project_id, name="文档", color="#64748b",
+        Role(id="scribe", name="文档", color="#64748b",
              description="技术写作者,维护 README、变更说明和使用文档,行文简洁面向读者。",
              capabilities=[], preference="适合文档,快速低成本"),
     ]
+
+
+def ensure_role_templates(store: Store) -> int:
+    """旧数据库首次升级时播种全局模板；已有模板永不覆盖。"""
+    if store.list_role_templates():
+        return 0
+    roles = _builtin_role_templates()
     for i, role in enumerate(roles):
-        role.sort_order = (i + 1) * 10   # 按模板顺序展示(主控在前),留间隔便于插入
+        role.sort_order = (i + 1) * 10
         if not _bind_role(store, role):
-            raise RuntimeError("没有已启用的 runtime,无法创建固定执行角色")
+            return 0
+    for role in roles:
+        store.put_role_template(role)
+    store.audit("platform", "role_templates_seeded",
+                detail=f"roles={','.join(role.id for role in roles)}")
+    return len(roles)
+
+
+def project_roles_from_templates(store: Store, project_id: str) -> list[Role]:
+    """校验并复制当前全局模板，供新项目在写入前完整准备角色。"""
+    templates = store.list_role_templates()
+    if not templates:
+        raise RuntimeError("全局角色模板为空,请先检测并启用 runtime,再到全局设置中配置角色")
+    roles = []
+    for template in templates:
+        backend = store.get_backend(template.runtime_id)
+        if backend is None:
+            raise RuntimeError(
+                f"全局角色模板 @{template.id} 使用的 runtime 不存在: {template.runtime_id}")
+        if not backend.enabled:
+            raise RuntimeError(
+                f"全局角色模板 @{template.id} 使用的 runtime 已停用: {template.runtime_id}")
+        data = template.to_dict()
+        data["project_id"] = project_id
+        roles.append(Role.from_dict(data))
     return roles
 
 
-def init_project(store: Store, project_id: str) -> None:
-    """项目初始化:播种该项目的默认角色与 general 频道(已存在的不覆盖)。"""
-    for role in default_roles(store, project_id):
+def default_roles(store: Store, project_id: str) -> list[Role]:
+    """兼容旧调用名：默认角色现从可配置的全局模板复制。"""
+    return project_roles_from_templates(store, project_id)
+
+
+def init_project(store: Store, project_id: str, roles: list[Role] | None = None) -> None:
+    """项目初始化:复制全局角色模板并创建 general 频道(已存在的不覆盖)。"""
+    for role in roles or project_roles_from_templates(store, project_id):
         if store.get_role(project_id, role.id) is None:
             store.put_role(role)
     if not store.list_channels(project_id):
@@ -167,8 +202,11 @@ def seed(store: Store) -> None:
         store.put_backend(b)
     for r in DEMO_RESOURCES:
         store.put_resource(r)
+    ensure_role_templates(store)
+    demo_roles = project_roles_from_templates(store, DEMO_PROJECT.id)
+    DEMO_PROJECT.orchestrator_role_id = demo_roles[0].id
     store.put_project(DEMO_PROJECT)
-    for role in default_roles(store, DEMO_PROJECT.id):
+    for role in demo_roles:
         store.put_role(role)
     if store.get_channel(DEFAULT_CHANNEL.id) is None:
         store.put_channel(DEFAULT_CHANNEL)
@@ -179,9 +217,12 @@ def ensure_default_project(store: Store) -> None:
     """平台至少要有一个项目(项目是第一层级);没有时创建 default 项目。"""
     if store.list_projects() or not has_enabled_runtime(store):
         return
+    ensure_role_templates(store)
+    roles = project_roles_from_templates(store, "default")
     store.put_project(Project(id="default", name="默认项目",
-                              description="首次使用自动创建,可在项目页改名或新建其他项目"))
-    init_project(store, "default")
+                              description="首次使用自动创建,可在项目页改名或新建其他项目",
+                              orchestrator_role_id=roles[0].id))
+    init_project(store, "default", roles)
 
 
 def ensure_role_bindings(store: Store) -> int:
@@ -204,6 +245,8 @@ def migrate_project_fields(store: Store) -> int:
     重写一遍即落库为结构化条目。
     """
     migrated = 0
+    for role in store.list_role_templates():
+        store.put_role_template(role)
     for role in store.list_roles():
         store.put_role(role)   # 旧 traits 标签经 from_dict 迁移为 preference,重写落库
     for project in store.list_projects():

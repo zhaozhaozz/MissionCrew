@@ -36,8 +36,14 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             model_names = {m["name"] for m in body.models}
             invalid_roles = [r for r in store.list_roles()
                              if r.runtime_id == b.id and model_names and r.model not in model_names]
-            if invalid_roles:
-                names = ", ".join(f"{r.project_id}/@{r.id}" for r in invalid_roles)
+            invalid_templates = [r for r in store.list_role_templates()
+                                 if r.runtime_id == b.id and model_names
+                                 and r.model not in model_names]
+            if invalid_roles or invalid_templates:
+                names = ", ".join([
+                    *(f"{r.project_id}/@{r.id}" for r in invalid_roles),
+                    *(f"全局角色模板/@{r.id}" for r in invalid_templates),
+                ])
                 raise HTTPException(400, f"模型仍被角色使用,请先修改角色: {names}")
         for field in ("name", "model", "tier", "cost_per_run", "security_level",
                       "capabilities", "models", "enabled"):
@@ -45,6 +51,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             if v is not None:
                 setattr(b, field, v)
         store.put_backend(b)
+        if b.enabled:
+            seed_mod.ensure_role_templates(store)
         store.audit("human", "backend_updated", detail=f"backend={b.id}")
         return b.to_dict()
 
@@ -64,6 +72,17 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "project_id": role.project_id,
                 "project_name": project_names.get(role.project_id, role.project_id),
                 "model": role.model,
+            })
+        for role in store.list_role_templates():
+            if not role.runtime_id:
+                continue
+            role_users.setdefault(role.runtime_id, []).append({
+                "id": role.id,
+                "name": role.name,
+                "project_id": "",
+                "project_name": "全局角色模板",
+                "model": role.model,
+                "template": True,
             })
         for users in role_users.values():
             users.sort(key=lambda r: (r["project_name"], r["id"]))
@@ -184,6 +203,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                     existing.models = b.models
                 store.put_backend(existing)
                 updated.append(b.id)
+        seed_mod.ensure_role_templates(store)
         seed_mod.ensure_default_project(store)
         seed_mod.ensure_role_bindings(store)
         return {"found": [i["id"] for i in report if i["installed"]],
@@ -194,8 +214,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if store.get_backend(backend_id) is None:
             raise HTTPException(404, "后端不存在")
         users = [r for r in store.list_roles() if r.runtime_id == backend_id]
-        if users:
-            names = ", ".join(f"{r.project_id}/@{r.id}" for r in users)
+        templates = [r for r in store.list_role_templates() if r.runtime_id == backend_id]
+        if users or templates:
+            names = ", ".join([
+                *(f"{r.project_id}/@{r.id}" for r in users),
+                *(f"全局角色模板/@{r.id}" for r in templates),
+            ])
             raise HTTPException(409, f"runtime 仍被角色使用,请先修改角色: {names}")
         store.delete_backend(backend_id)
         store.audit("human", "backend_deleted", detail=f"backend={backend_id}")

@@ -33,14 +33,18 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         data = body.model_dump()
         data.pop("rules_yaml")
         is_new = existing is None
-        if is_new and not seed_mod.has_enabled_runtime(store):
-            raise HTTPException(400, "请先检测并启用至少一个 runtime,再创建项目角色")
+        new_roles = None
+        if is_new:
+            try:
+                new_roles = seed_mod.project_roles_from_templates(store, body.id)
+            except RuntimeError as exc:
+                raise HTTPException(400, str(exc))
         orchestrator = body.orchestrator_role_id or (
-            existing.orchestrator_role_id if existing else "lead")
+            existing.orchestrator_role_id if existing else new_roles[0].id)
         if existing and store.get_role(body.id, orchestrator) is None:
             raise HTTPException(400, f"主控角色不属于当前项目: @{orchestrator}")
-        if is_new and orchestrator != "lead":
-            raise HTTPException(400, "新项目请先创建角色，再修改主控角色")
+        if is_new and orchestrator not in {role.id for role in new_roles}:
+            raise HTTPException(400, f"主控角色不属于全局角色模板: @{orchestrator}")
         data["orchestrator_role_id"] = orchestrator
         data["max_chain_runs"] = (body.max_chain_runs if body.max_chain_runs is not None
                                   else (existing.max_chain_runs if existing
@@ -81,8 +85,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             except ValueError as exc:
                 raise HTTPException(400, f"Skill {skill.id} 的文件引用不合法: {exc}")
         store.put_project(project)
-        if is_new:  # 新项目自动获得自己的默认角色和 general 频道
-            seed_mod.init_project(store, project.id)
+        if is_new:  # 新项目复制当前全局角色模板并获得自己的 general 频道
+            seed_mod.init_project(store, project.id, new_roles)
             library_for(project.id)
         store.audit("human", "project_saved", detail=f"project={project.id} new={is_new}")
         return project.to_dict()

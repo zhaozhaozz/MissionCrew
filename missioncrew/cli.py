@@ -34,6 +34,7 @@ app.add_typer(role_app, name="role")
 def _store() -> Store:
     store = Store(db_path())
     seed_mod.ensure_role_bindings(store)
+    seed_mod.ensure_role_templates(store)
     return store
 
 
@@ -147,15 +148,20 @@ def project_add(file: Path = typer.Option(..., help="项目定义 YAML 文件"))
     p = Project.from_dict(data)
     store = _store()
     is_new = store.get_project(p.id) is None
-    if is_new and not seed_mod.has_enabled_runtime(store):
-        raise typer.BadParameter("请先检测并启用至少一个 runtime,再创建项目角色")
+    new_roles = None
+    if is_new:
+        try:
+            new_roles = seed_mod.project_roles_from_templates(store, p.id)
+        except RuntimeError as exc:
+            raise typer.BadParameter(str(exc))
+        p.orchestrator_role_id = data.get("orchestrator_role_id") or new_roles[0].id
     if not is_new and store.get_role(p.id, p.orchestrator_role_id) is None:
         raise typer.BadParameter(f"主控角色不属于当前项目: @{p.orchestrator_role_id}")
-    if is_new and p.orchestrator_role_id != "lead":
-        raise typer.BadParameter("新项目请先创建角色，再修改主控角色")
+    if is_new and p.orchestrator_role_id not in {role.id for role in new_roles}:
+        raise typer.BadParameter(f"主控角色不属于全局角色模板: @{p.orchestrator_role_id}")
     store.put_project(p)
     if is_new:
-        seed_mod.init_project(store, p.id)
+        seed_mod.init_project(store, p.id, new_roles)
         library_for(p.id)
     typer.echo(f"项目已保存: {p.id}")
 
@@ -185,6 +191,7 @@ def backend_add(file: Path = typer.Option(..., help="后端定义 YAML(单个或
         b = Backend(**d)
         store.put_backend(b)
         typer.echo(f"后端已保存: {b.id}")
+    seed_mod.ensure_role_templates(store)
 
 
 @backend_app.command("list")
@@ -219,6 +226,7 @@ def backend_detect(register: bool = typer.Option(True, help="检测到后立即�
                 if not existing.models:
                     existing.models = b.models
                 store.put_backend(existing)
+        seed_mod.ensure_role_templates(store)
         seed_mod.ensure_default_project(store)  # 平台至少要有一个项目
         seed_mod.ensure_role_bindings(store)
         typer.echo("工具已注册/刷新;默认项目(含角色与 general 频道)就绪。mc serve 打开页面。")

@@ -38,9 +38,8 @@ class ChannelCreate(BaseModel):
     actor_role_id: Optional[str] = None
 
 
-class RoleInput(BaseModel):
+class RoleTemplateInput(BaseModel):
     id: str
-    project_id: str
     runtime_id: str            # 角色定义时固定的 runtime,必填
     model: str = ""            # 空 = CLI 默认模型
     effort: str = ""           # 推理力度,仅支持的 runtime 可设;空 = CLI 默认
@@ -52,9 +51,17 @@ class RoleInput(BaseModel):
     sort_order: Optional[int] = None   # None = 保留现值;新角色排到项目末尾
 
 
+class RoleInput(RoleTemplateInput):
+    project_id: str
+
+
 class RoleReorder(BaseModel):
     project_id: str
     ids: list[str]                 # 项目全部角色 id,按目标显示顺序排列
+
+
+class RoleTemplateReorder(BaseModel):
+    ids: list[str]                 # 全部全局角色模板 id,按目标显示顺序排列
 
 
 class GuidelineInput(BaseModel):

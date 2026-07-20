@@ -2,9 +2,153 @@
    只列支持的工具 + 安装状态/版本/路径 + 启停;成本/能力/档位在角色层配置 */
 async function renderGlobalSettings() {
   await ensureTraits();
+  renderGlobalRoleTable();
   await renderBackendTable();
   // 能查到最新版就直接展示:首次进入自动静默查询,不用等用户点按钮
   if (!Object.keys(updateHints).length) checkUpdates(true);
+}
+
+/* ---------------- 全局设置:新项目角色模板 ---------------- */
+function renderGlobalRoleTable() {
+  const table = document.getElementById("global-role-table");
+  if (!table) return;
+  const rows = globalRoleTemplates().map((role, index) => {
+    const execution = role.runtime_id
+      ? `${esc(role.runtime_id)} / ${esc(role.model || "(CLI 默认)")}` +
+        (role.effort ? ` / effort ${esc(role.effort)}` : "")
+      : `<span class="muted">未绑定</span>`;
+    return `<tr data-id="${esc(role.id)}">
+      <td class="drag-handle" draggable="true" title="拖动排序"
+          ondragstart="globalRoleDragStart(event)" ondragend="globalRoleDragEnd()">⠿</td>
+      <td><span class="role-dot" style="background:${esc(role.color || "#888")};display:inline-block"></span>
+          <b>@${esc(role.id)}</b> ${esc(role.name)}
+          ${index === 0 ? `<span class="pill">新项目默认主控</span>` : ""}</td>
+      <td class="muted">${esc(role.preference || "—")}</td>
+      <td>${abilityPills(role) || "—"}</td>
+      <td class="muted">${execution}</td>
+      <td><button class="ghost" onclick="editGlobalRoleTemplate('${role.id}')">编辑</button></td></tr>`;
+  }).join("");
+  table.innerHTML =
+    `<tr><th></th><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th></th></tr>` +
+    (rows || `<tr><td colspan="6" class="empty">尚未配置角色模板</td></tr>`);
+  table.ondragover = globalRoleDragOver;
+  table.ondrop = event => event.preventDefault();
+}
+
+let _dragGlobalRoleRow = null, _dragGlobalRoleFrom = "";
+const _globalRoleRowIds = () =>
+  [...document.querySelectorAll("#global-role-table tr[data-id]")].map(row => row.dataset.id);
+
+function globalRoleDragStart(event) {
+  _dragGlobalRoleRow = event.target.closest("tr");
+  _dragGlobalRoleFrom = _globalRoleRowIds().join(",");
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", _dragGlobalRoleRow.dataset.id);
+  event.dataTransfer.setDragImage(_dragGlobalRoleRow, 16, 16);
+  _dragGlobalRoleRow.classList.add("dragging");
+}
+
+function globalRoleDragOver(event) {
+  if (!_dragGlobalRoleRow) return;
+  event.preventDefault();
+  const over = event.target.closest("tr[data-id]");
+  if (!over || over === _dragGlobalRoleRow) return;
+  const box = over.getBoundingClientRect();
+  over.parentNode.insertBefore(
+    _dragGlobalRoleRow,
+    event.clientY > box.top + box.height / 2 ? over.nextSibling : over,
+  );
+}
+
+async function globalRoleDragEnd() {
+  if (!_dragGlobalRoleRow) return;
+  _dragGlobalRoleRow.classList.remove("dragging");
+  _dragGlobalRoleRow = null;
+  const ids = _globalRoleRowIds();
+  if (ids.join(",") === _dragGlobalRoleFrom) return;
+  try {
+    await api("POST", "/api/role-templates/reorder", { ids });
+    await loadOverview();
+  } finally {
+    renderGlobalRoleTable();
+  }
+}
+
+function editGlobalRoleTemplate(id) {
+  if (!id && !overview.backends.some(backend => backend.enabled)) {
+    uiAlert("没有已启用的 runtime，请先检测并启用，再创建全局角色模板。");
+    return;
+  }
+  const role = globalRoleTemplates().find(item => item.id === id) || {
+    id: "", name: "", description: "", capabilities: [], preference: "",
+    runtime_id: "", model: "", effort: "", color: "#3564d7",
+  };
+  const abilityChips = Object.entries(traitMeta.abilities).map(([key, label]) =>
+    `<span class="chip ${(role.capabilities || []).includes(key) ? "on" : ""}" data-cap="${key}"
+       onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");
+  const backendOptions = (role.runtime_id ? "" :
+    `<option value="" disabled selected>选择 runtime…</option>`) + overview.backends.map(backend =>
+      `<option value="${esc(backend.id)}" ${role.runtime_id === backend.id ? "selected" : ""}
+         ${!backend.enabled && role.runtime_id !== backend.id ? "disabled" : ""}>` +
+      `${esc(backend.id)} — ${esc(backend.name)}${backend.enabled ? "" : "(已停用)"}</option>`
+    ).join("");
+  window._editingRoleModel = role.model;
+  window._editingRoleEffort = role.effort;
+  openFormDialog(id ? `编辑全局角色模板 @${id}` : "新建全局角色模板", `
+    <div class="row">
+      <div><label>角色 id(@ 提及名)</label><input type="text" id="rf-id" value="${esc(role.id)}" ${id ? "disabled" : ""}></div>
+      <div><label>显示名</label><input type="text" id="rf-name" value="${esc(role.name)}"></div>
+      <div><label>标识色</label><input type="text" id="rf-color" value="${esc(role.color)}"></div>
+    </div>
+    <div class="row">
+      <div><label>Runtime(复制到新项目后固定)</label>
+        <select id="rf-backend" onchange="window._editingRoleModel=null;window._editingRoleEffort=null;refreshModelOptions();refreshEffortOptions()">${backendOptions}</select></div>
+      <div><label>模型(清单来自 runtime)</label><select id="rf-model"></select></div>
+      <div><label>Effort(推理力度)</label><select id="rf-effort"></select></div>
+    </div>
+    <label>角色定位/人格</label>
+    <textarea id="rf-desc" rows="3">${esc(role.description)}</textarea>
+    <label>角色能力</label><div class="chips" id="rf-caps">${abilityChips}</div>
+    <label>角色偏好</label><input type="text" id="rf-pref" value="${esc(role.preference || "")}">`,
+    `<button class="action" onclick="saveGlobalRoleTemplate()">保存</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>
+     ${id ? `<button class="danger" onclick="deleteGlobalRoleTemplate('${id}')">删除模板</button>` : ""}`);
+  refreshModelOptions();
+  refreshEffortOptions();
+}
+
+async function saveGlobalRoleTemplate() {
+  const runtimeId = document.getElementById("rf-backend").value;
+  const body = {
+    id: document.getElementById("rf-id").value.trim(),
+    name: document.getElementById("rf-name").value.trim(),
+    color: document.getElementById("rf-color").value.trim(),
+    description: document.getElementById("rf-desc").value,
+    capabilities: [...document.querySelectorAll("#rf-caps .chip.on")]
+      .map(chip => chip.dataset.cap),
+    preference: document.getElementById("rf-pref").value.trim(),
+    runtime_id: runtimeId,
+    model: document.getElementById("rf-model").value,
+    effort: document.getElementById("rf-effort").value,
+  };
+  if (!body.id) { uiAlert("角色 id 不能为空"); return; }
+  if (!runtimeId) { uiAlert("请为角色选择 runtime"); return; }
+  await api("POST", "/api/role-templates", body);
+  await loadOverview();
+  fdlg.close();
+  renderGlobalRoleTable();
+  await renderBackendTable();
+  toast("全局角色模板已保存", "success");
+}
+
+async function deleteGlobalRoleTemplate(id) {
+  if (!await uiConfirm(`删除全局角色模板 @${id}？已有项目角色不会受影响。`)) return;
+  await api("DELETE", `/api/role-templates/${encodeURIComponent(id)}`);
+  await loadOverview();
+  fdlg.close();
+  renderGlobalRoleTable();
+  await renderBackendTable();
+  toast("全局角色模板已删除", "success");
 }
 
 let updateHints = {};   // 检查更新的结果:{id: {latest, update_available, installed}}

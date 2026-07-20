@@ -95,7 +95,10 @@ function toast(msg, type = "info", ms = 3200) {
   document.getElementById("toasts").appendChild(el);
   setTimeout(dismiss, ms);
 }
-let overview = { projects: [], tasks: [], roles: [], channels: [], backends: [], boards: [] };
+let overview = {
+  projects: [], tasks: [], roles: [], role_templates: [],
+  channels: [], backends: [], boards: [],
+};
 let currentProject = localStorage.getItem("mc.project") || null;
 let currentTab = "chat";
 let currentChan = null;
@@ -105,7 +108,7 @@ let routeRestored = false;   // 首次加载按 URL 还原视图后才允许写 
 
 // 项目是第一层级:聊天、看板、角色、频道都只看当前项目
 const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);
+const globalRoleTemplates = () => overview.role_templates || [];
 const projChannels = () => overview.channels.filter(c => c.project_id === currentProject);
 const projTasks = () => overview.tasks.filter(t => t.project_id === currentProject);
 const projBoards = () => (overview.boards || []).filter(b => b.project_id === currentProject);
-

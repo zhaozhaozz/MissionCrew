@@ -82,6 +82,62 @@ def test_role_crud_api(client):
     assert "writer" not in {r["id"] for r in client.get("/api/roles").json()}
 
 
+def test_global_role_templates_seed_new_projects_and_first_is_default(client, seeded):
+    templates = client.get("/api/role-templates").json()
+    assert [role["id"] for role in templates][:3] == ["lead", "dev", "reviewer"]
+    assert client.get("/api/overview").json()["role_templates"] == templates
+
+    coordinator = {
+        "id": "coordinator", "name": "协调者", "runtime_id": "exp-1",
+        "model": "ultra", "effort": "high", "capabilities": ["reasoning"],
+        "description": "负责新项目调度", "preference": "先规划", "color": "#112233",
+    }
+    assert client.post("/api/role-templates", json=coordinator).status_code == 200
+    ids = ["coordinator", *[role["id"] for role in templates]]
+    assert client.post("/api/role-templates/reorder", json={"ids": ids}).status_code == 200
+
+    created = client.post("/api/projects", json={"id": "templated", "name": "Templated"})
+    assert created.status_code == 200
+    assert created.json()["orchestrator_role_id"] == "coordinator"
+    copied = seeded.get_role("templated", "coordinator")
+    assert (copied.runtime_id, copied.model, copied.effort) == ("exp-1", "ultra", "high")
+    assert copied.description == "负责新项目调度"
+    assert [role.id for role in seeded.list_roles("templated")] == ids
+
+    # 模板是新项目的快照来源，不会反向修改已有项目。
+    coordinator["name"] = "新名称"
+    assert client.post("/api/role-templates", json=coordinator).status_code == 200
+    assert seeded.get_role("templated", "coordinator").name == "协调者"
+    assert seeded.get_project("webshop").orchestrator_role_id == "lead"
+    assert seeded.get_role("webshop", "coordinator") is None
+
+
+def test_global_role_template_validation_and_delete_guard(client, seeded):
+    bad = client.post("/api/role-templates", json={
+        "id": "bad", "runtime_id": "missing", "capabilities": ["coding"],
+    })
+    assert bad.status_code == 400 and "runtime 不存在" in bad.json()["detail"]
+
+    templates = seeded.list_role_templates()
+    for role in templates[1:]:
+        seeded.delete_role_template(role.id)
+    only = seeded.list_role_templates()[0]
+    denied = client.delete(f"/api/role-templates/{only.id}")
+    assert denied.status_code == 409 and "至少保留一个" in denied.json()["detail"]
+
+
+def test_new_project_rejects_unavailable_template_runtime_without_partial_write(client, seeded):
+    template = seeded.list_role_templates()[0]
+    backend = seeded.get_backend(template.runtime_id)
+    backend.enabled = False
+    seeded.put_backend(backend)
+    response = client.post("/api/projects", json={"id": "blocked", "name": "Blocked"})
+    assert response.status_code == 400
+    assert f"@{template.id}" in response.json()["detail"] and "已停用" in response.json()["detail"]
+    assert seeded.get_project("blocked") is None
+    assert seeded.list_roles("blocked") == []
+
+
 def test_role_api_rejects_unknown_trait_and_bad_id(client):
     p = {"project_id": "webshop", "runtime_id": "std-1", "model": "pro"}
     assert client.post("/api/roles", json={"id": "x", "capabilities": ["nope"], **p}).status_code == 400
@@ -154,6 +210,16 @@ def test_new_project_requires_an_enabled_runtime(store):
     response = empty_client.post("/api/projects", json={"id": "empty", "name": "Empty"})
     assert response.status_code == 400
     assert "runtime" in response.json()["detail"]
+
+
+def test_enabling_first_runtime_initializes_global_role_templates(store):
+    store.put_backend(Backend(id="paused", name="Paused", adapter="mock", enabled=False))
+    empty_client = TestClient(create_app())
+    assert empty_client.get("/api/role-templates").json() == []
+    assert empty_client.post("/api/backends", json={"id": "paused", "enabled": True}).status_code == 200
+    templates = empty_client.get("/api/role-templates").json()
+    assert templates[0]["id"] == "lead"
+    assert all(role["runtime_id"] == "paused" for role in templates)
 
 
 def test_runtime_and_model_in_use_cannot_be_removed(client, seeded):
@@ -273,6 +339,15 @@ def test_tools_endpoint_merges_registration_state(client):
         (r["installed"] for r in rows), reverse=True)
     for r in rows:  # 运行时页不暴露档位/成本/能力
         assert "tier" not in r and "cost_per_run" not in r and "capabilities" not in r
+
+
+def test_global_settings_exposes_new_project_role_templates(client):
+    html = client.get("/").text
+    js = client.get("/assets/js/settings-runtime.js").text
+    assert 'id="global-role-table"' in html
+    assert "第一项是新项目的默认主控" in html
+    assert "/api/role-templates/reorder" in js
+    assert "editGlobalRoleTemplate" in js
 
 
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----

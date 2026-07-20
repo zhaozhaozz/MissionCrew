@@ -55,6 +55,7 @@ CREATE TABLE IF NOT EXISTS stats (
 );
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS roles    (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS role_templates (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS boards   (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -373,6 +374,23 @@ class Store:
             rs = [r for r in rs if r.project_id == project_id]
         # 手工排序优先,同序号(含旧数据的默认 0)按 id 字母序稳定兜底
         return sorted(rs, key=lambda r: (r.project_id, r.sort_order, r.id))
+
+    # ---- 全局角色模板:仅供新项目复制,不与已有项目角色联动 ----
+    def put_role_template(self, role: Role) -> None:
+        data = role.to_dict()
+        data["project_id"] = ""
+        self._put("role_templates", role.id, data)
+
+    def get_role_template(self, id: str) -> Optional[Role]:
+        d = self._get("role_templates", id)
+        return Role.from_dict(d) if d else None
+
+    def list_role_templates(self) -> list[Role]:
+        roles = [Role.from_dict(d) for d in self._list("role_templates")]
+        return sorted(roles, key=lambda role: (role.sort_order, role.id))
+
+    def delete_role_template(self, id: str) -> None:
+        self._delete("role_templates", id)
 
     # ---- 自定义面板 ----
     def put_board(self, board: Board) -> None:
