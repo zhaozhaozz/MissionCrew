@@ -23,32 +23,25 @@ charter: |
 dev_guidelines: |
   技术栈、分层约定、API 兼容性要求、禁止事项。
 
-# 多篇完整准则文档；file_refs 指向项目版本化文档库内的相对路径。
+# 多篇完整准则文档；所有 Agent 都会收到已启用条目并自行判断是否适用。
+# 关联项目文档时直接使用普通相对 Markdown 链接，Agent 会按需读取。
 guidelines:
   - id: testing
     title: 测试规范
     content: |
-      修复缺陷必须提供回归测试；测试失败必须保留可复现输入和关键输出。
-    file_refs: [runbooks/local-ci.md]
+      修复缺陷必须提供回归测试；测试失败必须保留可复现输入和关键输出。执行方式见[本地 CI](runbooks/local-ci.md)。
   - id: deployment
     title: 部署说明
     content: |
-      部署前完成数据库迁移检查、配置检查和回滚演练。
-    file_refs: [runbooks/deploy.md]
+      部署前完成数据库迁移检查、配置检查和回滚演练，具体步骤见[部署手册](runbooks/deploy.md)。
 
-# 项目 Skill 是完整说明文档，可引用文档库文件，并按 backend id/adapter 选择性注入。
-# runtime_ids 与 adapters 均为空时注入所有 Runtime。
+# 项目 Skill 是完整说明文档；所有 Agent 都会收到已启用条目并自行判断是否适用。
 skills:
   - id: myproj-local-ci
     name: 项目本地 CI
     description: 在提交前执行项目标准验证。
     instructions: |
-      先运行快速单元测试，再运行受影响模块的集成测试；保留失败证据。
-    file_refs: [runbooks/local-ci.md]
-    runtime_ids: []
-    adapters: []
-    runtime_instructions:
-      codex: 使用工作区沙箱执行命令。
+      先阅读[本地 CI](runbooks/local-ci.md)，运行快速单元测试，再运行受影响模块的集成测试；保留失败证据。
 
 # 可申请的受控资源 id(资源本体和密钥在平台侧登记,不进 Prompt)
 resources: []

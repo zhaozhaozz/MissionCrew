@@ -113,54 +113,67 @@ class Rule:
 
 @dataclass
 class GuidelineDocument:
-    """一篇项目准则文档，可引用项目文档库中的补充文件。"""
+    """一篇项目准则文档；由执行者结合当前任务判断是否适用。"""
 
     id: str
     title: str = ""
     content: str = ""
-    file_refs: list[str] = field(default_factory=list)
     enabled: bool = True
 
     @classmethod
     def from_dict(cls, value: dict | str) -> "GuidelineDocument":
         if isinstance(value, str):
             return cls(id=value, title=value)
-        return cls(**value)
+        data = dict(value)
+        refs = data.pop("file_refs", [])  # 旧引用迁移成普通 Markdown 链接
+        if refs:
+            content = str(data.get("content", ""))
+            links = [f"- [{ref}]({ref})" for ref in refs
+                     if isinstance(ref, str) and f"]({ref})" not in content]
+            if links:
+                data["content"] = "\n\n".join(
+                    part for part in (content, "## 相关文档\n" + "\n".join(links)) if part)
+        data.pop("role_ids", None)  # 短期版本曾支持角色绑定，现统一由执行者判断
+        return cls(**data)
 
 
 @dataclass
 class ProjectSkill:
-    """项目 Skill：完整说明、文件引用和 Runtime 适用范围。"""
+    """项目 Skill：完整说明；由执行者结合当前任务判断是否适用。"""
 
     id: str
     name: str = ""
     description: str = ""
     instructions: str = ""
-    file_refs: list[str] = field(default_factory=list)
-    # 均为空表示注入所有 Runtime；否则 backend id 或 adapter 任一命中才注入。
-    runtime_ids: list[str] = field(default_factory=list)
-    adapters: list[str] = field(default_factory=list)
-    runtime_instructions: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
-
-    def applies_to(self, backend: "Backend") -> bool:
-        return self.enabled and (
-            (not self.runtime_ids and not self.adapters)
-            or backend.id in self.runtime_ids
-            or backend.adapter in self.adapters
-        )
-
-    def instructions_for(self, backend: "Backend") -> str:
-        override = (self.runtime_instructions.get(backend.id)
-                    or self.runtime_instructions.get(backend.adapter)
-                    or self.runtime_instructions.get("default"))
-        return "\n\n".join(x for x in (self.instructions, override) if x)
 
     @classmethod
     def from_dict(cls, value: dict | str) -> "ProjectSkill":
         if isinstance(value, str):
             return cls(id=value, name=value)
-        return cls(**value)
+        data = dict(value)
+        # 旧版按文件、Runtime 或角色预装配；升级后把文件引用转成 Markdown
+        # 链接、把补充说明并入正文，仅丢弃绑定条件，由执行者自行判断。
+        instructions = str(data.get("instructions", ""))
+        refs = data.pop("file_refs", [])
+        links = [f"- [{ref}]({ref})" for ref in refs
+                 if isinstance(ref, str) and f"]({ref})" not in instructions]
+        if links:
+            instructions = "\n\n".join(
+                part for part in (instructions, "## 相关文档\n" + "\n".join(links)) if part)
+        overrides = data.pop("runtime_instructions", {})
+        if isinstance(overrides, dict):
+            notes = [f"### {key}\n{value}" for key, value in overrides.items()
+                     if isinstance(key, str) and isinstance(value, str) and value]
+            if notes:
+                instructions = "\n\n".join(part for part in (
+                    instructions,
+                    "## 迁移的补充说明（按当前任务判断是否适用）\n" + "\n\n".join(notes),
+                ) if part)
+        data["instructions"] = instructions
+        for key in ("runtime_ids", "adapters", "role_ids"):
+            data.pop(key, None)
+        return cls(**data)
 
 
 @dataclass

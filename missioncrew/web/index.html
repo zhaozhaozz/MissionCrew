@@ -181,7 +181,7 @@
       <div class="section">
         <div class="content-topbar">
           <div><h2>准则文档 <span class="muted" id="guide-proj-label"></span></h2>
-            <p class="muted">篇目列表位于应用左侧栏；右侧专注显示当前准则正文和配置。</p></div>
+            <p class="muted">篇目列表位于应用左侧栏；Agent 会结合任务判断准则是否适用，关联文档直接写成 Markdown 链接。</p></div>
           <button class="ghost compact" onclick="editGuideline(null)">＋ 新建</button>
         </div>
         <section class="config-editor-pane form single-pane-editor" id="guideline-editor"></section>
@@ -192,16 +192,10 @@
       <div class="section">
         <div class="content-topbar">
           <div><h2>项目 Skills <span class="muted" id="skill-proj-label"></span></h2>
-            <p class="muted">Skill 列表位于应用左侧栏；当前 Skill 可包含多个引用文件，因此保留文件栏和正文编辑区。</p></div>
+            <p class="muted">Skill 列表位于应用左侧栏；Agent 会结合任务选择 Skill，并根据正文中的 Markdown 链接按需读取文档。</p></div>
           <button class="ghost compact" onclick="editSkill(null)">＋ 新建</button>
         </div>
-        <div class="config-manager">
-          <aside class="config-list-pane">
-            <h3>当前 Skill 文件</h3>
-            <div id="skill-file-list"></div>
-          </aside>
-          <section class="config-editor-pane form" id="skill-editor"></section>
-        </div>
+        <section class="config-editor-pane form single-pane-editor" id="skill-editor"></section>
       </div>
     </div>
 

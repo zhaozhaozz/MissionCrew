@@ -10,7 +10,7 @@ from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend,
-                                     ExecutionConfig, ProjectResource,
+                                     ExecutionConfig, GuidelineDocument, ProjectResource,
                                      ProjectSkill, Task, TaskStage)
 from missioncrew.api import create_app
 
@@ -101,7 +101,7 @@ def test_orchestrator_can_create_task_channel_and_dynamic_board(seeded):
     assert "missioncrew-action" not in reply and "平台操作" in reply
 
 
-def test_document_library_versions_and_is_injected_into_all_execution_modes(seeded):
+def test_document_library_versions_and_context_use_links_on_demand(seeded):
     client = _client(seeded)
     url = "/api/projects/webshop/documents/file/specs/checkout.md"
     first = client.put(url, json={"content": "# Checkout v1\n", "actor": "alice"})
@@ -126,20 +126,28 @@ def test_document_library_versions_and_is_injected_into_all_execution_modes(seed
 
     project = seeded.get_project("webshop")
     project.skills.append(ProjectSkill(
-        id="checkout-std", name="结算开发", instructions="遵循结算步骤",
-        file_refs=["specs/checkout.md"], runtime_ids=["std-1"],
+        id="checkout-dev", name="结算开发",
+        instructions="遵循 [结算说明](specs/checkout.md)",
     ))
     project.skills.append(ProjectSkill(
-        id="expert-only", instructions="只给专家", runtime_ids=["exp-1"],
+        id="expert-only", instructions="仅在疑难任务中使用",
     ))
+    project.skills.append(ProjectSkill(id="common", instructions="所有角色通用"))
+    project.guidelines.append(GuidelineDocument(
+        id="dev-guide", content="开发相关任务准则"))
+    project.guidelines.append(GuidelineDocument(
+        id="tester-guide", content="测试相关任务准则"))
     seeded.put_project(project)
     chat = ChatEngine(seeded)
     msg_id = seeded.add_message("general", "human", "human", "@dev 开发", ["dev"])
     chat_cfg = chat._assemble(seeded.get_channel("general"),
                               seeded.get_role("webshop", "dev"),
                               seeded.get_backend("std-1"), msg_id)
-    assert "checkout-std" in chat_cfg.prompt and "expert-only" not in chat_cfg.prompt
-    assert "# Checkout v2" in chat_cfg.prompt
+    assert "checkout-dev" in chat_cfg.prompt and "expert-only" in chat_cfg.prompt
+    assert "开发相关任务准则" in chat_cfg.prompt and "测试相关任务准则" in chat_cfg.prompt
+    assert "[结算说明](specs/checkout.md)" in chat_cfg.prompt
+    assert "# Checkout v2" not in chat_cfg.prompt  # 链接文件不再预注入
+    assert "仅在任务需要时读取链接文件" in chat_cfg.prompt
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in chat_cfg.prompt
 
     task = Task(id="t_context", project_id="webshop", title="context")
@@ -147,35 +155,45 @@ def test_document_library_versions_and_is_injected_into_all_execution_modes(seed
         task, TaskStage(name="develop"), project, seeded.get_backend("exp-1"),
         {}, [], [],
     )
-    assert "expert-only" in task_cfg.prompt and "checkout-std" not in task_cfg.prompt
+    assert "common" in task_cfg.prompt
+    assert "expert-only" in task_cfg.prompt and "checkout-dev" in task_cfg.prompt
+    assert "开发相关任务准则" in task_cfg.prompt and "测试相关任务准则" in task_cfg.prompt
+    assert "结合当前任务自行判断哪些条目适用" in task_cfg.prompt
     assert task_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in task_cfg.prompt
 
 
-def test_guideline_and_skill_management_validate_runtime_scope(seeded):
+def test_guideline_and_skill_management_have_no_binding_fields(seeded):
     client = _client(seeded)
-    assert client.post("/api/projects/webshop/guidelines", json={
+    guideline = client.post("/api/projects/webshop/guidelines", json={
         "id": "testing", "title": "测试规范", "content": "所有修复必须回归。",
-        "file_refs": ["specs/testing.md"], "actor_role_id": "lead",
-    }).status_code == 200
+        "actor_role_id": "lead",
+    })
+    assert guideline.status_code == 200
+    assert all(key not in guideline.json() for key in ("file_refs", "role_ids"))
     assert client.post("/api/projects/webshop/guidelines", json={
         "id": "forbidden", "actor_role_id": "tester",
     }).status_code == 403
-
     skill = client.post("/api/projects/webshop/skills", json={
         "id": "local-ci", "name": "本地 CI", "instructions": "运行完整测试",
-        "runtime_ids": ["std-1"], "runtime_instructions": {"std-1": "使用 uv"},
         "actor_role_id": "lead",
     })
     assert skill.status_code == 200
-    assert skill.json()["runtime_ids"] == ["std-1"]
-    unknown = client.post("/api/projects/webshop/skills", json={
-        "id": "bad-runtime", "runtime_ids": ["missing"],
+    assert all(key not in skill.json() for key in (
+        "file_refs", "runtime_ids", "adapters", "runtime_instructions", "role_ids"))
+
+    # 旧持久化字段仍可读取，但会被丢弃，不再造成预注入或 Runtime 绑定。
+    legacy_guideline = GuidelineDocument.from_dict({
+        "id": "legacy-guide", "file_refs": ["specs/testing.md"],
+        "role_ids": ["tester"]})
+    legacy_skill = ProjectSkill.from_dict({
+        "id": "legacy-skill", "file_refs": ["specs/testing.md"],
+        "runtime_ids": ["std-1"], "adapters": ["codex"],
+        "runtime_instructions": {"std-1": "旧覆盖"},
     })
-    assert unknown.status_code == 400
-    bad_ref = client.post("/api/projects/webshop/skills", json={
-        "id": "bad-ref", "file_refs": ["../outside.md"],
-    })
-    assert bad_ref.status_code == 400
+    assert "[specs/testing.md](specs/testing.md)" in legacy_guideline.content
+    assert "[specs/testing.md](specs/testing.md)" in legacy_skill.instructions
+    assert "旧覆盖" in legacy_skill.instructions
+    assert not hasattr(legacy_guideline, "role_ids") and not hasattr(legacy_skill, "role_ids")
 
 
 def test_sandboxed_cli_commands_allow_the_document_library():
@@ -400,11 +418,11 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
         seeded.get_project("webshop"), "lead",
         '配置已生成。'
         '<missioncrew-action>{"action":"save_guideline","id":"api-style",'
-        '"title":"API 规范","content":"保持兼容","file_refs":[],"enabled":true}'
+        '"title":"API 规范","content":"保持兼容","enabled":true}'
         '</missioncrew-action>'
         '<missioncrew-action>{"action":"save_skill","id":"local-ci",'
-        '"name":"本地 CI","instructions":"运行测试","file_refs":[],"runtime_ids":["std-1"],'
-        '"adapters":[],"runtime_instructions":{"std-1":"使用 uv"},"enabled":true}'
+        '"name":"本地 CI","instructions":"运行 [CI](runbooks/local-ci.md)",'
+        '"enabled":true}'
         '</missioncrew-action>'
         '<missioncrew-action>{"action":"save_rule","match":{"labels":["auth"]},'
         '"require_evidence":["regression_test"],"require_gates":["security_review"],'
@@ -415,30 +433,31 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     )
     project = seeded.get_project("webshop")
     assert next(g for g in project.guidelines if g.id == "api-style").content == "保持兼容"
-    assert next(s for s in project.skills if s.id == "local-ci").runtime_ids == ["std-1"]
+    assert next(s for s in project.skills if s.id == "local-ci").instructions == \
+        "运行 [CI](runbooks/local-ci.md)"
     assert next(r for r in project.rules if r.match == {"labels": ["auth"]}).require_gates == [
         "security_review"]
     assert library_for("webshop").read("specs/generated.md") == "# Generated\n"
     assert "missioncrew-action" not in reply
     assert "已保存准则文档" in reply and "已保存文档 specs/generated.md" in reply
 
-    # 相同 match 更新而不是产生重复规则；不存在的 Runtime 被拒绝。
+    # 相同 match 更新而不是产生重复规则；字段类型错误的配置被拒绝。
     update = chat._apply_orchestrator_actions(
         project, "lead",
         '<missioncrew-action>{"action":"save_rule","original_match":{"labels":["auth"]},'
         '"match":{"labels":["authentication"]},'
         '"require_evidence":["security_test"],"require_gates":[],'
         '"require_capabilities":[],"note":"更新"}</missioncrew-action>'
-        '<missioncrew-action>{"action":"save_skill","id":"bad-runtime",'
-        '"runtime_ids":["missing"],"file_refs":[]}</missioncrew-action>',
+        '<missioncrew-action>{"action":"save_skill","id":"bad-config",'
+        '"enabled":"yes"}</missioncrew-action>',
         root_id=1, depth=0,
     )
     project = seeded.get_project("webshop")
     matching = [r for r in project.rules if r.match == {"labels": ["authentication"]}]
     assert len(matching) == 1 and matching[0].require_evidence == ["security_test"]
     assert all(r.match != {"labels": ["auth"]} for r in project.rules)
-    assert all(skill.id != "bad-runtime" for skill in project.skills)
-    assert "控制动作未执行" in update and "不存在的 Runtime" in update
+    assert all(skill.id != "bad-config" for skill in project.skills)
+    assert "控制动作未执行" in update and "enabled 必须是布尔值" in update
 
     msg = seeded.add_message("general", "human", "human", "@lead 生成配置", ["lead"])
     prompt = chat._assemble(
@@ -468,10 +487,10 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert 'id="config-chat-thread"' in html
     assert 'id="config-chat-input"' in html
     assert 'class="content-topbar"' in html
-    assert 'id="skill-file-list"' in html
     assert 'class="config-editor-pane form single-pane-editor"' in html
     for removed in ("guideline-page-list", "skill-page-list", "rule-page-list",
-                    "doc-tree", "docs-timeline", "docs-layout"):
+                    "skill-file-list", "config-manager", "doc-tree", "docs-timeline",
+                    "docs-layout"):
         assert removed not in html
     assert "config-generator" not in html
     assert "project-configs.js" in html
@@ -484,6 +503,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "documentSidebarHtml()" in router
     assert "sendConfigChat" in js and "pollConfigChat" in js
     assert "currentConfigDraft" in js and "captureConfigChatSelection" in js
+    assert "roleBindingPicker" not in js and "role_ids" not in js
+    assert "fileRefPicker" not in js and "runtime_instructions" not in js
     assert "line_start" in js and "selected_text" in js
     assert 'replace(/@/g, "\\\\u0040")' in js
     assert "只需回答，不要写入" in js

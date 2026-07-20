@@ -5,7 +5,6 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 
-from ..collab.documents import safe_relative_path
 from ..core.models import GuidelineDocument, ProjectSkill
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import GuidelineInput, SkillInput
@@ -24,10 +23,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         actor = ctx.validate_orchestrator_actor(project, body.actor_role_id)
         if not MENTION_ID_RE.fullmatch(body.id):
             raise HTTPException(400, "准则 id 只能包含字母、数字、下划线、连字符")
-        try:
-            [safe_relative_path(ref) for ref in body.file_refs]
-        except ValueError as exc:
-            raise HTTPException(400, f"准则文件引用不合法: {exc}")
         guideline = GuidelineDocument(**body.model_dump(exclude={"actor_role_id"}))
         project.guidelines = [g for g in project.guidelines if g.id != guideline.id]
         project.guidelines.append(guideline)
@@ -60,14 +55,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         actor = ctx.validate_orchestrator_actor(project, body.actor_role_id)
         if not MENTION_ID_RE.fullmatch(body.id):
             raise HTTPException(400, "Skill id 只能包含字母、数字、下划线、连字符")
-        unknown = [runtime_id for runtime_id in body.runtime_ids
-                   if store.get_backend(runtime_id) is None]
-        if unknown:
-            raise HTTPException(400, f"Skill 引用了不存在的 Runtime: {unknown}")
-        try:
-            [safe_relative_path(ref) for ref in body.file_refs]
-        except ValueError as exc:
-            raise HTTPException(400, f"Skill 文件引用不合法: {exc}")
         skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id"}))
         project.skills = [s for s in project.skills if s.id != skill.id]
         project.skills.append(skill)

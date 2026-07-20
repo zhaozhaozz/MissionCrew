@@ -68,7 +68,6 @@ class GuidelineInput(BaseModel):
     id: str
     title: str = ""
     content: str = ""
-    file_refs: list[str] = []
     enabled: bool = True
     actor_role_id: Optional[str] = None
 
@@ -78,10 +77,6 @@ class SkillInput(BaseModel):
     name: str = ""
     description: str = ""
     instructions: str = ""
-    file_refs: list[str] = []
-    runtime_ids: list[str] = []
-    adapters: list[str] = []
-    runtime_instructions: dict[str, str] = {}
     enabled: bool = True
     actor_role_id: Optional[str] = None
 

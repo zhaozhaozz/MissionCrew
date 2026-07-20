@@ -2,7 +2,6 @@
 let selectedGuidelineId;
 let selectedSkillId;
 let selectedRuleIndex;
-let skillRuntimeInstructions = [];
 const configEditorDirty = { guidelines: false, skills: false, rules: false };
 const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "rules", "docs"]);
 const CONFIG_CHAT_TARGETS = {
@@ -14,7 +13,7 @@ const CONFIG_CHAT_TARGETS = {
 const CONFIG_FIELD_LABELS = {
   "gf-id": "准则 id", "gf-title": "标题", "gf-content": "正文",
   "sf-id": "Skill id", "sf-name": "名称", "sf-desc": "简介",
-  "sf-instructions": "完整执行说明", "sf-adapters": "适用适配器",
+  "sf-instructions": "完整执行说明",
   "rf-match": "匹配条件", "rf-evidence": "所需证据", "rf-gates": "所需门禁",
   "rf-capabilities": "验证能力", "rf-note": "说明",
   "doc-new-path": "文档路径", "doc-content": "文档正文",
@@ -31,23 +30,6 @@ function markConfigDirty(kind) {
 function projectConfigLabel(id) {
   const element = document.getElementById(id);
   if (element) element.textContent = `— 项目「${currentProject || "无"}」`;
-}
-
-function fileRefPicker(id, selected = [], kind) {
-  const values = [...new Set([...(selected || []), ...docFiles])];
-  return `<select id="${id}" multiple size="${Math.min(8, Math.max(3, values.length || 3))}"
-      onchange="markConfigDirty('${kind}')">
-    ${values.map(path => `<option value="${esc(path)}" ${selected.includes(path) ? "selected" : ""}>${esc(path)}</option>`).join("")}
-  </select><div class="muted">可多选项目版本化文档。</div>
-  <input id="${id}-extra" placeholder="额外相对路径，逗号分隔，例如 specs/deploy.md"
-    oninput="markConfigDirty('${kind}')">`;
-}
-
-function readFileRefs(id) {
-  const selected = [...document.getElementById(id).selectedOptions].map(option => option.value);
-  const extra = document.getElementById(`${id}-extra`).value
-    .split(",").map(path => path.trim()).filter(Boolean);
-  return [...new Set([...selected, ...extra])];
 }
 
 function renderProjectConfigPage(tab, force = false) {
@@ -98,11 +80,6 @@ function valueOf(id) {
   return document.getElementById(id)?.value ?? "";
 }
 
-function selectedOptionsOf(id) {
-  const element = document.getElementById(id);
-  return element ? [...element.selectedOptions].map(option => option.value) : [];
-}
-
 function clippedDraftText(value) {
   const clipped = clippedConfigText(value);
   return clipped.truncated ? `${clipped.text}\n…（草稿过长，已截断）` : clipped.text;
@@ -112,20 +89,12 @@ function currentConfigDraft(context) {
   if (context.tab === "guidelines") return {
     id: valueOf("gf-id"), title: valueOf("gf-title"),
     content: clippedDraftText(valueOf("gf-content")),
-    file_refs: [...new Set([...selectedOptionsOf("gf-refs"),
-      ...valueOf("gf-refs-extra").split(",").map(value => value.trim()).filter(Boolean)])],
     enabled: document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.guidelines,
   };
   if (context.tab === "skills") return {
     id: valueOf("sf-id"), name: valueOf("sf-name"), description: valueOf("sf-desc"),
-    instructions: clippedDraftText(valueOf("sf-instructions")), adapters: valueOf("sf-adapters"),
-    file_refs: [...new Set([...selectedOptionsOf("sf-refs"),
-      ...valueOf("sf-refs-extra").split(",").map(value => value.trim()).filter(Boolean)])],
-    runtime_ids: [...document.querySelectorAll("#sf-runtimes .chip.on")]
-      .map(element => element.dataset.runtime),
-    runtime_instructions: Object.fromEntries(
-      skillRuntimeInstructions.filter(([key]) => key.trim())),
+    instructions: clippedDraftText(valueOf("sf-instructions")),
     enabled: document.getElementById("sf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.skills,
   };
@@ -395,7 +364,7 @@ function renderGuidelineEditor() {
       oninput="markConfigDirty('guidelines')">
     <label>正文（Markdown）</label><textarea id="gf-content" rows="18"
       oninput="markConfigDirty('guidelines')">${esc(guideline?.content || "")}</textarea>
-    <label>引用项目文档</label>${fileRefPicker("gf-refs", guideline?.file_refs || [], "guidelines")}
+    <div class="muted">关联项目文档请写成相对 Markdown 链接，例如 [部署说明](runbooks/deploy.md)；Agent 会在需要时读取。</div>
     <label>启用</label><span class="switch ${guideline?.enabled === false ? "" : "on"}" id="gf-enabled"
       role="switch" onclick="this.classList.toggle('on');markConfigDirty('guidelines')"></span>
     <div class="form-actions"><button class="action" onclick="saveGuideline()">保存</button>
@@ -417,7 +386,6 @@ async function saveGuideline() {
     id,
     title: document.getElementById("gf-title").value.trim(),
     content: document.getElementById("gf-content").value,
-    file_refs: readFileRefs("gf-refs"),
     enabled: document.getElementById("gf-enabled").classList.contains("on"),
   });
   selectedGuidelineId = id;
@@ -444,23 +412,12 @@ function renderSkillsPage(force = false) {
   if (selectedSkillId === undefined
       || (selectedSkillId !== null && !skills.some(item => item.id === selectedSkillId)))
     selectedSkillId = skills[0]?.id ?? null;
-  const skill = skills.find(item => item.id === selectedSkillId);
-  document.getElementById("skill-file-list").innerHTML = (skill?.file_refs || []).map(path =>
-    `<div class="config-list-item" data-path="${esc(path)}"
-       onclick="openDocFromSidebar(this.dataset.path)" title="${esc(path)}">
-       📄 ${esc(path)}
-     </div>`).join("")
-    || `<div class="empty">${skill ? "此 Skill 未引用项目文档。" : "请先从左侧选择或新建 Skill。"}</div>`;
   if (force || !configEditorDirty.skills) renderSkillEditor();
   updateConfigChatContext();
 }
 
 function renderSkillEditor() {
   const skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
-  skillRuntimeInstructions = Object.entries(skill?.runtime_instructions || {});
-  const runtimeOptions = (overview.backends || []).map(runtime =>
-    `<label class="chip ${skill?.runtime_ids?.includes(runtime.id) ? "on" : ""}" data-runtime="${esc(runtime.id)}"
-      onclick="this.classList.toggle('on');markConfigDirty('skills')">${esc(runtime.name || runtime.id)}</label>`).join("");
   document.getElementById("skill-editor").innerHTML = `
     <h3>${skill ? "编辑 Skill" : "新建 Skill"}</h3>
     <label>id（保存后不可修改）</label>
@@ -472,42 +429,11 @@ function renderSkillEditor() {
       oninput="markConfigDirty('skills')">
     <label>完整执行说明（Markdown）</label><textarea id="sf-instructions" rows="16"
       oninput="markConfigDirty('skills')">${esc(skill?.instructions || "")}</textarea>
-    <label>引用项目文档</label>${fileRefPicker("sf-refs", skill?.file_refs || [], "skills")}
-    <label>适用 Runtime（全部不选 = 所有 Runtime）</label><div class="chips" id="sf-runtimes">${runtimeOptions}</div>
-    <label>适用适配器（逗号分隔，可选）</label><input id="sf-adapters"
-      value="${esc((skill?.adapters || []).join(", "))}" placeholder="claude_code, codex"
-      oninput="markConfigDirty('skills')">
-    <label>Runtime 专用补充说明</label><div id="sf-ri"></div>
-    <button class="ghost" type="button" onclick="addSkillRuntimeInstruction()">＋ 添加覆盖</button>
+    <div class="muted">关联项目文档请写成相对 Markdown 链接，例如 [本地 CI](runbooks/local-ci.md)；Agent 会在需要时读取。</div>
     <label>启用</label><span class="switch ${skill?.enabled === false ? "" : "on"}" id="sf-enabled"
       role="switch" onclick="this.classList.toggle('on');markConfigDirty('skills')"></span>
     <div class="form-actions"><button class="action" onclick="saveSkill()">保存</button>
       ${skill ? `<button class="danger" onclick="deleteSkill('${esc(skill.id)}')">删除</button>` : ""}</div>`;
-  renderSkillRuntimeInstructions();
-}
-
-function renderSkillRuntimeInstructions() {
-  const root = document.getElementById("sf-ri");
-  if (!root) return;
-  root.innerHTML = skillRuntimeInstructions.map(([key, value], index) => `<div class="row" style="margin-bottom:6px">
-    <div style="flex:0 0 180px"><input value="${esc(key)}" placeholder="Runtime id / adapter / default"
-      oninput="skillRuntimeInstructions[${index}][0]=this.value;markConfigDirty('skills')"></div>
-    <div><input value="${esc(value)}" placeholder="专用补充说明"
-      oninput="skillRuntimeInstructions[${index}][1]=this.value;markConfigDirty('skills')"></div>
-    <button class="danger" type="button" onclick="removeSkillRuntimeInstruction(${index})">删除</button></div>`).join("")
-    || `<div class="muted">暂无专用覆盖。</div>`;
-}
-
-function addSkillRuntimeInstruction() {
-  skillRuntimeInstructions.push(["", ""]);
-  markConfigDirty("skills");
-  renderSkillRuntimeInstructions();
-}
-
-function removeSkillRuntimeInstruction(index) {
-  skillRuntimeInstructions.splice(index, 1);
-  markConfigDirty("skills");
-  renderSkillRuntimeInstructions();
 }
 
 function editSkill(id) {
@@ -521,20 +447,11 @@ function editSkill(id) {
 async function saveSkill() {
   const id = document.getElementById("sf-id").value.trim();
   if (!id) { uiAlert("请输入 Skill id"); return; }
-  const runtimeInstructions = {};
-  for (const [rawKey, value] of skillRuntimeInstructions) {
-    const key = rawKey.trim();
-    if (key) runtimeInstructions[key] = value;
-  }
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills`, {
     id,
     name: document.getElementById("sf-name").value.trim(),
     description: document.getElementById("sf-desc").value.trim(),
     instructions: document.getElementById("sf-instructions").value,
-    file_refs: readFileRefs("sf-refs"),
-    runtime_ids: [...document.querySelectorAll("#sf-runtimes .chip.on")].map(item => item.dataset.runtime),
-    adapters: document.getElementById("sf-adapters").value.split(",").map(item => item.trim()).filter(Boolean),
-    runtime_instructions: runtimeInstructions,
     enabled: document.getElementById("sf-enabled").classList.contains("on"),
   });
   selectedSkillId = id;

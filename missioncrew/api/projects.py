@@ -4,7 +4,7 @@ from __future__ import annotations
 import yaml
 from fastapi import FastAPI, HTTPException
 
-from ..collab.documents import archive_library, library_for, safe_relative_path
+from ..collab.documents import archive_library, library_for
 from ..core import seed as seed_mod
 from ..core.models import DEFAULT_MAX_CHAIN_RUNS, Project, Rule
 from .context import MENTION_ID_RE, ApiContext
@@ -69,21 +69,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         for doc in project.guidelines:
             if not MENTION_ID_RE.fullmatch(doc.id):
                 raise HTTPException(400, f"准则 id 不合法: {doc.id}")
-            try:
-                [safe_relative_path(ref) for ref in doc.file_refs]
-            except ValueError as exc:
-                raise HTTPException(400, f"准则 {doc.id} 的文件引用不合法: {exc}")
         for skill in project.skills:
             if not MENTION_ID_RE.fullmatch(skill.id):
                 raise HTTPException(400, f"Skill id 不合法: {skill.id}")
-            unknown = [runtime_id for runtime_id in skill.runtime_ids
-                       if store.get_backend(runtime_id) is None]
-            if unknown:
-                raise HTTPException(400, f"Skill {skill.id} 引用了不存在的 Runtime: {unknown}")
-            try:
-                [safe_relative_path(ref) for ref in skill.file_refs]
-            except ValueError as exc:
-                raise HTTPException(400, f"Skill {skill.id} 的文件引用不合法: {exc}")
         store.put_project(project)
         if is_new:  # 新项目复制当前全局角色模板并获得自己的 general 频道
             seed_mod.init_project(store, project.id, new_roles)

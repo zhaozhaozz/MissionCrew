@@ -1,8 +1,8 @@
 /* ---- 版本化文档库 ---- */
-let docFiles = [];   // 文档库文件清单缓存,供准则/Skill 的 file_refs 选择器使用
+let docFiles = [];   // 文档库文件清单缓存，供应用侧栏目录树使用
 
 async function loadDocFiles() {
-  // 轻量拉取文件清单(准则/Skill 编辑器的引用选择器数据源),不渲染文档页
+  // 轻量拉取文件清单以渲染应用侧栏，不渲染文档主区
   if (!currentProject) return;
   try {
     const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);

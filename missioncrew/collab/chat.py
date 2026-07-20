@@ -100,8 +100,8 @@ ORCHESTRATOR_TEMPLATE = """\
 <missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
 <missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_guideline","id":"dev-spec","title":"开发规范","content":"Markdown 正文","file_refs":[],"enabled":true}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_skill","id":"local-ci","name":"本地 CI","description":"用途","instructions":"完整执行说明","file_refs":[],"runtime_ids":[],"adapters":[],"runtime_instructions":{{}},"enabled":true}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_guideline","id":"dev-spec","title":"开发规范","content":"Markdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_skill","id":"local-ci","name":"本地 CI","description":"用途","instructions":"完整执行说明，可用 [本地 CI](runbooks/local-ci.md) 链接项目文档","enabled":true}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_rule","match":{{"task_type":"bug"}},"require_evidence":["reproduction","regression_test"],"require_gates":[],"require_capabilities":[],"note":"Bug 验证要求"}}</missioncrew-action>
 <missioncrew-action>{{"action":"write_document","path":"specs/design.md","content":"Markdown 正文","message":"新增设计文档"}}</missioncrew-action>
 要点：
@@ -121,8 +121,9 @@ ORCHESTRATOR_TEMPLATE = """\
     {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
-- save_guideline / save_skill 按 id 新建或覆盖；只能引用项目文档库内的相对路径。
-  save_skill.runtime_ids 只能填写下方现有 Runtime 的 id。
+- save_guideline / save_skill 按 id 新建或覆盖。不要建立文件、Runtime 或角色绑定列表；
+  需要关联项目文档时，在正文中写标准相对 Markdown 链接。所有执行者都会收到已启用的
+  准则和 Skill，并结合当前任务自行判断是否适用、是否需要读取链接文件。
 - save_rule 默认以 match 对象作为规则身份；修改现有规则的 match 时，可额外传
   original_match 定位旧规则，平台会在原位置更新，避免留下重复规则。
   write_document 写入项目版本化文档库并立即生成 Git 版本。
@@ -389,7 +390,7 @@ class ChatEngine:
             project = self.store.get_project(channel.project_id)
             if project:
                 library = library_for(project.id)
-                project_section = render_project_context(project, backend, library)
+                project_section = render_project_context(project, library)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(library.root)
                 allowed_dirs = project_allowed_dirs(project, library)
                 if not channel.workdir:   # 平台自有工作区才建软链,不污染真实代码仓
@@ -665,8 +666,7 @@ class ChatEngine:
             f"- {g.id}({g.title or g.id}){'[停用]' if not g.enabled else ''}"
             for g in project.guidelines) or "(无)"
         skills = "\n".join(
-            f"- {s.id}({s.name or s.id}){'[停用]' if not s.enabled else ''};Runtime="
-            + (",".join([*s.runtime_ids, *s.adapters]) or "全部")
+            f"- {s.id}({s.name or s.id}){'[停用]' if not s.enabled else ''}"
             for s in project.skills) or "(无)"
         runtimes = "\n".join(
             f"- {backend.id}: adapter={backend.adapter};"
@@ -809,14 +809,11 @@ class ChatEngine:
         enabled = action.get("enabled", True)
         if not isinstance(enabled, bool):
             raise ValueError("enabled 必须是布尔值")
-        file_refs = self._action_string_list(action, "file_refs")
-        file_refs = [safe_relative_path(ref) for ref in file_refs]
 
         if kind == "save_guideline":
             guideline = GuidelineDocument(
                 id=raw_id, title=str(action.get("title", "")),
-                content=str(action.get("content", "")), file_refs=file_refs,
-                enabled=enabled,
+                content=str(action.get("content", "")), enabled=enabled,
             )
             project.guidelines = [g for g in project.guidelines if g.id != raw_id]
             project.guidelines.append(guideline)
@@ -825,23 +822,11 @@ class ChatEngine:
                              detail=f"project={project.id} guideline={raw_id}")
             return f"已保存准则文档 {guideline.title or raw_id}"
 
-        runtime_ids = self._action_string_list(action, "runtime_ids")
-        unknown = [runtime_id for runtime_id in runtime_ids
-                   if self.store.get_backend(runtime_id) is None]
-        if unknown:
-            raise ValueError(f"Skill 引用了不存在的 Runtime: {unknown}")
-        runtime_instructions = action.get("runtime_instructions", {})
-        if (not isinstance(runtime_instructions, dict)
-                or any(not isinstance(key, str) or not isinstance(value, str)
-                       for key, value in runtime_instructions.items())):
-            raise ValueError("runtime_instructions 必须是字符串映射")
         skill = ProjectSkill(
             id=raw_id, name=str(action.get("name", "")),
             description=str(action.get("description", "")),
             instructions=str(action.get("instructions", "")),
-            file_refs=file_refs, runtime_ids=runtime_ids,
-            adapters=self._action_string_list(action, "adapters"),
-            runtime_instructions=runtime_instructions, enabled=enabled,
+            enabled=enabled,
         )
         project.skills = [s for s in project.skills if s.id != raw_id]
         project.skills.append(skill)
