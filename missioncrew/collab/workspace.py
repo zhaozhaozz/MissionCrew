@@ -36,7 +36,7 @@ _WORKSPACE_LOCKS_GUARD = threading.Lock()
 @dataclass(frozen=True)
 class AgentWorkspace:
     root: Path
-    docs: Path
+    documents: Path
     guidelines: Path
     skills: Path
     tasks: Path
@@ -159,16 +159,19 @@ def migrate_legacy_workspace_layout() -> int:
                             json.dumps(entries, ensure_ascii=False, indent=2) + "\n")
             _move_logs(task_dir, harness / "runtime")
 
-    agent_workspaces = home / "agent-workspaces"
-    if agent_workspaces.is_dir():
-        for legacy_documents in agent_workspaces.glob("**/.missioncrew/documents"):
-            if not legacy_documents.is_symlink():
+    # A short-lived layout exposed the project document link as ``docs/``.
+    # Only migrate platform-created symlinks; preserve any ordinary directory.
+    for workspace_root in (home / "agent-workspaces", home / "workspaces"):
+        if not workspace_root.is_dir():
+            continue
+        for temporary_docs in workspace_root.glob("**/.missioncrew/docs"):
+            if not temporary_docs.is_symlink():
                 continue
-            docs = legacy_documents.parent / "docs"
-            if docs.is_symlink() or docs.exists():
-                legacy_documents.unlink()
+            documents = temporary_docs.parent / "documents"
+            if documents.is_symlink() or documents.exists():
+                temporary_docs.unlink()
             else:
-                legacy_documents.rename(docs)
+                temporary_docs.rename(documents)
             migrated += 1
     return migrated
 
@@ -235,7 +238,7 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 
 ## 可用内容
 
-- `docs/`：项目版本化文档库，可直接创建和编辑 Markdown 或其他项目文档；平台会在执行后记录版本。
+- `documents/`：项目版本化文档库，可直接创建和编辑 Markdown 或其他项目文档；平台会在执行后记录版本。
 - `tasks/`：项目任务的 Markdown 视图。可新建任务文件，也可编辑既有任务的标题、描述、类型、标签、风险和预算字段；平台会在执行后同步。状态、阶段和审批由平台管理。
 - `guidelines/`：项目准则 Markdown 快照；根据 description 判断是否需要读取。
 - `skills/`：项目 Skill 文件；结合当前任务按需读取。
@@ -423,7 +426,7 @@ def prepare_agent_workspace(store: Store, project: Project,
     root = root.resolve()
     workspace = AgentWorkspace(
         root=root,
-        docs=root / "docs",
+        documents=root / "documents",
         guidelines=root / "guidelines",
         skills=root / "skills",
         tasks=root / "tasks",
@@ -431,13 +434,13 @@ def prepare_agent_workspace(store: Store, project: Project,
     )
     with _workspace_lock(root):
         root.mkdir(parents=True, exist_ok=True)
-        legacy_documents = root / "documents"
-        if legacy_documents.is_symlink():
-            if workspace.docs.is_symlink() or workspace.docs.exists():
-                legacy_documents.unlink()
+        temporary_docs = root / "docs"
+        if temporary_docs.is_symlink():
+            if workspace.documents.is_symlink() or workspace.documents.exists():
+                temporary_docs.unlink()
             else:
-                legacy_documents.rename(workspace.docs)
-        _link_directory(workspace.docs, library.root)
+                temporary_docs.rename(workspace.documents)
+        _link_directory(workspace.documents, library.root)
         workspace.guidelines.mkdir(parents=True, exist_ok=True)
         enabled_guidelines = {guideline.name: guideline for guideline in project.guidelines
                               if guideline.enabled}

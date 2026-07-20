@@ -136,7 +136,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
         _render_skill(skill)
         for skill in project.skills if skill.enabled
     ]
-    documents_dir = (workspace_dir / "docs" if workspace_dir is not None
+    documents_dir = (workspace_dir / "documents" if workspace_dir is not None
                      else library.root)
     tasks_dir = workspace_dir / "tasks" if workspace_dir is not None else None
     skills_dir = workspace_dir / "skills" if workspace_dir is not None else None

@@ -90,7 +90,7 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         env={
             **env,
             "MISSIONCREW_WORKSPACE": str(workspace.root),
-            "MISSIONCREW_DOCUMENTS_DIR": str(workspace.docs),
+            "MISSIONCREW_DOCUMENTS_DIR": str(workspace.documents),
             "MISSIONCREW_GUIDELINES_DIR": str(workspace.guidelines),
             "MISSIONCREW_SKILLS_DIR": str(workspace.skills),
             "MISSIONCREW_TASKS_DIR": str(workspace.tasks),
