@@ -1,17 +1,4 @@
 /* ---------------- 项目设置(当前项目:信息 / 角色 / 频道 / 资源) ---------------- */
-function rulesToYaml(rules) {
-  return (rules || []).map(rule => {
-    const lines = [`- match: ${JSON.stringify(rule.match)}`];
-    if (rule.require_evidence?.length)
-      lines.push(`  require_evidence: ${JSON.stringify(rule.require_evidence)}`);
-    if (rule.require_gates?.length)
-      lines.push(`  require_gates: ${JSON.stringify(rule.require_gates)}`);
-    if (rule.require_capabilities?.length)
-      lines.push(`  require_capabilities: ${JSON.stringify(rule.require_capabilities)}`);
-    if (rule.note) lines.push(`  note: ${JSON.stringify(rule.note)}`);
-    return lines.join("\n");
-  }).join("\n");
-}
 
 function projObj() { return overview.projects.find(project => project.id === currentProject); }
 
@@ -48,7 +35,6 @@ async function renderProjSettings() {
       <button class="action" onclick="saveProject()">保存项目信息</button>
       <button class="ghost" onclick="switchTab('guidelines')">准则文档</button>
       <button class="ghost" onclick="switchTab('skills')">Skills</button>
-      <button class="ghost" onclick="switchTab('rules')">验证规则</button>
       <button class="danger" onclick="deleteProject('${esc(project.id)}')">删除项目</button>
     </div>`;
   renderRoleTable();

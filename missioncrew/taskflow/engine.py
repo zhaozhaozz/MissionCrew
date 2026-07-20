@@ -42,7 +42,7 @@ class Engine:
             id=new_id("t"), project_id=project_id, title=title, description=description,
             task_type=task_type, labels=labels, risk=risk,
             security_level=security_level, max_tier=max_tier,
-            stages=workflow.build_plan(task_type, labels, risk, project),
+            stages=workflow.build_plan(task_type, risk),
         )
         self.store.put_task(task)
         plan = " -> ".join(s.name for s in task.stages)

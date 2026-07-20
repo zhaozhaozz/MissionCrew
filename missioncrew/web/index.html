@@ -79,15 +79,6 @@
         <div id="skill-list"></div>
       </div>
       <div class="side-sec">
-        <h2 class="sec-head" id="sec-rules" onclick="toggleSection('rules')">
-          <span class="caret">▾</span>验证规则<span class="count" id="cnt-rules"></span>
-          <span class="sec-act">
-            <button class="icon-btn" title="新建验证规则" onclick="event.stopPropagation();quickNewRule()">＋</button>
-            <button class="icon-btn" title="管理验证规则" onclick="event.stopPropagation();switchTab('rules')">⚙</button>
-          </span></h2>
-        <div id="rule-list"></div>
-      </div>
-      <div class="side-sec">
         <h2 class="sec-head" id="sec-roles" onclick="toggleSection('roles')">
           <span class="caret">▾</span>角色<span class="count" id="cnt-roles"></span>
           <span class="sec-act">
@@ -151,7 +142,6 @@
         <a onclick="scrollToSec('sec-proj-chans')">频道</a>
         <a onclick="switchTab('guidelines')">准则文档 ↗</a>
         <a onclick="switchTab('skills')">Skills ↗</a>
-        <a onclick="switchTab('rules')">验证规则 ↗</a>
       </div>
       <div class="section" id="sec-proj-info">
         <h2>项目信息 <span class="muted" id="proj-label"></span></h2>
@@ -191,17 +181,6 @@
           <button class="ghost compact" onclick="editSkill(null)">＋ 新建</button>
         </div>
         <section class="config-editor-pane form single-pane-editor" id="skill-editor"></section>
-      </div>
-    </div>
-
-    <div id="rules-view" class="page">
-      <div class="section">
-        <div class="content-topbar">
-          <div><h2>验证规则 <span class="muted" id="rule-proj-label"></span></h2>
-            <p class="muted">规则列表位于应用左侧栏；右侧显示当前规则的完整匹配和验证要求。</p></div>
-          <button class="ghost compact" onclick="editRule(null)">＋ 新建</button>
-        </div>
-        <section class="config-editor-pane form single-pane-editor" id="rule-editor"></section>
       </div>
     </div>
 
@@ -266,7 +245,7 @@
     <label>项目 id(创建后不可改)</label><input type="text" id="np-id" placeholder="例如 webshop">
     <label>名称</label><input type="text" id="np-name" placeholder="例如 WebShop 电商站">
     <label>一句话描述</label><input type="text" id="np-desc">
-    <p class="muted" id="np-role-summary">创建后复制全局角色模板并获得 general 频道;章程、准则、验证规则到「项目设置」页补充。</p>
+    <p class="muted" id="np-role-summary">创建后复制全局角色模板并获得 general 频道；章程和准则到「项目设置」页补充。</p>
   </div>
   <div class="actions"><button class="action" onclick="createProject()">创建项目</button></div>
 </dialog>

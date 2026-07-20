@@ -34,7 +34,11 @@ guidelines:
 
       # 测试规范
 
-      修复缺陷必须提供回归测试；测试失败必须保留可复现输入和关键输出。执行方式见[本地 CI](runbooks/local-ci.md)。
+      - 修复缺陷必须提供回归测试；测试失败必须保留可复现输入和关键输出。
+      - 前端界面变化应完成浏览器流程测试和视觉检查。
+      - 认证逻辑变化应进行安全审查，高风险变更必须获得人工批准。
+
+      执行方式见[本地 CI](runbooks/local-ci.md)。
   - markdown: |
       ---
       name: deployment
@@ -55,16 +59,3 @@ skills:
 
 # 可申请的受控资源 id(资源本体和密钥在平台侧登记,不进 Prompt)
 resources: []
-
-# 验证准则:匹配任务特征 -> 强制的证据 / 门禁 / 能力
-rules:
-  - match: { task_type: bug }
-    require_evidence: [reproduction, regression_test]
-    note: Bug 必须先复现,并提供修复前失败、修复后通过的回归证据
-  - match: { labels: [ui] }
-    require_evidence: [browser_test, screenshot]
-    require_capabilities: [multimodal]
-    note: 前端界面变化必须完成浏览器流程测试和视觉验证
-  - match: { risk: high }
-    require_gates: [human_approval]
-    note: 高风险变更必须人工审批

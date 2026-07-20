@@ -362,7 +362,7 @@
   .single-pane-editor { width: 100%; max-width: none; }
   .config-editor-pane.form { max-width: none; min-width: 0; }
   .config-editor-pane > h3 { margin-top: 0; color: var(--text); font-size: 15px; }
-  #guidelines-view, #skills-view, #rules-view, #docs-view {
+  #guidelines-view, #skills-view, #docs-view {
     padding-bottom: var(--config-chat-space, 308px);
   }
   #guidelines-view, #docs-view { overflow: hidden; }
@@ -452,7 +452,7 @@
     .config-chat.collapsed { left: auto; right: 10px; }
     .guideline-current-name { max-width: 100%; overflow: hidden; }
     .guideline-current-name code { overflow: hidden; text-overflow: ellipsis; }
-    #guidelines-view, #skills-view, #rules-view, #docs-view {
+    #guidelines-view, #skills-view, #docs-view {
       padding-bottom: var(--config-chat-space, 308px);
     }
   }

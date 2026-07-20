@@ -4,7 +4,7 @@ from fastapi.testclient import TestClient
 
 from missioncrew.core import seed as seed_mod
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.core.models import Backend, Role
+from missioncrew.core.models import Backend, Project, Role
 from missioncrew.api import create_app
 
 
@@ -194,15 +194,27 @@ def test_seed_binding_keeps_duty_affinity(seeded):
     assert seeded.get_role("webshop", "secure").runtime_id == "rev-1"
 
 
-def test_project_api_with_rules_yaml(client):
-    body = {"id": "proj2", "name": "新项目", "charter": "范围",
-            "rules_yaml": '- match: {task_type: bug}\n  require_evidence: [reproduction]\n'}
-    r = client.post("/api/projects", json=body)
-    assert r.status_code == 200
-    assert r.json()["rules"][0]["require_evidence"] == ["reproduction"]
-    # 非法 YAML 返回 400
-    bad = client.post("/api/projects", json={"id": "p3", "rules_yaml": "match: {"})
-    assert bad.status_code == 400
+def test_legacy_project_rules_migrate_to_a_guideline():
+    project = Project.from_dict({
+        "id": "legacy", "name": "旧项目",
+        "rules": [{
+            "match": {"task_type": "bug"},
+            "require_evidence": ["reproduction"],
+            "require_gates": ["human_approval"],
+            "note": "先复现再修复",
+        }],
+    })
+    assert not hasattr(project, "rules")
+    guideline = next(g for g in project.guidelines
+                     if g.name == "migrated-validation-rules")
+    assert guideline.description == "从旧验证规则迁移的任务执行与验证指导。"
+    assert '适用条件：`{"task_type": "bug"}`' in guideline.content
+    assert "原证据要求：reproduction" in guideline.content
+    assert "原门禁要求：human_approval" in guideline.content
+    assert "先复现再修复" in guideline.content
+    persisted = project.to_dict()
+    assert "rules" not in persisted
+    assert len(Project.from_dict(persisted).guidelines) == 1
 
 
 def test_new_project_requires_an_enabled_runtime(store):

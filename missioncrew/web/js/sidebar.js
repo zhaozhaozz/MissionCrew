@@ -106,20 +106,12 @@ function openSkillFromSidebar(id) {
   editSkill(id);
 }
 
-function openRuleFromSidebar(index) {
-  editRule(index);
-}
-
 function quickNewGuideline() {
   editGuideline(null);
 }
 
 function quickNewSkill() {
   editSkill(null);
-}
-
-function quickNewRule() {
-  editRule(null);
 }
 
 function openBoardFromSidebar(id) {

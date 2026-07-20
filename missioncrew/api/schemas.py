@@ -93,7 +93,6 @@ class ProjectInput(BaseModel):
     skills: Optional[list[dict | str]] = None
     resources: Optional[list[str]] = None
     required_env: Optional[str] = None
-    rules_yaml: Optional[str] = None  # 验证准则,YAML 列表;None 表示更新时保留
 
 
 class ResourceAdd(BaseModel):

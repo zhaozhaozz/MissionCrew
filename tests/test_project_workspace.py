@@ -27,9 +27,7 @@ def test_project_has_one_configurable_orchestrator_and_protects_it(seeded):
     assert project["orchestrator_role_id"] == "lead"
     assert project["max_chain_runs"] == DEFAULT_MAX_CHAIN_RUNS == 20
 
-    project.update({"orchestrator_role_id": "expert", "max_chain_runs": 1000,
-                    "rules_yaml": ""})
-    project.pop("rules", None)
+    project.update({"orchestrator_role_id": "expert", "max_chain_runs": 1000})
     response = client.post("/api/projects", json=project)
     assert response.status_code == 200
     assert response.json()["orchestrator_role_id"] == "expert"
@@ -501,9 +499,6 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
         '"name":"本地 CI","instructions":"运行 [CI](runbooks/local-ci.md)",'
         '"enabled":true}'
         '</missioncrew-action>'
-        '<missioncrew-action>{"action":"save_rule","match":{"labels":["auth"]},'
-        '"require_evidence":["regression_test"],"require_gates":["security_review"],'
-        '"require_capabilities":["security"],"note":"认证变更"}</missioncrew-action>'
         '<missioncrew-action>{"action":"write_document","path":"specs/generated.md",'
         '"content":"# Generated\\n","message":"Generate spec"}</missioncrew-action>',
         root_id=1, depth=0,
@@ -514,29 +509,23 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     assert guideline.description == "修改 API 时使用"
     assert next(s for s in project.skills if s.id == "local-ci").instructions == \
         "运行 [CI](runbooks/local-ci.md)"
-    assert next(r for r in project.rules if r.match == {"labels": ["auth"]}).require_gates == [
-        "security_review"]
+    assert not hasattr(project, "rules")
     assert library_for("webshop").read("specs/generated.md") == "# Generated\n"
     assert "missioncrew-action" not in reply
     assert "已保存准则文档" in reply and "已保存文档 specs/generated.md" in reply
 
-    # 相同 match 更新而不是产生重复规则；字段类型错误的配置被拒绝。
+    # 旧 save_rule 动作已被移除；其他配置仍执行各自的字段校验。
     update = chat._apply_orchestrator_actions(
         project, "lead",
-        '<missioncrew-action>{"action":"save_rule","original_match":{"labels":["auth"]},'
-        '"match":{"labels":["authentication"]},'
-        '"require_evidence":["security_test"],"require_gates":[],'
-        '"require_capabilities":[],"note":"更新"}</missioncrew-action>'
+        '<missioncrew-action>{"action":"save_rule","match":{"labels":["auth"]}}'
+        '</missioncrew-action>'
         '<missioncrew-action>{"action":"save_skill","id":"bad-config",'
         '"enabled":"yes"}</missioncrew-action>',
         root_id=1, depth=0,
     )
     project = seeded.get_project("webshop")
-    matching = [r for r in project.rules if r.match == {"labels": ["authentication"]}]
-    assert len(matching) == 1 and matching[0].require_evidence == ["security_test"]
-    assert all(r.match != {"labels": ["auth"]} for r in project.rules)
     assert all(skill.id != "bad-config" for skill in project.skills)
-    assert "控制动作未执行" in update and "enabled 必须是布尔值" in update
+    assert "不支持的动作: save_rule" in update and "enabled 必须是布尔值" in update
 
     msg = seeded.add_message("general", "human", "human", "@lead 生成配置", ["lead"])
     prompt = chat._assemble(
@@ -544,8 +533,8 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
         seeded.get_backend("std-1"), msg,
     ).prompt
     assert all(action in prompt for action in (
-        "save_guideline", "save_skill", "save_rule", "write_document"))
-    assert "original_match" in prompt and "只提问或讨论时直接回答" in prompt
+        "save_guideline", "save_skill", "write_document"))
+    assert "save_rule" not in prompt and "只提问或讨论时直接回答" in prompt
     assert "api-style:修改 API 时使用" in prompt
     assert "local-ci(本地 CI)" in prompt
     assert "## 现有 Runtime" in prompt and "std-1: adapter=" in prompt
@@ -560,8 +549,9 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     boards = client.get("/assets/js/boards.js").text
     main = client.get("/assets/js/main.js").text
 
-    for view in ("guidelines-view", "skills-view", "rules-view", "docs-view"):
+    for view in ("guidelines-view", "skills-view", "docs-view"):
         assert f'id="{view}"' in html
+    assert 'id="rules-view"' not in html and 'id="sec-rules"' not in html
     assert 'id="config-chat"' in html
     assert 'id="config-chat-context"' in html
     assert 'id="config-chat-selection"' in html
@@ -581,7 +571,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
         assert removed not in html
     assert "config-generator" not in html
     assert "project-configs.js" in html
-    assert '"guidelines", "skills", "rules"' in router
+    assert '"guidelines", "skills"' in router and '"rules"' not in router
     assert "openFormDialog" not in js
     assert "uiPrompt" not in documents
     assert 'id="doc-new-path"' in documents
@@ -608,7 +598,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert all(markup in boards for markup in (
         "markdownInline", "<blockquote>", "<pre><code", "markdown-table-wrap"))
     assert all(action in js for action in (
-        "save_guideline", "save_skill", "save_rule", "write_document"))
+        "save_guideline", "save_skill", "write_document"))
+    assert "save_rule" not in js and "验证规则" not in html
 
 
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----

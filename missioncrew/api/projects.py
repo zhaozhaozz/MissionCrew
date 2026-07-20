@@ -1,13 +1,12 @@
-"""项目端点:创建/更新(含验证准则 YAML)与删除。"""
+"""项目端点:创建、更新与删除。"""
 from __future__ import annotations
 
-import yaml
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import archive_library, library_for
 from ..collab.project_context import write_guideline_context
 from ..core import seed as seed_mod
-from ..core.models import DEFAULT_MAX_CHAIN_RUNS, Project, Rule
+from ..core.models import DEFAULT_MAX_CHAIN_RUNS, Project
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import ProjectInput
 
@@ -20,19 +19,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if not body.id.strip() or not MENTION_ID_RE.fullmatch(body.id):
             raise HTTPException(400, "项目 id 只能包含字母、数字、下划线、连字符")
         existing = store.get_project(body.id)
-        try:
-            if body.rules_yaml is None:
-                raw_rules = [r.__dict__ for r in existing.rules] if existing else []
-            else:
-                raw_rules = (yaml.safe_load(body.rules_yaml) or []) \
-                    if body.rules_yaml.strip() else []
-            if not isinstance(raw_rules, list):
-                raise ValueError("rules 必须是 YAML 列表")
-            rules = [Rule(**r) for r in raw_rules]
-        except (yaml.YAMLError, TypeError, ValueError) as e:
-            raise HTTPException(400, f"验证准则解析失败: {e}")
         data = body.model_dump()
-        data.pop("rules_yaml")
         is_new = existing is None
         new_roles = None
         if is_new:
@@ -62,7 +49,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                              (existing.resources if existing else []))
         data["required_env"] = (body.required_env if body.required_env is not None else
                                 (existing.required_env if existing else None))
-        data["rules"] = [r.__dict__ for r in rules]
         try:
             project = Project.from_dict(data)
         except (TypeError, ValueError) as exc:

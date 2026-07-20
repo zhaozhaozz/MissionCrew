@@ -3,8 +3,7 @@ from missioncrew.taskflow.workflow import build_plan
 
 
 def _plan_names(seeded, task_type, labels=None, risk="normal"):
-    project = seeded.get_project("webshop")
-    return [s.name for s in build_plan(task_type, labels or [], risk, project)]
+    return [s.name for s in build_plan(task_type, risk)]
 
 
 def test_bug_plan_has_reproduce_and_regression(seeded):
@@ -12,26 +11,23 @@ def test_bug_plan_has_reproduce_and_regression(seeded):
     assert names == ["reproduce", "fix", "regression", "review", "merge"]
 
 
-def test_auth_rule_inserts_security_review(seeded):
+def test_labels_do_not_inject_project_rule_stages(seeded):
     names = _plan_names(seeded, "feature", labels=["auth"])
-    assert "security_review" in names
-    assert names.index("security_review") < names.index("review")
+    assert names == ["understand", "develop", "verify", "review", "merge"]
+    assert "security_review" not in names
 
 
 def test_high_risk_requires_human_approval(seeded):
-    project = seeded.get_project("webshop")
-    plan = build_plan("feature", [], "high", project)
+    plan = build_plan("feature", "high")
     assert plan[-1].human_gate is True
 
 
-def test_ui_rule_adds_multimodal_and_evidence(seeded):
-    project = seeded.get_project("webshop")
-    plan = build_plan("feature", ["ui"], "normal", project)
+def test_project_guidelines_do_not_mechanically_mutate_plan(seeded):
+    plan = build_plan("feature")
     verify = next(s for s in plan if s.kind == "verify")
-    assert "multimodal" in verify.required_capabilities
-    assert {"browser_test", "screenshot"} <= set(verify.produces)
-    # 门禁层面同样强制
-    assert {"browser_test", "screenshot"} <= set(plan[-1].requires_evidence)
+    assert verify.required_capabilities == []
+    assert verify.produces == ["test_report"]
+    assert plan[-1].requires_evidence == []
 
 
 # ---- 端到端 ----
@@ -71,8 +67,7 @@ def test_high_risk_blocks_until_approved(engine):
     mid = engine.store.get_task(t.id)
     assert mid.status == "awaiting_approval"
     assert mid.current_stage.name == "merge"
-    # 安全审查阶段已由具备 security 能力的独立后端完成
-    assert "security_review_report" in engine.store.evidence_types(t.id)
+    assert "security_review_report" not in engine.store.evidence_types(t.id)
 
     engine.approve(t.id, "alice")
     engine.run(t.id)

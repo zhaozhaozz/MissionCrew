@@ -1,6 +1,6 @@
 /* ---- URL 路由:/<项目>/<视图>[/<频道>](History API,干净 URL),
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
-const TABS = ["chat", "board", "custom", "docs", "guidelines", "skills", "rules",
+const TABS = ["chat", "board", "custom", "docs", "guidelines", "skills",
               "proj", "settings"];
 
 function parsePath() {
@@ -45,11 +45,9 @@ function setProject(id) {
   selectedGuidelineName = undefined;
   guidelineMarkdownMode = "preview";
   selectedSkillId = undefined;
-  selectedRuleIndex = undefined;
   configChatSelection = null;
   configEditorDirty.guidelines = false;
   configEditorDirty.skills = false;
-  configEditorDirty.rules = false;
   document.getElementById("msgs").innerHTML = "";
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   docFiles = []; docFilesMeta = []; docSelected = null;
@@ -75,7 +73,6 @@ function switchTab(tab) {
   document.getElementById("docs-view").style.display = tab === "docs" ? "block" : "none";
   document.getElementById("guidelines-view").style.display = tab === "guidelines" ? "block" : "none";
   document.getElementById("skills-view").style.display = tab === "skills" ? "block" : "none";
-  document.getElementById("rules-view").style.display = tab === "rules" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
   document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
   // 侧栏导航:任务看板/全局设置是导航项,项目设置是 ⚙;
@@ -88,7 +85,6 @@ function switchTab(tab) {
   document.getElementById("sec-docs").classList.toggle("active", tab === "docs");
   document.getElementById("sec-guides").classList.toggle("active", tab === "guidelines");
   document.getElementById("sec-skills").classList.toggle("active", tab === "skills");
-  document.getElementById("sec-rules").classList.toggle("active", tab === "rules");
   if (tab === "proj") renderProjSettings();
   if (tab === "custom") renderCustomBoards(true);
   if (tab === "docs") renderDocuments();
@@ -195,14 +191,6 @@ function renderSidebar() {
             onclick="openSkillFromSidebar(this.dataset.id)" title="${esc(s.description || s.id)}">
          ⚡ ${esc(s.name || s.id)}${s.enabled === false ? " (停用)" : ""}</div>`).join("")
       || `<div class="side-item" onclick="quickNewSkill()">＋ 添加第一个 Skill…</div>`;
-  // 验证规则 -> 全页逐条编辑
-  const rules = projObj()?.rules || [];
-  if (!_secState("rules", "rule-list", "cnt-rules", rules.length))
-    document.getElementById("rule-list").innerHTML = rules.map((rule, index) =>
-      `<div class="side-item ${index === selectedRuleIndex && currentTab === "rules" ? "selected" : ""}"
-            onclick="openRuleFromSidebar(${index})" title="${esc(JSON.stringify(rule.match))}">
-         ✓ ${esc(rule.note || JSON.stringify(rule.match))}</div>`).join("")
-      || `<div class="side-item" onclick="quickNewRule()">＋ 添加第一条验证规则…</div>`;
   // 角色 -> 聊天 @(主控带标记)
   const orch = projObj()?.orchestrator_role_id;
   if (!_secState("roles", "role-list", "cnt-roles", projRoles().length))

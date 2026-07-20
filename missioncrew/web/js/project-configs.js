@@ -1,23 +1,19 @@
-/* ---- 项目准则 / Skills / 验证规则全页管理与底部主控对话 ---- */
+/* ---- 项目准则 / Skills 全页管理与底部主控对话 ---- */
 let selectedGuidelineName;
 let selectedSkillId;
-let selectedRuleIndex;
 let guidelineMarkdownMode = "preview";
 const GUIDELINE_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
-const configEditorDirty = { guidelines: false, skills: false, rules: false };
-const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "rules", "docs"]);
+const configEditorDirty = { guidelines: false, skills: false };
+const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "docs"]);
 const CONFIG_CHAT_TARGETS = {
   guidelines: { label: "准则文档", action: "save_guideline" },
   skills: { label: "Skill", action: "save_skill" },
-  rules: { label: "验证规则", action: "save_rule" },
   docs: { label: "版本化文档", action: "write_document" },
 };
 const CONFIG_FIELD_LABELS = {
   "gf-content": "准则 Markdown 文件",
   "sf-id": "Skill id", "sf-name": "名称", "sf-desc": "简介",
   "sf-instructions": "完整执行说明",
-  "rf-match": "匹配条件", "rf-evidence": "所需证据", "rf-gates": "所需门禁",
-  "rf-capabilities": "验证能力", "rf-note": "说明",
   "doc-new-path": "文档路径", "doc-content": "文档正文",
 };
 let configChatSelection = null;
@@ -91,7 +87,6 @@ function projectConfigLabel(id) {
 function renderProjectConfigPage(tab, force = false) {
   if (tab === "guidelines") renderGuidelinesPage(force);
   if (tab === "skills") renderSkillsPage(force);
-  if (tab === "rules") renderRulesPage(force);
 }
 
 function configChatContext() {
@@ -113,12 +108,6 @@ function configChatContext() {
     item = skill ? `${draftName || skill.name || skill.id}（id: ${skill.id}）`
                  : `新建 Skill（${draftName || draftId || "未命名"}，未保存）`;
     itemKey = skill?.id || "new";
-  } else if (currentTab === "rules") {
-    const rule = selectedRuleIndex === null ? null : project.rules?.[selectedRuleIndex];
-    const draftMatch = valueOf("rf-match").replace(/\s+/g, " ").trim().slice(0, 200);
-    item = rule ? `规则 ${selectedRuleIndex + 1}（match: ${draftMatch || JSON.stringify(rule.match)}）`
-                : "新建验证规则（未保存）";
-    itemKey = rule ? `index-${selectedRuleIndex}` : "new";
   } else if (currentTab === "docs") {
     const draftPath = document.getElementById("doc-new-path")?.value.trim();
     item = docMode === "new" ? `新建文档（${draftPath || "路径未填写"}）`
@@ -164,12 +153,6 @@ function currentConfigDraft(context) {
     instructions: clippedDraftText(valueOf("sf-instructions")),
     enabled: document.getElementById("sf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.skills,
-  };
-  if (context.tab === "rules") return {
-    original_match: selectedRuleIndex === null ? null : projObj()?.rules?.[selectedRuleIndex]?.match,
-    match_json: valueOf("rf-match"), require_evidence: valueOf("rf-evidence"),
-    require_gates: valueOf("rf-gates"), require_capabilities: valueOf("rf-capabilities"),
-    note: valueOf("rf-note"), unsaved_changes: configEditorDirty.rules,
   };
   return {
     path: docMode === "new" ? valueOf("doc-new-path") : docSelected,
@@ -583,105 +566,4 @@ async function deleteSkill(id) {
   await loadOverview();
   renderSkillsPage(true);
   toast("Skill 已删除", "success");
-}
-
-/* ---- 验证规则 ---- */
-function renderRulesPage(force = false) {
-  projectConfigLabel("rule-proj-label");
-  const rules = projObj()?.rules || [];
-  if (selectedRuleIndex === undefined
-      || (selectedRuleIndex !== null && !rules[selectedRuleIndex]))
-    selectedRuleIndex = rules.length ? 0 : null;
-  if (force || !configEditorDirty.rules) renderRuleEditor();
-  updateConfigChatContext();
-}
-
-function renderRuleEditor() {
-  const rule = selectedRuleIndex === null ? null : (projObj()?.rules || [])[selectedRuleIndex];
-  document.getElementById("rule-editor").innerHTML = `
-    <h3>${rule ? "编辑验证规则" : "新建验证规则"}</h3>
-    <label>匹配条件（JSON 对象）</label><textarea id="rf-match" rows="5"
-      placeholder='{"task_type":"bug","labels":["auth"],"risk":["high"]}'
-      oninput="markConfigDirty('rules')">${esc(JSON.stringify(rule?.match || {}, null, 2))}</textarea>
-    <div class="muted">支持 task_type、labels（任一标签命中）和 risk。</div>
-    <label>所需证据（逗号分隔）</label><input id="rf-evidence"
-      value="${esc((rule?.require_evidence || []).join(", "))}" placeholder="reproduction, regression_test"
-      oninput="markConfigDirty('rules')">
-    <label>所需门禁（逗号分隔）</label><input id="rf-gates"
-      value="${esc((rule?.require_gates || []).join(", "))}" placeholder="security_review, human_approval"
-      oninput="markConfigDirty('rules')">
-    <label>验证角色所需能力（逗号分隔）</label><input id="rf-capabilities"
-      value="${esc((rule?.require_capabilities || []).join(", "))}" placeholder="security, review"
-      oninput="markConfigDirty('rules')">
-    <label>说明</label><textarea id="rf-note" rows="4"
-      oninput="markConfigDirty('rules')">${esc(rule?.note || "")}</textarea>
-    <div class="form-actions"><button class="action" onclick="saveRule()">保存</button>
-      ${rule ? `<button class="danger" onclick="deleteRule(${selectedRuleIndex})">删除</button>` : ""}</div>`;
-}
-
-function editRule(index) {
-  selectedRuleIndex = index;
-  configChatSelection = null;
-  configEditorDirty.rules = false;
-  if (currentTab !== "rules") switchTab("rules");
-  else renderRulesPage(true);
-}
-
-function commaList(id) {
-  return document.getElementById(id).value.split(",").map(item => item.trim()).filter(Boolean);
-}
-
-async function saveProjectRules(rules) {
-  const project = projObj();
-  await api("POST", "/api/projects", {
-    id: project.id,
-    name: project.name,
-    description: project.description,
-    charter: project.charter,
-    orchestrator_role_id: project.orchestrator_role_id,
-    max_chain_runs: project.max_chain_runs,
-    rules_yaml: rulesToYaml(rules),
-  });
-}
-
-async function saveRule() {
-  let match;
-  try {
-    match = JSON.parse(document.getElementById("rf-match").value || "{}");
-    if (!match || Array.isArray(match) || typeof match !== "object") throw new Error();
-  } catch (error) {
-    uiAlert("匹配条件必须是 JSON 对象");
-    return;
-  }
-  const rules = [...(projObj()?.rules || [])];
-  const rule = {
-    match,
-    require_evidence: commaList("rf-evidence"),
-    require_gates: commaList("rf-gates"),
-    require_capabilities: commaList("rf-capabilities"),
-    note: document.getElementById("rf-note").value.trim(),
-  };
-  if (selectedRuleIndex === null) {
-    rules.push(rule);
-    selectedRuleIndex = rules.length - 1;
-  } else {
-    rules[selectedRuleIndex] = rule;
-  }
-  await saveProjectRules(rules);
-  configEditorDirty.rules = false;
-  await loadOverview();
-  renderRulesPage(true);
-  toast("验证规则已保存", "success");
-}
-
-async function deleteRule(index) {
-  if (!await uiConfirm(`删除验证规则 ${index + 1}？`)) return;
-  const rules = [...(projObj()?.rules || [])];
-  rules.splice(index, 1);
-  await saveProjectRules(rules);
-  selectedRuleIndex = undefined;
-  configEditorDirty.rules = false;
-  await loadOverview();
-  renderRulesPage(true);
-  toast("验证规则已删除", "success");
 }

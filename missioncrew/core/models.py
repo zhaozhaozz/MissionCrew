@@ -6,6 +6,7 @@ Project 承载"准则、上下文、Skill"(领域怎么理解);
 """
 from __future__ import annotations
 
+import json as _json
 import re as _re
 import secrets as _secrets
 import time
@@ -88,29 +89,6 @@ class Backend:
     @classmethod
     def from_dict(cls, d: dict) -> "Backend":
         return cls(**d)
-
-
-@dataclass
-class Rule:
-    """项目验证准则:匹配任务特征 -> 追加证据要求 / 门禁 / 能力要求。"""
-
-    match: dict = field(default_factory=dict)   # {task_type, labels(任一命中), risk}
-    require_evidence: list[str] = field(default_factory=list)
-    require_gates: list[str] = field(default_factory=list)       # security_review | human_approval
-    require_capabilities: list[str] = field(default_factory=list)  # 作用于验证类阶段
-    note: str = ""
-
-    def matches(self, task_type: str, labels: list[str], risk: str) -> bool:
-        m = self.match
-        if "task_type" in m and m["task_type"] != task_type:
-            return False
-        if "labels" in m and not set(m["labels"]) & set(labels):
-            return False
-        if "risk" in m:
-            wanted = m["risk"] if isinstance(m["risk"], list) else [m["risk"]]
-            if risk not in wanted:
-                return False
-        return True
 
 
 @dataclass
@@ -313,7 +291,6 @@ class Project:
     skills: list[ProjectSkill] = field(default_factory=list)
     resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
-    rules: list[Rule] = field(default_factory=list)     # 验证准则
 
     def __post_init__(self):
         # 资源条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
@@ -336,9 +313,48 @@ class Project:
     @classmethod
     def from_dict(cls, d: dict) -> "Project":
         d = dict(d)
-        d["rules"] = [Rule(**r) for r in d.get("rules", [])]
-        d["guidelines"] = [GuidelineDocument.from_dict(v)
-                           for v in d.get("guidelines", [])]
+        guidelines = [GuidelineDocument.from_dict(v) for v in d.get("guidelines", [])]
+        legacy_rules = d.pop("rules", [])
+        if isinstance(legacy_rules, list) and any(
+                isinstance(rule, dict) for rule in legacy_rules):
+            # 旧验证规则不再驱动工作流；一次性转成普通准则，保留人类意图并由
+            # Agent 结合任务自行判断。项目重写后 rules 字段自然消失。
+            used_names = {guideline.name for guideline in guidelines}
+            base_name = "migrated-validation-rules"
+            name = base_name
+            suffix = 2
+            while name in used_names:
+                name = f"{base_name}-{suffix}"
+                suffix += 1
+            sections = [
+                "# 从旧验证规则迁移的准则",
+                "",
+                "这些要求原先由平台按任务属性机械匹配；现在作为普通准则，"
+                "由 Agent 根据具体任务判断是否适用。",
+            ]
+            for index, rule in enumerate(
+                    (item for item in legacy_rules if isinstance(item, dict)), 1):
+                sections.extend([
+                    "", f"## 旧规则 {index}", "",
+                    "- 适用条件：`" + _json.dumps(
+                        rule.get("match", {}), ensure_ascii=False, sort_keys=True) + "`",
+                ])
+                for key, label in (
+                    ("require_evidence", "原证据要求"),
+                    ("require_gates", "原门禁要求"),
+                    ("require_capabilities", "原能力要求"),
+                ):
+                    values = rule.get(key, [])
+                    if isinstance(values, list) and values:
+                        sections.append(f"- {label}：" + "、".join(map(str, values)))
+                if rule.get("note"):
+                    sections.extend(["", str(rule["note"])])
+            guidelines.append(GuidelineDocument(
+                name=name,
+                description="从旧验证规则迁移的任务执行与验证指导。",
+                content="\n".join(sections),
+            ))
+        d["guidelines"] = guidelines
         d["skills"] = [ProjectSkill.from_dict(v) for v in d.get("skills", [])]
         d.setdefault("orchestrator_role_id", "lead")
         d.setdefault("max_chain_runs", DEFAULT_MAX_CHAIN_RUNS)

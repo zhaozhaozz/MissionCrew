@@ -1,10 +1,10 @@
-"""工作流引擎的静态部分:按任务类型生成阶段计划,并用项目验证准则修正。
+"""工作流引擎的静态部分:按任务类型生成固定阶段计划。
 
 工作流只控制阶段和门禁,不干涉 Agent 内部如何搜索代码、拆分任务、写代码。
 """
 from __future__ import annotations
 
-from ..core.models import Project, TaskStage
+from ..core.models import TaskStage
 
 # 基础工作流:每类任务的阶段骨架。final 阶段无 Agent,只做门禁与收尾。
 BASE_WORKFLOWS: dict[str, list[dict]] = {
@@ -47,25 +47,8 @@ BASE_WORKFLOWS: dict[str, list[dict]] = {
     ],
 }
 
-# 安全审查阶段模板:由验证准则(如认证逻辑变更)动态插入到 review 之前
-SECURITY_REVIEW_STAGE = dict(
-    name="security_review", kind="review", produces=["security_review_report"],
-    independent=True, required_capabilities=["review", "security"],
-    goal="以安全视角独立审查变更:注入、越权、凭据泄露、危险默认值等,"
-         "产出安全审查报告(evidence 类型 security_review_report)。",
-)
-
-
-def build_plan(task_type: str, labels: list[str], risk: str, project: Project) -> list[TaskStage]:
-    """基础工作流 + 项目验证准则 => 任务的具体阶段计划。
-
-    准则效果的落点:
-    - require_capabilities -> 所有 verify 阶段(如 UI 变更要求 multimodal);
-    - require_evidence     -> 追加到最后一个 verify 阶段的 produces(让执行者知道要做),
-                              同时追加到 review/final 的 requires_evidence(让门禁强制检查);
-    - require_gates        -> security_review 插入独立安全审查阶段;
-                              human_approval 让 final 阶段要求人工审批。
-    """
+def build_plan(task_type: str, risk: str = "normal") -> list[TaskStage]:
+    """由任务类型生成阶段计划；项目级指导统一由准则上下文提供。"""
     templates = BASE_WORKFLOWS.get(task_type) or BASE_WORKFLOWS["feature"]
     stages = [TaskStage(**dict(t)) for t in templates]
 
@@ -74,41 +57,9 @@ def build_plan(task_type: str, labels: list[str], risk: str, project: Project) -
         if s.kind == "review" and not s.required_capabilities:
             s.required_capabilities = ["review"]
 
-    matched = [r for r in project.rules if r.matches(task_type, labels, risk)]
-    # 高风险任务默认需要人工审批,与准则叠加
-    need_human = risk == "high"
-    extra_evidence: list[str] = []
-    extra_caps: list[str] = []
-    need_security = False
-
-    for r in matched:
-        extra_evidence += r.require_evidence
-        extra_caps += r.require_capabilities
-        if "security_review" in r.require_gates:
-            need_security = True
-        if "human_approval" in r.require_gates:
-            need_human = True
-
-    verify_stages = [s for s in stages if s.kind == "verify"]
-    for s in verify_stages:
-        s.required_capabilities = sorted(set(s.required_capabilities) | set(extra_caps))
-    if verify_stages and extra_evidence:
-        # 其他阶段已承诺产出的证据不重复要求,避免验证阶段重做前序工作
-        covered = {t for s in stages for t in s.produces}
-        last = verify_stages[-1]
-        last.produces = list(dict.fromkeys(
-            last.produces + [t for t in extra_evidence if t not in covered]))
-
-    if need_security:
-        idx = next((i for i, s in enumerate(stages) if s.name == "review"), len(stages) - 1)
-        stages.insert(idx, TaskStage(**dict(SECURITY_REVIEW_STAGE)))
-
-    # 门禁强制:任务级证据要求在收尾前必须全部存在
-    final = stages[-1]
-    all_required = list(dict.fromkeys(extra_evidence))
-    final.requires_evidence = list(dict.fromkeys(final.requires_evidence + all_required))
-    if need_human:
-        final.human_gate = True
+    # 高风险是任务自身的固定安全属性，不依赖项目配置。
+    if risk == "high":
+        stages[-1].human_gate = True
 
     return stages
 

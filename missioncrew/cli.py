@@ -169,7 +169,7 @@ def project_add(file: Path = typer.Option(..., help="项目定义 YAML 文件"))
 @project_app.command("list")
 def project_list():
     for p in _store().list_projects():
-        typer.echo(f"{p.id:<16} {p.name}  准则 {len(p.rules)} 条")
+        typer.echo(f"{p.id:<16} {p.name}  准则 {len(p.guidelines)} 篇")
 
 
 @project_app.command("show")

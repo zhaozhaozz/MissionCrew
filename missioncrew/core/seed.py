@@ -1,12 +1,12 @@
-"""演示种子数据:一组分档后端 + 一个带验证准则的示例项目。
+"""演示种子数据:一组分档后端 + 一个带统一准则的示例项目。
 
 后端全部使用 mock 适配器,可零成本走通全流程;换成真实后端只需把
 adapter 改为 claude_code / codex 并配置模型。
 """
 from __future__ import annotations
 
-from .models import (TIER_ORDER, Backend, Channel, Project, ProjectSkill,
-                     Resource, Role, Rule, _RETIRED_ABILITY_TEXT,
+from .models import (TIER_ORDER, Backend, Channel, GuidelineDocument, Project,
+                     ProjectSkill, Resource, Role, _RETIRED_ABILITY_TEXT,
                      preference_segments)
 from .store import Store
 
@@ -40,22 +40,16 @@ DEMO_PROJECT = Project(
                    "数据库变更必须走迁移脚本;错误必须显式处理,禁止裸 except。",
     skills=[ProjectSkill(id="webshop-local-ci", name="WebShop 本地 CI"),
             ProjectSkill(id="webshop-db-migration", name="WebShop 数据库迁移")],
+    guidelines=[GuidelineDocument(
+        name="task-validation",
+        description="实现、修复或验证 WebShop 任务时使用。",
+        content=("# 任务验证准则\n\n"
+                 "- Bug 必须先复现，并提供修复前失败、修复后通过的回归证据。\n"
+                 "- 前端界面变化必须完成浏览器流程测试和视觉检查。\n"
+                 "- 认证逻辑变化必须进行安全审查。\n"
+                 "- 高风险变更必须获得人工批准。"),
+    )],
     resources=["test-db"],
-    rules=[
-        Rule(match={"task_type": "bug"},
-             require_evidence=["reproduction", "regression_test"],
-             note="Bug 必须先复现,并提供修复前失败、修复后通过的回归证据"),
-        Rule(match={"labels": ["ui"]},
-             require_evidence=["browser_test", "screenshot"],
-             require_capabilities=["multimodal"],
-             note="前端界面变化必须完成浏览器流程测试和视觉验证"),
-        Rule(match={"labels": ["auth"]},
-             require_gates=["security_review"],
-             note="认证逻辑变化必须增加安全审查"),
-        Rule(match={"risk": "high"},
-             require_gates=["human_approval"],
-             note="高风险(如生产环境)变更必须人工审批"),
-    ],
 )
 
 DEMO_RESOURCES = [

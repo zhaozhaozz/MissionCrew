@@ -25,7 +25,7 @@ from ..core.config import mc_home
 from .documents import library_for, safe_relative_path
 from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            BoardWidget, Channel, ExecutionConfig,
-                           GuidelineDocument, ProjectSkill, Role, Rule)
+                           GuidelineDocument, ProjectSkill, Role)
 from .project_context import (guideline_context_dir, project_allowed_dirs,
                               render_project_context, write_guideline_context)
 from ..core.store import Store
@@ -103,7 +103,6 @@ ORCHESTRATOR_TEMPLATE = """\
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_guideline","markdown":"---\\nname: dev-spec\\ndescription: 涉及代码实现、API 或数据库变更时使用\\n---\\n\\n# 开发规范\\n\\nMarkdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_skill","id":"local-ci","name":"本地 CI","description":"用途","instructions":"完整执行说明，可用 [本地 CI](runbooks/local-ci.md) 链接项目文档","enabled":true}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_rule","match":{{"task_type":"bug"}},"require_evidence":["reproduction","regression_test"],"require_gates":[],"require_capabilities":[],"note":"Bug 验证要求"}}</missioncrew-action>
 <missioncrew-action>{{"action":"write_document","path":"specs/design.md","content":"Markdown 正文","message":"新增设计文档"}}</missioncrew-action>
 要点：
 - create_channel 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
@@ -129,12 +128,12 @@ ORCHESTRATOR_TEMPLATE = """\
   Markdown 链接。description 应简洁说明适用场景；所有执行者只会收到已启用准则的
   description，并在相关时从对应准则 Markdown 文件读取完整正文。
   Skill 仍结合当前任务自行判断是否适用、是否需要读取链接文件。
-- save_rule 默认以 match 对象作为规则身份；修改现有规则的 match 时，可额外传
-  original_match 定位旧规则，平台会在原位置更新，避免留下重复规则。
-  write_document 写入项目版本化文档库并立即生成 Git 版本。
+- 验证、审查、安全和审批等项目要求也统一写入准则 Markdown，由 Agent 根据任务
+  判断是否适用；平台不再维护或机械执行独立的验证规则。write_document 写入项目
+  版本化文档库并立即生成 Git 版本。
 - 配置页面协作消息会明确给出当前页面、当前条目、未保存草稿，以及用户选中的
   字段、行号和原文。只提问或讨论时直接回答，不要改配置；明确要求创建或修改时，
-  必须使用对应的 save_guideline / save_skill / save_rule / write_document 动作实际落库。
+  必须使用对应的 save_guideline / save_skill / write_document 动作实际落库。
 - 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
   最合适的角色，@ 它并写清任务简报。
@@ -158,9 +157,6 @@ ORCHESTRATOR_TEMPLATE = """\
 
 ## 现有 Runtime
 {runtimes}
-
-## 现有验证规则
-{rules}
 """
 
 
@@ -679,13 +675,10 @@ class ChatEngine:
             f"- {backend.id}: adapter={backend.adapter};"
             f"{'启用' if backend.enabled else '停用'}"
             for backend in self.store.list_backends()) or "(无)"
-        rules = "\n".join(
-            f"- {json.dumps(rule.__dict__, ensure_ascii=False)}"
-            for rule in project.rules) or "(无)"
         return ORCHESTRATOR_TEMPLATE.format(
             max_runs=project.max_chain_runs,
             repos=repos, channels=channels, boards=boards,
-            guidelines=guidelines, skills=skills, runtimes=runtimes, rules=rules)
+            guidelines=guidelines, skills=skills, runtimes=runtimes)
 
     def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
                                     root_id: int, depth: int) -> str:
@@ -700,8 +693,7 @@ class ChatEngine:
                     reports.append(self._action_post_message(
                         project_id, role_id, action, root_id, depth))
                     continue
-                if kind in ("save_guideline", "save_skill", "save_rule",
-                            "write_document"):
+                if kind in ("save_guideline", "save_skill", "write_document"):
                     reports.append(self._apply_project_config_action(
                         project, role_id, action))
                     continue
@@ -758,13 +750,6 @@ class ChatEngine:
             cleaned = "\n\n".join(x for x in (cleaned, "平台操作：" + "；".join(reports)) if x)
         return cleaned or "(主控动作已处理)"
 
-    @staticmethod
-    def _action_string_list(action: dict, field: str) -> list[str]:
-        value = action.get(field, [])
-        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
-            raise ValueError(f"{field} 必须是字符串列表")
-        return value
-
     def _apply_project_config_action(self, project, role_id: str,
                                      action: dict) -> str:
         """校验并执行主控生成的项目配置；所有写入都限定在当前项目。"""
@@ -781,34 +766,6 @@ class ChatEngine:
             self.store.audit(role_id, "document_saved",
                              detail=f"project={project.id} path={path} revision={revision}")
             return f"已保存文档 {path}"
-
-        if kind == "save_rule":
-            match = action.get("match")
-            if not isinstance(match, dict):
-                raise ValueError("save_rule.match 必须是对象")
-            original_match = action.get("original_match", match)
-            if not isinstance(original_match, dict):
-                raise ValueError("save_rule.original_match 必须是对象")
-            rule = Rule(
-                match=match,
-                require_evidence=self._action_string_list(action, "require_evidence"),
-                require_gates=self._action_string_list(action, "require_gates"),
-                require_capabilities=self._action_string_list(
-                    action, "require_capabilities"),
-                note=str(action.get("note", "")),
-            )
-            replaced = False
-            for index, existing in enumerate(project.rules):
-                if existing.match == original_match:
-                    project.rules[index] = rule
-                    replaced = True
-                    break
-            if not replaced:
-                project.rules.append(rule)
-            self.store.put_project(project)
-            self.store.audit(role_id, "rule_saved",
-                             detail=f"project={project.id} match={rule.match}")
-            return f"已{'更新' if replaced else '新增'}验证规则 {rule.match}"
 
         enabled = action.get("enabled", True)
         if not isinstance(enabled, bool):
