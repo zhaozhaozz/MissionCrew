@@ -160,6 +160,20 @@ function fmtBody(text, markdown = false) {
 }
 
 let lastMsgDate = "";   // 聊天流的日期分隔线:与上一条消息不同天时插入
+const MESSAGE_FOLD_AT = 4000;
+
+function agentExecutionLabel(message) {
+  return `runtime=${message.runtime_id || "未记录"} · ` +
+    `model=${message.model || "CLI 默认"} · ` +
+    `effort=${message.effort || "CLI 默认"}`;
+}
+
+function toggleMessageBody(button) {
+  const body = button.previousElementSibling;
+  const expanded = body.classList.toggle("expanded");
+  button.setAttribute("aria-expanded", String(expanded));
+  button.textContent = expanded ? "收起长回复" : `展开完整回复（${button.dataset.size} 字符）`;
+}
 
 function appendMessages(list) {
   const pane = document.getElementById("msgs");
@@ -182,14 +196,17 @@ function appendMessages(list) {
     const name = isAgent ? "@" + m.author : m.author_type === "platform" ? "系统" : m.author;
     const initial = isAgent || isHuman ? (m.author[0] || "?").toUpperCase() : "⚙";
     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const longReply = isAgent && m.content.length > MESSAGE_FOLD_AT;
     const div = document.createElement("div");
     div.className = `msg ${m.author_type}`;
     div.dataset.msgId = m.id;   // 运行过程卡片按触发消息内联定位
     div.innerHTML = `<span class="avatar" style="background:${color}">${esc(initial)}</span>
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${isAgent ? color : "var(--text)"}">${esc(name)}</span>
-          ${isAgent ? `<span class="via">agent</span>` : ""}<span class="time">${time}</span></div>
-        <div class="body">${fmtBody(m.content, isAgent)}</div>
+          ${isAgent ? `<span class="via">${esc(agentExecutionLabel(m))}</span>` : ""}<span class="time">${time}</span></div>
+        <div class="body${longReply ? " folded" : ""}">${fmtBody(m.content, isAgent)}</div>
+        ${longReply ? `<button type="button" class="message-fold-toggle" data-size="${m.content.length}"
+          aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;
     pane.appendChild(div);
     lastMsgId = Math.max(lastMsgId, m.id);

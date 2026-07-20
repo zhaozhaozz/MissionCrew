@@ -3,8 +3,9 @@
 协作模型:
 - 人类在频道里 @角色 布置工作;角色由固定 runtime/model 执行,
   定位、能力与偏好用于协作方选人,不参与执行时路由;
-- Agent 的回复原样发布到频道,回复中 @其他角色 即发起协作,平台自动级联触发;
-- 所有消息(包括 Agent 之间的)对人类完全可见,全程审计。
+- 只有项目主控能在回复中 @其他角色发起工作;执行角色看不到其他角色名册,
+  完成后由平台自动把完整结果交回主控继续调度;
+- 所有主控调度与执行结果都对人类完全可见,全程审计。
 
 防失控:级联深度上限 + 单条协作链的执行总数上限 + 不响应自己 @ 自己。
 """
@@ -27,8 +28,7 @@ from .project_context import project_allowed_dirs, render_project_context
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
-MAX_DEPTH = 4          # 级联深度:人类消息为 0,Agent 回复逐层 +1
-                       # 4 层可容纳 主管->执行->评审->主管汇总 的完整闭环
+MAX_DEPTH = 10         # 自动回主控也计一层;与执行总数上限配合，允许多轮调度闭环
 MAX_CHAIN_RUNS = 10    # 单条协作链(同一条人类消息引发)的执行总数上限
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
 CHAT_TIMEOUT = 900     # 单次聊天执行超时(秒)
@@ -64,13 +64,9 @@ CHAT_PROMPT = """\
 
 # 回复要求
 - 只完成触发消息交代的工作;信息不足时在回复中提出,不要臆测扩大范围。
-- 你的最终回复会被原样发布到聊天频道,人类和其他角色都能看到。
+- 你的最终回复会被完整、原样发布到聊天频道,人类可以看到。
 - 回复用中文,先说结论,再简述做了什么;不要贴大段日志。
-- 需要其他角色接手时,在回复中提及 @角色名,并为对方写清楚任务简报:
-  背景、要求、验收标准(对方看得到最近对话,但不要假设对方了解全部细节)。
-- 角色名册(各自定位供选人参考):
-{roster}
-- 不需要协作就不要 @ 任何角色;不要 @ 你自己;不要编造不存在的角色。
+{collaboration_section}
 """
 
 ORCHESTRATOR_TEMPLATE = """\
@@ -103,7 +99,7 @@ ORCHESTRATOR_TEMPLATE = """\
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
   最合适的角色，@ 它并写清任务简报。
 - 调度预算：@ 级联深度上限 {max_depth} 层、单条协作链最多 {max_runs} 次执行。
-  复杂任务分批派发，让执行角色完成后 @ 你汇报，再派下一批。
+  复杂任务分批派发；执行角色完成后平台会把完整结果自动交回你，再派下一批。
 
 ## 项目代码仓
 {repos}
@@ -130,25 +126,43 @@ class ChatEngine:
     # ---- 对外入口 ----
     def post(self, channel_id: str, author: str, content: str,
              author_type: str = "human", reply_to: Optional[int] = None,
-             root_id: Optional[int] = None, depth: int = 0) -> int:
+             root_id: Optional[int] = None, depth: int = 0,
+             runtime_id: Optional[str] = None, model: Optional[str] = None,
+             effort: Optional[str] = None) -> int:
         """发布一条消息,并异步触发其中 @ 到的角色。返回消息 id。"""
         channel = self.store.get_channel(channel_id)
         if channel is None:
             raise ValueError(f"频道不存在: {channel_id}")
-        # @ 提及只在频道所属项目的角色中生效:项目之间互不相干
-        mentions = self._valid_mentions(content, channel.project_id or "",
-                                        exclude=author if author_type == "agent" else None)
-        # 人类消息没 @ 任何角色时默认交给项目主控调度;Agent 消息不适用——
-        # 不 @ 人正是级联的自然终点,默认转发会让协作链失控。
-        # 作者就是主控本人时也不补(否则自己触发自己)。
+        project = self.store.get_project(channel.project_id or "")
+        orchestrator = project.orchestrator_role_id if project else ""
+        role = (self.store.get_role(channel.project_id or "", author)
+                if author_type == "agent" else None)
+
+        # 只有主控的 Agent 消息能按正文中的 @ 调度其他角色。执行角色不论
+        # 回复里是否误写了 @，都只把完整结果交回主控，避免横向看见/调用名册。
+        if author_type == "agent":
+            if author == orchestrator:
+                mentions = self._valid_mentions(
+                    content, channel.project_id or "", exclude=author)
+            elif orchestrator and self.store.get_role(
+                    channel.project_id or "", orchestrator):
+                mentions = [orchestrator]
+            else:
+                mentions = []
+            if role:
+                runtime_id = role.runtime_id if runtime_id is None else runtime_id
+                model = role.model if model is None else model
+                effort = role.effort if effort is None else effort
+        else:
+            # 人类仍可直接点名角色；无有效 @ 时默认交给项目主控。
+            mentions = self._valid_mentions(content, channel.project_id or "", exclude=None)
         if not mentions and author_type == "human" and channel.project_id:
-            project = self.store.get_project(channel.project_id)
-            orchestrator = project.orchestrator_role_id if project else ""
             if (orchestrator and author != orchestrator
                     and self.store.get_role(channel.project_id, orchestrator)):
                 mentions = [orchestrator]
         msg_id = self.store.add_message(channel_id, author, author_type, content,
-                                        mentions, reply_to, root_id, depth)
+                                        mentions, reply_to, root_id, depth,
+                                        runtime_id or "", model or "", effort or "")
         root = root_id if root_id is not None else msg_id
         for role_id in mentions:
             self._trigger(channel, role_id, msg_id, root, depth)
@@ -204,21 +218,36 @@ class ChatEngine:
             self._execute_inner(run_id, channel, role_id, msg_id, root_id, depth)
         except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
             self.store.update_chat_run(run_id, "failed", error=str(e))
-            self.store.add_message(channel.id, "platform", "platform",
-                                   f"@{role_id} 执行出错: {e}", [], msg_id, root_id, depth)
+            self._post_failure(channel, role_id, msg_id, root_id, depth,
+                               f"@{role_id} 执行出错: {e}")
+
+    def _post_failure(self, channel: Channel, role_id: str, msg_id: int,
+                      root_id: int, depth: int, content: str) -> None:
+        """公开执行失败；非主控失败也自动交回主控决定后续动作。"""
+        result_depth = depth + 1
+        failure_id = self.store.add_message(
+            channel.id, "platform", "platform", content, [], msg_id, root_id,
+            result_depth)
+        project = self.store.get_project(channel.project_id or "")
+        orchestrator = project.orchestrator_role_id if project else ""
+        if (orchestrator and role_id != orchestrator
+                and self.store.get_role(channel.project_id or "", orchestrator)):
+            self._trigger(channel, orchestrator, failure_id, root_id, result_depth)
 
     def _execute_inner(self, run_id: int, channel: Channel, role_id: str,
                        msg_id: int, root_id: int, depth: int) -> None:
         role = self.store.get_role(channel.project_id or "", role_id)
         if role is None:
             self.store.update_chat_run(run_id, "failed", error="角色不存在")
+            self._post_failure(channel, role_id, msg_id, root_id, depth,
+                               f"@{role_id} 执行失败: 角色不存在")
             return
 
         backend, trace = self._pick_backend(channel, role)
         if backend is None:
             self.store.update_chat_run(run_id, "failed", error=trace)
-            self.store.add_message(channel.id, "platform", "platform",
-                                   f"@{role_id} 无可用后端: {trace}", [], msg_id, root_id, depth)
+            self._post_failure(channel, role_id, msg_id, root_id, depth,
+                               f"@{role_id} 无可用后端: {trace}")
             return
 
         self.store.update_chat_run(run_id, "running", backend_id=backend.id)
@@ -249,9 +278,9 @@ class ChatEngine:
         if not result.success:
             self.store.update_chat_run(run_id, "failed", backend_id=backend.id,
                                        error=result.summary)
-            self.store.add_message(channel.id, "platform", "platform",
-                                   f"@{role_id}(后端 {backend.id})执行失败: {result.summary}",
-                                   [], msg_id, root_id, depth)
+            self._post_failure(
+                channel, role_id, msg_id, root_id, depth,
+                f"@{role_id}(后端 {backend.id})执行失败: {result.summary}")
             return
 
         reply = (result.output or result.summary or "(无输出)").strip()
@@ -267,9 +296,10 @@ class ChatEngine:
         # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
         self.store.remove_duplicate_reply_output(run_id, reply)
         self.store.update_chat_run(run_id, "done", backend_id=backend.id)
-        # Agent 回复作为该角色的消息发布;其中的 @ 会继续级联(深度 +1)
+        # 主控回复中的 @ 才会分派；执行角色回复自动返回主控(深度 +1)。
         self.post(channel.id, role_id, reply, author_type="agent",
-                  reply_to=msg_id, root_id=root_id, depth=depth + 1)
+                  reply_to=msg_id, root_id=root_id, depth=depth + 1,
+                  runtime_id=backend.id, model=backend.model, effort=cfg.effort)
 
     # ---- 内部:固定执行组合与上下文装配 ----
     def _pick_backend(self, _channel: Channel, role: Role):
@@ -299,6 +329,7 @@ class ChatEngine:
 
         project_section = ""
         orchestrator_section = ""
+        project = None
         env = {}
         allowed_dirs = []
         if channel.project_id:
@@ -313,25 +344,59 @@ class ChatEngine:
                 if role.id == project.orchestrator_role_id:
                     orchestrator_section = self._orchestrator_section(project)
 
+        is_orchestrator = bool(project and role.id == project.orchestrator_role_id)
+        orchestrator_id = project.orchestrator_role_id if project else ""
+        known_roles = {r.id for r in self.store.list_roles(channel.project_id or "")}
+
+        def _worker_visible(text: str) -> str:
+            """执行角色的任务简报不暴露其他执行角色 id。"""
+            if is_orchestrator:
+                return text
+            return MENTION_RE.sub(
+                lambda match: (match.group(0)
+                               if match.group(1) in {role.id, orchestrator_id}
+                               or match.group(1) not in known_roles
+                               else "[其他执行角色]"),
+                text,
+            )
+
         history_lines = []
         trigger = ""
         for m in self.store.recent_messages(channel.id, HISTORY_WINDOW):
-            line = f"[{m['author']}] {m['content']}"
+            author = m["author"]
+            if (not is_orchestrator and m["author_type"] == "agent"
+                    and author != orchestrator_id):
+                author = "执行角色"
+            line = f"[{author}] {_worker_visible(m['content'])}"
             if m["id"] == msg_id:
                 trigger = line
-            else:
+            elif is_orchestrator:
                 history_lines.append(line)
 
-        # 名册带偏好标签与人格定位:人格的用途正是让调度方判断该找谁;
-        # 只列本项目的角色,项目之间互不可见
+        # 只有主控拿到项目角色名册；执行角色只接收当前任务简报，完成后由
+        # 平台自动回传主控，不知道也不能横向调度其他执行角色。
         def _tag(r):
             labels = "/".join([*r.ability_labels(),
                                *( [r.preference] if r.preference else [] )])
             head = f"@{r.id}({r.name}" + (f"|{labels}" if labels else "") + ")"
             desc = " ".join((r.description or "").split())
             return f"  - {head}: {desc}" if desc else f"  - {head}"
-        roster = "\n".join(_tag(r) for r in self.store.list_roles(channel.project_id or "")
-                           if r.id != role.id)
+        if is_orchestrator:
+            roster = "\n".join(
+                _tag(r) for r in self.store.list_roles(channel.project_id or "")
+                if r.id != role.id) or "(无其他角色)"
+            collaboration_section = (
+                "- 只有你（项目主控）可以在回复中 @其他角色。需要接手时，为对方写清"
+                "背景、要求和验收标准。\n"
+                "- 不需要协作就不要 @任何角色；不要 @你自己，不要编造不存在的角色。\n"
+                "- 角色名册（仅主控可见，各自定位供你选人参考）：\n" + roster
+            )
+        else:
+            collaboration_section = (
+                "- 你不是项目主控，看不到其他执行角色名册，也不能 @或调度其他角色。\n"
+                "- 只提交本次任务的完整结果；完成或失败后，平台会自动把结果交回"
+                "项目主控，由主控检查并继续后续流程。"
+            )
         prompt = CHAT_PROMPT.format(
             role_id=role.id, role_name=role.name, role_desc=role.description,
             role_capabilities=", ".join(role.capabilities) or "无特别标注",
@@ -344,7 +409,7 @@ class ChatEngine:
             project_section=project_section,
             orchestrator_section=orchestrator_section,
             history="\n".join(history_lines) or "(无)",
-            trigger=trigger, roster=roster or "(无其他角色)",
+            trigger=trigger, collaboration_section=collaboration_section,
         )
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,

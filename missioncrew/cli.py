@@ -92,10 +92,10 @@ def demo(run: bool = typer.Option(True, help="是否顺带演示典型流程")):
         typer.echo(f"  · {r.message}")
     typer.echo(f"  批准命令: mc approve {t2.id} --approver 你的名字")
 
-    typer.echo("\n=== 演示 3:聊天协作(@dev 干活,完成后自动 @reviewer 评审) ===")
+    typer.echo("\n=== 演示 3:聊天协作(主控分派,执行结果自动返回主控) ===")
     chat = ChatEngine(store)
-    chat.post("general", "human",
-              "@dev 优惠券叠加的边界条件再排查一遍,完成后请 @reviewer 复核结论。")
+    chat.post("general", "lead", "@dev 请排查优惠券叠加的边界条件。",
+              author_type="agent")
     chat.wait_idle()
     for m in store.list_messages("general"):
         who = f"@{m['author']}" if m["author_type"] == "agent" else m["author"]
@@ -266,7 +266,7 @@ def chat_send(content: str = typer.Argument(..., help="消息内容,@角色 触�
 def chat_log(channel: str = typer.Argument("general"),
              project: Optional[str] = typer.Option(None, "-p", "--project"),
              limit: int = 50):
-    """查看频道聊天记录(含 Agent 之间的协作消息)。"""
+    """查看频道聊天记录(含主控调度与执行角色回传)。"""
     store = _store()
     cid = _resolve_channel(store, channel, project)
     for m in store.recent_messages(cid, limit):

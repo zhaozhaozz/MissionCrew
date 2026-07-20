@@ -151,7 +151,8 @@
                  display: grid; place-items: center; color: #fff; font-size: 12px;
                  font-weight: 700; box-shadow: var(--shadow-sm); }
   .msg .msg-main { flex: 1; min-width: 0; }
-  .msg .head { font-size: 12.5px; margin-bottom: 3px; }
+  .msg .head { display: flex; align-items: baseline; flex-wrap: wrap;
+               font-size: 12.5px; margin-bottom: 3px; }
   .msg .author { font-weight: 700; }
   .msg .time, .msg .via { color: var(--muted); font-weight: 400; margin-left: 8px; font-size: 11.5px; }
   .msg .body { background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-sm);
@@ -169,6 +170,14 @@
   .msg .body h4 { color: var(--text); font-size: 13.5px; margin: 8px 0 3px; }
   .msg .body code { background: var(--bg-soft); border-radius: 4px; padding: 0 5px; font-size: 12.5px; }
   .msg .body ul { margin: 4px 0; padding-left: 20px; }
+  .msg .body.folded { position: relative; max-height: 300px; overflow: hidden; }
+  .msg .body.folded:not(.expanded)::after { content: ""; position: absolute; inset: auto 0 0;
+                                            height: 56px; pointer-events: none;
+                                            background: linear-gradient(transparent, var(--card)); }
+  .msg .body.folded.expanded { max-height: none; overflow: visible; }
+  .message-fold-toggle { display: block; margin: 5px 4px 0; padding: 2px 0; border: 0;
+                         background: transparent; color: var(--accent); font-size: 11.5px;
+                         cursor: pointer; }
   .mention { color: var(--accent); font-weight: 600; }
   .date-sep { text-align: center; margin: 20px 0 16px; animation: fadeUp .18s ease; }
   .date-sep span { background: var(--bg-soft); color: var(--muted); font-size: 11.5px;

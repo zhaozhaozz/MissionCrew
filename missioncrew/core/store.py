@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL, author TEXT NOT NULL, author_type TEXT NOT NULL,
   content TEXT NOT NULL, mentions TEXT DEFAULT '[]',
+  runtime_id TEXT DEFAULT '', model TEXT DEFAULT '', effort TEXT DEFAULT '',
   reply_to INTEGER, root_id INTEGER, depth INTEGER DEFAULT 0,
   created_at REAL NOT NULL
 );
@@ -90,7 +91,87 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate_chat_messages()
         self._conn.commit()
+
+    def _migrate_chat_messages(self) -> int:
+        """升级聊天消息字段，并修复旧版末尾 4000 字符回复。
+
+        旧数据库不会因 ``CREATE TABLE IF NOT EXISTS`` 自动增加列；旧适配器又把
+        完整回复截成末尾 4000 字符，但完整文本仍保留在 run_events 中。迁移按
+        message.reply_to + author 找到对应执行，仅在事件文本明确以旧正文结尾时
+        恢复，避免猜测或误改普通的 4000 字符消息。
+        """
+        columns = {row["name"] for row in self._conn.execute(
+            "PRAGMA table_info(messages)").fetchall()}
+        for name in ("runtime_id", "model", "effort"):
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE messages ADD COLUMN {name} TEXT DEFAULT ''")
+
+        rows = self._conn.execute(
+            "SELECT m.*, r.id AS run_id, r.backend_id AS run_backend_id "
+            "FROM messages m LEFT JOIN chat_runs r ON r.id=("
+            "  SELECT r2.id FROM chat_runs r2 "
+            "  WHERE r2.trigger_message_id=m.reply_to AND r2.role_id=m.author "
+            "  ORDER BY r2.id DESC LIMIT 1"
+            ") WHERE m.author_type='agent' AND ("
+            "  m.runtime_id='' OR m.model='' OR m.effort='' OR LENGTH(m.content)=4000"
+            ") ORDER BY m.id"
+        ).fetchall()
+        changed = 0
+        for row in rows:
+            runtime_id, model, effort = row["runtime_id"], row["model"], row["effort"]
+            content = row["content"]
+            run_id = row["run_id"]
+            events = self._conn.execute(
+                "SELECT kind, content FROM run_events WHERE run_id=? ORDER BY id",
+                (run_id,),
+            ).fetchall() if run_id else []
+
+            if run_id and (not runtime_id or not model or not effort):
+                prompt = "".join(e["content"] for e in events if e["kind"] == "input")
+                combo = next((line.removeprefix("固定执行组合:")
+                              for line in prompt.splitlines()
+                              if line.startswith("固定执行组合:")), "")
+                if combo:
+                    parsed_runtime, sep, model_effort = combo.partition("/")
+                    parsed_model, effort_sep, parsed_effort = model_effort.rpartition(
+                        "/effort=")
+                    runtime_id = runtime_id or parsed_runtime
+                    if sep:
+                        model = model or (parsed_model if effort_sep else model_effort)
+                    effort = effort or (parsed_effort if effort_sep else "")
+            runtime_id = runtime_id or row["run_backend_id"] or ""
+            if model == "(CLI 默认)":
+                model = ""
+
+            if len(content) == 4000 and events:
+                candidates = []
+                for kind in ("text", "stdout"):
+                    last = next((i for i in range(len(events) - 1, -1, -1)
+                                 if events[i]["kind"] == kind), None)
+                    if last is None:
+                        continue
+                    first = last
+                    while first > 0 and events[first - 1]["kind"] == kind:
+                        first -= 1
+                    candidate = "".join(
+                        events[i]["content"] for i in range(first, last + 1)).strip()
+                    if len(candidate) > len(content) and candidate.endswith(content):
+                        candidates.append(candidate)
+                if candidates:
+                    content = max(candidates, key=len)
+
+            before = (row["runtime_id"], row["model"], row["effort"], row["content"])
+            after = (runtime_id, model, effort, content)
+            if after != before:
+                self._conn.execute(
+                    "UPDATE messages SET runtime_id=?, model=?, effort=?, content=? "
+                    "WHERE id=?", (*after, row["id"]))
+                changed += 1
+        self._conn.commit()
+        return changed
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
         """写操作,返回 lastrowid。"""
@@ -299,12 +380,15 @@ class Store:
     # ---- 聊天:消息 ----
     def add_message(self, channel: str, author: str, author_type: str, content: str,
                     mentions: list[str], reply_to: Optional[int] = None,
-                    root_id: Optional[int] = None, depth: int = 0) -> int:
+                    root_id: Optional[int] = None, depth: int = 0,
+                    runtime_id: str = "", model: str = "", effort: str = "") -> int:
         msg_id = self._execute(
             "INSERT INTO messages(channel, author, author_type, content, mentions, "
-            "reply_to, root_id, depth, created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            "runtime_id, model, effort, reply_to, root_id, depth, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (channel, author, author_type, content,
-             json.dumps(mentions, ensure_ascii=False), reply_to, root_id, depth, time.time()),
+             json.dumps(mentions, ensure_ascii=False), runtime_id, model, effort,
+             reply_to, root_id, depth, time.time()),
         )
         if root_id is None:  # 人类发起的消息,自身就是协作链的根
             self._execute("UPDATE messages SET root_id=? WHERE id=?", (msg_id, msg_id))

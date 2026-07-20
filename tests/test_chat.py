@@ -20,17 +20,17 @@ def test_mention_triggers_agent_reply(chat, seeded):
     chat.wait_idle()
     msgs = _log(seeded)
     agents = [m for m in msgs if m["author_type"] == "agent"]
-    assert len(agents) == 1
-    assert agents[0]["author"] == "dev"
+    assert [m["author"] for m in agents] == ["dev", "lead"]
     assert agents[0]["reply_to"] == msgs[0]["id"]
     assert agents[0]["root_id"] == msgs[0]["id"]
+    assert json.loads(agents[0]["mentions"]) == ["lead"]
 
 
 def test_unknown_role_not_triggered(chat, seeded):
     chat.post("general", "human", "@nobody 你好 @dev 在吗")
     chat.wait_idle()
     agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
-    assert agents == {"dev"}
+    assert agents == {"dev", "lead"}
 
 
 # ---- 人类不 @ 任何角色时默认交给项目主控 ----
@@ -53,12 +53,12 @@ def test_unrecognized_mention_still_falls_back_to_orchestrator(chat, seeded):
     assert agents == {"lead"}
 
 
-def test_agent_reply_without_mention_does_not_reach_orchestrator(chat, seeded):
-    """Agent 回复不 @ 人是级联的自然终点,不能默认转发给主控。"""
+def test_worker_reply_automatically_returns_to_orchestrator(chat, seeded):
+    """执行角色无需知道主控 id；平台把完整结果自动交回主控。"""
     chat.post("general", "human", "@dev 简单看一下就行,不用找别人。")
     chat.wait_idle()
     authors = [m["author"] for m in _log(seeded) if m["author_type"] == "agent"]
-    assert authors == ["dev"]                   # 到 dev 为止,没有续发给 lead
+    assert authors == ["dev", "lead"]
 
 
 def test_orchestrator_self_message_not_looped_back(chat, seeded):
@@ -86,25 +86,39 @@ def test_channel_without_project_has_no_default_target(seeded):
     assert not [m for m in msgs if m["author_type"] == "agent"]
 
 
-def test_cascade_dev_to_reviewer(chat, seeded):
-    """人类 @dev 并要求完成后请 @reviewer;dev 的回复应触发 reviewer。"""
-    chat.post("general", "human", "@dev 修复金额计算,完成后请 @reviewer 复核。")
+def test_worker_cannot_dispatch_reviewer_and_returns_to_lead(chat, seeded):
+    """执行角色即使输出 @reviewer，也不能横向触发，只能返回主控。"""
+    root = seeded.add_message("general", "human", "human", "开始", [])
+    chat.post("general", "dev", "完整结果。@reviewer 请继续复核。",
+              author_type="agent", reply_to=root, root_id=root, depth=1)
     chat.wait_idle()
     msgs = _log(seeded)
     authors = [m["author"] for m in msgs if m["author_type"] == "agent"]
-    assert authors == ["dev", "reviewer"]
+    assert authors == ["dev", "lead"]
     dev_msg = next(m for m in msgs if m["author"] == "dev")
-    rev_msg = next(m for m in msgs if m["author"] == "reviewer")
-    assert rev_msg["reply_to"] == dev_msg["id"]
-    assert rev_msg["depth"] == 2
-    assert rev_msg["root_id"] == msgs[0]["id"]  # 同一条协作链
+    assert "@reviewer" in dev_msg["content"]    # 原始结果不篡改
+    assert json.loads(dev_msg["mentions"]) == ["lead"]
+    assert not any(r["role_id"] == "reviewer" for r in
+                   seeded._query("SELECT role_id FROM chat_runs"))
+
+
+def test_only_orchestrator_agent_can_dispatch_other_roles(chat, seeded):
+    root = chat.post("general", "lead", "@reviewer 请复核金额计算。",
+                     author_type="agent")
+    chat.wait_idle()
+    msgs = _log(seeded)
+    reviewer = next(m for m in msgs if m["author"] == "reviewer")
+    assert reviewer["reply_to"] == root
+    assert json.loads(reviewer["mentions"]) == ["lead"]
+    assert [r["role_id"] for r in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")] == ["reviewer", "lead"]
 
 
 def test_multiple_mentions_run_in_parallel(chat, seeded):
     chat.post("general", "human", "@dev 和 @expert 分别评估一下方案 A/B。")
     chat.wait_idle()
     agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
-    assert agents == {"dev", "expert"}
+    assert agents == {"dev", "expert", "lead"}
 
 
 def test_expert_role_uses_fixed_expert_runtime(chat, seeded):
@@ -115,7 +129,7 @@ def test_expert_role_uses_fixed_expert_runtime(chat, seeded):
 
 
 def test_depth_limit_stops_cascade(chat, seeded):
-    """模拟已达深度上限的 agent 消息再 @dev:必须截断且不触发执行。"""
+    """执行角色在深度上限回主控时必须截断且不再触发执行。"""
     root = seeded.add_message("general", "human", "human", "起始", [])
     chat.post("general", "reviewer", "@dev 继续接力。", author_type="agent",
               reply_to=root, root_id=root, depth=MAX_DEPTH)
@@ -123,11 +137,11 @@ def test_depth_limit_stops_cascade(chat, seeded):
     msgs = _log(seeded)
     assert any("级联深度上限" in m["content"] for m in msgs
                if m["author_type"] == "platform")
-    assert not any(m["author"] == "dev" and m["author_type"] == "agent" for m in msgs)
+    assert not seeded._query("SELECT id FROM chat_runs")
 
 
 def test_chain_run_budget(chat, seeded):
-    """同一协作链累计执行数达到上限后,新的 @ 不再触发。"""
+    """同一协作链累计执行数达到上限后,执行结果不再触发主控。"""
     root = seeded.add_message("general", "human", "human", "起始", [])
     for _ in range(MAX_CHAIN_RUNS):
         seeded.add_chat_run("general", "dev", root, root, 1)
@@ -141,7 +155,7 @@ def test_chain_run_budget(chat, seeded):
 
 
 def test_agent_failure_posted_to_channel(chat, seeded):
-    # vision 角色要求 multimodal,唯一候选 vis-1;禁用后应把失败贴回频道
+    # vision 固定 runtime 停用后，失败须公开并自动交回主控。
     b = seeded.get_backend("vis-1")
     b.enabled = False
     seeded.put_backend(b)
@@ -150,17 +164,32 @@ def test_agent_failure_posted_to_channel(chat, seeded):
     msgs = _log(seeded)
     assert any("无可用后端" in m["content"] for m in msgs
                if m["author_type"] == "platform")
+    assert any(r["role_id"] == "lead" for r in
+               seeded._query("SELECT role_id FROM chat_runs"))
 
 
-def test_prompt_separates_persona_from_task(chat, seeded):
-    """人格是选人画像,任务只来自触发消息;名册须含其他角色的人格供调度。"""
-    msg_id = seeded.add_message("general", "human", "human", "@dev 修一下登录", ["dev"])
+def test_prompt_separates_worker_context_from_orchestrator_roster(chat, seeded):
+    """执行角色只拿任务；只有主控能看到其他角色名册和最近对话。"""
+    seeded.add_message("general", "reviewer", "agent", "评审历史", [])
+    msg_id = seeded.add_message(
+        "general", "human", "human", "@dev 修一下登录，之后请 @expert 处理", ["dev"])
     cfg = chat._assemble(seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
                          seeded.get_backend("std-1"), msg_id)
     assert "角色定位" in cfg.prompt          # 人格被明确标注为定位,不是任务
     assert "任务简报" in cfg.prompt          # 任务来自发起者撰写的触发消息
     reviewer = seeded.get_role("webshop", "reviewer")
-    assert reviewer.description[:10] in cfg.prompt  # 名册携带他人人格
+    assert reviewer.description[:10] not in cfg.prompt
+    assert "评审历史" not in cfg.prompt
+    assert "@expert" not in cfg.prompt and "[其他执行角色]" in cfg.prompt
+    assert "看不到其他执行角色名册" in cfg.prompt
+
+    lead_msg = seeded.add_message("general", "human", "human", "请规划", ["lead"])
+    lead_cfg = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "lead"),
+        seeded.get_backend("std-1"), lead_msg)
+    assert reviewer.description[:10] in lead_cfg.prompt
+    assert "评审历史" in lead_cfg.prompt
+    assert "角色名册（仅主控可见" in lead_cfg.prompt
 
 
 def test_lead_dispatcher_role_seeded(seeded):
@@ -169,11 +198,12 @@ def test_lead_dispatcher_role_seeded(seeded):
     assert "调度" in lead.description and "不亲自实现" in lead.description
 
 
-def test_agent_messages_visible_to_human(chat, seeded):
-    """Agent 之间的协作消息保存在频道消息流中,人类可完整读取。"""
+def test_dispatch_and_worker_return_are_visible_to_human(chat, seeded):
+    """执行结果与自动回主控的闭环都保存在频道消息流中。"""
     chat.post("general", "human", "@dev 处理,完成后请 @reviewer 复核。")
     chat.wait_idle()
     msgs = seeded.list_messages("general")
-    # dev 发给 reviewer 的协作消息就在频道里
     dev_msg = next(m for m in msgs if m["author"] == "dev")
-    assert "@reviewer" in dev_msg["content"]
+    assert dev_msg["content"]
+    assert json.loads(dev_msg["mentions"]) == ["lead"]
+    assert any(m["author"] == "lead" for m in msgs if m["author_type"] == "agent")

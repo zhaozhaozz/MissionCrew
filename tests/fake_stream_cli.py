@@ -15,6 +15,17 @@ def line(d):
 
 
 def main():
+    if "plain-long" in sys.argv:
+        for i in range(500):
+            print(f"完整回复第{i:03d}行", flush=True)
+        return
+    if "long" in sys.argv:
+        reply = "完整开头：不能丢失\n" + "长回复正文" * 1200
+        line({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": reply}]}})
+        line({"type": "result", "subtype": "success", "result": reply,
+              "is_error": False})
+        return
     if "plain" in sys.argv:
         print("第一行进度", flush=True)
         print("第二行进度", flush=True)

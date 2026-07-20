@@ -1,4 +1,5 @@
 """运行过程事件:适配器实时上报 -> 落库 -> 聊天接口内联展示。"""
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -59,6 +60,45 @@ def test_duplicate_reply_output_is_removed_exactly(store):
     assert store.run_events(11)[0]["kind"] == "stdout"
 
 
+def test_legacy_truncated_reply_and_execution_metadata_are_migrated(store):
+    trigger = store.add_message("general", "human", "human", "开始核查", [])
+    run_id = store.add_chat_run("general", "reviewer", trigger, trigger, 0)
+    store.append_run_event(
+        run_id, "input",
+        "# 聊天协作请求\n固定执行组合:claude/claude-opus-4-8/effort=high\n")
+    full_reply = "完整开头：代码流程\n" + "证据正文" * 1200
+    store.append_run_event(run_id, "text", full_reply)
+    message_id = store.add_message(
+        "general", "reviewer", "agent", full_reply[-4000:], [],
+        reply_to=trigger, root_id=trigger, depth=1)
+
+    assert store._migrate_chat_messages() == 1
+    restored = store.get_message(message_id)
+    assert restored["content"] == full_reply
+    assert (restored["runtime_id"], restored["model"], restored["effort"]) == (
+        "claude", "claude-opus-4-8", "high")
+    assert store._migrate_chat_messages() == 0       # 幂等，不重复修改
+
+
+def test_existing_message_table_gets_execution_metadata_columns(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    con = sqlite3.connect(path)
+    con.execute("""CREATE TABLE messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel TEXT NOT NULL, author TEXT NOT NULL, author_type TEXT NOT NULL,
+        content TEXT NOT NULL, mentions TEXT DEFAULT '[]',
+        reply_to INTEGER, root_id INTEGER, depth INTEGER DEFAULT 0,
+        created_at REAL NOT NULL
+    )""")
+    con.commit()
+    con.close()
+
+    from missioncrew.core.store import Store
+    legacy = Store(path)
+    columns = {row["name"] for row in legacy._query("PRAGMA table_info(messages)")}
+    assert {"runtime_id", "model", "effort"} <= columns
+
+
 # ---- CLI 适配器:stream-json 解析出思考/工具/文本,普通 CLI 按行透传 ----
 
 def test_cli_adapter_parses_stream_json_events(tmp_path):
@@ -74,6 +114,24 @@ def test_cli_adapter_parses_stream_json_events(tmp_path):
     assert any(k == "tool" and "Bash" in t for k, t in events)
     # thinking_tokens 等 system 子事件不进过程流
     assert not any("thinking_tokens" in t for _, t in events)
+
+
+def test_cli_adapter_keeps_full_long_stream_reply(tmp_path):
+    events, emit = _collect()
+    backend = Backend(id="c", name="c", adapter="claude_code",
+                      command=[sys.executable, FAKE_STREAM, "long", "stream-json"])
+    result = adapters.CliAdapter("claude_code").run(_cfg(tmp_path, backend, emit))
+    assert len(result.output) > 4000
+    assert result.output.startswith("完整开头：不能丢失")
+
+
+def test_plain_cli_adapter_keeps_more_than_tail_lines(tmp_path):
+    events, emit = _collect()
+    backend = Backend(id="p", name="p", adapter="pi",
+                      command=[sys.executable, FAKE_STREAM, "plain-long"])
+    result = adapters.CliAdapter("pi").run(_cfg(tmp_path, backend, emit))
+    assert result.output.startswith("完整回复第000行")
+    assert result.output.endswith("完整回复第499行")
 
 
 def test_cli_adapter_streams_plain_lines(tmp_path):
@@ -167,16 +225,29 @@ def test_acp_adapter_emits_process_events(tmp_path):
     assert any(k == "status" and "权限请求" in t for k, t in events)
 
 
+def test_acp_adapter_keeps_full_long_reply(tmp_path, monkeypatch):
+    long_reply = "ACP 完整开头\n" + "长回复" * 1600
+    monkeypatch.setattr(adapters.acp, "run_prompt",
+                        lambda *args, **kwargs: (True, long_reply))
+    backend = Backend(id="kimi", name="k", adapter="kimi",
+                      command=[sys.executable, FAKE_ACP])
+    result = adapters.AcpAdapter("kimi").run(_cfg(tmp_path, backend, None))
+    assert result.output == long_reply
+
+
 # ---- 端到端:聊天执行事件落库,经 API 内联提供给前端 ----
 
 def test_chat_run_events_flow_to_api(seeded):
+    dev = seeded.get_role("webshop", "dev")
+    dev.effort = "high"
+    seeded.put_role(dev)
     chat = ChatEngine(seeded, max_workers=2)
     chat.post("general", "human", "@dev 看一下这个问题")
     chat.wait_idle()
     client = TestClient(create_app())
     d = client.get("/api/chat/general/messages").json()
     assert d["runs"], "消息接口应返回频道执行记录"
-    run = d["runs"][-1]
+    run = next(r for r in d["runs"] if r["role_id"] == "dev")
     assert run["role_id"] == "dev" and run["status"] == "done"
     assert run["events_size"] > 0
     assert run["trigger_message_id"] == d["messages"][0]["id"]
@@ -184,6 +255,19 @@ def test_chat_run_events_flow_to_api(seeded):
     kinds = {e["kind"] for e in events}
     assert {"thinking", "tool"} <= kinds
     assert "text" not in kinds       # 与最终 Agent 回复完全一致，不在过程流重复展示
-    agent_reply = next(m["content"] for m in d["messages"]
-                       if m["author_type"] == "agent")
+    dev_message = next(m for m in d["messages"] if m["author"] == "dev")
+    assert (dev_message["runtime_id"], dev_message["model"], dev_message["effort"]) == (
+        dev.runtime_id, dev.model, "high")
+    agent_reply = dev_message["content"]
     assert agent_reply and all(e["content"].strip() != agent_reply for e in events)
+
+
+def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
+    client = TestClient(create_app())
+    js = client.get("/assets/js/sidebar.js").text
+    assert "agentExecutionLabel" in js
+    assert "runtime=${message.runtime_id" in js
+    assert "model=${message.model" in js
+    assert "effort=${message.effort" in js
+    assert "MESSAGE_FOLD_AT" in js and "toggleMessageBody" in js
+    assert '<span class="via">agent</span>' not in js

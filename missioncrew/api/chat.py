@@ -34,10 +34,21 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/chat/{channel_id}/messages")
     def messages(channel_id: str, after_id: int = 0):
-        if store.get_channel(channel_id) is None:
+        channel = store.get_channel(channel_id)
+        if channel is None:
             raise HTTPException(404, "频道不存在")
+        items = store.list_messages(channel_id, after_id)
+        # 新消息持久化执行当时的组合；无法从旧执行事件迁移的历史消息才用
+        # 当前角色配置兜底，避免页面继续只显示笼统的 "agent"。
+        for item in items:
+            if item["author_type"] != "agent" or item.get("runtime_id"):
+                continue
+            role = store.get_role(channel.project_id or "", item["author"])
+            if role:
+                item.update(runtime_id=role.runtime_id, model=role.model,
+                            effort=role.effort)
         return {
-            "messages": store.list_messages(channel_id, after_id),
+            "messages": items,
             "active_runs": store.active_chat_runs(channel_id),
             # 最近执行记录(含已结束):前端按 events_size 变化拉取过程事件
             "runs": store.chat_runs_for_channel(channel_id),

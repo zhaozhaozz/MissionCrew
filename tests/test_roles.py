@@ -195,7 +195,7 @@ def test_roles_isolated_between_projects(client, seeded):
     chat.wait_idle()
     agents = {m["author"] for m in seeded.list_messages("general")
               if m["author_type"] == "agent"}
-    assert agents == {"dev"}
+    assert agents == {"dev", "lead"}
 
 
 def test_delete_project_cascades_roles_and_channels(client, seeded):

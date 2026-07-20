@@ -389,8 +389,8 @@ class MockAdapter:
     模拟能力边界(用于演示路由升级):
     - 任务带 hard 标签时,economy 档执行失败;
     - 任务带 very-hard 标签时,非 expert 档执行失败。
-    聊天协作:触发消息中出现"请 @某角色"时,回复会 @该角色发起协作,
-    模拟真实 Agent 遵循协作指令的行为。
+    聊天协作:触发消息中出现"请 @某角色"时,回复会包含该 @；是否触发由
+    ChatEngine 按"只有项目主控可以调度"的规则决定。
     """
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
@@ -474,7 +474,7 @@ class AcpAdapter:
             Path(cfg.workdir, f".mc_last_output_{self.adapter_name}.log").write_text(text)
         except OSError:
             pass
-        return RunResult(ok, text[-300:], output=text[-4000:])
+        return RunResult(ok, text[-300:], output=text)
 
 
 def _kill_process_group(proc: subprocess.Popen) -> None:
@@ -639,8 +639,10 @@ class CliAdapter:
             )
         except FileNotFoundError:
             return RunResult(False, f"命令不存在: {template[0]}(后端 {cfg.backend.id})")
-        out_tail: deque = deque(maxlen=400)   # 原始输出尾部(落盘/兜底回复)
+        out_tail: deque = deque(maxlen=400)   # 原始输出尾部(诊断日志)
         err_tail: deque = deque(maxlen=200)
+        out_full: list[str] = []               # 最终回复必须完整，不能只保留尾部
+        err_full: list[str] = []               # stdout 为空时的完整错误通道兜底
         final_box: list[str] = []             # stream-json 的 result 最终回复
         text_acc: list[str] = []              # stream-json 的文本块(无 result 时兜底)
 
@@ -658,6 +660,10 @@ class CliAdapter:
                 if not line.strip():
                     continue
                 (out_tail if kind == "stdout" else err_tail).append(line)
+                if kind == "stdout" and not stream_json:
+                    out_full.append(line)
+                elif kind == "stderr":
+                    err_full.append(line)
                 if kind == "stdout" and stream_json:
                     final = _claude_stream_event(line, parse_emit)
                     if final is not None:
@@ -697,15 +703,15 @@ class CliAdapter:
             _kill_process_group(proc)
             for r in readers:
                 r.join(timeout=3)
-        raw_out = "\n".join(out_tail).strip() or "\n".join(err_tail).strip()
+        raw_out = "\n".join(out_full).strip() or "\n".join(err_full).strip()
         _write_log()
         # stream-json:回复取 result 事件;异常中断没等到 result 时退回已解析
         # 的文本块或 stderr,不把原始 JSONL 发进频道
         out = (final_box[-1].strip() if final_box else "")
         if not out and stream_json:
-            out = "\n".join(text_acc).strip() or "\n".join(err_tail).strip()
+            out = "\n".join(text_acc).strip() or "\n".join(err_full).strip()
         out = out or raw_out
-        return RunResult(proc.returncode == 0, out[-300:], output=out[-4000:])
+        return RunResult(proc.returncode == 0, out[-300:], output=out)
 
 
 def get_adapter(name: str):
