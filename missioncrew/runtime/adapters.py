@@ -748,7 +748,16 @@ def _role_from_prompt(prompt: str) -> str:
 
 def _trigger_from_prompt(prompt: str) -> str:
     m = re.search(r"# 触发消息[^\n]*\n(.*?)(?:\n# |\Z)", prompt, re.S)
-    return m.group(1) if m else ""
+    if not m:
+        return ""
+    raw = m.group(1).strip()
+    try:
+        message = json.loads(raw)
+    except json.JSONDecodeError:
+        return raw
+    if isinstance(message, dict):
+        return str(message.get("content", ""))
+    return raw
 
 
 # ---- 按 runtime 动态发现可用模型(仿 Multica 的 per-provider ListModels) ----

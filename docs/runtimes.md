@@ -33,7 +33,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 模板占位符(`render_command`):
 
-- `{prompt}` — 装配好的完整提示词(角色定位、项目上下文、最近对话、触发消息);
+- `{prompt}` — 装配好的完整提示词(角色定位、项目上下文、JSON 格式的最近对话与触发消息、按需读取的频道历史文件路径);
 - `{model}` — 角色固定的模型;为空时该 token 连同紧邻的 `--model`/`-m` 标志一起移除,即显式使用 CLI 默认模型;
 - `{effort}` — 角色固定的推理力度(见下方 Effort 一节);为空时连同紧邻的 `--effort`/`-c` 标志一起移除;
 - `{documents_dir}` — 项目文档库路径的兼容占位符；新模板应使用 `{allowed_dirs}`；
@@ -102,7 +102,7 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 执行环境
 
-每次执行的进程环境:工作目录为频道 workdir(绑定代码仓的用仓路径,否则用平台自有目录并软链文档库)。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录与文档库；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。子进程 `PWD` 与实际 `cwd` 强制保持一致，避免 Runtime 从继承环境误判工作根。`MISSIONCREW_DOCUMENTS_DIR` 继续单独指向文档库；执行前后平台对文档库做快照提交,Agent 直接写目录的改动进入版本历史与审计。聊天执行超时 900 秒。
+每次执行的进程环境:工作目录为频道 workdir(绑定代码仓的用仓路径,否则用平台自有目录并软链文档库)。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、文档库，以及当前角色的频道历史 JSON 所在目录；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。子进程 `PWD` 与实际 `cwd` 强制保持一致，避免 Runtime 从继承环境误判工作根。`MISSIONCREW_DOCUMENTS_DIR` 单独指向文档库，`MISSIONCREW_CHANNEL_HISTORY` 指向平台原子更新、不受消息分页上限影响的完整频道历史；主控获得原始视图，执行角色获得不暴露其他执行角色身份与执行组合的脱敏视图。执行前后平台对文档库做快照提交,Agent 直接写目录的改动进入版本历史与审计。聊天执行超时 900 秒。
 
 ## 接入新工具
 

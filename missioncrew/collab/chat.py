@@ -56,10 +56,14 @@ CHAT_PROMPT = """\
 {orchestrator_section}\
 工作目录就是当前目录,直接在其中读写文件、运行命令完成工作。
 
-# 最近对话
+# 频道历史记录(JSON)
+完整频道历史文件:{channel_history_path}
+也可以通过环境变量 MISSIONCREW_CHANNEL_HISTORY 获取该路径。仅在最近对话不足以完成任务时按需读取。
+
+# 最近对话(JSON,按消息边界格式化)
 {history}
 
-# 触发消息(你的任务简报,由发起者撰写)
+# 触发消息(JSON,你的任务简报由发起者撰写)
 {trigger}
 
 # 回复要求
@@ -119,6 +123,7 @@ class ChatEngine:
                                         thread_name_prefix="chat-run")
         self._futures: list[Future] = []
         self._futures_lock = threading.Lock()
+        self._history_lock = threading.Lock()
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
@@ -163,6 +168,7 @@ class ChatEngine:
         msg_id = self.store.add_message(channel_id, author, author_type, content,
                                         mentions, reply_to, root_id, depth,
                                         runtime_id or "", model or "", effort or "")
+        self._write_channel_history(channel)
         root = root_id if root_id is not None else msg_id
         for role_id in mentions:
             self._trigger(channel, role_id, msg_id, root, depth)
@@ -200,11 +206,13 @@ class ChatEngine:
             self.store.add_message(channel.id, "platform", "platform",
                                    f"已达级联深度上限({MAX_DEPTH}),不再触发 @{role_id}。",
                                    [], msg_id, root_id, depth)
+            self._write_channel_history(channel)
             return
         if self.store.count_chain_runs(root_id) >= MAX_CHAIN_RUNS:
             self.store.add_message(channel.id, "platform", "platform",
                                    f"本条协作链执行数已达上限({MAX_CHAIN_RUNS}),"
                                    f"不再触发 @{role_id}。", [], msg_id, root_id, depth)
+            self._write_channel_history(channel)
             return
         run_id = self.store.add_chat_run(channel.id, role_id, msg_id, root_id, depth)
         future = self._pool.submit(self._execute, run_id, channel, role_id,
@@ -228,6 +236,7 @@ class ChatEngine:
         failure_id = self.store.add_message(
             channel.id, "platform", "platform", content, [], msg_id, root_id,
             result_depth)
+        self._write_channel_history(channel)
         project = self.store.get_project(channel.project_id or "")
         orchestrator = project.orchestrator_role_id if project else ""
         if (orchestrator and role_id != orchestrator
@@ -348,30 +357,21 @@ class ChatEngine:
         orchestrator_id = project.orchestrator_role_id if project else ""
         known_roles = {r.id for r in self.store.list_roles(channel.project_id or "")}
 
-        def _worker_visible(text: str) -> str:
-            """执行角色的任务简报不暴露其他执行角色 id。"""
-            if is_orchestrator:
-                return text
-            return MENTION_RE.sub(
-                lambda match: (match.group(0)
-                               if match.group(1) in {role.id, orchestrator_id}
-                               or match.group(1) not in known_roles
-                               else "[其他执行角色]"),
-                text,
-            )
-
-        history_lines = []
-        trigger = ""
+        history_records = []
+        trigger_message = self.store.get_message(msg_id)
         for m in self.store.recent_messages(channel.id, HISTORY_WINDOW):
-            author = m["author"]
-            if (not is_orchestrator and m["author_type"] == "agent"
-                    and author != orchestrator_id):
-                author = "执行角色"
-            line = f"[{author}] {_worker_visible(m['content'])}"
-            if m["id"] == msg_id:
-                trigger = line
-            elif is_orchestrator:
-                history_lines.append(line)
+            if m["id"] != msg_id and is_orchestrator:
+                history_records.append(
+                    self._message_record(m, role, project, known_roles))
+
+        trigger_record = (self._message_record(
+                              trigger_message, role, project, known_roles)
+                          if trigger_message else {})
+        channel_history_path = self._write_channel_history(channel, role, project)
+        history_parent = str(channel_history_path.parent.resolve())
+        if history_parent not in allowed_dirs:
+            allowed_dirs.append(history_parent)
+        env["MISSIONCREW_CHANNEL_HISTORY"] = str(channel_history_path)
 
         # 只有主控拿到项目角色名册；执行角色只接收当前任务简报，完成后由
         # 平台自动回传主控，不知道也不能横向调度其他执行角色。
@@ -408,8 +408,10 @@ class ChatEngine:
             channel_purpose=channel.purpose or "(未说明)",
             project_section=project_section,
             orchestrator_section=orchestrator_section,
-            history="\n".join(history_lines) or "(无)",
-            trigger=trigger, collaboration_section=collaboration_section,
+            channel_history_path=channel_history_path,
+            history=json.dumps(history_records, ensure_ascii=False, indent=2),
+            trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2),
+            collaboration_section=collaboration_section,
         )
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
@@ -417,6 +419,119 @@ class ChatEngine:
             env=env, timeout=CHAT_TIMEOUT,
             effort=role.effort,
         )
+
+    @staticmethod
+    def _decoded_mentions(message: dict) -> list[str]:
+        raw = message.get("mentions", "[]")
+        try:
+            mentions = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [str(item) for item in mentions] if isinstance(mentions, list) else []
+
+    def _message_record(self, message: dict, role: Optional[Role] = None,
+                        project=None, known_roles: Optional[set[str]] = None) -> dict:
+        """把数据库消息转换为边界明确的 JSON 记录，并按执行角色脱敏。"""
+        author = str(message.get("author", ""))
+        author_type = str(message.get("author_type", ""))
+        content = str(message.get("content", ""))
+        mentions = self._decoded_mentions(message)
+        orchestrator_id = project.orchestrator_role_id if project else ""
+        known_roles = (known_roles if known_roles is not None else
+                       ({r.id for r in self.store.list_roles(project.id)}
+                        if project else set()))
+        full_view = role is None or not project or role.id == orchestrator_id
+        redact_author = (not full_view and author_type == "agent"
+                         and author not in {role.id, orchestrator_id})
+
+        if not full_view:
+            def _visible_mention(match: re.Match) -> str:
+                role_id = match.group(1)
+                if (role_id in {role.id, orchestrator_id}
+                        or role_id not in known_roles):
+                    return match.group(0)
+                return "[其他执行角色]"
+
+            content = MENTION_RE.sub(_visible_mention, content)
+            mentions = [
+                item if item in {role.id, orchestrator_id} or item not in known_roles
+                else "其他执行角色"
+                for item in mentions
+            ]
+
+        record = {
+            "id": int(message.get("id", 0)),
+            "author": {
+                "id": "执行角色" if redact_author else author,
+                "type": author_type,
+            },
+            "content": content,
+            "mentions": mentions,
+            "thread": {
+                "reply_to": message.get("reply_to"),
+                "root_id": message.get("root_id"),
+                "depth": int(message.get("depth", 0)),
+            },
+            "created_at": message.get("created_at"),
+        }
+        if not redact_author and any(message.get(key) for key in
+                                     ("runtime_id", "model", "effort")):
+            record["execution"] = {
+                "runtime": str(message.get("runtime_id", "")),
+                "model": str(message.get("model", "")),
+                "effort": str(message.get("effort", "")),
+            }
+        return record
+
+    @staticmethod
+    def _atomic_write_json(path: Path, payload: dict) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+    def _write_channel_history(self, channel: Channel,
+                               role: Optional[Role] = None, project=None) -> Path:
+        """原子更新完整频道历史，并返回当前角色获准读取的 JSON 视图。"""
+        # 历史文件与频道工作目录分开存放；否则平台自有工作区会让执行角色
+        # 顺带获得同级的主控原始历史，只靠 --add-dir 无法维持角色隔离。
+        root = (mc_home() / "channel-history" / channel.id).resolve()
+        canonical = root / "history" / "channel-history.json"
+        orchestrator_id = project.orchestrator_role_id if project else ""
+        scoped = bool(role and project and role.id != orchestrator_id)
+        visible_path = (root / "agents" / role.id / "channel-history.json"
+                        if scoped else canonical)
+
+        with self._history_lock:
+            messages = self.store.all_messages(channel.id)
+
+            def _payload(records: list[dict]) -> dict:
+                return {
+                    "schema_version": 1,
+                    "channel": {
+                        "id": channel.id,
+                        "name": channel.name,
+                        "project_id": channel.project_id,
+                        "purpose": channel.purpose,
+                    },
+                    "message_count": len(records),
+                    "last_message_id": records[-1]["id"] if records else None,
+                    "messages": records,
+                }
+
+            canonical_records = [self._message_record(m) for m in messages]
+            self._atomic_write_json(canonical, _payload(canonical_records))
+            if scoped:
+                known_roles = {r.id for r in self.store.list_roles(project.id)}
+                visible_records = [
+                    self._message_record(m, role, project, known_roles)
+                    for m in messages
+                ]
+                self._atomic_write_json(visible_path, _payload(visible_records))
+        return visible_path
 
     def _orchestrator_section(self, project) -> str:
         """主控专属上下文:动作说明 + 代码仓/现有频道/现有面板清单与调度预算。

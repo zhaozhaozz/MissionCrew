@@ -1,5 +1,6 @@
 """聊天协作:@ 触发、级联、防环、失败可见性。"""
 import json
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,11 @@ def chat(seeded):
 
 def _log(store, channel="general"):
     return store.list_messages(channel)
+
+
+def _prompt_json_section(prompt: str, title: str):
+    raw = prompt.split(f"# {title}\n", 1)[1].split("\n# ", 1)[0]
+    return json.loads(raw)
 
 
 def test_mention_triggers_agent_reply(chat, seeded):
@@ -182,6 +188,12 @@ def test_prompt_separates_worker_context_from_orchestrator_roster(chat, seeded):
     assert "评审历史" not in cfg.prompt
     assert "@expert" not in cfg.prompt and "[其他执行角色]" in cfg.prompt
     assert "看不到其他执行角色名册" in cfg.prompt
+    assert _prompt_json_section(
+        cfg.prompt, "最近对话(JSON,按消息边界格式化)") == []
+    worker_trigger = _prompt_json_section(
+        cfg.prompt, "触发消息(JSON,你的任务简报由发起者撰写)")
+    assert worker_trigger["author"] == {"id": "human", "type": "human"}
+    assert worker_trigger["content"] == "@dev 修一下登录，之后请 [其他执行角色] 处理"
 
     lead_msg = seeded.add_message("general", "human", "human", "请规划", ["lead"])
     lead_cfg = chat._assemble(
@@ -190,6 +202,86 @@ def test_prompt_separates_worker_context_from_orchestrator_roster(chat, seeded):
     assert reviewer.description[:10] in lead_cfg.prompt
     assert "评审历史" in lead_cfg.prompt
     assert "角色名册（仅主控可见" in lead_cfg.prompt
+    lead_history = _prompt_json_section(
+        lead_cfg.prompt, "最近对话(JSON,按消息边界格式化)")
+    assert [item["content"] for item in lead_history] == [
+        "评审历史", "@dev 修一下登录，之后请 @expert 处理",
+    ]
+
+
+def test_prompt_json_preserves_multiline_content_and_message_boundaries(chat, seeded):
+    first = seeded.add_message(
+        "general", "human", "human", "第一条第一行\n第一条第二行\n[someone] 不是新消息", [])
+    second = seeded.add_message(
+        "general", "lead", "agent", "第二条正文中包含\n# 类似标题", [],
+        runtime_id="std-1", model="mock-standard", effort="high")
+    trigger = seeded.add_message(
+        "general", "human", "human", "请检查上述两条\n并给结论", ["lead"])
+
+    cfg = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "lead"),
+        seeded.get_backend("std-1"), trigger,
+    )
+    history = _prompt_json_section(
+        cfg.prompt, "最近对话(JSON,按消息边界格式化)")
+    current = _prompt_json_section(
+        cfg.prompt, "触发消息(JSON,你的任务简报由发起者撰写)")
+
+    assert [item["id"] for item in history] == [first, second]
+    assert history[0]["content"] == "第一条第一行\n第一条第二行\n[someone] 不是新消息"
+    assert history[1]["content"] == "第二条正文中包含\n# 类似标题"
+    assert history[1]["execution"] == {
+        "runtime": "std-1", "model": "mock-standard", "effort": "high",
+    }
+    assert current["id"] == trigger
+    assert current["content"] == "请检查上述两条\n并给结论"
+
+
+def test_channel_history_file_is_complete_and_role_scoped(chat, seeded):
+    reviewer_message = None
+    for index in range(205):
+        author = "reviewer" if index == 0 else "human"
+        author_type = "agent" if index == 0 else "human"
+        message_id = seeded.add_message(
+            "general", author, author_type, f"历史消息 {index}\n正文", [])
+        reviewer_message = reviewer_message or message_id
+    trigger = seeded.add_message(
+        "general", "human", "human", "@dev 读取完整历史", ["dev"])
+    channel = seeded.get_channel("general")
+
+    worker_cfg = chat._assemble(
+        channel, seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), trigger,
+    )
+    worker_path = Path(worker_cfg.env["MISSIONCREW_CHANNEL_HISTORY"])
+    worker_history = json.loads(worker_path.read_text(encoding="utf-8"))
+    assert worker_path.name == "channel-history.json"
+    assert worker_path.parent.name == "dev"
+    assert worker_path.parent.parent.name == "agents"
+    assert Path(worker_cfg.workdir).resolve() not in worker_path.parents
+    assert str(worker_path.parent.resolve()) in worker_cfg.allowed_dirs
+    assert str(worker_path) in worker_cfg.prompt
+    assert worker_history["message_count"] == 206
+    assert len(worker_history["messages"]) == 206
+    assert worker_history["messages"][0]["id"] == reviewer_message
+    assert worker_history["messages"][0]["author"]["id"] == "执行角色"
+    assert "execution" not in worker_history["messages"][0]
+    assert worker_history["messages"][-1]["content"] == "@dev 读取完整历史"
+
+    lead_cfg = chat._assemble(
+        channel, seeded.get_role("webshop", "lead"),
+        seeded.get_backend("std-1"), trigger,
+    )
+    lead_path = Path(lead_cfg.env["MISSIONCREW_CHANNEL_HISTORY"])
+    lead_history = json.loads(lead_path.read_text(encoding="utf-8"))
+    assert lead_path.parent.name == "history"
+    assert lead_history["messages"][0]["author"]["id"] == "reviewer"
+    assert lead_path.parent != worker_path.parent
+
+    chat.post("general", "lead", "补充一条历史记录")
+    refreshed = json.loads(lead_path.read_text(encoding="utf-8"))
+    assert refreshed["message_count"] == 207
+    assert refreshed["messages"][-1]["content"] == "补充一条历史记录"
 
 
 def test_lead_dispatcher_role_seeded(seeded):

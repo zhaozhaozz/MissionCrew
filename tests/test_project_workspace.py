@@ -1,5 +1,6 @@
 """项目主控、频道、文档库、自定义面板和结构化上下文的集成测试。"""
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -206,7 +207,9 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
         TaskStage(name="develop"), project, seeded.get_backend("std-1"), {}, [], [],
     )
 
-    assert chat_cfg.allowed_dirs == task_cfg.allowed_dirs == expected
+    history_dir = str(Path(chat_cfg.env["MISSIONCREW_CHANNEL_HISTORY"]).parent.resolve())
+    assert task_cfg.allowed_dirs == expected
+    assert chat_cfg.allowed_dirs == [*expected, history_dir]
     assert all(path in chat_cfg.prompt and path in task_cfg.prompt for path in expected)
 
 

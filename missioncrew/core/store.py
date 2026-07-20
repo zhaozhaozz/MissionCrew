@@ -403,6 +403,11 @@ class Store:
             "SELECT * FROM messages WHERE channel=? AND id>? ORDER BY id LIMIT ?",
             (channel, after_id, limit))]
 
+    def all_messages(self, channel: str) -> list[dict]:
+        """返回频道完整消息历史，不受分页接口的条数上限影响。"""
+        return [dict(r) for r in self._query(
+            "SELECT * FROM messages WHERE channel=? ORDER BY id", (channel,))]
+
     def recent_messages(self, channel: str, limit: int = 20) -> list[dict]:
         rows = self._query(
             "SELECT * FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
