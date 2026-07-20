@@ -178,13 +178,8 @@
     </div>
 
     <div id="guidelines-view" class="page">
-      <div class="section">
-        <div class="content-topbar">
-          <div><h2>准则文档 <span class="muted" id="guide-proj-label"></span></h2>
-            <p class="muted">篇目列表位于应用左侧栏；Agent 会结合任务判断准则是否适用，关联文档直接写成 Markdown 链接。</p></div>
-          <button class="ghost compact" onclick="editGuideline(null)">＋ 新建</button>
-        </div>
-        <section class="config-editor-pane form single-pane-editor" id="guideline-editor"></section>
+      <div class="section content-workspace">
+        <section class="config-editor-pane form single-pane-editor guideline-workspace" id="guideline-editor"></section>
       </div>
     </div>
 
@@ -211,13 +206,7 @@
     </div>
 
     <div id="docs-view" class="page">
-      <div class="section">
-        <div class="content-topbar">
-          <div><h2>版本化文档库 <span class="muted" id="docs-proj-label"></span></h2>
-            <p class="muted">目录树位于应用左侧栏；右侧显示当前文档，版本记录通过正文工具栏的按钮展开。</p>
-            <div class="muted" id="docs-root"></div></div>
-          <button class="ghost compact" onclick="newDocument()">＋ 新建</button>
-        </div>
+      <div class="section content-workspace">
         <div class="doc-pane" id="doc-pane"></div>
       </div>
     </div>
@@ -239,6 +228,10 @@
     </div>
 
     <section id="config-chat" class="config-chat" aria-label="当前配置页主控对话">
+      <div class="config-chat-resize" id="config-chat-resize"
+        onpointerdown="startConfigChatResize(event)" title="拖动调整对话框高度"></div>
+      <button class="config-chat-toggle" id="config-chat-toggle" type="button"
+        onclick="toggleConfigChatCollapsed()" aria-label="收起主控对话" title="收起主控对话">−</button>
       <div class="config-chat-head">
         <strong>与项目主控交流</strong>
         <span id="config-chat-context">当前页面：—</span>

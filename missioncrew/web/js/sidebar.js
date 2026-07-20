@@ -155,12 +155,15 @@ function selectChannel(id, jump = true) {
 }
 
 function fmtBody(text, markdown = false) {
-  // Agent 回复按轻量 Markdown 渲染(标题/粗体/行内代码/列表),人类与平台消息保持纯文本;
-  // miniMarkdown 生成的标签无属性,@ 高亮的正则替换不会破坏标签结构
-  let html = markdown ? miniMarkdown(text) : esc(text);
-  html = html.replace(/@([\w-]+)/g, (m, id) =>
-    roleColor[id] ? `<span class="mention" style="color:${roleColor[id]}">@${id}</span>` : m);
-  return html;
+  // 先把已知角色提及替换为占位符，再做 Markdown，避免 @ 正则误改链接 href 属性。
+  const mentions = [];
+  const held = String(text ?? "").replace(/@([\w-]+)/g, (match, id) => {
+    if (!roleColor[id]) return match;
+    mentions.push(`<span class="mention" style="color:${roleColor[id]}">@${id}</span>`);
+    return `\uE100${mentions.length - 1}\uE101`;
+  });
+  const html = markdown ? miniMarkdown(held) : esc(held);
+  return html.replace(/\uE100(\d+)\uE101/g, (_, index) => mentions[Number(index)]);
 }
 
 let lastMsgDate = "";   // 聊天流的日期分隔线:与上一条消息不同天时插入

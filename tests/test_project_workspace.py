@@ -477,6 +477,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     js = client.get("/assets/js/project-configs.js").text
     router = client.get("/assets/js/router.js").text
     documents = client.get("/assets/js/documents.js").text
+    boards = client.get("/assets/js/boards.js").text
     main = client.get("/assets/js/main.js").text
 
     for view in ("guidelines-view", "skills-view", "rules-view", "docs-view"):
@@ -486,8 +487,14 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert 'id="config-chat-selection"' in html
     assert 'id="config-chat-thread"' in html
     assert 'id="config-chat-input"' in html
+    assert 'id="config-chat-resize"' in html
+    assert 'id="config-chat-toggle"' in html
     assert 'class="content-topbar"' in html
     assert 'class="config-editor-pane form single-pane-editor"' in html
+    assert "篇目列表位于应用左侧栏" not in html
+    assert 'id="guide-proj-label"' not in html
+    assert 'id="docs-proj-label"' not in html
+    assert 'id="docs-root"' not in html
     for removed in ("guideline-page-list", "skill-page-list", "rule-page-list",
                     "skill-file-list", "config-manager", "doc-tree", "docs-timeline",
                     "docs-layout"):
@@ -503,12 +510,19 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "documentSidebarHtml()" in router
     assert "sendConfigChat" in js and "pollConfigChat" in js
     assert "currentConfigDraft" in js and "captureConfigChatSelection" in js
+    assert "startConfigChatResize" in js and "toggleConfigChatCollapsed" in js
+    assert "CONFIG_CHAT_HEIGHT_KEY" in js and "CONFIG_CHAT_COLLAPSED_KEY" in js
+    assert "guideline-markdown-preview markdown-body" in js
+    assert "setGuidelineMarkdownMode" in js
     assert "roleBindingPicker" not in js and "role_ids" not in js
     assert "fileRefPicker" not in js and "runtime_instructions" not in js
     assert "line_start" in js and "selected_text" in js
     assert 'replace(/@/g, "\\\\u0040")' in js
     assert "只需回答，不要写入" in js
     assert "setInterval(pollConfigChat, 2000)" in main
+    assert "openMarkdownDocumentLink" in documents
+    assert all(markup in boards for markup in (
+        "markdownInline", "<blockquote>", "<pre><code", "markdown-table-wrap"))
     assert all(action in js for action in (
         "save_guideline", "save_skill", "save_rule", "write_document"))
 

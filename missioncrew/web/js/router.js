@@ -43,6 +43,7 @@ function setProject(id) {
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
   currentCustomBoard = null; customBoardEditing = false;
   selectedGuidelineId = undefined;
+  guidelineMarkdownMode = "preview";
   selectedSkillId = undefined;
   selectedRuleIndex = undefined;
   configChatSelection = null;

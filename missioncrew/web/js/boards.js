@@ -95,17 +95,122 @@ function previewBoardDraft() {
 }
 
 // ---- 组件渲染器:按 type 分派,未知类型回退 JSON 展示 ----
+function markdownInline(source) {
+  const tokens = [];
+  const hold = html => `\uE000${tokens.push(html) - 1}\uE001`;
+  let value = String(source ?? "");
+  value = value.replace(/`([^`\n]+)`/g, (_, code) => hold(`<code>${esc(code)}</code>`));
+  value = value.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+    (_, label, target) => {
+      const safeLabel = markdownInline(label);
+      const href = target.trim();
+      if (/^(https?:\/\/|mailto:)/i.test(href))
+        return hold(`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`);
+      if (href.startsWith("#")) return hold(`<a href="${esc(href)}">${safeLabel}</a>`);
+      if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return hold(safeLabel);
+      return hold(`<a href="#" data-doc-link="${esc(href)}" ` +
+        `onclick="return openMarkdownDocumentLink(event,this.dataset.docLink)">${safeLabel}</a>`);
+    });
+  let html = esc(value)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>");
+  return html.replace(/\uE000(\d+)\uE001/g, (_, index) => tokens[Number(index)]);
+}
+
+function markdownTableCells(line) {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, "|"));
+}
+
+function markdownBlockStart(lines, index) {
+  const line = lines[index] || "";
+  return /^\s*(```|~~~)/.test(line) || /^(#{1,6})\s+/.test(line)
+    || /^\s*(?:[-*+] |\d+[.)] )/.test(line) || /^\s*>/.test(line)
+    || /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)
+    || (line.includes("|") && /^\s*\|?\s*:?-{3,}:?/.test(lines[index + 1] || ""));
+}
+
 function miniMarkdown(text) {
-  // 轻量 Markdown:先转义,再处理标题/粗体/行内代码/列表/换行
-  let h = esc(text);
-  h = h.replace(/^### (.*)$/gm, "<h4>$1</h4>")
-       .replace(/^## (.*)$/gm, "<h4>$1</h4>")
-       .replace(/^# (.*)$/gm, "<h3>$1</h3>")
-       .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-       .replace(/`([^`]+)`/g, "<code>$1</code>")
-       .replace(/^[-*] (.*)$/gm, "<li>$1</li>");
-  h = h.replace(/(<li>.*<\/li>\n?)+/g, m => `<ul>${m}</ul>`);
-  return h.replace(/\n/g, "<br>").replace(/<\/(h3|h4|ul|li)><br>/g, "</$1>");
+  // 项目内容来自用户和 Agent，先按块解析并逐段转义，避免 Markdown 预览注入 HTML。
+  const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const output = [];
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    if (!line.trim()) { index += 1; continue; }
+
+    const fence = line.match(/^\s*(```|~~~)\s*([\w+-]*)\s*$/);
+    if (fence) {
+      const body = [];
+      index += 1;
+      while (index < lines.length && !new RegExp(`^\\s*${fence[1]}`).test(lines[index]))
+        body.push(lines[index++]);
+      if (index < lines.length) index += 1;
+      const language = fence[2] ? ` class="language-${esc(fence[2])}"` : "";
+      output.push(`<pre><code${language}>${esc(body.join("\n"))}</code></pre>`);
+      continue;
+    }
+
+    const heading = line.match(/^(#{1,6})\s+(.+?)\s*#*$/);
+    if (heading) {
+      const level = heading[1].length;
+      const slug = heading[2].replace(/[^\p{L}\p{N}\s-]/gu, "").trim().replace(/\s+/g, "-").toLowerCase();
+      output.push(`<h${level}${slug ? ` id="${esc(slug)}"` : ""}>${markdownInline(heading[2])}</h${level}>`);
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      output.push("<hr>");
+      index += 1;
+      continue;
+    }
+
+    if (/^\s*>/.test(line)) {
+      const quote = [];
+      while (index < lines.length && /^\s*>/.test(lines[index]))
+        quote.push(lines[index++].replace(/^\s*>\s?/, ""));
+      output.push(`<blockquote>${miniMarkdown(quote.join("\n"))}</blockquote>`);
+      continue;
+    }
+
+    const list = line.match(/^\s*([-*+]|\d+[.)])\s+(.+)$/);
+    if (list) {
+      const ordered = /^\d/.test(list[1]);
+      const tag = ordered ? "ol" : "ul";
+      const items = [];
+      while (index < lines.length) {
+        const item = lines[index].match(/^\s*([-*+]|\d+[.)])\s+(.+)$/);
+        if (!item || /^\d/.test(item[1]) !== ordered) break;
+        items.push(`<li>${markdownInline(item[2])}</li>`);
+        index += 1;
+      }
+      output.push(`<${tag}>${items.join("")}</${tag}>`);
+      continue;
+    }
+
+    if (line.includes("|") && /^\s*\|?\s*:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+\s*\|?\s*$/.test(lines[index + 1] || "")) {
+      const headers = markdownTableCells(line);
+      index += 2;
+      const rows = [];
+      while (index < lines.length && lines[index].includes("|") && lines[index].trim())
+        rows.push(markdownTableCells(lines[index++]));
+      output.push(`<div class="markdown-table-wrap"><table><thead><tr>${headers.map(cell =>
+        `<th>${markdownInline(cell)}</th>`).join("")}</tr></thead><tbody>${rows.map(row =>
+        `<tr>${headers.map((_, column) => `<td>${markdownInline(row[column] || "")}</td>`).join("")}</tr>`
+      ).join("")}</tbody></table></div>`);
+      continue;
+    }
+
+    const paragraph = [line];
+    index += 1;
+    while (index < lines.length && lines[index].trim() && !markdownBlockStart(lines, index))
+      paragraph.push(lines[index++]);
+    output.push(`<p>${paragraph.map(markdownInline).join("<br>")}</p>`);
+  }
+  return output.join("\n");
 }
 
 function widgetTable(columns, rows) {
@@ -248,4 +353,3 @@ async function deleteCustomBoard() {
   await loadOverview(); renderCustomBoards();
   toast("面板已删除", "success");
 }
-

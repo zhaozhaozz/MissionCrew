@@ -2,6 +2,7 @@
 let selectedGuidelineId;
 let selectedSkillId;
 let selectedRuleIndex;
+let guidelineMarkdownMode = "preview";
 const configEditorDirty = { guidelines: false, skills: false, rules: false };
 const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "rules", "docs"]);
 const CONFIG_CHAT_TARGETS = {
@@ -21,6 +22,60 @@ const CONFIG_FIELD_LABELS = {
 let configChatSelection = null;
 let configChatPolling = false;
 const configChatThreads = new Map();
+const CONFIG_CHAT_COLLAPSED_KEY = "mc.configChatCollapsed";
+const CONFIG_CHAT_HEIGHT_KEY = "mc.configChatHeight";
+let configChatCollapsed = localStorage.getItem(CONFIG_CHAT_COLLAPSED_KEY) === "1";
+let configChatHeight = Number(localStorage.getItem(CONFIG_CHAT_HEIGHT_KEY)) || 270;
+
+function boundedConfigChatHeight(value) {
+  return Math.max(180, Math.min(value, Math.max(180, window.innerHeight - 90)));
+}
+
+function applyConfigChatLayout() {
+  const panel = document.getElementById("config-chat");
+  const toggle = document.getElementById("config-chat-toggle");
+  const views = document.getElementById("views");
+  if (!panel || !toggle || !views) return;
+  configChatHeight = boundedConfigChatHeight(configChatHeight);
+  panel.classList.toggle("collapsed", configChatCollapsed);
+  panel.style.height = configChatCollapsed ? "" : `${configChatHeight}px`;
+  toggle.textContent = configChatCollapsed ? "💬" : "−";
+  toggle.setAttribute("aria-label", configChatCollapsed ? "展开主控对话" : "收起主控对话");
+  toggle.title = configChatCollapsed ? "展开主控对话" : "收起主控对话";
+  views.style.setProperty("--config-chat-space",
+    configChatCollapsed ? "86px" : `${configChatHeight + 38}px`);
+}
+
+function toggleConfigChatCollapsed() {
+  configChatCollapsed = !configChatCollapsed;
+  localStorage.setItem(CONFIG_CHAT_COLLAPSED_KEY, configChatCollapsed ? "1" : "0");
+  applyConfigChatLayout();
+  if (!configChatCollapsed) document.getElementById("config-chat-input")?.focus();
+}
+
+function startConfigChatResize(event) {
+  if (configChatCollapsed || event.button !== 0) return;
+  event.preventDefault();
+  const panel = document.getElementById("config-chat");
+  if (!panel) return;
+  const startY = event.clientY;
+  const startHeight = panel.getBoundingClientRect().height;
+  document.body.classList.add("resizing-config-chat");
+  const move = moveEvent => {
+    configChatHeight = boundedConfigChatHeight(startHeight + startY - moveEvent.clientY);
+    applyConfigChatLayout();
+  };
+  const stop = () => {
+    document.body.classList.remove("resizing-config-chat");
+    localStorage.setItem(CONFIG_CHAT_HEIGHT_KEY, String(Math.round(configChatHeight)));
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop);
+  window.addEventListener("pointercancel", stop);
+}
 
 function markConfigDirty(kind) {
   configEditorDirty[kind] = true;
@@ -167,7 +222,7 @@ function captureConfigChatSelection() {
   const range = browserSelection.getRangeAt(0);
   const node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
     ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
-  const source = node?.closest?.(".doc-body, .doc-pane > pre");
+  const source = node?.closest?.(".doc-body, .doc-pane > pre, .guideline-markdown-preview");
   if (!source) return;
   if (browserSelection.isCollapsed) { clearConfigChatSelection(); return; }
   const prefix = document.createRange();
@@ -177,7 +232,9 @@ function captureConfigChatSelection() {
   const first = prefix.toString().split("\n").length;
   const last = first + selected.split("\n").length - 1;
   setConfigChatSelection({
-    context_key: context.key, field: "文档阅读视图", line_start: first,
+    context_key: context.key,
+    field: source.classList.contains("guideline-markdown-preview") ? "准则阅读视图" : "文档阅读视图",
+    line_start: first,
     line_end: last, basis: "rendered", ...clippedConfigText(selected, 12000),
   });
 }
@@ -215,6 +272,7 @@ function updateConfigChatContext() {
   if (!panel) return;
   const context = configChatContext();
   panel.classList.toggle("visible", Boolean(context));
+  applyConfigChatLayout();
   if (!context) return;
   if (configChatSelection?.context_key !== context.key) configChatSelection = null;
   document.getElementById("config-chat-context").textContent =
@@ -341,10 +399,11 @@ document.getElementById("config-chat-input").addEventListener("keydown", event =
     sendConfigChat();
   }
 });
+window.addEventListener("resize", applyConfigChatLayout);
+applyConfigChatLayout();
 
 /* ---- 准则文档 ---- */
 function renderGuidelinesPage(force = false) {
-  projectConfigLabel("guide-proj-label");
   const guidelines = projObj()?.guidelines || [];
   if (selectedGuidelineId === undefined
       || (selectedGuidelineId !== null && !guidelines.some(item => item.id === selectedGuidelineId)))
@@ -355,24 +414,61 @@ function renderGuidelinesPage(force = false) {
 
 function renderGuidelineEditor() {
   const guideline = (projObj()?.guidelines || []).find(item => item.id === selectedGuidelineId);
+  if (!guideline) guidelineMarkdownMode = "edit";
   document.getElementById("guideline-editor").innerHTML = `
-    <h3>${guideline ? "编辑准则文档" : "新建准则文档"}</h3>
-    <label>id（保存后不可修改）</label>
-    <input id="gf-id" value="${esc(guideline?.id || "")}" ${guideline ? "disabled" : ""}
-      placeholder="例如 development" oninput="markConfigDirty('guidelines')">
-    <label>标题</label><input id="gf-title" value="${esc(guideline?.title || "")}"
-      oninput="markConfigDirty('guidelines')">
-    <label>正文（Markdown）</label><textarea id="gf-content" rows="18"
-      oninput="markConfigDirty('guidelines')">${esc(guideline?.content || "")}</textarea>
-    <div class="muted">关联项目文档请写成相对 Markdown 链接，例如 [部署说明](runbooks/deploy.md)；Agent 会在需要时读取。</div>
-    <label>启用</label><span class="switch ${guideline?.enabled === false ? "" : "on"}" id="gf-enabled"
-      role="switch" onclick="this.classList.toggle('on');markConfigDirty('guidelines')"></span>
-    <div class="form-actions"><button class="action" onclick="saveGuideline()">保存</button>
-      ${guideline ? `<button class="danger" onclick="deleteGuideline('${esc(guideline.id)}')">删除</button>` : ""}</div>`;
+    <div class="guideline-toolbar">
+      <label class="guideline-toolbar-field guideline-id"><span>ID</span>
+        <input id="gf-id" value="${esc(guideline?.id || "")}" ${guideline ? "disabled" : ""}
+          placeholder="development" oninput="markConfigDirty('guidelines')"></label>
+      <label class="guideline-toolbar-field guideline-title"><span>标题</span>
+        <input id="gf-title" value="${esc(guideline?.title || "")}"
+          placeholder="准则标题" oninput="markConfigDirty('guidelines')"></label>
+      <label class="guideline-enabled"><span>启用</span>
+        <span class="switch ${guideline?.enabled === false ? "" : "on"}" id="gf-enabled"
+          role="switch" tabindex="0" onclick="this.classList.toggle('on');markConfigDirty('guidelines')"></span></label>
+      <span class="guideline-toolbar-spacer"></span>
+      <div class="guideline-view-toggle" aria-label="Markdown 显示方式">
+        <button class="ghost compact" id="guideline-edit-button" type="button"
+          onclick="setGuidelineMarkdownMode('edit')">编辑</button>
+        <button class="ghost compact" id="guideline-preview-button" type="button"
+          onclick="setGuidelineMarkdownMode('preview')">预览</button>
+      </div>
+      <button class="action" type="button" onclick="saveGuideline()">保存</button>
+      ${guideline ? `<button class="danger" type="button" onclick="deleteGuideline('${esc(guideline.id)}')">删除</button>` : ""}
+    </div>
+    <div class="guideline-markdown-surface">
+      <textarea id="gf-content" class="guideline-markdown-editor" aria-label="准则正文（Markdown）"
+        spellcheck="false" oninput="markConfigDirty('guidelines');updateGuidelineMarkdownPreview()">${esc(guideline?.content || "")}</textarea>
+      <article class="guideline-markdown-preview markdown-body" id="guideline-markdown-preview"></article>
+    </div>`;
+  updateGuidelineMarkdownPreview();
+  setGuidelineMarkdownMode(guidelineMarkdownMode);
+}
+
+function updateGuidelineMarkdownPreview() {
+  const preview = document.getElementById("guideline-markdown-preview");
+  if (!preview) return;
+  const content = valueOf("gf-content");
+  preview.innerHTML = content.trim() ? miniMarkdown(content)
+    : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
+}
+
+function setGuidelineMarkdownMode(mode) {
+  guidelineMarkdownMode = mode === "edit" ? "edit" : "preview";
+  const editor = document.getElementById("gf-content");
+  const preview = document.getElementById("guideline-markdown-preview");
+  if (!editor || !preview) return;
+  const editing = guidelineMarkdownMode === "edit";
+  editor.hidden = !editing;
+  preview.hidden = editing;
+  document.getElementById("guideline-edit-button")?.classList.toggle("active", editing);
+  document.getElementById("guideline-preview-button")?.classList.toggle("active", !editing);
+  if (!editing) updateGuidelineMarkdownPreview();
 }
 
 function editGuideline(id) {
   selectedGuidelineId = id;
+  guidelineMarkdownMode = id ? "preview" : "edit";
   configChatSelection = null;
   configEditorDirty.guidelines = false;
   if (currentTab !== "guidelines") switchTab("guidelines");
@@ -389,6 +485,7 @@ async function saveGuideline() {
     enabled: document.getElementById("gf-enabled").classList.contains("on"),
   });
   selectedGuidelineId = id;
+  guidelineMarkdownMode = "preview";
   configEditorDirty.guidelines = false;
   await loadOverview();
   renderGuidelinesPage(true);

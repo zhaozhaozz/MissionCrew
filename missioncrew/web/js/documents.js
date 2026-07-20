@@ -23,14 +23,47 @@ function docEncode(path) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
+function normalizedDocumentLink(path) {
+  const raw = path.split(/[?#]/, 1)[0];
+  let decoded = raw;
+  try { decoded = decodeURIComponent(raw); } catch (_) { /* 保留原始路径 */ }
+  const base = currentTab === "docs" && docSelected && !decoded.startsWith("/")
+    ? docSelected.split("/").slice(0, -1) : [];
+  const parts = decoded.startsWith("/") ? [] : base;
+  for (const part of decoded.replace(/^\/+/, "").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") parts.pop();
+    else parts.push(part);
+  }
+  return parts.join("/");
+}
+
+function openMarkdownDocumentLink(event, path) {
+  event.preventDefault();
+  const target = normalizedDocumentLink(path);
+  if (!target || !docFiles.includes(target)) {
+    toast(`找不到项目文档：${target || path}`, "error");
+    return false;
+  }
+  docSelected = target;
+  docMode = "view";
+  docViewingRevision = null;
+  docHistoryOpen = false;
+  configChatSelection = null;
+  if (currentTab === "docs") {
+    renderSidebar();
+    renderDocPane();
+  } else {
+    switchTab("docs");
+  }
+  return false;
+}
+
 async function renderDocuments() {
   if (!currentProject || currentTab !== "docs") return;
-  document.getElementById("docs-proj-label").textContent = `— 项目「${esc(currentProject)}」`;
   const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
   docFilesMeta = d.files;
   docFiles = d.files.map(f => f.path);
-  document.getElementById("docs-root").textContent =
-    `Runtime 目录：${d.root}(平台工作区内可经 ./documents 软链访问)`;
   if (docSelected && !docFiles.includes(docSelected) && docMode !== "new") {
     docSelected = null; docMode = "view";
   }
@@ -111,7 +144,7 @@ async function renderDocPane() {
       <input type="text" id="doc-new-path" value="" placeholder="specs/design.md" autofocus
         oninput="updateConfigChatContext()">
       <label>正文</label>
-      <textarea id="doc-content" rows="20" style="width:100%;height:auto"></textarea>`;
+      <textarea id="doc-content" class="doc-editor" aria-label="文档正文"></textarea>`;
     document.getElementById("doc-new-path")?.focus();
     updateConfigChatContext();
     return;
@@ -133,7 +166,7 @@ async function renderDocPane() {
       <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">编辑中</span>
         <button class="action" onclick="saveDocument()">保存新版本</button>
         <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
-      <textarea id="doc-content" rows="20" style="width:100%;height:auto">${esc(content)}</textarea>`;
+      <textarea id="doc-content" class="doc-editor" aria-label="文档正文">${esc(content)}</textarea>`;
     updateConfigChatContext();
     return;
   }
@@ -155,7 +188,7 @@ async function renderDocPane() {
         <button class="ghost" onclick="docViewingRevision=null;renderDocPane()">返回最新</button></div>`
     : "";
   const body = isMarkdownDoc(docSelected)
-    ? `<div class="doc-body">${miniMarkdown(d.content)}</div>`
+    ? `<article class="doc-body markdown-body">${miniMarkdown(d.content)}</article>`
     : `<pre style="white-space:pre-wrap;font-size:12.5px">${esc(d.content)}</pre>`;
   pane.innerHTML = `
     <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
