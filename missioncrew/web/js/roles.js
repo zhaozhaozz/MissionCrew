@@ -68,13 +68,20 @@ async function roleDragEnd() {
   }
 }
 
-function editRole(id) {
+function editRole(id, templateId = "") {
   // runtime 是定义角色时的必选项:没有已启用的 runtime 就没法新建,提前引导
   if (!id && !overview.backends.some(b => b.enabled)) {
     uiAlert("没有已启用的 runtime,请先在全局设置的 Runtime 页注册并启用,再创建角色。");
     return;
   }
-  const r = projRoles().find(x => x.id === id) || {
+  const template = !id && templateId
+    ? globalRoleTemplates().find(role => role.id === templateId)
+    : null;
+  if (templateId && !template) {
+    uiAlert(`全局角色模板 @${templateId} 不存在，可能已被删除。`);
+    return;
+  }
+  const r = projRoles().find(x => x.id === id) || template || {
     id: "", name: "", description: "", capabilities: [], preference: "",
     runtime_id: "", model: "", effort: "", color: "#3564d7" };
   const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
@@ -88,7 +95,22 @@ function editRole(id) {
       `${esc(b.id)} — ${esc(b.name)}${b.enabled ? "" : "(已停用)"}</option>`).join("");
   window._editingRoleModel = r.model;    // 供模型下拉初始化选中
   window._editingRoleEffort = r.effort;  // 供 effort 下拉初始化选中
+  window._editingProjectRoleId = id || "";  // 新建时防止同 id 静默覆盖已有角色
+  const existingIds = new Set(projRoles().map(role => role.id));
+  const templateOptions = globalRoleTemplates().map(role =>
+    `<option value="${esc(role.id)}" ${templateId === role.id ? "selected" : ""}>` +
+    `@${esc(role.id)} — ${esc(role.name || role.id)}` +
+    `${existingIds.has(role.id) ? "（项目已有同名角色，导入后请修改 id）" : ""}</option>`
+  ).join("");
+  const importControl = id ? "" : `
+    <label>从全局角色模板导入（可选）</label>
+    <select id="rf-template" onchange="importGlobalRoleTemplate(this.value)">
+      <option value="" ${templateId ? "" : "selected"}>不使用模板，从空白角色开始</option>
+      ${templateOptions}
+    </select>
+    <p class="muted">导入会把模板配置填入下方表单；保存前可以修改，已有项目和全局模板都不会被改动。</p>`;
   openFormDialog(id ? `编辑角色 @${id}` : "新建角色", `
+    ${importControl}
     <div class="row">
       <div><label>角色 id(@ 提及名)</label><input type="text" id="rf-id" value="${esc(r.id)}" ${id ? "disabled" : ""}></div>
       <div><label>显示名</label><input type="text" id="rf-name" value="${esc(r.name)}"></div>
@@ -113,6 +135,12 @@ function editRole(id) {
      ${id ? `<button class="danger" onclick="deleteRole('${id}')">删除角色</button>` : ""}`);
   refreshModelOptions();
   refreshEffortOptions();
+}
+
+function importGlobalRoleTemplate(templateId) {
+  // 复用角色编辑器的完整渲染路径，确保 Runtime/模型/Effort 下拉同步刷新。
+  fdlg.close();
+  editRole(null, templateId);
 }
 
 // 每个角色必须先选 runtime;模型清单向 runtime 本体动态查询(仿 Multica),
@@ -196,6 +224,10 @@ async function saveRole() {
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
   if (!runtime_id) { uiAlert("请为角色选择 runtime(定义时固定执行组合)"); return; }
+  if (!window._editingProjectRoleId && projRoles().some(role => role.id === body.id)) {
+    uiAlert(`项目中已存在角色 @${body.id}；请修改角色 id，或取消后直接编辑已有角色。`);
+    return;
+  }
   await api("POST", "/api/roles", body);
   await loadOverview();
   fdlg.close();
@@ -211,4 +243,3 @@ async function deleteRole(id) {
   renderRoleTable(); renderSidebar();
   toast("角色已删除", "success");
 }
-

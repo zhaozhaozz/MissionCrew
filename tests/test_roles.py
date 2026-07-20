@@ -350,6 +350,16 @@ def test_global_settings_exposes_new_project_role_templates(client):
     assert "editGlobalRoleTemplate" in js
 
 
+def test_project_role_form_can_import_global_template(client):
+    html = client.get("/").text
+    js = client.get("/assets/js/roles.js").text
+    assert "新增角色时可从全局角色模板导入" in html
+    assert "从全局角色模板导入（可选）" in js
+    assert "importGlobalRoleTemplate" in js
+    assert "globalRoleTemplates().find" in js
+    assert "项目中已存在角色" in js
+
+
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----
 
 def test_backend_models_endpoint_merges_ladder_and_runtime(client, seeded, monkeypatch):
