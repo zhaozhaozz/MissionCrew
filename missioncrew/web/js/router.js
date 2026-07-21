@@ -216,12 +216,14 @@ function renderSidebar() {
   const orch = projObj()?.orchestrator_role_id;
   if (!_secState("roles", "role-list", "cnt-roles", projRoles().length))
     document.getElementById("role-list").innerHTML = projRoles().map(r =>
-      `<div class="role-chip" style="padding-left:20px" onclick="insertMention('${r.id}')" title="${esc(r.description)}">
+      `<div class="role-chip" style="padding-left:20px" data-role-id="${esc(r.id)}"
+            onclick="insertMention(this.dataset.roleId)" title="${esc(r.description)}">
          <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>
          <span>@${esc(r.id)}</span><small>${esc(r.name)}</small>
          ${r.id === orch ? `<span class="pill" style="color:var(--warn);border-color:var(--warn)">主控</span>` : ""}</div>`).join("");
   document.getElementById("role-bar").innerHTML = projRoles().map(r =>
-    `<button onclick="insertMention('${r.id}')" title="${esc(r.description || "")}">
+    `<button data-role-id="${esc(r.id)}" onclick="insertMention(this.dataset.roleId)"
+       title="选择后会创建可触发执行的提及。${esc(r.description || "")}">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}</button>`).join("");
   restoreScrollPositions(scrollState);
 }

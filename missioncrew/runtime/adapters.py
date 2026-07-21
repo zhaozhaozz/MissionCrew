@@ -625,8 +625,8 @@ class MockAdapter:
     模拟能力边界(用于演示路由升级):
     - 任务带 hard 标签时,economy 档执行失败;
     - 任务带 very-hard 标签时,非 expert 档执行失败。
-    聊天协作:触发消息中出现"请 @某角色"时,回复会包含该 @；是否触发由
-    ChatEngine 按"只有项目主控可以调度"的规则决定。
+    聊天协作:触发消息中出现"请 @某角色"时,回复会用显式 @[角色] 语法；
+    是否触发仍由 ChatEngine 按"只有项目主控可以调度"的规则决定。
     """
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
@@ -678,7 +678,7 @@ class MockAdapter:
         reply = (f"收到。我已在工作区完成相关处理(模拟执行,by {cfg.backend.id}/"
                  f"{combo})。")
         for r in dict.fromkeys(asked):
-            reply += f"\n@{r} 上面的工作已完成,交给你继续。"
+            reply += f"\n@[{r}] 上面的工作已完成,交给你继续。"
         # 回显触发消息中的平台控制动作块,模拟真实 Agent 按指示发出动作
         for block in re.findall(r"<missioncrew-action>.*?</missioncrew-action>",
                                 trigger, re.S):

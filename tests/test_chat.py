@@ -27,7 +27,7 @@ def _prompt_json_section(prompt: str, title: str):
 
 
 def test_mention_triggers_agent_reply(chat, seeded):
-    chat.post("general", "human", "@dev 看一下购物车模块的异常处理。")
+    chat.post("general", "human", "@[dev] 看一下购物车模块的异常处理。")
     chat.wait_idle()
     msgs = _log(seeded)
     agents = [m for m in msgs if m["author_type"] == "agent"]
@@ -37,11 +37,78 @@ def test_mention_triggers_agent_reply(chat, seeded):
     assert json.loads(agents[0]["mentions"]) == ["lead"]
 
 
-def test_unknown_role_not_triggered(chat, seeded):
+def test_plain_and_unknown_mentions_are_text_and_fall_back_to_lead(chat, seeded):
     chat.post("general", "human", "@nobody 你好 @dev 在吗")
     chat.wait_idle()
     agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
-    assert agents == {"dev", "lead"}
+    assert agents == {"lead"}
+
+
+def test_selected_scribe_does_not_dispatch_plain_dev_reference(chat, seeded):
+    """回归：只有选择器确认的 @scribe 合法，正文 @dev 只是取证来源。"""
+    content = "@scribe 请依据 @dev 已验收的源码取证报告创建架构文档。"
+    chat.post("general", "human", content, mention_spans=[
+        {"role_id": "scribe", "start": 0, "end": len("@scribe")},
+    ])
+    chat.wait_idle()
+
+    message = _log(seeded)[0]
+    assert json.loads(message["mentions"]) == ["scribe"]
+    assert json.loads(message["mention_spans"]) == [
+        {"role_id": "scribe", "start": 0, "end": len("@scribe")},
+    ]
+    api_message = TestClient(create_app()).get(
+        "/api/chat/general/messages").json()["messages"][0]
+    assert api_message["mention_spans"] == [
+        {"role_id": "scribe", "start": 0, "end": len("@scribe")},
+    ]
+    assert [row["role_id"] for row in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")] == ["scribe", "lead"]
+
+
+def test_human_picker_offsets_use_unicode_code_points(chat, seeded):
+    content = "😀 @dev 检查 Unicode 偏移"
+    chat.post("general", "human", content, mention_spans=[
+        {"role_id": "dev", "start": 2, "end": 6},
+    ])
+    chat.wait_idle()
+    assert json.loads(_log(seeded)[0]["mention_spans"]) == [
+        {"role_id": "dev", "start": 2, "end": 6},
+    ]
+
+
+def test_invalid_picker_range_is_rejected(chat, seeded):
+    with pytest.raises(ValueError, match="提及范围无效"):
+        chat.post("general", "human", "@dev 检查", mention_spans=[
+            {"role_id": "dev", "start": 1, "end": 5},
+        ])
+    assert _log(seeded) == []
+
+
+def test_message_api_rejects_forged_picker_range(seeded):
+    client = TestClient(create_app())
+    response = client.post("/api/chat/general/messages", json={
+        "author": "human", "content": "@dev 检查",
+        "mentions": [{"role_id": "dev", "start": 1, "end": 5}],
+    })
+    assert response.status_code == 400
+    assert "提及范围无效" in response.json()["detail"]
+    assert seeded.list_messages("general") == []
+
+
+def test_orchestrator_requires_explicit_bracket_syntax(chat, seeded):
+    chat.post("general", "lead", "@scribe 请参考 @dev 的报告。", author_type="agent")
+    chat.wait_idle()
+    assert seeded._query("SELECT * FROM chat_runs") == []
+
+    root = chat.post("general", "lead", "@[scribe] 请参考 @dev 的报告。",
+                     author_type="agent")
+    chat.wait_idle()
+    stored = seeded.get_message(root)
+    assert json.loads(stored["mentions"]) == ["scribe"]
+    assert json.loads(stored["mention_spans"])[0]["role_id"] == "scribe"
+    assert {row["role_id"] for row in seeded._query(
+        "SELECT role_id FROM chat_runs")} == {"scribe", "lead"}
 
 
 # ---- 人类不 @ 任何角色时默认交给项目主控 ----
@@ -66,7 +133,7 @@ def test_unrecognized_mention_still_falls_back_to_orchestrator(chat, seeded):
 
 def test_worker_reply_automatically_returns_to_orchestrator(chat, seeded):
     """执行角色无需知道主控 id；平台把完整结果自动交回主控。"""
-    chat.post("general", "human", "@dev 简单看一下就行,不用找别人。")
+    chat.post("general", "human", "@[dev] 简单看一下就行,不用找别人。")
     chat.wait_idle()
     authors = [m["author"] for m in _log(seeded) if m["author_type"] == "agent"]
     assert authors == ["dev", "lead"]
@@ -114,11 +181,14 @@ def test_worker_cannot_dispatch_reviewer_and_returns_to_lead(chat, seeded):
 
 
 def test_only_orchestrator_agent_can_dispatch_other_roles(chat, seeded):
-    root = chat.post("general", "lead", "@reviewer 请复核金额计算。",
+    root = chat.post("general", "lead", "@[reviewer] 请复核金额计算。",
                      author_type="agent")
     chat.wait_idle()
     msgs = _log(seeded)
     reviewer = next(m for m in msgs if m["author"] == "reviewer")
+    lead_message = next(m for m in msgs if m["id"] == root)
+    assert lead_message["content"].startswith("@reviewer")
+    assert json.loads(lead_message["mention_spans"])[0]["role_id"] == "reviewer"
     assert reviewer["reply_to"] == root
     assert json.loads(reviewer["mentions"]) == ["lead"]
     assert [r["role_id"] for r in seeded._query(
@@ -126,14 +196,14 @@ def test_only_orchestrator_agent_can_dispatch_other_roles(chat, seeded):
 
 
 def test_multiple_mentions_run_in_parallel(chat, seeded):
-    chat.post("general", "human", "@dev 和 @expert 分别评估一下方案 A/B。")
+    chat.post("general", "human", "@[dev] 和 @[expert] 分别评估一下方案 A/B。")
     chat.wait_idle()
     agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
     assert agents == {"dev", "expert", "lead"}
 
 
 def test_expert_role_uses_fixed_expert_runtime(chat, seeded):
-    chat.post("general", "human", "@expert 分析一下这个架构问题。")
+    chat.post("general", "human", "@[expert] 分析一下这个架构问题。")
     chat.wait_idle()
     runs = seeded._query("SELECT * FROM chat_runs WHERE role_id='expert'")
     assert runs and runs[0]["backend_id"] == "exp-1"  # 默认专家角色已固定到 expert runtime
@@ -199,7 +269,7 @@ def test_agent_failure_posted_to_channel(chat, seeded):
     b = seeded.get_backend("vis-1")
     b.enabled = False
     seeded.put_backend(b)
-    chat.post("general", "human", "@vision 验证一下首页截图。")
+    chat.post("general", "human", "@[vision] 验证一下首页截图。")
     chat.wait_idle()
     msgs = _log(seeded)
     assert any("无可用后端" in m["content"] for m in msgs
@@ -486,7 +556,7 @@ def test_lead_dispatcher_role_seeded(seeded):
 
 def test_dispatch_and_worker_return_are_visible_to_human(chat, seeded):
     """执行结果与自动回主控的闭环都保存在频道消息流中。"""
-    chat.post("general", "human", "@dev 处理,完成后请 @reviewer 复核。")
+    chat.post("general", "human", "@[dev] 处理,完成后请 @reviewer 复核。")
     chat.wait_idle()
     msgs = seeded.list_messages("general")
     dev_msg = next(m for m in msgs if m["author"] == "dev")

@@ -269,7 +269,7 @@ def test_roles_isolated_between_projects(client, seeded):
                          runtime_id="std-1", model="pro"))
     chat = ChatEngine(seeded, max_workers=2)
     # webshop 的 general 频道里 @alpha 的专属角色:不触发
-    chat.post("general", "human", "@only-a 在吗?@dev 你也看看。")
+    chat.post("general", "human", "@only-a 在吗?@[dev] 你也看看。")
     chat.wait_idle()
     agents = {m["author"] for m in seeded.list_messages("general")
               if m["author_type"] == "agent"}

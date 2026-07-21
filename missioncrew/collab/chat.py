@@ -1,9 +1,10 @@
 """聊天协作引擎。
 
 协作模型:
-- 人类在频道里 @角色 布置工作;角色由固定 runtime/model 执行,
+- 人类在频道里通过角色选择器建立结构化提及;主控用 @[角色] 明确调度,
+  普通 @角色 只是正文;角色由固定 runtime/model 执行,
   定位、能力与偏好用于协作方选人,不参与执行时路由;
-- 只有项目主控能在回复中 @其他角色发起工作;执行角色看不到其他角色名册,
+- 只有项目主控能在回复中用 @[角色] 发起工作;执行角色看不到其他角色名册,
   完成后由平台自动把完整结果交回主控继续调度;
 - 所有主控调度与执行结果都对人类完全可见,全程审计。
 
@@ -37,16 +38,11 @@ from .skills import save_project_skill, save_project_skill_markdown
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
+EXPLICIT_MENTION_RE = re.compile(r"@\[([\w-]+)\]")
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
 CHAT_TIMEOUT = 900     # 单次聊天执行超时(秒)
 ACTION_RE = re.compile(r"<missioncrew-action>(.*?)</missioncrew-action>", re.S)
 CONTROL_ID_RE = re.compile(r"[\w-]+")
-
-# 转交语义:@ 前若紧跟顺序词("完成后请 @reviewer"),说明是让前序角色
-# 完成后转交,不立即触发;前序角色回复中 @ 到时才真正执行
-DEFER_MARKERS = ("完成后", "然后", "之后", "接着", "随后")
-DEFER_WINDOW = 8       # 顺序词与 @ 之间允许的最大字符距离
-
 
 @dataclass
 class _PendingInteraction:
@@ -114,7 +110,7 @@ ORCHESTRATOR_TEMPLATE = """\
 你是本项目唯一主控，负责理解项目目标、拆解工作并调度其他角色。可在回复中加入
 一个或多个控制动作（动作会被平台执行并从公开回复中移除，执行结果附在回复末尾）：
 <missioncrew-action>{{"action":"create_channel","id":"channel-id","name":"名称","purpose":"任务边界","workdir":"可选，项目代码仓路径"}}</missioncrew-action>
-<missioncrew-action>{{"action":"post_message","channel":"channel-id","content":"开工简报，@角色 会正常触发执行"}}</missioncrew-action>
+<missioncrew-action>{{"action":"post_message","channel":"channel-id","content":"@[角色] 开工简报；正文里的普通 @角色 仅作引用"}}</missioncrew-action>
 <missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
 <missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
@@ -124,7 +120,7 @@ ORCHESTRATOR_TEMPLATE = """\
 要点：
 - create_channel 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
   不填时若项目只配了一个代码仓则自动使用它。新频道创建后是空的，
-  用 post_message 把任务简报发进去、@ 相应角色开工。
+  用 post_message 把任务简报发进去，并用 @[角色] 显式选择执行者开工。
 - update_board 不携带 layout 字段时保留现有布局；携带则全量替换。
   layout 每项含 id、type、title、x、y、width、height、content。
   type 是通用展示原语（领域含义来自数据，不是类型）：
@@ -154,7 +150,8 @@ ORCHESTRATOR_TEMPLATE = """\
   必须使用对应的 save_guideline / save_skill / write_document 动作实际落库。
 - 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
-  最合适的角色，@ 它并写清任务简报。
+  最合适的角色，用 @[角色ID] 明确调度并写清任务简报。只有这种方括号语法
+  会触发执行；普通 @角色ID 只是正文引用，可用于描述已完成工作或其他角色。
 - 协作链预算：本项目单条协作链最多 {max_runs} 次 Agent 执行。这只是防止失控循环的
   总次数兜底，不限制调度层级；请在预算内自主拆解、分派、验收并推进任务。
 
@@ -227,8 +224,14 @@ class ChatEngine:
              author_type: str = "human", reply_to: Optional[int] = None,
              root_id: Optional[int] = None, depth: int = 0,
              runtime_id: Optional[str] = None, model: Optional[str] = None,
-             effort: Optional[str] = None) -> int:
-        """发布一条消息,并异步触发其中 @ 到的角色。返回消息 id。"""
+             effort: Optional[str] = None,
+             mention_spans: Optional[list[dict]] = None) -> int:
+        """发布消息，并只按可信的结构化提及异步触发角色。
+
+        Web 人类消息必须传选择器生成的 ``mention_spans``；省略该参数的
+        内部/CLI 调用可用 ``@[role]``。主控 Agent 也只能用此显式语法。
+        普通 ``@role`` 永远只是正文引用。
+        """
         channel = self.store.get_channel(channel_id)
         if channel is None:
             raise ValueError(f"频道不存在: {channel_id}")
@@ -237,11 +240,12 @@ class ChatEngine:
         role = (self.store.get_role(channel.project_id or "", author)
                 if author_type == "agent" else None)
 
-        # 只有主控的 Agent 消息能按正文中的 @ 调度其他角色。执行角色不论
-        # 回复里是否误写了 @，都只把完整结果交回主控，避免横向看见/调用名册。
+        legal_spans: list[dict] = []
+        # 只有主控能用显式 @[role] 调度。执行角色无论写哪种 @，都只把
+        # 完整结果交回主控，避免横向看见或调用名册。
         if author_type == "agent":
             if author == orchestrator:
-                mentions = self._valid_mentions(
+                content, mentions, legal_spans = self._parse_explicit_mentions(
                     content, channel.project_id or "", exclude=author)
             elif orchestrator and self.store.get_role(
                     channel.project_id or "", orchestrator):
@@ -253,15 +257,22 @@ class ChatEngine:
                 model = role.model if model is None else model
                 effort = role.effort if effort is None else effort
         else:
-            # 人类仍可直接点名角色；无有效 @ 时默认交给项目主控。
-            mentions = self._valid_mentions(content, channel.project_id or "", exclude=None)
+            # Web 明确传空数组时，正文里的 @xxx 仍是普通文本；CLI/内部调用
+            # 若省略结构化范围，可使用更明确的 @[role] 语法。
+            if mention_spans is None:
+                content, mentions, legal_spans = self._parse_explicit_mentions(
+                    content, channel.project_id or "", exclude=None)
+            else:
+                mentions, legal_spans = self._validate_mention_spans(
+                    content, mention_spans, channel.project_id or "")
         if not mentions and author_type == "human" and channel.project_id:
             if (orchestrator and author != orchestrator
                     and self.store.get_role(channel.project_id, orchestrator)):
                 mentions = [orchestrator]
         msg_id = self.store.add_message(channel_id, author, author_type, content,
                                         mentions, reply_to, root_id, depth,
-                                        runtime_id or "", model or "", effort or "")
+                                        runtime_id or "", model or "", effort or "",
+                                        mention_spans=legal_spans)
         self._write_channel_history(channel)
         root = root_id if root_id is not None else msg_id
         for role_id in mentions:
@@ -319,20 +330,66 @@ class ChatEngine:
             "cleared_sessions": cleared_sessions, "stopped_runtimes": stopped,
         }
 
-    # ---- 内部:触发与执行 ----
-    def _valid_mentions(self, content: str, project_id: str,
-                        exclude: Optional[str]) -> list[str]:
-        known = {r.id for r in self.store.list_roles(project_id)}
-        seen = []
-        for m in MENTION_RE.finditer(content):
-            rid = m.group(1)
-            if rid not in known or rid == exclude or rid in seen:
-                continue
-            window = content[max(0, m.start() - DEFER_WINDOW):m.start()]
-            if any(k in window for k in DEFER_MARKERS):
-                continue  # 转交指令,等前序角色完成后在回复中 @ 才触发
-            seen.append(rid)
-        return seen
+    # ---- 内部:可信提及、触发与执行 ----
+    def _parse_explicit_mentions(self, content: str, project_id: str,
+                                 exclude: Optional[str]) -> tuple[str, list[str], list[dict]]:
+        """把主控/CLI 的 ``@[role]`` 归一化成可见 ``@role`` 与精确范围。"""
+        known = {role.id for role in self.store.list_roles(project_id)}
+        parts: list[str] = []
+        targets: list[str] = []
+        spans: list[dict] = []
+        cursor = 0
+        output_length = 0
+        for match in EXPLICIT_MENTION_RE.finditer(content):
+            prefix = content[cursor:match.start()]
+            parts.append(prefix)
+            output_length += len(prefix)
+            role_id = match.group(1)
+            if role_id not in known:
+                raw = match.group(0)
+                parts.append(raw)
+                output_length += len(raw)
+            else:
+                visible = f"@{role_id}"
+                start = output_length
+                parts.append(visible)
+                output_length += len(visible)
+                if role_id != exclude:
+                    spans.append({"role_id": role_id, "start": start,
+                                  "end": output_length})
+                    if role_id not in targets:
+                        targets.append(role_id)
+            cursor = match.end()
+        parts.append(content[cursor:])
+        return "".join(parts), targets, spans
+
+    def _validate_mention_spans(self, content: str, requested: list[dict],
+                                project_id: str) -> tuple[list[str], list[dict]]:
+        """验证 UI 选择器给出的 Unicode code-point 范围，不从正文猜目标。"""
+        known = {role.id for role in self.store.list_roles(project_id)}
+        normalized: list[dict] = []
+        for item in requested:
+            if not isinstance(item, dict):
+                raise ValueError("提及必须由角色选择器生成")
+            role_id = item.get("role_id")
+            start, end = item.get("start"), item.get("end")
+            if (not isinstance(role_id, str) or role_id not in known
+                    or type(start) is not int or type(end) is not int
+                    or start < 0 or end <= start or end > len(content)
+                    or content[start:end] != f"@{role_id}"):
+                raise ValueError("提及范围无效，请从角色选择器重新选择")
+            normalized.append({"role_id": role_id, "start": start, "end": end})
+
+        normalized.sort(key=lambda item: (item["start"], item["end"]))
+        previous_end = -1
+        targets: list[str] = []
+        for item in normalized:
+            if item["start"] < previous_end:
+                raise ValueError("提及范围重叠，请从角色选择器重新选择")
+            previous_end = item["end"]
+            if item["role_id"] not in targets:
+                targets.append(item["role_id"])
+        return targets, normalized
 
     def _trigger(self, channel: Channel, role_id: str, msg_id: int,
                  root_id: int, depth: int) -> None:
@@ -602,14 +659,16 @@ class ChatEngine:
                 _tag(r) for r in self.store.list_roles(channel.project_id or "")
                 if r.id != role.id) or "(无其他角色)"
             collaboration_section = (
-                "- 只有你（项目主控）可以在回复中 @其他角色。需要接手时，为对方写清"
+                "- 只有你（项目主控）可以调度其他角色。调度必须使用 @[角色ID]；"
+                "普通 @角色ID 只是正文引用，不会触发执行。需要接手时，为对方写清"
                 "背景、要求和验收标准。\n"
-                "- 不需要协作就不要 @任何角色；不要 @你自己，不要编造不存在的角色。\n"
+                "- 不需要协作就不要写 @[角色ID]；不要调度你自己，不要编造不存在的角色。\n"
                 "- 角色名册（仅主控可见，各自定位供你选人参考）：\n" + roster
             )
         else:
             collaboration_section = (
-                "- 你不是项目主控，看不到其他执行角色名册，也不能 @或调度其他角色。\n"
+                "- 你不是项目主控，看不到其他执行角色名册，也不能使用 @[角色ID]"
+                "或调度其他角色。\n"
                 "- 只提交本次任务的完整结果；完成或失败后，平台会自动把结果交回"
                 "项目主控，由主控检查并继续后续流程。"
             )
@@ -713,6 +772,16 @@ class ChatEngine:
             return []
         return [str(item) for item in mentions] if isinstance(mentions, list) else []
 
+    @staticmethod
+    def _decoded_mention_spans(message: dict) -> list[dict]:
+        raw = message.get("mention_spans", "[]")
+        try:
+            spans = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return []
+        return [dict(item) for item in spans if isinstance(item, dict)] \
+            if isinstance(spans, list) else []
+
     def _message_record(self, message: dict, role: Optional[Role] = None,
                         project=None, known_roles: Optional[set[str]] = None) -> dict:
         """把数据库消息转换为边界明确的 JSON 记录，并按执行角色脱敏。"""
@@ -720,6 +789,7 @@ class ChatEngine:
         author_type = str(message.get("author_type", ""))
         content = str(message.get("content", ""))
         mentions = self._decoded_mentions(message)
+        mention_spans = self._decoded_mention_spans(message)
         orchestrator_id = project.orchestrator_role_id if project else ""
         known_roles = (known_roles if known_roles is not None else
                        ({r.id for r in self.store.list_roles(project.id)}
@@ -737,6 +807,8 @@ class ChatEngine:
                 return "[其他执行角色]"
 
             content = MENTION_RE.sub(_visible_mention, content)
+            # 脱敏替换会改变字符偏移；执行角色不需要渲染主控界面的提及样式。
+            mention_spans = []
             mentions = [
                 item if item in {role.id, orchestrator_id} or item not in known_roles
                 else "其他执行角色"
@@ -752,6 +824,7 @@ class ChatEngine:
             },
             "content": content,
             "mentions": mentions,
+            "mention_spans": mention_spans,
             "thread": {
                 "reply_to": message.get("reply_to"),
                 "root_id": message.get("root_id"),
@@ -1006,7 +1079,7 @@ class ChatEngine:
 
     def _action_post_message(self, project_id: str, role_id: str, action: dict,
                              root_id: int, depth: int) -> str:
-        """主控向本项目任意频道发消息(调度闭环):@ 正常触发级联,
+        """主控向本项目任意频道发消息(调度闭环):@[角色] 显式触发级联,
         共享同一条协作链的执行次数预算,防止跨频道绕开防爆炸限制。"""
         raw = str(action.get("channel", "")).strip()
         content = str(action.get("content", "")).strip()

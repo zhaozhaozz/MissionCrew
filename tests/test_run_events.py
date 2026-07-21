@@ -96,7 +96,7 @@ def test_existing_message_table_gets_execution_metadata_columns(tmp_path):
     from missioncrew.core.store import Store
     legacy = Store(path)
     columns = {row["name"] for row in legacy._query("PRAGMA table_info(messages)")}
-    assert {"runtime_id", "model", "effort", "kind"} <= columns
+    assert {"runtime_id", "model", "effort", "kind", "mention_spans"} <= columns
 
 
 # ---- CLI 适配器:stream-json 解析出思考/工具/文本,普通 CLI 按行透传 ----
@@ -248,7 +248,7 @@ def test_chat_run_events_flow_to_api(seeded):
     dev.effort = "high"
     seeded.put_role(dev)
     chat = ChatEngine(seeded, max_workers=2)
-    chat.post("general", "human", "@dev 看一下这个问题")
+    chat.post("general", "human", "@[dev] 看一下这个问题")
     chat.wait_idle()
     client = TestClient(create_app())
     d = client.get("/api/chat/general/messages").json()
@@ -272,6 +272,7 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     client = TestClient(create_app())
     js = client.get("/assets/js/sidebar.js").text
     css = client.get("/assets/css/app.css").text
+    html = client.get("/").text
     assert "agentExecutionLabel" in js
     assert "runtime=${message.runtime_id" in js
     assert "model=${message.model" in js
@@ -284,5 +285,9 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert 'flex: none; white-space: nowrap;' in css
     assert "RUN_INPUT_FOLD_AT" not in js
     assert "/clear-context" in js and 'm.kind === "context_boundary"' in js
-    assert "清除上下文" in client.get("/").text
+    assert "清除上下文" in html
+    assert 'id="input" contenteditable="true"' in html and 'id="mention-picker"' in html
+    assert "composerPayload" in js and "mention_spans" in js
+    assert "mention legal-mention mention-compose" in js
+    assert ".mention.legal-mention" in css and "cursor: help" in css
     assert '<span class="via">agent</span>' not in js

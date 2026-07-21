@@ -24,9 +24,16 @@ class ApprovalInput(BaseModel):
     stage: Optional[str] = None
 
 
+class MessageMentionInput(BaseModel):
+    role_id: str = Field(min_length=1, max_length=100, pattern=r"^[\w-]+$")
+    start: int = Field(ge=0)
+    end: int = Field(gt=0)
+
+
 class MessageInput(BaseModel):
     author: str = "human"
     content: str
+    mentions: list[MessageMentionInput] = Field(default_factory=list, max_length=50)
 
 
 class PageContextInput(BaseModel):

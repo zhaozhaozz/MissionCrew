@@ -1,6 +1,8 @@
 """聊天端点:频道管理与消息收发。"""
 from __future__ import annotations
 
+import json
+
 from fastapi import FastAPI, HTTPException
 
 from ..collab.workspace import write_page_context_snapshot
@@ -49,6 +51,11 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             if role:
                 item.update(runtime_id=role.runtime_id, model=role.model,
                             effort=role.effort)
+        for item in items:
+            try:
+                item["mention_spans"] = json.loads(item.get("mention_spans") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                item["mention_spans"] = []
         return {
             "messages": items,
             "active_runs": store.active_chat_runs(channel_id),
@@ -71,10 +78,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.post("/api/chat/{channel_id}/messages")
     def post_message(channel_id: str, body: MessageInput):
+        if store.get_channel(channel_id) is None:
+            raise HTTPException(404, f"频道不存在: {channel_id}")
         try:
-            msg_id = chat.post(channel_id, body.author, body.content)
+            msg_id = chat.post(
+                channel_id, body.author, body.content,
+                mention_spans=[item.model_dump() for item in body.mentions],
+            )
         except ValueError as e:
-            raise HTTPException(404, str(e))
+            raise HTTPException(400, str(e))
         return {"id": msg_id}
 
     @app.post("/api/chat/{channel_id}/clear-context")

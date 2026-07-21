@@ -108,7 +108,7 @@ def demo(run: bool = typer.Option(True, help="是否顺带演示典型流程")):
 
     typer.echo("\n=== 演示 3:聊天协作(主控分派,执行结果自动返回主控) ===")
     chat = ChatEngine(store)
-    chat.post("general", "lead", "@dev 请排查优惠券叠加的边界条件。",
+    chat.post("general", "lead", "@[dev] 请排查优惠券叠加的边界条件。",
               author_type="agent")
     chat.wait_idle()
     for m in store.list_messages("general"):
@@ -268,12 +268,12 @@ def _resolve_channel(store: Store, channel: str, project: Optional[str]) -> str:
 
 
 @chat_app.command("send")
-def chat_send(content: str = typer.Argument(..., help="消息内容,@角色 触发执行"),
+def chat_send(content: str = typer.Argument(..., help="消息内容；@[角色] 显式触发执行"),
               channel: str = typer.Option("general", "-c", "--channel"),
               project: Optional[str] = typer.Option(None, "-p", "--project"),
               author: str = typer.Option("human", "--author"),
               wait: bool = typer.Option(True, help="等待所有触发的执行(含级联)结束")):
-    """向频道发消息;@到的角色会执行工作并把回复发回频道。"""
+    """向频道发消息；@[角色] 会执行工作，普通 @角色 只是正文。"""
     store = _store()
     cid = _resolve_channel(store, channel, project)
     chat = ChatEngine(store)

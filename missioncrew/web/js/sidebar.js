@@ -140,11 +140,159 @@ function openDocFromSidebar(path) {
   else switchTab("docs");
 }
 
+let savedComposerRange = null;
+let mentionPickerRoles = [];
+let mentionPickerIndex = 0;
+
+function roleInfo(id) {
+  return projRoles().find(role => role.id === id) || null;
+}
+
+function legalMentionTitle(id) {
+  const role = roleInfo(id);
+  return `已确认提及：发送后会触发 @${id}${role?.name ? `（${role.name}）` : ""}`;
+}
+
+function createComposerMention(id) {
+  const role = roleInfo(id);
+  if (!role) return null;
+  const span = document.createElement("span");
+  span.className = "mention legal-mention mention-compose";
+  span.contentEditable = "false";
+  span.dataset.roleId = id;
+  span.title = legalMentionTitle(id);
+  span.style.color = role.color || roleColor[id] || "var(--accent)";
+  span.textContent = `@${id}`;
+  return span;
+}
+
+function composerContainsNode(box, node) {
+  const element = node?.nodeType === Node.TEXT_NODE ? node.parentNode : node;
+  return element === box || box.contains(element);
+}
+
+function rememberComposerSelection() {
+  const box = document.getElementById("input");
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  if (composerContainsNode(box, range.commonAncestorContainer))
+    savedComposerRange = range.cloneRange();
+}
+
+function composerInsertionRange() {
+  const box = document.getElementById("input");
+  const selection = window.getSelection();
+  if (savedComposerRange && composerContainsNode(box, savedComposerRange.commonAncestorContainer)) {
+    selection.removeAllRanges();
+    selection.addRange(savedComposerRange);
+    return savedComposerRange.cloneRange();
+  }
+  const range = document.createRange();
+  range.selectNodeContents(box);
+  range.collapse(false);
+  return range;
+}
+
+function activeMentionQuery() {
+  const box = document.getElementById("input");
+  const selection = window.getSelection();
+  if (!selection?.rangeCount) return null;
+  const range = selection.getRangeAt(0);
+  if (!range.collapsed || !composerContainsNode(box, range.startContainer)
+      || range.startContainer.nodeType !== Node.TEXT_NODE) return null;
+  const prefix = range.startContainer.nodeValue.slice(0, range.startOffset);
+  const match = prefix.match(/(^|[^\w@])@([\w-]*)$/u);
+  if (!match) return null;
+  const start = match.index + match[1].length;
+  return { node: range.startContainer, start, end: range.startOffset,
+           query: match[2].toLowerCase() };
+}
+
+function hideMentionPicker() {
+  const picker = document.getElementById("mention-picker");
+  picker.hidden = true;
+  picker.innerHTML = "";
+  mentionPickerRoles = [];
+  mentionPickerIndex = 0;
+}
+
+function renderMentionPicker(query) {
+  const picker = document.getElementById("mention-picker");
+  mentionPickerRoles = projRoles().filter(role => !query
+    || role.id.toLowerCase().includes(query)
+    || String(role.name || "").toLowerCase().includes(query));
+  if (!mentionPickerRoles.length) { hideMentionPicker(); return; }
+  mentionPickerIndex = Math.min(mentionPickerIndex, mentionPickerRoles.length - 1);
+  picker.innerHTML = mentionPickerRoles.map((role, index) =>
+    `<button type="button" role="option" class="${index === mentionPickerIndex ? "active" : ""}"
+       data-role-id="${esc(role.id)}" aria-selected="${index === mentionPickerIndex}"
+       onmousedown="event.preventDefault();chooseComposerMention(this.dataset.roleId)">
+       <span class="role-dot" style="background:${esc(role.color || "#888")}"></span>
+       <b>@${esc(role.id)}</b><span>${esc(role.name || "")}</span>
+       <small>${esc(role.description || "")}</small></button>`).join("");
+  picker.hidden = false;
+}
+
+function updateMentionPicker() {
+  const query = activeMentionQuery();
+  if (!query) { hideMentionPicker(); return; }
+  mentionPickerIndex = 0;
+  renderMentionPicker(query.query);
+}
+
+function moveMentionPicker(delta) {
+  if (!mentionPickerRoles.length) return;
+  mentionPickerIndex = (mentionPickerIndex + delta + mentionPickerRoles.length)
+    % mentionPickerRoles.length;
+  renderMentionPicker(activeMentionQuery()?.query || "");
+  document.querySelector("#mention-picker button.active")?.scrollIntoView({ block: "nearest" });
+}
+
+function insertComposerMention(id) {
+  const box = document.getElementById("input");
+  const mention = createComposerMention(id);
+  if (!mention) return;
+  box.focus();
+  let range = composerInsertionRange();
+  const query = activeMentionQuery();
+  if (query) {
+    range = document.createRange();
+    range.setStart(query.node, query.start);
+    range.setEnd(query.node, query.end);
+  }
+  range.deleteContents();
+
+  const before = range.cloneRange();
+  before.selectNodeContents(box);
+  before.setEnd(range.startContainer, range.startOffset);
+  if (before.toString() && !/\s$/u.test(before.toString())) {
+    const space = document.createTextNode(" ");
+    range.insertNode(space);
+    range.setStartAfter(space);
+    range.collapse(true);
+  }
+  range.insertNode(mention);
+  const trailing = document.createTextNode(" ");
+  range.setStartAfter(mention);
+  range.collapse(true);
+  range.insertNode(trailing);
+  range.setStartAfter(trailing);
+  range.collapse(true);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  savedComposerRange = range.cloneRange();
+  hideMentionPicker();
+}
+
+function chooseComposerMention(id) {
+  insertComposerMention(id);
+}
+
 function insertMention(id) {
   if (currentTab !== "chat") switchTab("chat");
-  const box = document.getElementById("input");
-  box.value = (box.value ? box.value.replace(/\s*$/, " ") : "") + `@${id} `;
-  box.focus();
+  insertComposerMention(id);
 }
 
 function selectChannel(id, jump = true) {
@@ -156,14 +304,28 @@ function selectChannel(id, jump = true) {
   syncUrl();
 }
 
-function fmtBody(text, markdown = false) {
-  // 先把已知角色提及替换为占位符，再做 Markdown，避免 @ 正则误改链接 href 属性。
+function fmtBody(text, markdown = false, mentionSpans = []) {
+  // 只有后端验证过的精确范围会变成提及徽标；正文里的其他 @xxx 保持普通文字。
+  const source = String(text ?? "");
+  const chars = Array.from(source);
   const mentions = [];
-  const held = String(text ?? "").replace(/@([\w-]+)/g, (match, id) => {
-    if (!roleColor[id]) return match;
-    mentions.push(`<span class="mention" style="color:${roleColor[id]}">@${id}</span>`);
-    return `\uE100${mentions.length - 1}\uE101`;
-  });
+  let held = "";
+  let cursor = 0;
+  const spans = [...(Array.isArray(mentionSpans) ? mentionSpans : [])]
+    .sort((a, b) => Number(a.start) - Number(b.start));
+  for (const span of spans) {
+    const id = String(span.role_id || "");
+    const start = Number(span.start), end = Number(span.end);
+    if (!Number.isInteger(start) || !Number.isInteger(end) || start < cursor || end > chars.length
+        || chars.slice(start, end).join("") !== `@${id}`) continue;
+    held += chars.slice(cursor, start).join("");
+    const color = roleInfo(id)?.color || roleColor[id] || "var(--accent)";
+    mentions.push(`<span class="mention legal-mention" style="color:${esc(color)}" ` +
+      `title="${esc(legalMentionTitle(id))}">@${esc(id)}</span>`);
+    held += `\uE100${mentions.length - 1}\uE101`;
+    cursor = end;
+  }
+  held += chars.slice(cursor).join("");
   const html = markdown ? miniMarkdown(held) : esc(held);
   return html.replace(/\uE100(\d+)\uE101/g, (_, index) => mentions[Number(index)]);
 }
@@ -222,7 +384,7 @@ function appendMessages(list) {
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${isAgent ? color : "var(--text)"}">${esc(name)}</span>
           ${isAgent ? `<span class="via">${esc(agentExecutionLabel(m))}</span>` : ""}<span class="time">${time}</span></div>
-        <div class="body${longReply ? " folded" : ""}">${fmtBody(m.content, isAgent)}</div>
+        <div class="body${longReply ? " folded" : ""}">${fmtBody(m.content, isAgent, m.mention_spans)}</div>
         ${longReply ? `<button type="button" class="message-fold-toggle" data-size="${m.content.length}"
           aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;
@@ -491,20 +653,91 @@ async function pollMessages() {
     syncRuns(d.runs || []);
     const pane = document.getElementById("msgs");
     if (!pane.children.length)
-      pane.innerHTML = `<div class="chat-empty empty">还没有消息:@角色 布置工作,对话会显示在这里</div>`;
+      pane.innerHTML = `<div class="chat-empty empty">还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。</div>`;
   } catch (e) { /* 服务重启间隙,忽略 */ }
+}
+
+function composerPayload() {
+  const box = document.getElementById("input");
+  let content = "";
+  let codePoints = 0;
+  const mentions = [];
+  const append = value => {
+    content += value;
+    codePoints += Array.from(value).length;
+  };
+  const visit = node => {
+    if (node.nodeType === Node.TEXT_NODE) { append(node.nodeValue || ""); return; }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    if (node.classList.contains("mention-compose") && node.dataset.roleId) {
+      const token = `@${node.dataset.roleId}`;
+      const start = codePoints;
+      append(token);
+      mentions.push({ role_id: node.dataset.roleId, start, end: codePoints });
+      return;
+    }
+    if (node.tagName === "BR") { append("\n"); return; }
+    const block = node !== box && (node.tagName === "DIV" || node.tagName === "P");
+    if (block && content && !content.endsWith("\n")) append("\n");
+    node.childNodes.forEach(visit);
+    if (block && content && !content.endsWith("\n")) append("\n");
+  };
+  box.childNodes.forEach(visit);
+  if (!content.trim()) return { content: "", mentions: [] };
+
+  const leading = content.match(/^\s*/u)?.[0] || "";
+  const trailing = content.match(/\s*$/u)?.[0] || "";
+  const shift = Array.from(leading).length;
+  const keptEnd = codePoints - Array.from(trailing).length;
+  return {
+    content: content.trim(),
+    mentions: mentions
+      .filter(item => item.start >= shift && item.end <= keptEnd)
+      .map(item => ({ ...item, start: item.start - shift, end: item.end - shift })),
+  };
+}
+
+function restoreComposerPayload(content, mentionSpans = []) {
+  const box = document.getElementById("input");
+  const chars = Array.from(String(content || ""));
+  const fragment = document.createDocumentFragment();
+  let cursor = 0;
+  for (const span of [...mentionSpans].sort((a, b) => a.start - b.start)) {
+    const token = chars.slice(span.start, span.end).join("");
+    if (span.start < cursor || token !== `@${span.role_id}`) continue;
+    if (span.start > cursor)
+      fragment.appendChild(document.createTextNode(chars.slice(cursor, span.start).join("")));
+    const mention = createComposerMention(span.role_id);
+    if (mention) fragment.appendChild(mention);
+    else fragment.appendChild(document.createTextNode(token));
+    cursor = span.end;
+  }
+  if (cursor < chars.length)
+    fragment.appendChild(document.createTextNode(chars.slice(cursor).join("")));
+  box.replaceChildren(fragment);
+  const range = document.createRange();
+  range.selectNodeContents(box);
+  range.collapse(false);
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  selection.addRange(range);
+  savedComposerRange = range.cloneRange();
+  box.focus();
 }
 
 async function send() {
   const box = document.getElementById("input");
-  const content = box.value.trim();
+  const payload = composerPayload();
+  const { content, mentions } = payload;
   if (!content || !currentChan) return;
-  box.value = "";
-  box.style.height = "";   // 复位自动增高
+  box.replaceChildren();
+  savedComposerRange = null;
+  hideMentionPicker();
   try {
-    await api("POST", `/api/chat/${currentChan}/messages`, { author: "human", content });
+    await api("POST", `/api/chat/${currentChan}/messages`,
+              { author: "human", content, mentions });
   } catch (e) {
-    box.value = content;   // 发送失败(频道被删/服务重启):还回输入,不丢内容
+    restoreComposerPayload(content, mentions);  // 发送失败时还原结构化提及，不降级成文本
     return;
   }
   await pollMessages();
@@ -523,12 +756,36 @@ async function clearChatContext() {
 
 const inputBox = document.getElementById("input");
 inputBox.addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey && !imeComposing(e)) { e.preventDefault(); send(); }
+  if (imeComposing(e)) return;
+  const pickerOpen = !document.getElementById("mention-picker").hidden;
+  if (pickerOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+    e.preventDefault(); moveMentionPicker(e.key === "ArrowDown" ? 1 : -1); return;
+  }
+  if (pickerOpen && e.key === "Escape") { e.preventDefault(); hideMentionPicker(); return; }
+  if (pickerOpen && e.key === "Enter" && !e.shiftKey && mentionPickerRoles.length) {
+    e.preventDefault(); chooseComposerMention(mentionPickerRoles[mentionPickerIndex].id); return;
+  }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); return; }
+  if (e.key === "Enter" && e.shiftKey) {
+    e.preventDefault(); document.execCommand("insertText", false, "\n");
+  }
 });
-// 输入框随内容自动增高(上限 160px),发送后复位
 inputBox.addEventListener("input", () => {
-  inputBox.style.height = "auto";
-  inputBox.style.height = Math.min(inputBox.scrollHeight, 160) + "px";
+  if (!inputBox.textContent && !inputBox.querySelector(".mention-compose"))
+    inputBox.replaceChildren();
+  rememberComposerSelection();
+  updateMentionPicker();
+});
+inputBox.addEventListener("keyup", rememberComposerSelection);
+inputBox.addEventListener("mouseup", rememberComposerSelection);
+inputBox.addEventListener("paste", event => {
+  event.preventDefault();
+  document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+});
+document.addEventListener("selectionchange", rememberComposerSelection);
+document.addEventListener("mousedown", event => {
+  if (!event.target.closest("#input-wrap") && !event.target.closest("#role-bar")
+      && !event.target.closest("#role-list")) hideMentionPicker();
 });
 document.getElementById("board-request").addEventListener("keydown", e => {
   if (e.key === "Enter" && !e.shiftKey && !imeComposing(e)) { e.preventDefault(); requestBoard(); }
