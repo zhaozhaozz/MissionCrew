@@ -235,6 +235,16 @@ class ChatEngine:
         channel = self.store.get_channel(channel_id)
         if channel is None:
             raise ValueError(f"频道不存在: {channel_id}")
+        if channel.archived:
+            if author_type != "agent":
+                raise ValueError("频道已归档，请先恢复后再发送消息")
+            channel.archived = False
+            channel.archived_at = 0.0
+            self.store.put_channel(channel)
+            self.store.audit(
+                author, "channel_reactivated",
+                detail=f"project={channel.project_id or ''} channel={channel.id}",
+            )
         project = self.store.get_project(channel.project_id or "")
         orchestrator = project.orchestrator_role_id if project else ""
         role = (self.store.get_role(channel.project_id or "", author)
@@ -298,19 +308,7 @@ class ChatEngine:
         if self.store.active_chat_runs(channel_id):
             raise ValueError("频道仍有 Agent 正在运行，请等待本轮结束后再清除上下文")
 
-        targets: dict[tuple[str, str], object] = {}
-        for session in self.store.chat_sessions_for_channel(channel_id):
-            backend = self.store.get_backend(session["backend_id"])
-            if backend is not None:
-                targets[(backend.id, session["session_key"])] = backend
-        for role in self.store.list_roles(channel.project_id or ""):
-            backend = self.store.get_backend(role.runtime_id)
-            if backend is not None:
-                targets[(backend.id, self._session_key(channel, role.id))] = backend
-
-        stopped = 0
-        for (_backend_id, session_key), backend in targets.items():
-            stopped += runtime_manager.stop(backend, session_key)
+        stopped = self.stop_channel_sessions(channel_id)
         cleared_sessions = self.store.clear_chat_sessions(channel_id)
         marker_id = self.store.add_message(
             channel_id, "platform", "platform",
@@ -329,6 +327,26 @@ class ChatEngine:
             "ok": True, "marker_id": marker_id,
             "cleared_sessions": cleared_sessions, "stopped_runtimes": stopped,
         }
+
+    def stop_channel_sessions(self, channel_id: str) -> int:
+        """停止频道的持久 Runtime 实例，但保留原生 session 以便恢复。"""
+        channel = self.store.get_channel(channel_id)
+        if channel is None:
+            raise ValueError(f"频道不存在: {channel_id}")
+        targets: dict[tuple[str, str], object] = {}
+        for session in self.store.chat_sessions_for_channel(channel_id):
+            backend = self.store.get_backend(session["backend_id"])
+            if backend is not None:
+                targets[(backend.id, session["session_key"])] = backend
+        for role in self.store.list_roles(channel.project_id or ""):
+            backend = self.store.get_backend(role.runtime_id)
+            if backend is not None:
+                targets[(backend.id, self._session_key(channel, role.id))] = backend
+
+        stopped = 0
+        for (_backend_id, session_key), backend in targets.items():
+            stopped += runtime_manager.stop(backend, session_key)
+        return stopped
 
     # ---- 内部:可信提及、触发与执行 ----
     def _parse_explicit_mentions(self, content: str, project_id: str,
@@ -926,7 +944,8 @@ class ChatEngine:
         channels = "\n".join(
             f"- {_short(c.id)}(#{c.name}):{c.purpose or '无用途说明'}"
             + (f";工作目录 {c.workdir}" if c.workdir else "")
-            for c in self.store.list_channels(project.id)) or "(无)"
+            for c in self.store.list_channels(
+                project.id, include_archived=False)) or "(无)"
         boards = "\n".join(
             f"- {_short(b.id)}({b.name}):{b.description or '无描述'};组件 "
             + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")

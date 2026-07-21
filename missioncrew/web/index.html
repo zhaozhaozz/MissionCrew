@@ -24,7 +24,24 @@
     <div id="side-scroll">
       <div class="side-sec">
         <h2 class="sec-head" id="sec-channels" onclick="toggleSection('channels')">
-          <span class="caret">▾</span>频道<span class="count" id="cnt-channels"></span>
+          <span class="caret">▾</span><span>频道</span>
+          <span class="channel-filter-wrap">
+            <button class="icon-btn channel-filter-btn" id="channel-filter-btn" type="button"
+              title="筛选频道" aria-label="筛选频道" aria-haspopup="menu" aria-expanded="false"
+              onclick="toggleChannelFilter(event)">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h12l-4.5 5v4l-3 1.5V8z"/></svg>
+            </button>
+            <span id="channel-filter-menu" class="channel-filter-menu" role="menu" hidden
+              onclick="event.stopPropagation()">
+              <button type="button" role="menuitemradio" data-filter="all"
+                onclick="setChannelFilter('all')"><span>全部</span><small id="channel-filter-all-count"></small></button>
+              <button type="button" role="menuitemradio" data-filter="active"
+                onclick="setChannelFilter('active')"><span>活跃</span><small id="channel-filter-active-count"></small></button>
+              <button type="button" role="menuitemradio" data-filter="archived"
+                onclick="setChannelFilter('archived')"><span>已归档</span><small id="channel-filter-archived-count"></small></button>
+            </span>
+          </span>
+          <span class="count" id="cnt-channels"></span>
           <span class="sec-act">
             <button class="icon-btn" title="新建频道" onclick="event.stopPropagation();quickCreateChannel()">＋</button>
             <button class="icon-btn" title="管理频道" onclick="event.stopPropagation();gotoProjSection('chan-table')">⚙</button>
@@ -95,11 +112,18 @@
 
   <div id="views">
     <div id="chat-view">
+      <div id="channel-archive-banner" hidden>
+        <span>此频道已归档，只能查看历史消息。</span>
+        <span class="channel-banner-actions">
+          <button class="ghost compact" type="button" onclick="restoreChannel(currentChan)">恢复频道</button>
+          <button class="danger compact" type="button" onclick="deleteChannel(currentChan)">删除频道</button>
+        </span>
+      </div>
       <div id="msgs"><div class="chat-empty empty">还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。</div></div>
       <div id="composer">
         <div id="chat-composer-head">
           <div id="role-bar"></div>
-          <button class="ghost compact" type="button" onclick="clearChatContext()">清除上下文</button>
+          <button class="ghost compact" id="clear-context-btn" type="button" onclick="clearChatContext()">清除上下文</button>
         </div>
         <div id="input-row">
           <div id="input-wrap">

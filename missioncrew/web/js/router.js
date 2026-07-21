@@ -160,12 +160,11 @@ function _secState(sec, listId, countId, count) {
 function renderSidebar() {
   const scrollState = captureScrollPositions(["#side-scroll"]);
   // 频道 -> 聊天
-  const chans = projChannels();
+  const chans = visibleProjChannels();
   if (!_secState("channels", "chan-list", "cnt-channels", chans.length))
-    document.getElementById("chan-list").innerHTML = chans.map(c =>
-      `<div class="side-item ${c.id === currentChan && currentTab === "chat" ? "selected" : ""}"
-            onclick="selectChannel('${c.id}')" title="${esc(c.purpose || "")}"># ${esc(c.name || c.id)}</div>`).join("")
-      || `<div class="empty" style="padding-left:20px">暂无频道</div>`;
+    document.getElementById("chan-list").innerHTML = chans.map(channelSidebarItem).join("")
+      || `<div class="empty" style="padding-left:20px">该筛选下暂无频道</div>`;
+  renderChannelFilter();
   // 面板 -> 内置任务看板 + 项目自定义面板。
   const panels = projPanels();
   if (!_secState("boards", "board-list", "cnt-boards", panels.length)) {
@@ -225,5 +224,6 @@ function renderSidebar() {
     `<button data-role-id="${esc(r.id)}" onclick="insertMention(this.dataset.roleId)"
        title="选择后会创建可触发执行的提及。${esc(r.description || "")}">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}</button>`).join("");
+  renderChannelState();
   restoreScrollPositions(scrollState);
 }

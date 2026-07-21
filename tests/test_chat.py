@@ -111,6 +111,48 @@ def test_orchestrator_requires_explicit_bracket_syntax(chat, seeded):
         "SELECT role_id FROM chat_runs")} == {"scribe", "lead"}
 
 
+def test_archived_channel_is_read_only_until_agent_reactivates(chat, seeded):
+    channel = Channel(id="webshop:old-topic", name="old-topic", project_id="webshop",
+                      archived=True, archived_at=123.0)
+    seeded.put_channel(channel)
+
+    with pytest.raises(ValueError, match="频道已归档"):
+        chat.post(channel.id, "human", "继续讨论", mention_spans=[])
+    assert seeded.list_messages(channel.id) == []
+
+    message_id = chat.post(channel.id, "lead", "重新启用这个频道。", author_type="agent")
+    chat.wait_idle()
+    restored = seeded.get_channel(channel.id)
+    assert restored.archived is False and restored.archived_at == 0
+    assert seeded.get_message(message_id)["author"] == "lead"
+    audit = seeded.list_audit(limit=10)
+    assert any(row["action"] == "channel_reactivated" for row in audit)
+
+
+def test_channels_sort_general_then_latest_message_and_filter_archived(seeded):
+    seeded.put_channel(Channel(id="webshop:older", name="older", project_id="webshop",
+                               created_at=10))
+    seeded.put_channel(Channel(id="webshop:newer", name="newer", project_id="webshop",
+                               created_at=20))
+    seeded.put_channel(Channel(id="webshop:archived", name="archived",
+                               project_id="webshop", archived=True, created_at=30))
+    older_message = seeded.add_message(
+        "webshop:older", "human", "human", "older activity", [])
+    newer_message = seeded.add_message(
+        "webshop:newer", "human", "human", "newer activity", [])
+    seeded._execute("UPDATE messages SET created_at=100 WHERE id=?", (older_message,))
+    seeded._execute("UPDATE messages SET created_at=200 WHERE id=?", (newer_message,))
+
+    channels = seeded.list_channels("webshop")
+    assert [channel.id for channel in channels[:3]] == [
+        "general", "webshop:newer", "webshop:older"]
+    assert next(channel for channel in channels
+                if channel.id == "webshop:newer").last_message_at == 200
+    assert "webshop:archived" not in {
+        channel.id for channel in seeded.list_channels(
+            "webshop", include_archived=False)}
+
+
 # ---- 人类不 @ 任何角色时默认交给项目主控 ----
 
 def test_human_message_without_mention_goes_to_orchestrator(chat, seeded):

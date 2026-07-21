@@ -14,7 +14,7 @@ from missioncrew.collab.skills import (materialize_project_skills,
                                        project_skill_library_dir)
 from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
                                           sync_task_files)
-from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend,
+from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend, Channel,
                                      ExecutionConfig, GuidelineDocument, ProjectResource,
                                      ProjectSkill, Task, TaskStage)
 from missioncrew.api import create_app
@@ -488,6 +488,10 @@ def test_non_orchestrator_actions_are_stripped_end_to_end(seeded):
 def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
     chat = ChatEngine(seeded)
     client = _client(seeded)
+    seeded.put_channel(Channel(id="webshop:active-topic", name="active-topic",
+                               project_id="webshop"))
+    seeded.put_channel(Channel(id="webshop:archived-topic", name="archived-topic",
+                               project_id="webshop", archived=True))
     client.post("/api/projects/webshop/boards",
                 json={"id": "quality", "name": "质量面板", "layout": []})
     msg = seeded.add_message("general", "human", "human", "@lead 看看", ["lead"])
@@ -495,6 +499,7 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
                          seeded.get_role("webshop", "lead"),
                          seeded.get_backend("std-1"), msg)
     assert "## 现有频道" in cfg.prompt and "general" in cfg.prompt
+    assert "active-topic" in cfg.prompt and "archived-topic" not in cfg.prompt
     assert "## 现有面板" in cfg.prompt and "quality" in cfg.prompt
     assert "协作链预算" in cfg.prompt and "post_message" in cfg.prompt
     assert "@[角色ID]" in cfg.prompt and "普通 @角色ID 只是正文引用" in cfg.prompt

@@ -147,11 +147,24 @@ let currentChan = null;
 let lastMsgId = 0;
 let roleColor = {};
 let routeRestored = false;   // 首次加载按 URL 还原视图后才允许写 hash
+const CHANNEL_FILTERS = new Set(["all", "active", "archived"]);
+let channelFilter = localStorage.getItem("mc.channelFilter") || "active";
+if (!CHANNEL_FILTERS.has(channelFilter)) channelFilter = "active";
 
 // 项目是第一层级:聊天、看板、角色、频道都只看当前项目
 const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);
 const globalRoleTemplates = () => overview.role_templates || [];
-const projChannels = () => overview.channels.filter(c => c.project_id === currentProject);
+const channelIsGeneral = channel => channel.id === "general" || channel.id.endsWith(":general");
+const channelActivity = channel => Number(channel.last_message_at || channel.created_at || 0);
+const projChannels = () => overview.channels
+  .filter(channel => channel.project_id === currentProject)
+  .sort((left, right) => {
+    const generalOrder = Number(channelIsGeneral(right)) - Number(channelIsGeneral(left));
+    return generalOrder || channelActivity(right) - channelActivity(left)
+      || String(left.id).localeCompare(String(right.id));
+  });
+const visibleProjChannels = () => projChannels().filter(channel =>
+  channelFilter === "all" || (channelFilter === "archived" ? channel.archived : !channel.archived));
 const projTasks = () => overview.tasks.filter(t => t.project_id === currentProject);
 const projBoards = () => (overview.boards || []).filter(b => b.project_id === currentProject);
 // 任务看板是平台内置面板：参与面板导航，但不进入自定义 Board 的 CRUD。

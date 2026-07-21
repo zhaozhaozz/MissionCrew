@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 from fastapi import FastAPI, HTTPException
 
@@ -36,6 +37,42 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         store.audit(actor, "channel_created", detail=f"project={body.project_id} channel={cid}")
         return c.to_dict()
 
+    def mutable_channel(channel_id: str) -> Channel:
+        channel = store.get_channel(channel_id)
+        if channel is None:
+            raise HTTPException(404, "频道不存在")
+        if channel.is_general:
+            raise HTTPException(409, "general 是项目默认频道，不能归档或删除")
+        if store.active_chat_runs(channel_id):
+            raise HTTPException(409, "频道仍有 Agent 正在运行，请等待本轮结束")
+        return channel
+
+    @app.post("/api/chat/channels/{channel_id}/archive")
+    def archive_channel(channel_id: str):
+        channel = mutable_channel(channel_id)
+        if not channel.archived:
+            stopped = chat.stop_channel_sessions(channel_id)
+            channel.archived = True
+            channel.archived_at = time.time()
+            store.put_channel(channel)
+            store.audit("human", "channel_archived",
+                        detail=f"channel={channel_id} stopped_runtimes={stopped}")
+        else:
+            stopped = 0
+        return {**channel.to_dict(), "stopped_runtimes": stopped}
+
+    @app.post("/api/chat/channels/{channel_id}/restore")
+    def restore_channel(channel_id: str):
+        channel = store.get_channel(channel_id)
+        if channel is None:
+            raise HTTPException(404, "频道不存在")
+        if channel.archived:
+            channel.archived = False
+            channel.archived_at = 0.0
+            store.put_channel(channel)
+            store.audit("human", "channel_restored", detail=f"channel={channel_id}")
+        return channel.to_dict()
+
     @app.get("/api/chat/{channel_id}/messages")
     def messages(channel_id: str, after_id: int = 0):
         channel = store.get_channel(channel_id)
@@ -57,6 +94,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             except (json.JSONDecodeError, TypeError):
                 item["mention_spans"] = []
         return {
+            "channel": channel.to_dict(),
             "messages": items,
             "active_runs": store.active_chat_runs(channel_id),
             # 最近执行记录(含已结束):前端按 events_size 变化拉取过程事件
@@ -86,7 +124,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 mention_spans=[item.model_dump() for item in body.mentions],
             )
         except ValueError as e:
-            raise HTTPException(400, str(e))
+            raise HTTPException(409 if "已归档" in str(e) else 400, str(e))
         return {"id": msg_id}
 
     @app.post("/api/chat/{channel_id}/clear-context")
@@ -117,8 +155,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.delete("/api/chat/channels/{channel_id}")
     def delete_channel(channel_id: str):
-        if store.get_channel(channel_id) is None:
-            raise HTTPException(404, "频道不存在")
+        mutable_channel(channel_id)
+        stopped = chat.stop_channel_sessions(channel_id)
         store.delete_channel(channel_id)
-        store.audit("human", "channel_deleted", detail=f"channel={channel_id}")
-        return {"ok": True}
+        store.audit("human", "channel_deleted",
+                    detail=f"channel={channel_id} stopped_runtimes={stopped}")
+        return {"ok": True, "stopped_runtimes": stopped}

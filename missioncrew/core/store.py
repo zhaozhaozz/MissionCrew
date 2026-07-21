@@ -68,6 +68,8 @@ CREATE TABLE IF NOT EXISTS messages (
   reply_to INTEGER, root_id INTEGER, depth INTEGER DEFAULT 0,
   created_at REAL NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_messages_channel_created
+  ON messages(channel, created_at DESC);
 CREATE TABLE IF NOT EXISTS chat_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL, role_id TEXT NOT NULL, backend_id TEXT DEFAULT '',
@@ -472,15 +474,40 @@ class Store:
         return (s + 1) / (s + f + 2)
 
     # ---- 聊天:频道 / 角色(均按项目隔离,项目是第一层级) ----
-    def put_channel(self, c: Channel) -> None: self._put("channels", c.id, c.to_dict())
+    def put_channel(self, c: Channel) -> None:
+        # general 是每个项目稳定的入口，不允许因旧数据或内部调用进入归档态。
+        if c.is_general:
+            c.archived = False
+            c.archived_at = 0.0
+        self._put("channels", c.id, c.to_dict())
+
     def get_channel(self, id: str) -> Optional[Channel]:
         d = self._get("channels", id)
         return Channel.from_dict(d) if d else None
-    def list_channels(self, project_id: Optional[str] = None) -> list[Channel]:
+
+    def list_channels(self, project_id: Optional[str] = None,
+                      include_archived: bool = True) -> list[Channel]:
         cs = [Channel.from_dict(d) for d in self._list("channels")]
         if project_id is not None:
             cs = [c for c in cs if c.project_id == project_id]
-        return sorted(cs, key=lambda c: c.created_at)
+        latest = {
+            row["channel"]: float(row["last_message_at"] or 0)
+            for row in self._query(
+                "SELECT channel, MAX(created_at) AS last_message_at "
+                "FROM messages GROUP BY channel")
+        }
+        for channel in cs:
+            channel.last_message_at = latest.get(channel.id, 0.0)
+        if not include_archived:
+            cs = [channel for channel in cs if not channel.archived]
+        # 每个项目的 general 永远第一；其余频道按最近消息排序，空频道用
+        # 创建时间作为活动时间，最后以 id 保证结果稳定。
+        return sorted(cs, key=lambda channel: (
+            channel.project_id or "",
+            0 if channel.is_general else 1,
+            -(channel.last_message_at or channel.created_at),
+            channel.id,
+        ))
 
     def put_role(self, r: Role) -> None:
         self._put("roles", f"{r.project_id}:{r.id}", r.to_dict())

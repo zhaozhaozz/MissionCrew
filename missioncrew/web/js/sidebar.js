@@ -291,6 +291,10 @@ function chooseComposerMention(id) {
 }
 
 function insertMention(id) {
+  if (projChannels().find(channel => channel.id === currentChan)?.archived) {
+    toast("频道已归档，请先恢复后再发送消息", "error");
+    return;
+  }
   if (currentTab !== "chat") switchTab("chat");
   insertComposerMention(id);
 }
@@ -390,6 +394,13 @@ function appendMessages(list) {
       </div>`;
     pane.appendChild(div);
     lastMsgId = Math.max(lastMsgId, m.id);
+  }
+  if (list.length && currentChan) {
+    const channel = overview.channels.find(item => item.id === currentChan);
+    if (channel)
+      channel.last_message_at = Math.max(channelActivity(channel),
+        ...list.map(message => Number(message.created_at || 0)));
+    renderSidebar();
   }
   if (list.length && nearBottom) pane.scrollTop = pane.scrollHeight;
 }
@@ -649,6 +660,13 @@ async function pollMessages() {
     if (!r.ok || chan !== currentChan) return;
     const d = await r.json();
     if (chan !== currentChan) return;
+    const channel = overview.channels.find(item => item.id === chan);
+    if (channel && d.channel) {
+      const lastMessageAt = channel.last_message_at;
+      Object.assign(channel, d.channel);
+      channel.last_message_at = Math.max(Number(lastMessageAt || 0),
+                                         Number(d.channel.last_message_at || 0));
+    }
     appendMessages(d.messages);
     syncRuns(d.runs || []);
     const pane = document.getElementById("msgs");
@@ -730,6 +748,10 @@ async function send() {
   const payload = composerPayload();
   const { content, mentions } = payload;
   if (!content || !currentChan) return;
+  if (projChannels().find(channel => channel.id === currentChan)?.archived) {
+    toast("频道已归档，请先恢复后再发送消息", "error");
+    return;
+  }
   box.replaceChildren();
   savedComposerRange = null;
   hideMentionPicker();

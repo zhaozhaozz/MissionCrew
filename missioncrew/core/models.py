@@ -562,7 +562,15 @@ class Channel:
     purpose: str = ""                 # 本频道负责的任务/讨论边界
     created_by_role_id: str = ""      # 为空表示人类/平台创建
     context_start_message_id: int = 0  # 最近一次清除上下文的可见分隔消息
+    archived: bool = False             # 归档后对人类只读，Agent 默认不感知
+    archived_at: float = 0.0
+    last_message_at: float = 0.0       # Store 按消息表计算，供列表排序与展示
     created_at: float = field(default_factory=now)
+
+    @property
+    def is_general(self) -> bool:
+        """项目默认频道兼容历史 ``general`` 与新式 ``project:general``。"""
+        return self.id == "general" or self.id.rsplit(":", 1)[-1] == "general"
 
     def to_dict(self) -> dict:
         return asdict(self)

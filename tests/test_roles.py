@@ -295,6 +295,44 @@ def test_channel_id_namespaced_by_project(client, seeded):
                        json={"id": "x", "project_id": "ghost"}).status_code == 400
 
 
+def test_channel_archive_restore_and_delete_api(client, seeded):
+    created = client.post("/api/chat/channels", json={
+        "id": "release", "project_id": "webshop", "purpose": "发布讨论",
+    })
+    assert created.status_code == 200
+    channel_id = created.json()["id"]
+
+    assert client.post("/api/chat/channels/general/archive").status_code == 409
+    assert client.delete("/api/chat/channels/general").status_code == 409
+
+    archived = client.post(f"/api/chat/channels/{channel_id}/archive")
+    assert archived.status_code == 200 and archived.json()["archived"] is True
+    overview_channel = next(channel for channel in client.get("/api/overview").json()["channels"]
+                            if channel["id"] == channel_id)
+    assert overview_channel["archived"] is True
+    blocked = client.post(f"/api/chat/{channel_id}/messages", json={
+        "author": "human", "content": "归档后不能继续发送", "mentions": [],
+    })
+    assert blocked.status_code == 409
+
+    restored = client.post(f"/api/chat/channels/{channel_id}/restore")
+    assert restored.status_code == 200 and restored.json()["archived"] is False
+    assert client.delete(f"/api/chat/channels/{channel_id}").status_code == 200
+    assert seeded.get_channel(channel_id) is None
+
+
+def test_active_channel_cannot_be_archived_or_deleted(client, seeded):
+    created = client.post("/api/chat/channels", json={
+        "id": "running", "project_id": "webshop",
+    }).json()
+    trigger = seeded.add_message(created["id"], "human", "human", "run", [])
+    run_id = seeded.add_chat_run(created["id"], "lead", trigger, trigger, 0)
+    assert client.post(f"/api/chat/channels/{created['id']}/archive").status_code == 409
+    assert client.delete(f"/api/chat/channels/{created['id']}").status_code == 409
+    seeded.update_chat_run(run_id, "done")
+    assert client.post(f"/api/chat/channels/{created['id']}/archive").status_code == 200
+
+
 def test_backend_update_api(client, seeded):
     r = client.post("/api/backends", json={"id": "eco-1", "enabled": False, "tier": "standard"})
     assert r.status_code == 200
@@ -328,6 +366,25 @@ def test_spa_fallback_serves_page_for_clean_urls(client):
     r = client.get("/default/settings")
     assert r.status_code == 200 and "MissionCrew" in r.text
     assert client.get("/webshop/chat/general").status_code == 200
+
+
+def test_channel_sidebar_exposes_filter_archive_restore_and_delete(client):
+    html = client.get("/").text
+    ui = client.get("/assets/js/ui.js").text
+    router = client.get("/assets/js/router.js").text
+    channels = client.get("/assets/js/channels.js").text
+    css = client.get("/assets/css/app.css").text
+
+    assert 'id="channel-filter-btn"' in html and 'id="channel-filter-menu"' in html
+    assert all(label in html for label in ("全部", "活跃", "已归档"))
+    assert 'id="channel-archive-banner"' in html
+    assert "CHANNEL_FILTERS" in ui and "channelIsGeneral" in ui
+    assert "channelActivity" in ui and "visibleProjChannels" in ui
+    assert "visibleProjChannels()" in router and "channelSidebarItem" in router
+    for function in ("archiveChannel", "restoreChannel", "deleteChannel",
+                     "renderChannelFilter", "renderChannelState"):
+        assert f"function {function}" in channels
+    assert ".channel-filter-menu" in css and ".channel-actions-menu" in css
     assert client.get("/api/nonexistent").status_code == 404
 
 
