@@ -171,6 +171,63 @@ def test_local_folder_import_and_new_project_skill_directory(seeded, tmp_path):
     assert not (escaped / "SKILL.md").exists()
 
 
+def test_save_skill_with_full_markdown_preserves_frontmatter(seeded):
+    client = TestClient(create_app())
+    root = project_skill_library_dir("webshop")
+    markdown = (
+        "---\nname: 发布\ndescription: 准备版本发布时使用\n"
+        "allowed-tools:\n  - Bash\n---\n\n参见 references/checklist.md。\n")
+    saved = client.post("/api/projects/webshop/skills", json={
+        "id": "release-md", "markdown": markdown, "enabled": False,
+    })
+    assert saved.status_code == 200
+    assert saved.json()["name"] == "发布" and saved.json()["enabled"] is False
+    assert (root / "release-md" / "SKILL.md").read_text() == markdown
+
+    info = client.get("/api/projects/webshop/skills/library").json()
+    entry = next(item for item in info["skills"] if item["id"] == "release-md")
+    assert entry["markdown"] == markdown
+
+    updated = client.post("/api/projects/webshop/skills", json={
+        "id": "release-md",
+        "markdown": markdown.replace("准备版本发布时使用", "发布前检查时使用"),
+        "enabled": True,
+    })
+    assert updated.status_code == 200
+    assert "allowed-tools:\n  - Bash" in (root / "release-md" / "SKILL.md").read_text()
+
+    invalid = client.post("/api/projects/webshop/skills", json={
+        "id": "broken", "markdown": "# 没有 frontmatter\n", "enabled": True,
+    })
+    assert invalid.status_code == 400
+    assert not (root / "broken").exists()
+
+
+def test_skill_file_read_endpoint_serves_text_and_rejects_escape(seeded):
+    client = TestClient(create_app())
+    root = project_skill_library_dir("webshop")
+    skill_dir = root / "browser-check"
+    (skill_dir / "scripts").mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(_skill_markdown("browser-check", "查看文件"))
+    (skill_dir / "scripts" / "check.sh").write_text("echo first\n")
+    (skill_dir / "blob.bin").write_bytes(b"\x00\x01\x02")
+
+    shown = client.get("/api/projects/webshop/skills/browser-check/file",
+                       params={"path": "scripts/check.sh"})
+    assert shown.status_code == 200
+    assert shown.json() == {
+        "path": "scripts/check.sh", "content": "echo first\n", "truncated": False}
+
+    assert client.get("/api/projects/webshop/skills/browser-check/file",
+                      params={"path": "../escape"}).status_code == 404
+    assert client.get("/api/projects/webshop/skills/browser-check/file",
+                      params={"path": "blob.bin"}).status_code == 400
+    assert client.get("/api/projects/webshop/skills/missing/file",
+                      params={"path": "SKILL.md"}).status_code == 404
+    assert client.get("/api/projects/webshop/skills/bad%2Fid/file",
+                      params={"path": "SKILL.md"}).status_code in (400, 404)
+
+
 def test_skill_page_exposes_all_import_modes(seeded):
     client = TestClient(create_app())
     html = client.get("/").text

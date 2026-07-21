@@ -76,6 +76,7 @@ class SkillInput(BaseModel):
     name: str = ""
     description: str = ""
     instructions: str = ""
+    markdown: Optional[str] = None     # 完整 SKILL.md 原文(含 frontmatter),优先于上面三个字段
     enabled: bool = True
     actor_role_id: Optional[str] = None
 

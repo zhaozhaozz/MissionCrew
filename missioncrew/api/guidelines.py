@@ -7,8 +7,10 @@ from fastapi import FastAPI, HTTPException, Request
 
 from ..collab.project_context import write_guideline_context
 from ..collab.skills import (delete_project_skill, import_skill_folder,
-                             import_skill_zip, save_project_skill,
-                             skill_library_info, sync_project_skill_library)
+                             import_skill_zip, project_skill_library_dir,
+                             read_skill_file, save_project_skill,
+                             save_project_skill_markdown, skill_library_info,
+                             sync_project_skill_library)
 from ..core.models import GuidelineDocument, ProjectSkill
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import GuidelineInput, SkillFolderImport, SkillInput
@@ -74,11 +76,31 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         actor = ctx.validate_orchestrator_actor(project, body.actor_role_id)
         if not MENTION_ID_RE.fullmatch(body.id):
             raise HTTPException(400, "Skill id 只能包含字母、数字、下划线、连字符")
-        skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id"}))
         try:
+            if body.markdown is not None:
+                return save_project_skill_markdown(
+                    store, project, body.id, body.markdown,
+                    enabled=body.enabled, actor=actor).__dict__
+            skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id", "markdown"}))
             return save_project_skill(store, project, skill, actor=actor).__dict__
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/skills/{skill_id}/file")
+    def read_skill_file_endpoint(project_id: str, skill_id: str, path: str):
+        project = ctx.must_project(project_id)
+        if not MENTION_ID_RE.fullmatch(skill_id):
+            raise HTTPException(400, "Skill id 不合法")
+        directory = project_skill_library_dir(project.id) / skill_id
+        if not directory.is_dir():
+            raise HTTPException(404, "Skill 不存在")
+        try:
+            content, truncated = read_skill_file(directory, path)
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"path": path, "content": content, "truncated": truncated}
 
     @app.post("/api/projects/{project_id}/skills/import-folder")
     def import_skills_from_folder(project_id: str, body: SkillFolderImport):

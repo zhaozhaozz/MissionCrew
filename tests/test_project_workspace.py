@@ -575,8 +575,9 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert 'id="config-chat-toggle"' in html
     assert 'id="nav-board"' not in html
     assert 'id="sec-boards"' in html and 'id="board-list"' in html
-    assert 'class="content-topbar"' in html
-    assert 'class="config-editor-pane form single-pane-editor"' in html
+    assert "content-topbar-actions" in html
+    assert "skill-page-head" in html and "skill-editor-pane" in html
+    assert "single-pane-editor" in html
     assert "篇目列表位于应用左侧栏" not in html
     assert 'id="guide-proj-label"' not in html
     assert 'id="docs-proj-label"' not in html

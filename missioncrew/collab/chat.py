@@ -31,7 +31,7 @@ from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            GuidelineDocument, ProjectSkill, Role, RuntimePolicy)
 from .project_context import (project_allowed_dirs, render_project_context,
                               write_guideline_context)
-from .skills import save_project_skill
+from .skills import save_project_skill, save_project_skill_markdown
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -106,7 +106,7 @@ ORCHESTRATOR_TEMPLATE = """\
 <missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
 <missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
 <missioncrew-action>{{"action":"save_guideline","markdown":"---\\nname: dev-spec\\ndescription: 涉及代码实现、API 或数据库变更时使用\\n---\\n\\n# 开发规范\\n\\nMarkdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_skill","id":"local-ci","name":"本地 CI","description":"用途","instructions":"完整执行说明，可用 [本地 CI](runbooks/local-ci.md) 链接项目文档","enabled":true}}</missioncrew-action>
+<missioncrew-action>{{"action":"save_skill","id":"local-ci","markdown":"---\\nname: 本地 CI\\ndescription: 用途\\n---\\n\\n完整执行说明，可用 [本地 CI](runbooks/local-ci.md) 链接项目文档","enabled":true}}</missioncrew-action>
 <missioncrew-action>{{"action":"write_document","path":"specs/design.md","content":"Markdown 正文","message":"新增设计文档"}}</missioncrew-action>
 要点：
 - create_channel 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
@@ -127,7 +127,8 @@ ORCHESTRATOR_TEMPLATE = """\
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
 - save_guideline 接收完整 markdown，文件必须以只含 name、description 的 YAML
   frontmatter 开头；后端直接读取这两个属性，不使用 id/title/summary，也不做字段转换。
-  修改并重命名现有准则时传 original_name。save_skill 仍按 id 新建或覆盖。
+  修改并重命名现有准则时传 original_name。save_skill 按 id 新建或覆盖，markdown 是
+  完整 SKILL.md 原文：frontmatter 至少含 name、description，附加属性原样保留。
   不要建立文件、Runtime 或角色绑定列表；需要关联项目文档时，在正文中写标准相对
   Markdown 链接。description 应简洁说明适用场景；所有执行者只会收到已启用准则的
   description，并在相关时从对应准则 Markdown 文件读取完整正文。
@@ -840,6 +841,13 @@ class ChatEngine:
         raw_id = str(action.get("id", "")).strip()
         if not CONTROL_ID_RE.fullmatch(raw_id):
             raise ValueError("id 只能包含字母、数字、下划线、连字符")
+        markdown = action.get("markdown")
+        if markdown is not None:
+            if not isinstance(markdown, str):
+                raise ValueError("save_skill.markdown 必须是字符串")
+            saved = save_project_skill_markdown(
+                self.store, project, raw_id, markdown, enabled=enabled, actor=role_id)
+            return f"已保存 Skill {saved.name or raw_id}"
         skill = ProjectSkill(
             id=raw_id, name=str(action.get("name", "")),
             description=str(action.get("description", "")),

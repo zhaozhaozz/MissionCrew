@@ -14,8 +14,7 @@ const CONFIG_CHAT_TARGETS = {
 };
 const CONFIG_FIELD_LABELS = {
   "gf-content": "准则 Markdown 文件",
-  "sf-id": "Skill id", "sf-name": "名称", "sf-desc": "简介",
-  "sf-instructions": "完整执行说明",
+  "sf-id": "Skill id", "sf-content": "SKILL.md 文件",
   "doc-new-path": "文档路径", "doc-content": "文档正文",
 };
 let configChatSelection = null;
@@ -105,8 +104,8 @@ function configChatContext() {
     itemKey = guideline?.name || "new";
   } else if (currentTab === "skills") {
     const skill = project.skills?.find(value => value.id === selectedSkillId);
-    const draftName = valueOf("sf-name").trim();
-    const draftId = valueOf("sf-id").trim();
+    const draftName = guidelineFrontmatterValue(valueOf("sf-content"), "name");
+    const draftId = skill ? skill.id : valueOf("sf-id").trim();
     item = skill ? `${draftName || skill.name || skill.id}（id: ${skill.id}）`
                  : `新建 Skill（${draftName || draftId || "未命名"}，未保存）`;
     itemKey = skill?.id || "new";
@@ -151,8 +150,12 @@ function currentConfigDraft(context) {
     unsaved_changes: configEditorDirty.guidelines,
   };
   if (context.tab === "skills") return {
-    id: valueOf("sf-id"), name: valueOf("sf-name"), description: valueOf("sf-desc"),
-    instructions: clippedDraftText(valueOf("sf-instructions")),
+    id: selectedSkillId ?? valueOf("sf-id").trim(),
+    markdown: clippedDraftText(valueOf("sf-content")),
+    frontmatter_contract: {
+      required_attributes: ["name", "description"],
+      source_of_truth: "后端直接从这份 SKILL.md frontmatter 读取 name、description；其他附加属性原样保留",
+    },
     enabled: document.getElementById("sf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.skills,
   };
@@ -219,7 +222,7 @@ function captureConfigChatSelection() {
   const range = browserSelection.getRangeAt(0);
   const node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
     ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
-  const source = node?.closest?.(".doc-body, .doc-pane > pre, .guideline-markdown-preview");
+  const source = node?.closest?.(".doc-body, .doc-pane > pre, .guideline-markdown-preview, .skill-markdown-preview");
   if (!source) return;
   if (browserSelection.isCollapsed) { clearConfigChatSelection(); return; }
   const prefix = document.createRange();
@@ -230,7 +233,9 @@ function captureConfigChatSelection() {
   const last = first + selected.split("\n").length - 1;
   setConfigChatSelection({
     context_key: context.key,
-    field: source.classList.contains("guideline-markdown-preview") ? "准则阅读视图" : "文档阅读视图",
+    field: source.classList.contains("guideline-markdown-preview") ? "准则阅读视图"
+      : source.classList.contains("skill-markdown-preview") ? "SKILL.md 阅读视图"
+      : "文档阅读视图",
     line_start: first,
     line_end: last, basis: "rendered", ...clippedConfigText(selected, 12000),
   });
@@ -332,12 +337,17 @@ async function sendConfigChat() {
       `frontmatter 只使用 name、description，后端直接读取这两个属性。保存时把修改后的完整文件放入 ` +
       `${context.action}.markdown，并在修改现有文件时传 original_name；不要使用 id、title、summary。`
     : "";
+  const skillEditingTip = context.tab === "skills"
+    ? `当前编辑对象是一份完整 SKILL.md 文件。current_draft.markdown 包含 YAML frontmatter 和正文；` +
+      `frontmatter 必须含 name、description，其他附加属性保持原样。保存时把修改后的完整文件放入 ` +
+      `${context.action}.markdown，id 传 current_draft.id（Skill 目录名，不可修改）。`
+    : "";
   const content = `@${project.orchestrator_role_id} 项目配置页协作消息（JSON）：\n` +
     `${serializedPayload}\n\n` +
     `这是围绕当前页面的对话：若用户只是提问、解释或讨论，只需回答，不要写入；` +
     `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
     `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
-    guidelineEditingTip;
+    guidelineEditingTip + skillEditingTip;
   input.value = "";
   status.textContent = `正在发送给 @${project.orchestrator_role_id}…`;
   try {
@@ -448,12 +458,15 @@ function renderGuidelineEditor() {
   setGuidelineMarkdownMode(guidelineMarkdownMode);
 }
 
+function markdownContentWithoutFrontmatter(markdown) {
+  const marker = markdown.startsWith("---\n") ? markdown.indexOf("\n---", 4) : -1;
+  return marker >= 0 ? markdown.slice(marker + 4).replace(/^\r?\n/, "") : markdown;
+}
+
 function updateGuidelineMarkdownPreview() {
   const preview = document.getElementById("guideline-markdown-preview");
   if (!preview) return;
-  const markdown = valueOf("gf-content");
-  const marker = markdown.startsWith("---\n") ? markdown.indexOf("\n---", 4) : -1;
-  const content = marker >= 0 ? markdown.slice(marker + 4).replace(/^\r?\n/, "") : markdown;
+  const content = markdownContentWithoutFrontmatter(valueOf("gf-content"));
   preview.innerHTML = content.trim() ? miniMarkdown(content)
     : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
 }
@@ -505,6 +518,10 @@ async function deleteGuideline(name) {
 }
 
 /* ---- Skills ---- */
+const SKILL_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
+let skillMarkdownMode = "preview";
+let skillFileTreeCollapsed = false;
+
 function renderSkillsPage(force = false) {
   projectConfigLabel("skill-proj-label");
   const skills = projObj()?.skills || [];
@@ -538,8 +555,8 @@ function renderSkillLibraryStatus() {
   }
   const issues = skillLibraryInfo.issues || [];
   box.innerHTML = `
-    <div><strong>直接投放目录</strong> <code>${esc(skillLibraryInfo.path)}</code></div>
-    <div class="muted">把包含 SKILL.md 的 Skill 文件夹直接复制到此目录；平台会在总览刷新或执行装配时自动发现。</div>
+    <span><strong>直接投放目录</strong> <code>${esc(skillLibraryInfo.path)}</code>
+      <span class="muted">复制含 SKILL.md 的 Skill 目录到此处，平台自动发现。</span></span>
     ${skillFolderImportOpen ? `<div class="skill-folder-import form">
       <label>包含一个或多个 Skill 的本地目录</label>
       <div class="row">
@@ -555,34 +572,191 @@ function renderSkillLibraryStatus() {
       <ul>${issues.map(issue => `<li>${esc(issue)}</li>`).join("")}</ul></details>` : ""}`;
 }
 
+function selectedSkillPackage() {
+  return skillLibraryInfo?.project_id === currentProject
+    ? (skillLibraryInfo.skills || []).find(item => item.id === selectedSkillId) : null;
+}
+
 function renderSkillEditor() {
   const skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
-  const packageInfo = skillLibraryInfo?.project_id === currentProject
-    ? (skillLibraryInfo.skills || []).find(item => item.id === selectedSkillId) : null;
-  const packageFiles = packageInfo?.files || [];
+  const packageInfo = skill ? selectedSkillPackage() : null;
+  if (!skill) skillMarkdownMode = "edit";
+  // 已存在的 Skill 必须等库信息带回 SKILL.md 原文再进入编辑，
+  // 避免用字段重建的草稿覆盖 frontmatter 附加属性。
+  const loading = Boolean(skill) && !packageInfo;
   document.getElementById("skill-editor").innerHTML = `
-    <h3>${skill ? "编辑 Skill" : "新建 Skill"}</h3>
-    <label>id（保存后不可修改）</label>
-    <input id="sf-id" value="${esc(skill?.id || "")}" ${skill ? "disabled" : ""}
-      placeholder="例如 local-ci" oninput="markConfigDirty('skills')">
-    <label>名称</label><input id="sf-name" value="${esc(skill?.name || "")}"
-      oninput="markConfigDirty('skills')">
-    <label>简介</label><input id="sf-desc" value="${esc(skill?.description || "")}"
-      oninput="markConfigDirty('skills')">
-    <label>完整执行说明（Markdown）</label><textarea id="sf-instructions" rows="16"
-      oninput="markConfigDirty('skills')">${esc(skill?.instructions || "")}</textarea>
-    <div class="muted">此处保存到 Skill 目录的 SKILL.md。脚本和参考资料使用相对路径，Agent 会以该 Skill 目录为根读取。</div>
-    ${skill ? `<div class="skill-package-files"><strong>完整目录</strong>
-      <code>${esc(packageInfo?.path || "正在读取…")}</code>
-      <div class="muted">${packageFiles.length ? `${packageFiles.length} 个文件：${packageFiles.map(esc).join("、")}` : "仅有 SKILL.md 或正在读取文件清单。"}</div></div>` : ""}
-    <label>启用</label><span class="switch ${skill?.enabled === false ? "" : "on"}" id="sf-enabled"
-      role="switch" onclick="this.classList.toggle('on');markConfigDirty('skills')"></span>
-    <div class="form-actions"><button class="action" onclick="saveSkill()">保存</button>
-      ${skill ? `<button class="danger" onclick="deleteSkill('${esc(skill.id)}')">删除</button>` : ""}</div>`;
+    <div class="guideline-toolbar">
+      ${skill
+        ? `<div class="guideline-current-name"><span>id</span>
+            <code>${esc(skill.id)}</code></div>`
+        : `<label class="guideline-toolbar-field"><span>id（保存后不可修改）</span>
+            <input id="sf-id" value="" placeholder="例如 local-ci"
+              oninput="markConfigDirty('skills')"></label>`}
+      <label class="guideline-enabled"><span>启用</span>
+        <span class="switch ${skill?.enabled === false ? "" : "on"}" id="sf-enabled"
+          role="switch" tabindex="0"
+          onclick="this.classList.toggle('on');markConfigDirty('skills')"></span></label>
+      <span class="guideline-toolbar-spacer"></span>
+      ${skill ? `<button class="ghost compact ${skillFileTreeCollapsed ? "" : "active"}"
+        id="skill-tree-toggle" type="button" onclick="toggleSkillFileTree()">文件树</button>` : ""}
+      <div class="guideline-view-toggle" aria-label="Markdown 显示方式">
+        <button class="ghost compact" id="skill-edit-button" type="button"
+          onclick="setSkillMarkdownMode('edit')">编辑</button>
+        <button class="ghost compact" id="skill-preview-button" type="button"
+          onclick="setSkillMarkdownMode('preview')">预览</button>
+      </div>
+      <button class="action" type="button" ${loading ? "disabled" : ""}
+        onclick="saveSkill()">保存</button>
+      ${skill ? `<button class="danger" type="button" data-id="${esc(skill.id)}"
+        onclick="deleteSkill(this.dataset.id)">删除</button>` : ""}
+    </div>
+    <div class="skill-main">
+      ${skill ? `<aside class="skill-file-tree ${skillFileTreeCollapsed ? "collapsed" : ""}"
+        id="skill-file-tree" style="width:${skillTreeWidth}px">
+        <div class="skill-file-tree-scroll">${skillFileTreeHtml(packageInfo)}</div>
+        <div class="skill-tree-resize" onpointerdown="startSkillTreeResize(event)"
+          title="拖动调整文件树宽度"></div>
+      </aside>` : ""}
+      <div class="guideline-markdown-surface">
+        ${loading ? `<div class="empty" style="padding:18px 20px">正在读取 SKILL.md…</div>` : `
+        <textarea id="sf-content" class="guideline-markdown-editor" aria-label="完整 SKILL.md 文件"
+          spellcheck="false"
+          oninput="markConfigDirty('skills');updateSkillMarkdownPreview()">${esc(skill ? packageInfo.markdown : SKILL_MARKDOWN_PLACEHOLDER)}</textarea>
+        <article class="skill-markdown-preview markdown-body" id="skill-markdown-preview"></article>`}
+      </div>
+      <div class="skill-file-viewer" id="skill-file-viewer" hidden></div>
+    </div>`;
+  updateSkillMarkdownPreview();
+  setSkillMarkdownMode(skillMarkdownMode);
+  if (skill && skillOpenFile) openSkillFile(skillOpenFile);
+}
+
+function skillFileTreeHtml(packageInfo) {
+  const head = `<div class="skill-file-tree-head"><strong>文件树</strong>
+    <span class="muted">${packageInfo ? `${(packageInfo.files || []).length} 个文件` : ""}</span></div>`;
+  if (!packageInfo) return head + `<div class="muted">正在读取文件清单…</div>`;
+  const pathLine = `<code class="skill-file-tree-path">${esc(packageInfo.path)}</code>`;
+  const files = packageInfo.files || [];
+  if (!files.length) return head + pathLine + `<div class="muted">目录为空。</div>`;
+  const root = { dirs: new Map(), files: [] };
+  for (const relative of files) {
+    const parts = relative.split("/");
+    let node = root;
+    for (const part of parts.slice(0, -1)) {
+      if (!node.dirs.has(part)) node.dirs.set(part, { dirs: new Map(), files: [] });
+      node = node.dirs.get(part);
+    }
+    node.files.push(parts[parts.length - 1]);
+  }
+  const renderNode = (node, prefix = "") => [
+    ...[...node.dirs.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([name, child]) =>
+      `<details open><summary title="${esc(prefix + name + "/")}">${esc(name)}/</summary>
+        <div class="skill-tree-children">${renderNode(child, prefix + name + "/")}</div></details>`),
+    ...node.files.slice().sort().map(name =>
+      `<div class="skill-tree-file ${name.toLowerCase() === "skill.md" ? "main" : ""}"
+        data-path="${esc(prefix + name)}" title="${esc(prefix + name)}"
+        onclick="openSkillFile(this.dataset.path)">${esc(name)}</div>`),
+  ].join("");
+  return head + pathLine + `<div class="skill-tree-body">${renderNode(root)}</div>`;
+}
+
+const SKILL_TREE_WIDTH_KEY = "mc.skillTreeWidth";
+let skillTreeWidth = Math.max(160, Math.min(
+  Number(localStorage.getItem(SKILL_TREE_WIDTH_KEY)) || 240, 520));
+
+function startSkillTreeResize(event) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  const tree = document.getElementById("skill-file-tree");
+  if (!tree) return;
+  const startX = event.clientX;
+  const startWidth = tree.getBoundingClientRect().width;
+  document.body.classList.add("resizing-skill-tree");
+  const move = moveEvent => {
+    skillTreeWidth = Math.max(160, Math.min(startWidth + moveEvent.clientX - startX, 520));
+    tree.style.width = `${skillTreeWidth}px`;
+  };
+  const stop = () => {
+    document.body.classList.remove("resizing-skill-tree");
+    localStorage.setItem(SKILL_TREE_WIDTH_KEY, String(Math.round(skillTreeWidth)));
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", stop);
+  window.addEventListener("pointercancel", stop);
+}
+
+function toggleSkillFileTree() {
+  skillFileTreeCollapsed = !skillFileTreeCollapsed;
+  document.getElementById("skill-file-tree")
+    ?.classList.toggle("collapsed", skillFileTreeCollapsed);
+  document.getElementById("skill-tree-toggle")
+    ?.classList.toggle("active", !skillFileTreeCollapsed);
+}
+
+function updateSkillMarkdownPreview() {
+  const preview = document.getElementById("skill-markdown-preview");
+  if (!preview) return;
+  const content = markdownContentWithoutFrontmatter(valueOf("sf-content"));
+  preview.innerHTML = content.trim() ? miniMarkdown(content)
+    : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
+}
+
+function setSkillMarkdownMode(mode) {
+  skillMarkdownMode = mode === "edit" ? "edit" : "preview";
+  const editor = document.getElementById("sf-content");
+  const preview = document.getElementById("skill-markdown-preview");
+  if (!editor || !preview) return;
+  const editing = skillMarkdownMode === "edit";
+  editor.hidden = !editing;
+  preview.hidden = editing;
+  document.getElementById("skill-edit-button")?.classList.toggle("active", editing);
+  document.getElementById("skill-preview-button")?.classList.toggle("active", !editing);
+  if (!editing) updateSkillMarkdownPreview();
+}
+
+let skillOpenFile = null;
+
+async function openSkillFile(path) {
+  if (!selectedSkillId) return;
+  if (path.toLowerCase() === "skill.md") { closeSkillFile(); return; }
+  const data = await api("GET",
+    `/api/projects/${encodeURIComponent(currentProject)}/skills/` +
+    `${encodeURIComponent(selectedSkillId)}/file?path=${encodeURIComponent(path)}`);
+  skillOpenFile = path;
+  const viewer = document.getElementById("skill-file-viewer");
+  if (!viewer) return;
+  viewer.innerHTML = `
+    <div class="skill-file-viewer-head">
+      <code>${esc(path)}</code>
+      <span class="guideline-toolbar-spacer"></span>
+      ${data.truncated ? `<span class="muted">文件过大，仅显示前 512 KB</span>` : ""}
+      <button class="ghost compact" type="button" onclick="closeSkillFile()">返回 SKILL.md</button>
+    </div>
+    <pre class="skill-file-viewer-body">${esc(data.content)}</pre>`;
+  viewer.hidden = false;
+  document.querySelector("#skill-editor .guideline-markdown-surface")
+    ?.setAttribute("hidden", "");
+  document.querySelectorAll("#skill-file-tree .skill-tree-file").forEach(row =>
+    row.classList.toggle("active", row.dataset.path === path));
+}
+
+function closeSkillFile() {
+  skillOpenFile = null;
+  const viewer = document.getElementById("skill-file-viewer");
+  if (viewer) { viewer.hidden = true; viewer.innerHTML = ""; }
+  document.querySelector("#skill-editor .guideline-markdown-surface")
+    ?.removeAttribute("hidden");
+  document.querySelectorAll("#skill-file-tree .skill-tree-file.active")
+    .forEach(row => row.classList.remove("active"));
 }
 
 function editSkill(id) {
   selectedSkillId = id;
+  skillOpenFile = null;
+  skillMarkdownMode = id ? "preview" : "edit";
   configChatSelection = null;
   configEditorDirty.skills = false;
   if (currentTab !== "skills") switchTab("skills");
@@ -590,16 +764,18 @@ function editSkill(id) {
 }
 
 async function saveSkill() {
-  const id = document.getElementById("sf-id").value.trim();
+  const skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
+  const id = skill ? skill.id : document.getElementById("sf-id").value.trim();
   if (!id) { uiAlert("请输入 Skill id"); return; }
+  const markdown = document.getElementById("sf-content")?.value;
+  if (markdown == null) { uiAlert("SKILL.md 尚未加载完成，请稍候"); return; }
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills`, {
     id,
-    name: document.getElementById("sf-name").value.trim(),
-    description: document.getElementById("sf-desc").value.trim(),
-    instructions: document.getElementById("sf-instructions").value,
+    markdown,
     enabled: document.getElementById("sf-enabled").classList.contains("on"),
   });
   selectedSkillId = id;
+  skillMarkdownMode = "preview";
   configEditorDirty.skills = false;
   await loadOverview();
   skillLibraryInfo = null;
@@ -612,6 +788,7 @@ async function deleteSkill(id) {
   if (!await uiConfirm(`删除 Skill「${id}」？`)) return;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/skills/${encodeURIComponent(id)}`);
   selectedSkillId = undefined;
+  skillOpenFile = null;
   configEditorDirty.skills = false;
   await loadOverview();
   skillLibraryInfo = null;

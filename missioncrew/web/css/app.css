@@ -279,16 +279,73 @@
   .board-toolbar select { min-width: 220px; background: var(--card); color: var(--text);
                           border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
                           font: inherit; cursor: pointer; }
-  .skill-library-box { margin: 8px 0 14px; padding: 10px 12px; border: 1px solid var(--line);
-                       border-radius: 10px; background: var(--bg-soft); font-size: 12.5px;
+  .skill-library-box { margin: 6px 0 0; padding: 6px 10px; border: 1px solid var(--line);
+                       border-radius: 10px; background: var(--bg-soft); font-size: 12px;
                        overflow-wrap: anywhere; }
-  .skill-library-box code, .skill-package-files code { user-select: all; }
+  .skill-library-box code { user-select: all; }
   .skill-scan-issues { margin-top: 6px; color: var(--warn); }
   .skill-scan-issues ul { margin: 5px 0 0; padding-left: 20px; }
   .skill-folder-import { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
-  .skill-package-files { margin: 8px 0; padding: 9px 10px; border-left: 3px solid var(--accent);
-                         background: var(--bg-soft); border-radius: 0 8px 8px 0;
-                         overflow-wrap: anywhere; }
+
+  /* Skill 页：与准则页同款工作区；库信息与操作在顶部，正文区左文件树右编辑。 */
+  .skill-workspace { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  .skill-page-head { flex: none; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+  .skill-head-row { display: flex; align-items: center; justify-content: space-between;
+                    gap: 10px; flex-wrap: wrap; }
+  .skill-head-row h2 { margin: 0; font-size: 15px; }
+  .skill-editor-pane { flex: 1; min-height: 0; display: flex; flex-direction: column;
+                       padding-top: 12px; }
+  .skill-main { flex: 1; min-height: 0; display: flex; gap: 12px; padding-top: 12px; }
+  .skill-main .guideline-markdown-surface { flex: 1; min-width: 0; padding-top: 0; }
+  .skill-file-tree { position: relative; flex: 0 0 auto; width: 240px;
+                     min-width: 160px; max-width: 520px; min-height: 0; display: flex;
+                     overflow: hidden; border: 1px solid var(--line); border-radius: 10px;
+                     background: var(--bg-soft); font-size: 12.5px; }
+  .skill-file-tree.collapsed { display: none; }
+  .skill-file-tree-scroll { flex: 1; min-width: 0; overflow: auto; padding: 10px 12px; }
+  .skill-file-tree-head { position: sticky; top: -10px; z-index: 1; display: flex;
+                          align-items: baseline; gap: 6px; margin: -10px -12px 4px;
+                          padding: 10px 12px 6px; background: var(--bg-soft);
+                          border-bottom: 1px solid var(--line); }
+  .skill-file-tree-path { display: block; margin-bottom: 8px; font-size: 11px;
+                          color: var(--muted); user-select: all; overflow-wrap: anywhere; }
+  .skill-tree-body details { margin: 0; }
+  .skill-tree-body summary { display: flex; align-items: center; gap: 5px; padding: 2px 6px;
+                             border-radius: 6px; cursor: pointer; color: var(--text);
+                             list-style: none; overflow-wrap: anywhere; }
+  .skill-tree-body summary::-webkit-details-marker { display: none; }
+  .skill-tree-body summary::marker { content: ""; }
+  .skill-tree-body summary::before { content: "▸"; flex: none; width: 14px; text-align: center;
+                                     color: var(--muted); font-size: 13px; line-height: 1;
+                                     transition: transform .12s; }
+  .skill-tree-body details[open] > summary::before { transform: rotate(90deg); }
+  .skill-tree-body summary:hover, .skill-tree-file:hover { background: var(--accent-soft); }
+  .skill-tree-children { margin-left: 10px; padding-left: 8px;
+                         border-left: 1px solid var(--line); }
+  .skill-tree-file { padding: 2px 6px 2px 20px; border-radius: 6px; color: var(--text-2);
+                     cursor: pointer; overflow-wrap: anywhere; }
+  .skill-tree-file.main { color: var(--accent); font-weight: 600; }
+  .skill-tree-file.active { background: var(--accent-soft); color: var(--accent); }
+  .skill-file-viewer { flex: 1; min-width: 0; min-height: 0; display: flex;
+                       flex-direction: column; }
+  .skill-file-viewer[hidden] { display: none; }
+  .skill-file-viewer-head { flex: none; display: flex; align-items: center; gap: 8px;
+                            padding-bottom: 8px; }
+  .skill-file-viewer-head code { font-size: 12px; color: var(--accent); user-select: all;
+                                 overflow-wrap: anywhere; }
+  .skill-file-viewer-body { flex: 1; min-height: 0; overflow: auto; margin: 0;
+                            padding: 14px 16px; border: 1px solid var(--line);
+                            border-radius: 10px; background: var(--card);
+                            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                            font-size: 12.5px; line-height: 1.6; color: var(--text); }
+  .skill-tree-resize { position: absolute; z-index: 2; top: 0; right: 0; bottom: 0;
+                       width: 8px; border-radius: 0 9px 9px 0;
+                       cursor: col-resize; touch-action: none; }
+  .skill-tree-resize:hover, body.resizing-skill-tree .skill-tree-resize {
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    box-shadow: inset 1px 0 0 var(--accent); }
+  body.resizing-skill-tree { cursor: col-resize; user-select: none; }
+  #skill-tree-toggle.active { color: var(--accent); background: var(--accent-soft); }
 
   /* ---- 弹窗 ---- */
   dialog { border: 1px solid var(--line); border-radius: 14px; background: var(--card);
@@ -366,14 +423,8 @@
   .danger:hover { background: var(--bad-soft); }
   .section { margin-bottom: 34px; scroll-margin-top: 56px; }
   .section > h2 { font-size: 14.5px; margin: 0 0 10px; display: flex; align-items: center; }
-  .content-topbar { display: flex; align-items: flex-start; gap: 16px;
-                    border-bottom: 1px solid var(--line); padding-bottom: 10px;
-                    margin-bottom: 16px; }
-  .content-topbar > div { min-width: 0; flex: 1; }
-  .content-topbar > .content-topbar-actions { flex: 0 1 auto; display: flex;
-                                              justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
-  .content-topbar h2 { margin: 0; font-size: 15px; }
-  .content-topbar p { margin: 4px 0 0; }
+  .content-topbar-actions { flex: 0 1 auto; display: flex;
+                            justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
   .ghost.compact { flex: none; padding: 3px 9px; font-size: 12px; }
   .single-pane-editor { width: 100%; max-width: none; }
   .config-editor-pane.form { max-width: none; min-width: 0; }
@@ -381,7 +432,7 @@
   #guidelines-view, #skills-view, #docs-view {
     padding-bottom: var(--config-chat-space, 308px);
   }
-  #guidelines-view, #docs-view { overflow: hidden; }
+  #guidelines-view, #skills-view, #docs-view { overflow: hidden; }
   .content-workspace { height: 100%; min-height: 0; margin: 0; }
 
   /* 准则页：元数据和动作只占一行，其余区域专注正文编辑或 Markdown 阅读。 */
@@ -407,9 +458,10 @@
                                      resize: none; border-radius: 10px; padding: 18px 20px;
                                      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                                      font-size: 13px; line-height: 1.65; }
-  .guideline-markdown-preview { height: 100%; min-height: 240px; overflow: auto;
-                                padding: 8px 20px 24px; }
-  .guideline-markdown-editor[hidden], .guideline-markdown-preview[hidden] { display: none; }
+  .guideline-markdown-preview, .skill-markdown-preview { height: 100%; min-height: 240px;
+                                overflow: auto; padding: 8px 20px 24px; }
+  .guideline-markdown-editor[hidden], .guideline-markdown-preview[hidden],
+  .skill-markdown-preview[hidden] { display: none; }
 
   /* 四个配置页共用的底部悬浮主控对话栏。 */
   .config-chat { display: none; position: absolute; z-index: 24; left: clamp(18px, 5vw, 72px);

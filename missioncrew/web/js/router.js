@@ -45,6 +45,8 @@ function setProject(id) {
   selectedGuidelineName = undefined;
   guidelineMarkdownMode = "preview";
   selectedSkillId = undefined;
+  skillMarkdownMode = "preview";
+  skillOpenFile = null;
   skillLibraryInfo = null;
   skillFolderImportOpen = false;
   configChatSelection = null;

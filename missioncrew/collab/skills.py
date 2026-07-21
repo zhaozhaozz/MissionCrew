@@ -28,6 +28,7 @@ MAX_SKILL_ARCHIVE_BYTES = 50 * 1024 * 1024
 MAX_SKILL_FILES = 5000
 MAX_SKILL_FILE_BYTES = 25 * 1024 * 1024
 MAX_SKILL_TOTAL_BYTES = 200 * 1024 * 1024
+MAX_SKILL_FILE_PREVIEW_BYTES = 512 * 1024
 
 _ID_RE = re.compile(r"[\w-]+")
 _FRONTMATTER_RE = re.compile(
@@ -153,6 +154,20 @@ def _validate_tree(directory: Path) -> tuple[list[str], int]:
     return files, total
 
 
+def read_skill_file(directory: Path, relative: str) -> tuple[str, bool]:
+    """读取 Skill 目录内单个文本文件，返回 (内容, 是否截断)。"""
+    files, _ = _validate_tree(directory)
+    if relative not in files:
+        raise FileNotFoundError("文件不存在")
+    data = (directory / relative).read_bytes()
+    truncated = len(data) > MAX_SKILL_FILE_PREVIEW_BYTES
+    if truncated:
+        data = data[:MAX_SKILL_FILE_PREVIEW_BYTES]
+    if b"\x00" in data:
+        raise ValueError("二进制文件不支持在线查看")
+    return data.decode("utf-8", errors="replace"), truncated
+
+
 def skill_directory_version(directory: Path) -> str:
     digest = hashlib.sha256()
     files, _ = _validate_tree(directory)
@@ -270,10 +285,13 @@ def skill_library_info(store: Store, project: Project) -> dict:
     for skill in project.skills:
         directory = root / skill.id
         files, total = _validate_tree(directory)
+        skill_file = _skill_file(directory) or directory / "SKILL.md"
         skills.append({
             **asdict(skill),
             "path": str(directory),
-            "skill_file": str((_skill_file(directory) or directory / "SKILL.md")),
+            "skill_file": str(skill_file),
+            "markdown": (skill_file.read_text(encoding="utf-8")
+                         if skill_file.is_file() else ""),
             "files": files,
             "file_count": len(files),
             "total_bytes": total,
@@ -282,15 +300,20 @@ def skill_library_info(store: Store, project: Project) -> dict:
     return {"path": str(root), "skills": skills, "issues": issues}
 
 
+def _prepare_skill_save_target(root: Path, skill_id: str) -> Path:
+    directory = root / skill_id
+    if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
+        raise ValueError("Skill 保存目标必须是项目 Skill 根下的普通目录")
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
 def save_project_skill(store: Store, project: Project, skill: ProjectSkill,
                        *, actor: str) -> ProjectSkill:
     with _project_lock(project.id):
         root = project_skill_library_dir(project.id)
         _initialize_legacy_skills(project, root)
-        directory = root / skill.id
-        if directory.is_symlink() or (directory.exists() and not directory.is_dir()):
-            raise ValueError("Skill 保存目标必须是项目 Skill 根下的普通目录")
-        directory.mkdir(parents=True, exist_ok=True)
+        directory = _prepare_skill_save_target(root, skill.id)
         existing_file = _skill_file(directory)
         target = directory / "SKILL.md"
         existing_markdown = (existing_file.read_text(encoding="utf-8")
@@ -303,6 +326,30 @@ def save_project_skill(store: Store, project: Project, skill: ProjectSkill,
         saved.enabled = skill.enabled
         store.put_project(project)
         store.audit(actor, "skill_saved", detail=f"project={project.id} skill={skill.id}")
+        return saved
+
+
+def save_project_skill_markdown(store: Store, project: Project, skill_id: str,
+                                markdown: str, *, enabled: bool,
+                                actor: str) -> ProjectSkill:
+    """按完整 SKILL.md 原文保存；frontmatter 与附加属性原样保留。"""
+    if not _ID_RE.fullmatch(skill_id):
+        raise ValueError("Skill id 只能包含字母、数字、下划线、连字符")
+    parse_skill_markdown(skill_id, markdown, enabled=enabled)
+    with _project_lock(project.id):
+        root = project_skill_library_dir(project.id)
+        _initialize_legacy_skills(project, root)
+        directory = _prepare_skill_save_target(root, skill_id)
+        existing_file = _skill_file(directory)
+        target = directory / "SKILL.md"
+        if existing_file is not None and existing_file != target:
+            existing_file.unlink()
+        _atomic_write_text(target, markdown if markdown.endswith("\n") else markdown + "\n")
+        project, _ = sync_project_skill_library(store, project, audit=False)
+        saved = next(item for item in project.skills if item.id == skill_id)
+        saved.enabled = enabled
+        store.put_project(project)
+        store.audit(actor, "skill_saved", detail=f"project={project.id} skill={skill_id}")
         return saved
 
 
