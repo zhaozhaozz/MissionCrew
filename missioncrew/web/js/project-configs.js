@@ -463,13 +463,35 @@ function markdownContentWithoutFrontmatter(markdown) {
   return marker >= 0 ? markdown.slice(marker + 4).replace(/^\r?\n/, "") : markdown;
 }
 
+function skillFrontmatterTableHtml(source) {
+  const rows = [];
+  let current = null;
+  for (const line of source.replace(/\r\n?/g, "\n").split("\n")) {
+    const property = line.match(/^([A-Za-z_][\w.-]*):(?:[ \t]*(.*))?$/);
+    if (property) {
+      current = { key: property[1], value: property[2] || "" };
+      rows.push(current);
+    } else if (current) {
+      const continuation = line.replace(/^(?: {2}|\t)/, "");
+      current.value += `${current.value ? "\n" : ""}${continuation}`;
+    } else if (line.trim()) {
+      current = { key: "YAML", value: line };
+      rows.push(current);
+    }
+  }
+  return `<div class="markdown-table-wrap"><table class="markdown-frontmatter-table">
+    <thead><tr><th>属性</th><th>值</th></tr></thead>
+    <tbody>${rows.map(row => `<tr><th scope="row">${esc(row.key)}</th>
+      <td><code class="markdown-frontmatter-value">${esc(row.value)}</code></td></tr>`).join("")}</tbody>
+  </table></div>`;
+}
+
 function skillMarkdownPreviewHtml(markdown) {
   const marker = markdown.startsWith("---\n") ? markdown.indexOf("\n---", 4) : -1;
   if (marker < 0) return miniMarkdown(markdown);
-  const frontmatter = markdown.slice(0, marker + 4);
+  const frontmatter = skillFrontmatterTableHtml(markdown.slice(4, marker));
   const content = markdown.slice(marker + 4).replace(/^\r?\n/, "");
-  return `<pre class="markdown-frontmatter"><code class="language-yaml">${
-    esc(frontmatter)}</code></pre>${miniMarkdown(content)}`;
+  return `${frontmatter}${miniMarkdown(content)}`;
 }
 
 function updateGuidelineMarkdownPreview() {

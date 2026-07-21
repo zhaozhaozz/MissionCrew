@@ -595,6 +595,9 @@
   .markdown-body th, .markdown-body td { padding: 7px 10px; border: 1px solid var(--line);
                                         text-align: left; vertical-align: top; }
   .markdown-body th { color: var(--text); background: var(--bg-soft); }
+  .markdown-frontmatter-table th:first-child { width: 1%; white-space: nowrap; }
+  .markdown-body .markdown-frontmatter-value { display: block; padding: 0; background: transparent;
+                                                white-space: pre-wrap; overflow-wrap: anywhere; }
 
   /* ---- 全局设置:运行时角色用量弹层 ---- */
   .runtime-role-usage { position: relative; display: inline-block; }

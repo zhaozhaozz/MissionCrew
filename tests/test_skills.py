@@ -243,8 +243,11 @@ def test_skill_page_exposes_all_import_modes(seeded):
     assert "直接投放目录" in js and "skillFolderImportOpen" in js
     assert "function isSkillMarkdownFile(path)" in js
     assert "/\\.(?:md|markdown)$/i.test(path)" in js
+    assert "function skillFrontmatterTableHtml(source)" in js
     assert "function skillMarkdownPreviewHtml(markdown)" in js
-    assert 'class="markdown-frontmatter"><code class="language-yaml"' in js
+    assert 'class="markdown-frontmatter-table"' in js
+    assert "<th>属性</th><th>值</th>" in js
+    assert 'class="markdown-frontmatter-value"' in js
     assert "skillMarkdownPreviewHtml(data.content)" in js
     assert 'class="skill-file-viewer-body markdown-body"' in js
     assert 'class="skill-file-viewer-body">${esc(data.content)}' in js
