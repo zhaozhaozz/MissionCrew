@@ -52,6 +52,14 @@ class RuntimeInstance:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class RuntimeExecutionInfo:
+    """一次调用在历史记录中的稳定执行形态。"""
+
+    mode: str = "one_shot"       # persistent | one_shot
+    transport: str = "runtime"   # 原生协议、ACP stdio 或 CLI 命令
+
+
 class RuntimeProvider(ABC):
     """Runtime provider 契约；后端原生协议只在此边界之后可见。"""
 
@@ -81,3 +89,7 @@ class RuntimeProvider(ABC):
     def instances(self, backend: Backend) -> list[RuntimeInstance]:
         """返回当前活动或长驻实例；无状态 provider 默认没有实例。"""
         return []
+
+    def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
+        """描述本次调用的形态，供统一使用历史记录；provider 可覆盖。"""
+        return RuntimeExecutionInfo()

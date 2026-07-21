@@ -1,9 +1,11 @@
 /* ---- 系统全局 Runtime 实时状态 ---- */
 let runtimeStatusLoading = false;
+let runtimeHistoryLoadedAt = 0;
 
 const RUNTIME_STATE_LABELS = {
   running: "执行中", starting: "启动中", idle: "空闲驻留",
   disconnected: "连接已断开", stopped: "未运行", disabled: "已停用",
+  succeeded: "成功", failed: "失败", interrupted: "已中断",
 };
 const RUNTIME_TRANSPORT_LABELS = {
   "claude-stream-json": "Claude stream-json",
@@ -24,6 +26,13 @@ function runtimeAge(timestamp, now) {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
   const hours = Math.floor(seconds / 3600);
   return `${hours}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+function runtimeDuration(seconds) {
+  seconds = Math.max(0, Math.floor(seconds || 0));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
 }
 
 function runtimeSessionCell(instance) {
@@ -84,6 +93,36 @@ function renderRuntimeStatusPayload(data) {
     `更新于 ${new Date(now * 1000).toLocaleTimeString()}`;
 }
 
+function renderRuntimeHistoryPayload(data) {
+  const history = data.history || [];
+  document.getElementById("runtime-history-count").textContent = history.length;
+  document.getElementById("runtime-status-history").innerHTML =
+    `<tr><th>结果</th><th>开始时间</th><th>Runtime / 连接</th><th>模式</th>` +
+    `<th>任务</th><th>模型</th><th>耗时</th></tr>` +
+    (history.map(item => `<tr>
+      <td title="${esc(item.summary || "")}">${runtimeStateBadge(item.status)}</td>
+      <td>${new Date(item.started_at * 1000).toLocaleString()}</td>
+      <td><b>${esc(item.backend_id)}</b><br><span class="muted">` +
+        `${esc(RUNTIME_TRANSPORT_LABELS[item.transport] || item.transport || item.adapter)}</span></td>
+      <td><span class="pill">${item.mode === "persistent" ? "持久实例" : "单次执行"}</span>` +
+        `${item.session_key ? `<br><code title="${esc(item.session_key)}">${esc(item.session_key)}</code>` : ""}</td>
+      <td>${esc(item.task_id || "—")}` +
+        `${item.stage_name ? `<br><span class="muted">${esc(item.stage_name)}</span>` : ""}</td>
+      <td>${esc(item.model || "默认")}` +
+        `${item.effort ? `<br><span class="muted">effort=${esc(item.effort)}</span>` : ""}</td>
+      <td>${runtimeDuration(item.duration_seconds)}</td>
+    </tr>`).join("") ||
+      `<tr><td colspan="7" class="empty runtime-empty">尚无 Runtime 使用记录。</td></tr>`);
+}
+
+async function renderRuntimeHistory(force = false) {
+  if (!force && Date.now() - runtimeHistoryLoadedAt < 3000) return;
+  const response = await fetch("/api/runtime/history?limit=100", { cache: "no-store" });
+  if (!response.ok) return;
+  renderRuntimeHistoryPayload(await response.json());
+  runtimeHistoryLoadedAt = Date.now();
+}
+
 async function renderRuntimeStatus(force = false) {
   if (currentTab !== "runtime-status" && !force) return;
   if (runtimeStatusLoading) return;
@@ -92,6 +131,7 @@ async function renderRuntimeStatus(force = false) {
     const response = await fetch("/api/runtime/status", { cache: "no-store" });
     if (!response.ok) return;
     renderRuntimeStatusPayload(await response.json());
+    await renderRuntimeHistory(force);
   } catch (_) {
     const updated = document.getElementById("runtime-status-updated");
     if (updated) updated.textContent = "服务暂时不可用，等待重试…";

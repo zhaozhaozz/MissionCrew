@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -85,6 +86,18 @@ CREATE TABLE IF NOT EXISTS run_events (
   created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id);
+CREATE TABLE IF NOT EXISTS runtime_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  backend_id TEXT NOT NULL, adapter TEXT NOT NULL,
+  mode TEXT NOT NULL, transport TEXT NOT NULL,
+  task_id TEXT DEFAULT '', stage_name TEXT DEFAULT '',
+  session_key TEXT DEFAULT '', model TEXT DEFAULT '', effort TEXT DEFAULT '',
+  workdir TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'running',
+  success INTEGER, summary TEXT DEFAULT '', owner_pid INTEGER NOT NULL,
+  started_at REAL NOT NULL, finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_runtime_usage_started
+  ON runtime_usage(started_at DESC);
 """
 
 
@@ -320,6 +333,86 @@ class Store:
     def list_runs(self, task_id: str) -> list[dict]:
         return [dict(r) for r in self._query(
             "SELECT * FROM runs WHERE task_id=? ORDER BY id", (task_id,))]
+
+    # ---- 系统全局 Runtime 使用历史 ----
+    def start_runtime_usage(self, *, backend_id: str, adapter: str,
+                            mode: str, transport: str, task_id: str = "",
+                            stage_name: str = "", session_key: str = "",
+                            model: str = "", effort: str = "",
+                            workdir: str = "") -> int:
+        """在 provider 启动前落库，使执行中的调用也能出现在历史列表。"""
+        return self._execute(
+            "INSERT INTO runtime_usage(backend_id,adapter,mode,transport,task_id,"
+            "stage_name,session_key,model,effort,workdir,status,owner_pid,started_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,'running',?,?)",
+            (backend_id, adapter, mode, transport, task_id, stage_name,
+             session_key, model, effort, workdir, os.getpid(), time.time()),
+        )
+
+    def finish_runtime_usage(self, usage_id: int, success: bool,
+                             summary: str = "") -> None:
+        status = "succeeded" if success else "failed"
+        self._execute(
+            "UPDATE runtime_usage SET status=?, success=?, summary=?, finished_at=? "
+            "WHERE id=? AND status='running'",
+            (status, int(success), str(summary or "")[:1000], time.time(), usage_id),
+        )
+
+    def reconcile_runtime_usage(self) -> int:
+        """把所属进程已经消失的未完成调用标为中断，保留重启前记录。"""
+        rows = self._query(
+            "SELECT DISTINCT owner_pid FROM runtime_usage WHERE status='running'")
+        stale = []
+        for row in rows:
+            pid = int(row["owner_pid"] or 0)
+            try:
+                if pid <= 0:
+                    raise ProcessLookupError
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                stale.append(pid)
+            except PermissionError:
+                pass
+        if not stale:
+            return 0
+        changed = 0
+        for pid in stale:
+            with self._lock:
+                cursor = self._conn.execute(
+                    "UPDATE runtime_usage SET status='interrupted', success=0, "
+                    "finished_at=? WHERE status='running' AND owner_pid=?",
+                    (time.time(), pid),
+                )
+                self._conn.commit()
+                changed += cursor.rowcount
+        return changed
+
+    def list_runtime_usage(self, limit: int = 100,
+                           backend_id: str = "") -> list[dict]:
+        self.reconcile_runtime_usage()
+        limit = max(1, min(int(limit), 500))
+        fields = (
+            "id,backend_id,adapter,mode,transport,task_id,stage_name,session_key,"
+            "model,effort,workdir,status,success,summary,started_at,finished_at"
+        )
+        if backend_id:
+            rows = self._query(
+                f"SELECT {fields} FROM runtime_usage WHERE backend_id=? "
+                "ORDER BY id DESC LIMIT ?", (backend_id, limit))
+        else:
+            rows = self._query(
+                f"SELECT {fields} FROM runtime_usage ORDER BY id DESC LIMIT ?",
+                (limit,))
+        now = time.time()
+        result = []
+        for row in rows:
+            item = dict(row)
+            if item["success"] is not None:
+                item["success"] = bool(item["success"])
+            ended = item["finished_at"] or now
+            item["duration_seconds"] = max(0.0, ended - item["started_at"])
+            result.append(item)
+        return result
 
     def add_grant(self, task_id: str, stage: str, resource_id: str, expires_at: float) -> None:
         self._execute(

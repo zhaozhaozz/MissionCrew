@@ -1,6 +1,8 @@
 """总览与词表端点。"""
 from __future__ import annotations
 
+import time
+
 from fastapi import FastAPI
 
 from ..collab.skills import sync_all_project_skill_libraries
@@ -36,3 +38,11 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def runtime_status():
         """系统级 Runtime 实例快照；前端轮询实现实时状态页。"""
         return runtime_manager.status(store.list_backends())
+
+    @app.get("/api/runtime/history")
+    def runtime_history(limit: int = 100, backend_id: str = ""):
+        """系统级 Runtime 调用历史，数据跨服务重启保留。"""
+        return {
+            "generated_at": time.time(),
+            "history": store.list_runtime_usage(limit, backend_id),
+        }

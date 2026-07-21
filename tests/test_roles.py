@@ -377,6 +377,20 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
     assert "/api/runtime/status" in js
     assert "Claude stream-json" in js and "Codex app-server" in js
     assert "ACP stdio" in js and "命令行执行" in js
+    usage_id = seeded.start_runtime_usage(
+        backend_id="codex", adapter="codex", mode="persistent",
+        transport="codex-app-server", task_id="chat:42", stage_name="chat",
+        session_key="general::lead", model="gpt-test", effort="high",
+        workdir="/work/project",
+    )
+    seeded.finish_runtime_usage(usage_id, True, "done")
+    history = client.get("/api/runtime/history?limit=10").json()["history"]
+    assert history[0]["backend_id"] == "codex"
+    assert history[0]["status"] == "succeeded"
+    assert history[0]["mode"] == "persistent"
+    assert 'id="runtime-status-history"' in html
+    assert "/api/runtime/history?limit=100" in js
+    assert "使用历史" in html and "已中断" in js
     assert "setInterval(pollRuntimeStatus, 1000)" in client.get(
         "/assets/js/main.js").text
 

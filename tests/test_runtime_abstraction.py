@@ -11,7 +11,7 @@ import pytest
 from missioncrew.core.models import (Backend, ExecutionConfig, RunResult,
                                      RuntimePermissions, RuntimePolicy)
 from missioncrew.runtime import (RuntimeCapabilities, RuntimeManager,
-                                 RuntimeProvider)
+                                 RuntimeExecutionInfo, RuntimeProvider)
 from missioncrew.runtime import adapters
 
 
@@ -33,6 +33,9 @@ class _RecordingProvider(RuntimeProvider):
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return ["model-a", "model-b"]
+
+    def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
+        return RuntimeExecutionInfo(mode="persistent", transport="test-rpc")
 
 
 def test_manager_injects_skills_paths_and_permissions(tmp_path):
@@ -71,6 +74,67 @@ def test_manager_injects_skills_paths_and_permissions(tmp_path):
     assert manager.list_models(backend) == ["model-a", "model-b"]
     assert manager.stop(backend, "channel::role") == 2
     assert provider.stopped == ("runtime", "channel::role")
+
+
+def test_manager_persists_runtime_usage_history(store, tmp_path):
+    manager = RuntimeManager()
+    manager.bind_usage_store(store)
+    manager.register("recording", _RecordingProvider())
+    config = ExecutionConfig(
+        task_id="task-history", stage_name="chat",
+        backend=Backend(id="runtime-history", name="Runtime", adapter="recording",
+                        model="model-a"),
+        prompt="work", workdir=str(tmp_path), session_key="channel::role",
+        effort="high",
+    )
+
+    assert manager.start(config).success
+
+    history = store.list_runtime_usage()
+    assert len(history) == 1
+    expected = {
+        "backend_id": "runtime-history", "adapter": "recording",
+        "mode": "persistent", "transport": "test-rpc",
+        "task_id": "task-history", "stage_name": "chat",
+        "session_key": "channel::role", "model": "model-a", "effort": "high",
+        "status": "succeeded", "success": True,
+    }
+    assert {key: history[0][key] for key in expected} == expected
+    assert history[0]["finished_at"] >= history[0]["started_at"]
+    assert history[0]["duration_seconds"] >= 0
+
+
+def test_runtime_usage_reconciles_dead_owner_as_interrupted(store, monkeypatch):
+    store.start_runtime_usage(
+        backend_id="runtime", adapter="custom", mode="one_shot",
+        transport="cli-command")
+
+    def missing_process(_pid, _signal):
+        raise ProcessLookupError
+
+    monkeypatch.setattr("missioncrew.core.store.os.kill", missing_process)
+    history = store.list_runtime_usage()
+    assert history[0]["status"] == "interrupted"
+    assert history[0]["success"] is False
+    assert history[0]["finished_at"] is not None
+
+
+@pytest.mark.parametrize(("adapter", "mode", "transport"), [
+    ("claude_code", "persistent", "claude-stream-json"),
+    ("codex", "persistent", "codex-app-server"),
+    ("kimi", "persistent", "acp-stdio"),
+    ("opencode", "one_shot", "cli-command"),
+])
+def test_builtin_providers_describe_usage_history_mode(
+        tmp_path, adapter, mode, transport):
+    manager = RuntimeManager()
+    backend = Backend(id=adapter, name=adapter, adapter=adapter)
+    config = ExecutionConfig(
+        task_id="task", stage_name="chat", backend=backend, prompt="work",
+        workdir=str(tmp_path), session_key="channel::role",
+    )
+    info = manager.provider_for(backend).execution_info(config)
+    assert (info.mode, info.transport) == (mode, transport)
 
 
 def test_permission_policy_is_validated_and_translated_for_codex(tmp_path):

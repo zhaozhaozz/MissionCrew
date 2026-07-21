@@ -221,6 +221,11 @@
         <p class="muted">持久实例在空闲时仍保留进程与原生 session/thread；单次执行结束后会立即从列表消失。</p>
         <div class="runtime-table-wrap"><table class="mgr" id="runtime-status-instances"></table></div>
       </div>
+      <div class="section">
+        <h2>使用历史 <span class="count" id="runtime-history-count"></span></h2>
+        <p class="muted">每次 Runtime 调用都会持久记录；服务重启前未结束的调用会标记为“已中断”。当前显示最近 100 条。</p>
+        <div class="runtime-table-wrap"><table class="mgr" id="runtime-status-history"></table></div>
+      </div>
     </div>
 
     <div id="settings-view" class="page">

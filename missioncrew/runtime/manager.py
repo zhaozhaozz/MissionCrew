@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Optional
 
 from . import adapters as _executors
-from .base import RuntimeCapabilities, RuntimeInstance, RuntimeProvider
+from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
+                   RuntimeProvider)
 from ..core.models import Backend, ExecutionConfig, RunResult
 
 
@@ -44,12 +45,21 @@ class _BuiltinProvider(RuntimeProvider):
         return [replace(instance, adapter=backend.adapter)
                 for instance in instances]
 
+    def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
+        if config.backend.adapter in _executors.ACP_SERVE_COMMANDS:
+            return RuntimeExecutionInfo(
+                mode="persistent" if config.session_key else "one_shot",
+                transport="acp-stdio",
+            )
+        return RuntimeExecutionInfo(mode="one_shot", transport="cli-command")
+
 
 class RuntimeManager:
     """主程序唯一可见的 Runtime 控制面。"""
 
     def __init__(self):
         self._providers: dict[str, RuntimeProvider] = {}
+        self._usage_store = None
         self._builtin = _BuiltinProvider()
         # 延迟导入避免 provider 与 manager 初始化互相依赖。业务层只会看到
         # RuntimeManager，Claude/Codex 原生协议类不会越过 runtime 包边界。
@@ -59,6 +69,14 @@ class RuntimeManager:
             "claude_code": ClaudeRuntimeProvider(self._builtin),
             "codex": CodexRuntimeProvider(self._builtin),
         })
+
+    def bind_usage_store(self, store) -> None:
+        """绑定持久化记录器；Runtime 执行不因历史写入失败而失败。"""
+        self._usage_store = store
+        try:
+            store.reconcile_runtime_usage()
+        except Exception:
+            pass
 
     def register(self, adapter: str, provider: RuntimeProvider) -> None:
         """注册/覆盖一个 adapter provider，供插件或测试扩展。"""
@@ -94,7 +112,42 @@ class RuntimeManager:
     def start(self, config: ExecutionConfig) -> RunResult:
         """按统一策略启动 Runtime；调用方不接触任何原始执行器。"""
         prepared = self._prepare(config)
-        return self.provider_for(prepared.backend).start(prepared)
+        provider = self.provider_for(prepared.backend)
+        execution = provider.execution_info(prepared)
+        usage_store = self._usage_store
+        usage_id = 0
+        if usage_store is not None:
+            try:
+                usage_id = usage_store.start_runtime_usage(
+                    backend_id=prepared.backend.id,
+                    adapter=prepared.backend.adapter,
+                    mode=execution.mode,
+                    transport=execution.transport,
+                    task_id=prepared.task_id,
+                    stage_name=prepared.stage_name,
+                    session_key=prepared.session_key,
+                    model=prepared.backend.model,
+                    effort=prepared.effort,
+                    workdir=prepared.workdir,
+                )
+            except Exception:
+                usage_id = 0
+        try:
+            result = provider.start(prepared)
+        except Exception as exc:
+            if usage_id:
+                try:
+                    usage_store.finish_runtime_usage(usage_id, False, str(exc))
+                except Exception:
+                    pass
+            raise
+        if usage_id:
+            try:
+                usage_store.finish_runtime_usage(
+                    usage_id, result.success, result.summary)
+            except Exception:
+                pass
+        return result
 
     def stop(self, backend: Backend, session_key: str = "") -> int:
         return self.provider_for(backend).stop(backend, session_key)

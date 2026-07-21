@@ -55,6 +55,8 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 每个实例统一提供 backend、adapter、transport、PID、session key、原生 session/thread id、任务与阶段、模型、工作目录、启动时间和最近活动时间。打印模式通过活动进程注册表上报；ACP 同时上报长驻池与一次性 client；Claude/Codex 原生 provider 直接上报其会话对象。页面的后端概览始终列出全部已注册 Runtime，即使当前没有进程，也会明确显示未运行或已停用。
 
+页面下方的「使用历史」来自独立的 `GET /api/runtime/history`，记录的是每次 `RuntimeManager.start()` 调用，而不是进程实例生命周期。`RuntimeProvider.execution_info()` 声明该次调用的 `persistent` / `one_shot` 形态与 transport；统一管理器在调用 provider 前写入 `running`，返回后更新为 `succeeded` 或 `failed`。记录包含 Runtime、任务/阶段、session key、模型、effort、工作目录、起止时间和耗时，保存在平台 SQLite 中，因此服务重启后仍保留。若服务退出时调用尚未结束，后续读取会在确认原所属进程已经消失后标记为 `interrupted`。页面显示最近 100 条并每三秒刷新一次历史列表。
+
 ## 接入技术
 
 ### 逐 Runtime 会话复用矩阵

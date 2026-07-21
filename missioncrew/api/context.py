@@ -38,6 +38,7 @@ class ApiContext:
     @classmethod
     def build(cls) -> "ApiContext":
         store = Store(db_path())
+        runtime_manager.bind_usage_store(store)
         seed_mod.ensure_role_bindings(store)
         seed_mod.ensure_role_templates(store)
         seed_mod.migrate_project_fields(store)

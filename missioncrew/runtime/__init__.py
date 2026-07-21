@@ -1,9 +1,10 @@
 """Runtime 统一抽象层。业务代码只应使用 ``runtime_manager``。"""
 
-from .base import RuntimeCapabilities, RuntimeInstance, RuntimeProvider
+from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
+                   RuntimeProvider)
 from .manager import RuntimeManager, runtime_manager
 
 __all__ = [
-    "RuntimeCapabilities", "RuntimeInstance", "RuntimeManager", "RuntimeProvider",
-    "runtime_manager",
+    "RuntimeCapabilities", "RuntimeExecutionInfo", "RuntimeInstance",
+    "RuntimeManager", "RuntimeProvider", "runtime_manager",
 ]

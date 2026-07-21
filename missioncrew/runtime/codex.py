@@ -10,7 +10,8 @@ from typing import Optional
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
-from .base import RuntimeCapabilities, RuntimeInstance, RuntimeProvider
+from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
+                   RuntimeProvider)
 from .native import (JsonLineProcess, RuntimeProtocolError, emit_json,
                      safe_emit)
 
@@ -498,6 +499,14 @@ class CodexRuntimeProvider(RuntimeProvider):
         return RuntimeCapabilities(
             session_reuse=True, structured_events=True,
             user_interaction=True, permission_control=True, interrupt=True)
+
+    def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
+        if config.backend.command:
+            return self.fallback.execution_info(config)
+        return RuntimeExecutionInfo(
+            mode="persistent" if config.session_key else "one_shot",
+            transport="codex-app-server",
+        )
 
     def interrupt(self, backend: Backend, session_key: str = "") -> int:
         with self._guard:

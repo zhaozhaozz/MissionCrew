@@ -40,6 +40,7 @@ DEFAULT_SERVE_PORT = 8321
 
 def _store() -> Store:
     store = Store(db_path())
+    runtime_manager.bind_usage_store(store)
     seed_mod.ensure_role_bindings(store)
     seed_mod.ensure_role_templates(store)
     migrated_paths = migrate_legacy_workspace_layout()

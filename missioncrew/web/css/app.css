@@ -468,9 +468,9 @@
   .runtime-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
                    color: var(--muted); }
   .runtime-state.running, .runtime-state.starting { color: var(--accent); }
-  .runtime-state.idle { color: var(--ok); }
-  .runtime-state.disconnected { color: var(--warn); }
-  .runtime-state.disabled { color: var(--bad); }
+  .runtime-state.idle, .runtime-state.succeeded { color: var(--ok); }
+  .runtime-state.disconnected, .runtime-state.interrupted { color: var(--warn); }
+  .runtime-state.disabled, .runtime-state.failed { color: var(--bad); }
   .runtime-state.running i, .runtime-state.starting i { animation: blink 1.2s infinite; }
   .runtime-session-cell code { display: inline-block; max-width: 260px; overflow: hidden;
                                text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; }
