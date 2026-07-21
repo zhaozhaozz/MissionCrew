@@ -188,6 +188,8 @@ class _LiveSession:
     busy: bool = False
     task_id: str = ""
     stage_name: str = ""
+    project_id: str = ""
+    role_id: str = ""
     model: str = ""
 
 
@@ -197,6 +199,8 @@ class _OneShotClient:
     client: _AcpClient
     task_id: str = ""
     stage_name: str = ""
+    project_id: str = ""
+    role_id: str = ""
     model: str = ""
 
 
@@ -298,6 +302,7 @@ def active_instances(runtime_id: str = "") -> list[RuntimeInstance]:
             session_key=session_key, native_session_id=live.session_id,
             workdir=client.cwd, task_id=live.task_id,
             stage_name=live.stage_name, model=live.model,
+            project_id=live.project_id, role_id=live.role_id,
             executable=Path(client.command[0]).name,
             started_at=client.started_at, last_activity=live.last_used,
         ))
@@ -313,6 +318,7 @@ def active_instances(runtime_id: str = "") -> list[RuntimeInstance]:
             mode="one_shot", transport="acp-stdio", state="running",
             pid=client.proc.pid, workdir=client.cwd,
             task_id=active.task_id, stage_name=active.stage_name,
+            project_id=active.project_id, role_id=active.role_id,
             model=active.model, executable=Path(client.command[0]).name,
             started_at=client.started_at, last_activity=client.started_at,
         ))
@@ -389,14 +395,15 @@ def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
 def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
                   model: str, timeout: int, runtime_id: str,
                   emit: Optional[Callable[[str, str], None]],
-                  task_id: str = "", stage_name: str = "") -> tuple[bool, str]:
+                  task_id: str = "", stage_name: str = "",
+                  project_id: str = "", role_id: str = "") -> tuple[bool, str]:
     try:
         client = _AcpClient(cmd, workdir, env, timeout, emit=emit)
     except OSError as e:
         return False, f"ACP 进程启动失败: {e}"
     with _ONE_SHOT_CLIENTS_GUARD:
         _ONE_SHOT_CLIENTS[id(client)] = _OneShotClient(
-            runtime_id, client, task_id, stage_name, model)
+            runtime_id, client, task_id, stage_name, project_id, role_id, model)
     try:
         initialize_result = _initialize(client)
         session_id, _ = _new_or_load_session(client, workdir, "", initialize_result)
@@ -416,7 +423,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                recovery_prompt: str = "",
                save_session: Optional[Callable[[str, str], None]] = None,
                context_version: str = "", runtime_id: str = "",
-               task_id: str = "", stage_name: str = "") -> tuple[bool, str]:
+               task_id: str = "", stage_name: str = "",
+               project_id: str = "", role_id: str = "") -> tuple[bool, str]:
     """完成一轮 ACP prompt，并按 channel×role 复用长驻原生会话。
 
     无 ``session_key`` 时保持一次性调用。长驻进程不存在（包括服务重启）时，
@@ -426,7 +434,7 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
     if not session_key:
         return _run_one_shot(
             cmd, prompt, workdir, env, model, timeout, runtime_id, emit,
-            task_id, stage_name)
+            task_id, stage_name, project_id, role_id)
 
     _cleanup_idle_sessions()
     signature = _client_signature(cmd, workdir, env)
@@ -454,13 +462,16 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                     raise
                 live = _LiveSession(
                     client, runtime_id, runtime_session_id, signature, time.time(),
-                    task_id=task_id, stage_name=stage_name, model=model)
+                    task_id=task_id, stage_name=stage_name,
+                    project_id=project_id, role_id=role_id, model=model)
                 with _LIVE_SESSIONS_GUARD:
                     _LIVE_SESSIONS[session_key] = live
 
             live.busy = True
             live.task_id = task_id
             live.stage_name = stage_name
+            live.project_id = project_id
+            live.role_id = role_id
             live.model = model
             live.last_used = time.time()
             live.client.begin_turn(timeout, emit)

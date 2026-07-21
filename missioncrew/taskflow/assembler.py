@@ -88,6 +88,7 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         backend=backend,
         prompt=prompt,
         workdir=str(ws),
+        project_id=project.id,
         runtime_policy=RuntimePolicy(
             readable_paths=list(allowed_dirs), writable_paths=list(allowed_dirs),
             skill_paths=[str(workspace.skills)],

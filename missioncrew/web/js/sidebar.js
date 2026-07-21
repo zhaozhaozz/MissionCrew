@@ -198,6 +198,15 @@ function appendMessages(list) {
       sep.innerHTML = `<span>${esc(day)}</span>`;
       pane.appendChild(sep);
     }
+    if (m.kind === "context_boundary") {
+      const boundary = document.createElement("div");
+      boundary.className = "context-boundary";
+      boundary.dataset.msgId = m.id;
+      boundary.innerHTML = `<span>${esc(m.content || "上下文已清除")}</span>`;
+      pane.appendChild(boundary);
+      lastMsgId = Math.max(lastMsgId, m.id);
+      continue;
+    }
     const isAgent = m.author_type === "agent";
     const isHuman = m.author_type === "human";
     const color = isAgent ? (roleColor[m.author] || "#888")
@@ -243,8 +252,6 @@ const RUN_EVENT_META = {
   stderr:      { label: "日志", cls: "re-log" },
   status:      { label: "状态", cls: "re-status" },
 };
-const RUN_INPUT_FOLD_AT = 2000;
-
 function mergeRunInputEvents(events) {
   // 存储层会把超 8000 字符的输入分段；展示时重新合并，避免一个 prompt
   // 出现多个「输入」块，也让折叠/展开控制的是完整原文。
@@ -294,9 +301,8 @@ function renderPermissionRequest(run, event, payload) {
     ${payload.can_approve_session ? `<button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','approve_session')">本会话批准</button>` : ""}
     <button class="danger" onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','deny')">拒绝</button>
   </div>`;
-  return `<div class="re re-interaction" data-event-id="${event.id}">
-    <span class="re-k">权限</span><span class="ri-status ${esc(status)}">${esc(statusLabel)}</span>
-    ${interactionDetails(payload)}${actions}</div>`;
+  return `<span class="ri-status ${esc(status)}">${esc(statusLabel)}</span>
+    ${interactionDetails(payload)}${actions}`;
 }
 
 function renderUserInputRequest(run, event, payload) {
@@ -320,8 +326,44 @@ function renderUserInputRequest(run, event, payload) {
     <button class="action" onclick="submitRuntimeAnswers(${run.id},'${esc(payload.request_id)}',this)">提交回答</button>
     <button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','cancel')">取消</button>
   </div>` : `<div class="ri-status ${esc(status)}">${status === "timeout" ? "等待超时，已取消" : "回答已提交"}</div>`;
-  return `<div class="re re-interaction" data-event-id="${event.id}">
-    <span class="re-k">提问</span>${questions}${actions}</div>`;
+  return `${questions}${actions}`;
+}
+
+function runEventPreview(event) {
+  const text = String(event.content || "").replace(/\s+/g, " ").trim();
+  if (event.kind === "input") return `${event.content.length.toLocaleString()} 字符 · 完整原文`;
+  if (!text) return "无内容";
+  return text.length > 100 ? text.slice(0, 100) + "…" : text;
+}
+
+function renderRunEvent(run, event, openEventId) {
+  const meta = RUN_EVENT_META[event.kind] || { label: event.kind, cls: "re-status" };
+  let content = esc(event.content);
+  let preview = runEventPreview(event);
+  if (event.kind === "permission_request") {
+    const payload = parseStructuredRunEvent(event);
+    if (payload) {
+      content = renderPermissionRequest(run, event, payload);
+      preview = payload.status === "pending" ? "等待用户决定" : `已处理 · ${payload.status}`;
+    }
+  } else if (event.kind === "user_input_request") {
+    const payload = parseStructuredRunEvent(event);
+    if (payload) {
+      content = renderUserInputRequest(run, event, payload);
+      preview = payload.status === "pending" ? "等待用户回答" : `已处理 · ${payload.status}`;
+    }
+  } else if (event.kind === "usage") {
+    const payload = parseStructuredRunEvent(event);
+    if (payload) {
+      content = esc(JSON.stringify(payload, null, 2));
+      preview = "Token 用量";
+    }
+  }
+  const open = String(event.id) === openEventId ? " open" : "";
+  return `<details class="re re-fold ${meta.cls}" data-event-id="${event.id}"${open}>
+    <summary><span class="re-k">${esc(meta.label)}</span>
+      <span class="re-fold-size">${esc(preview)}</span></summary>
+    <div class="re-content">${content}</div></details>`;
 }
 
 async function sendRuntimeInteraction(runId, requestId, decision, answers = {}) {
@@ -362,31 +404,28 @@ async function renderRunEvents(run, card) {
     const body = card.el.querySelector(".rc-events");
     const innerNear = !body.childElementCount ||
       body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    const openInputs = new Set([...body.querySelectorAll(".re-fold[open]")]
-      .map(el => el.dataset.eventId));
-    body.innerHTML = mergeRunInputEvents(d.events).map(e => {
-      const meta = RUN_EVENT_META[e.kind] || { label: e.kind, cls: "re-status" };
-      if (e.kind === "permission_request") {
-        const payload = parseStructuredRunEvent(e);
-        if (payload) return renderPermissionRequest(run, e, payload);
-      }
-      if (e.kind === "user_input_request") {
-        const payload = parseStructuredRunEvent(e);
-        if (payload) return renderUserInputRequest(run, e, payload);
-      }
-      if (e.kind === "usage") {
-        const payload = parseStructuredRunEvent(e);
-        if (payload) return `<div class="re ${meta.cls}"><span class="re-k">用量</span>${esc(JSON.stringify(payload))}</div>`;
-      }
-      if (e.kind === "input" && e.content.length > RUN_INPUT_FOLD_AT) {
-        const open = openInputs.has(String(e.id)) ? " open" : "";
-        return `<details class="re re-fold ${meta.cls}" data-event-id="${e.id}"${open}>
-          <summary><span class="re-k">${esc(meta.label)}</span>
-            <span class="re-fold-size">${e.content.length.toLocaleString()} 字符 · 完整原文</span></summary>
-          <div class="re-content">${esc(e.content)}</div></details>`;
-      }
-      return `<div class="re ${meta.cls}"><span class="re-k">${esc(meta.label)}</span>${esc(e.content)}</div>`;
-    }).join("") || `<div class="re re-status">(暂无过程输出)</div>`;
+    const events = mergeRunInputEvents(d.events);
+    const latestEventId = events.length ? String(events[events.length - 1].id) : "";
+    const newItem = latestEventId && latestEventId !== card.latestEventId;
+    const openEventId = newItem ? latestEventId
+      : card.openEventId === undefined ? latestEventId : card.openEventId;
+    body.innerHTML = events.map(e => renderRunEvent(run, e, openEventId)).join("")
+      || `<div class="re re-status">(暂无过程输出)</div>`;
+    card.latestEventId = latestEventId;
+    card.openEventId = openEventId;
+    body.querySelectorAll(".re-fold").forEach(details => {
+      details.addEventListener("toggle", () => {
+        const eventId = details.dataset.eventId;
+        if (details.open) {
+          body.querySelectorAll(".re-fold[open]").forEach(other => {
+            if (other !== details) other.open = false;
+          });
+          card.openEventId = eventId;
+        } else if (card.openEventId === eventId) {
+          card.openEventId = null;
+        }
+      });
+    });
     // 内外滚动都只在原本贴底时跟随,不打断正在回看历史的读者
     if (innerNear) body.scrollTop = body.scrollHeight;
     if (outerNear) pane.scrollTop = pane.scrollHeight;
@@ -409,7 +448,8 @@ function syncRuns(runs) {
       el.dataset.trigger = run.trigger_message_id;
       el.dataset.runId = run.id;
       el.innerHTML = `<summary></summary><div class="rc-events"></div>`;
-      card = { el, key: null, userToggled: false, fetching: false };
+      card = { el, key: null, userToggled: false, fetching: false,
+               latestEventId: "", openEventId: undefined };
       el.querySelector("summary").addEventListener("click", () => { card.userToggled = true; });
       el.addEventListener("toggle", () => {   // 展开时过程流贴底显示最新
         if (el.open) { const b = el.querySelector(".rc-events"); b.scrollTop = b.scrollHeight; }
@@ -468,6 +508,17 @@ async function send() {
     return;
   }
   await pollMessages();
+}
+
+async function clearChatContext() {
+  if (!currentChan) return;
+  if (!await uiConfirm(
+      "清除后，历史消息仍会保留在聊天记录中，但后续 Agent 不再复用之前的 Runtime 会话，也不会自动带入分隔线之前的最近对话。",
+      "清除频道上下文")) return;
+  const result = await api("POST", `/api/chat/${currentChan}/clear-context`);
+  await pollMessages();
+  toast(`上下文已清除${result.stopped_runtimes ? `，已停止 ${result.stopped_runtimes} 个持久实例` : ""}`,
+        "success");
 }
 
 const inputBox = document.getElementById("input");

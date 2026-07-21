@@ -561,6 +561,7 @@ class Channel:
     workdir: Optional[str] = None      # 执行工作目录,默认 MC_HOME/channels/<id>
     purpose: str = ""                 # 本频道负责的任务/讨论边界
     created_by_role_id: str = ""      # 为空表示人类/平台创建
+    context_start_message_id: int = 0  # 最近一次清除上下文的可见分隔消息
     created_at: float = field(default_factory=now)
 
     def to_dict(self) -> dict:
@@ -664,6 +665,8 @@ class ExecutionConfig:
     backend: Backend
     prompt: str
     workdir: str
+    project_id: str = ""  # 状态与历史使用的归属元数据
+    role_id: str = ""
     # 项目显式登记、允许 Runtime 读写的本地目录。workdir 是主工作根，
     # allowed_dirs 是旧构造入口；Runtime manager 会把统一策略翻译为后端参数。
     allowed_dirs: list[str] = field(default_factory=list)

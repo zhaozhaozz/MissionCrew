@@ -54,7 +54,7 @@ def _config(tmp_path, adapter: str, prompt: str, saved: dict,
 
     return ExecutionConfig(
         task_id="chat", stage_name="chat", backend=backend,
-        prompt=prompt, workdir=str(tmp_path),
+        prompt=prompt, workdir=str(tmp_path), project_id="project-a", role_id="lead",
         runtime_policy=RuntimePolicy(
             readable_paths=[str(tmp_path)],
             writable_paths=(list(writable_paths) if writable_paths is not None
@@ -97,6 +97,7 @@ def test_native_provider_reuses_process_and_session(
         assert instances[0].state == "idle"
         assert instances[0].pid
         assert instances[0].native_session_id == saved["id"]
+        assert (instances[0].project_id, instances[0].role_id) == ("project-a", "lead")
         kinds = {kind for kind, _ in events}
         assert {"status", "thinking", "tool", "text"} <= kinds
         if adapter == "codex":

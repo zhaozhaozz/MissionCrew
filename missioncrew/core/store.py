@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL, author TEXT NOT NULL, author_type TEXT NOT NULL,
   content TEXT NOT NULL, mentions TEXT DEFAULT '[]',
+  kind TEXT DEFAULT 'message',
   runtime_id TEXT DEFAULT '', model TEXT DEFAULT '', effort TEXT DEFAULT '',
   reply_to INTEGER, root_id INTEGER, depth INTEGER DEFAULT 0,
   created_at REAL NOT NULL
@@ -91,6 +92,7 @@ CREATE TABLE IF NOT EXISTS runtime_usage (
   backend_id TEXT NOT NULL, adapter TEXT NOT NULL,
   mode TEXT NOT NULL, transport TEXT NOT NULL,
   task_id TEXT DEFAULT '', stage_name TEXT DEFAULT '',
+  project_id TEXT DEFAULT '', role_id TEXT DEFAULT '',
   session_key TEXT DEFAULT '', model TEXT DEFAULT '', effort TEXT DEFAULT '',
   workdir TEXT DEFAULT '', status TEXT NOT NULL DEFAULT 'running',
   success INTEGER, summary TEXT DEFAULT '', owner_pid INTEGER NOT NULL,
@@ -113,6 +115,7 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._migrate_chat_messages()
+        self._migrate_runtime_usage()
         self._migrate_harness_paths()
         self._conn.commit()
 
@@ -133,10 +136,11 @@ class Store:
         """
         columns = {row["name"] for row in self._conn.execute(
             "PRAGMA table_info(messages)").fetchall()}
-        for name in ("runtime_id", "model", "effort"):
+        for name in ("runtime_id", "model", "effort", "kind"):
             if name not in columns:
+                default = "'message'" if name == "kind" else "''"
                 self._conn.execute(
-                    f"ALTER TABLE messages ADD COLUMN {name} TEXT DEFAULT ''")
+                    f"ALTER TABLE messages ADD COLUMN {name} TEXT DEFAULT {default}")
 
         rows = self._conn.execute(
             "SELECT m.*, r.id AS run_id, r.backend_id AS run_backend_id "
@@ -201,6 +205,15 @@ class Store:
                 changed += 1
         self._conn.commit()
         return changed
+
+    def _migrate_runtime_usage(self) -> None:
+        """为已有使用历史补齐项目与角色归属列。"""
+        columns = {row["name"] for row in self._conn.execute(
+            "PRAGMA table_info(runtime_usage)").fetchall()}
+        for name in ("project_id", "role_id"):
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE runtime_usage ADD COLUMN {name} TEXT DEFAULT ''")
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
         """写操作,返回 lastrowid。"""
@@ -337,16 +350,18 @@ class Store:
     # ---- 系统全局 Runtime 使用历史 ----
     def start_runtime_usage(self, *, backend_id: str, adapter: str,
                             mode: str, transport: str, task_id: str = "",
-                            stage_name: str = "", session_key: str = "",
+                            stage_name: str = "", project_id: str = "",
+                            role_id: str = "", session_key: str = "",
                             model: str = "", effort: str = "",
                             workdir: str = "") -> int:
         """在 provider 启动前落库，使执行中的调用也能出现在历史列表。"""
         return self._execute(
             "INSERT INTO runtime_usage(backend_id,adapter,mode,transport,task_id,"
-            "stage_name,session_key,model,effort,workdir,status,owner_pid,started_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,'running',?,?)",
+            "stage_name,project_id,role_id,session_key,model,effort,workdir,status,"
+            "owner_pid,started_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'running',?,?)",
             (backend_id, adapter, mode, transport, task_id, stage_name,
-             session_key, model, effort, workdir, os.getpid(), time.time()),
+             project_id, role_id, session_key, model, effort, workdir,
+             os.getpid(), time.time()),
         )
 
     def finish_runtime_usage(self, usage_id: int, success: bool,
@@ -393,7 +408,8 @@ class Store:
         limit = max(1, min(int(limit), 500))
         fields = (
             "id,backend_id,adapter,mode,transport,task_id,stage_name,session_key,"
-            "model,effort,workdir,status,success,summary,started_at,finished_at"
+            "project_id,role_id,model,effort,workdir,status,success,summary,"
+            "started_at,finished_at"
         )
         if backend_id:
             rows = self._query(
@@ -515,13 +531,14 @@ class Store:
     def add_message(self, channel: str, author: str, author_type: str, content: str,
                     mentions: list[str], reply_to: Optional[int] = None,
                     root_id: Optional[int] = None, depth: int = 0,
-                    runtime_id: str = "", model: str = "", effort: str = "") -> int:
+                    runtime_id: str = "", model: str = "", effort: str = "",
+                    kind: str = "message") -> int:
         msg_id = self._execute(
             "INSERT INTO messages(channel, author, author_type, content, mentions, "
-            "runtime_id, model, effort, reply_to, root_id, depth, created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "runtime_id, model, effort, kind, reply_to, root_id, depth, created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (channel, author, author_type, content,
-             json.dumps(mentions, ensure_ascii=False), runtime_id, model, effort,
+             json.dumps(mentions, ensure_ascii=False), runtime_id, model, effort, kind,
              reply_to, root_id, depth, time.time()),
         )
         if root_id is None:  # 人类发起的消息,自身就是协作链的根
@@ -542,10 +559,11 @@ class Store:
         return [dict(r) for r in self._query(
             "SELECT * FROM messages WHERE channel=? ORDER BY id", (channel,))]
 
-    def recent_messages(self, channel: str, limit: int = 20) -> list[dict]:
+    def recent_messages(self, channel: str, limit: int = 20,
+                        after_id: int = 0) -> list[dict]:
         rows = self._query(
-            "SELECT * FROM messages WHERE channel=? ORDER BY id DESC LIMIT ?",
-            (channel, limit))
+            "SELECT * FROM messages WHERE channel=? AND id>? "
+            "ORDER BY id DESC LIMIT ?", (channel, after_id, limit))
         return [dict(r) for r in reversed(rows)]
 
     # ---- 聊天:执行记录 ----
@@ -621,6 +639,18 @@ class Store:
 
     def delete_chat_session(self, session_key: str) -> None:
         self._execute("DELETE FROM chat_sessions WHERE session_key=?", (session_key,))
+
+    def chat_sessions_for_channel(self, channel: str) -> list[dict]:
+        return [dict(row) for row in self._query(
+            "SELECT * FROM chat_sessions WHERE channel=? ORDER BY session_key",
+            (channel,))]
+
+    def clear_chat_sessions(self, channel: str) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM chat_sessions WHERE channel=?", (channel,))
+            self._conn.commit()
+            return cursor.rowcount
 
     # ---- 聊天:执行过程事件(实时运行输出) ----
     # 同类连续事件合并进同一行(追加文本),避免逐 chunk/逐行插入把表撑爆;

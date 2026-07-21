@@ -77,6 +77,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, str(e))
         return {"id": msg_id}
 
+    @app.post("/api/chat/{channel_id}/clear-context")
+    def clear_context(channel_id: str):
+        try:
+            return chat.clear_context(channel_id)
+        except ValueError as exc:
+            message = str(exc)
+            raise HTTPException(
+                409 if "正在运行" in message else 404, message) from exc
+
     @app.post("/api/chat/{channel_id}/page-context")
     def write_page_context(channel_id: str, body: PageContextInput):
         channel = store.get_channel(channel_id)

@@ -125,6 +125,8 @@ class RuntimeManager:
                     transport=execution.transport,
                     task_id=prepared.task_id,
                     stage_name=prepared.stage_name,
+                    project_id=prepared.project_id,
+                    role_id=prepared.role_id,
                     session_key=prepared.session_key,
                     model=prepared.backend.model,
                     effort=prepared.effort,
@@ -198,6 +200,10 @@ class RuntimeManager:
                 "state": state, "running": running,
                 "instances": len(instances), "connected": connected,
                 "persistent": persistent, "one_shot": one_shot,
+                "projects": sorted({instance.project_id for instance in instances
+                                    if instance.project_id}),
+                "roles": sorted({instance.role_id for instance in instances
+                                 if instance.role_id}),
             })
         state_order = {"running": 0, "starting": 1, "idle": 2,
                        "disconnected": 3}

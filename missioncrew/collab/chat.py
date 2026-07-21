@@ -193,6 +193,13 @@ class ChatEngine:
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
 
+    @staticmethod
+    def _session_key(channel: Channel, role_id: str) -> str:
+        base = f"{channel.id}::{role_id}"
+        if channel.context_start_message_id:
+            return f"{base}::context-{channel.context_start_message_id}"
+        return base
+
     def respond_interaction(self, run_id: int, request_id: str,
                             response: dict) -> None:
         """由聊天 API 回答一个仍在等待的原生 Runtime 请求。"""
@@ -272,6 +279,46 @@ class ChatEngine:
             for f in pending:
                 f.result()
 
+    def clear_context(self, channel_id: str) -> dict:
+        """结束频道的持久会话，并以可见分隔消息建立新的上下文边界。"""
+        channel = self.store.get_channel(channel_id)
+        if channel is None:
+            raise ValueError(f"频道不存在: {channel_id}")
+        if self.store.active_chat_runs(channel_id):
+            raise ValueError("频道仍有 Agent 正在运行，请等待本轮结束后再清除上下文")
+
+        targets: dict[tuple[str, str], object] = {}
+        for session in self.store.chat_sessions_for_channel(channel_id):
+            backend = self.store.get_backend(session["backend_id"])
+            if backend is not None:
+                targets[(backend.id, session["session_key"])] = backend
+        for role in self.store.list_roles(channel.project_id or ""):
+            backend = self.store.get_backend(role.runtime_id)
+            if backend is not None:
+                targets[(backend.id, self._session_key(channel, role.id))] = backend
+
+        stopped = 0
+        for (_backend_id, session_key), backend in targets.items():
+            stopped += runtime_manager.stop(backend, session_key)
+        cleared_sessions = self.store.clear_chat_sessions(channel_id)
+        marker_id = self.store.add_message(
+            channel_id, "platform", "platform",
+            "上下文已清除 · 后续消息将启动全新的 Runtime 会话",
+            [], kind="context_boundary",
+        )
+        channel.context_start_message_id = marker_id
+        self.store.put_channel(channel)
+        self._write_channel_history(channel)
+        self.store.audit(
+            "human", "chat_context_cleared",
+            detail=(f"channel={channel_id} sessions={cleared_sessions} "
+                    f"runtimes={stopped} marker={marker_id}"),
+        )
+        return {
+            "ok": True, "marker_id": marker_id,
+            "cleared_sessions": cleared_sessions, "stopped_runtimes": stopped,
+        }
+
     # ---- 内部:触发与执行 ----
     def _valid_mentions(self, content: str, project_id: str,
                         exclude: Optional[str]) -> list[str]:
@@ -313,9 +360,11 @@ class ChatEngine:
         try:
             self._execute_inner(run_id, channel, role_id, msg_id, root_id, depth)
         except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
-            self.store.update_chat_run(run_id, "failed", error=str(e))
-            self._post_failure(channel, role_id, msg_id, root_id, depth,
-                               f"@{role_id} 执行出错: {e}")
+            try:
+                self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                   f"@{role_id} 执行出错: {e}")
+            finally:
+                self.store.update_chat_run(run_id, "failed", error=str(e))
 
     def _post_failure(self, channel: Channel, role_id: str, msg_id: int,
                       root_id: int, depth: int, content: str) -> None:
@@ -335,16 +384,20 @@ class ChatEngine:
                        msg_id: int, root_id: int, depth: int) -> None:
         role = self.store.get_role(channel.project_id or "", role_id)
         if role is None:
-            self.store.update_chat_run(run_id, "failed", error="角色不存在")
-            self._post_failure(channel, role_id, msg_id, root_id, depth,
-                               f"@{role_id} 执行失败: 角色不存在")
+            try:
+                self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                   f"@{role_id} 执行失败: 角色不存在")
+            finally:
+                self.store.update_chat_run(run_id, "failed", error="角色不存在")
             return
 
         backend, trace = self._pick_backend(channel, role)
         if backend is None:
-            self.store.update_chat_run(run_id, "failed", error=trace)
-            self._post_failure(channel, role_id, msg_id, root_id, depth,
-                               f"@{role_id} 无可用后端: {trace}")
+            try:
+                self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                   f"@{role_id} 无可用后端: {trace}")
+            finally:
+                self.store.update_chat_run(run_id, "failed", error=trace)
             return
 
         self.store.update_chat_run(run_id, "running", backend_id=backend.id)
@@ -387,11 +440,13 @@ class ChatEngine:
                                 result.success)
 
         if not result.success:
-            self.store.update_chat_run(run_id, "failed", backend_id=backend.id,
-                                       error=result.summary)
-            self._post_failure(
-                channel, role_id, msg_id, root_id, depth,
-                f"@{role_id}(后端 {backend.id})执行失败: {result.summary}")
+            try:
+                self._post_failure(
+                    channel, role_id, msg_id, root_id, depth,
+                    f"@{role_id}(后端 {backend.id})执行失败: {result.summary}")
+            finally:
+                self.store.update_chat_run(
+                    run_id, "failed", backend_id=backend.id, error=result.summary)
             return
 
         reply = (result.output or result.summary or "(无输出)").strip()
@@ -409,11 +464,11 @@ class ChatEngine:
         # 运行中先实时展示模型输出；最终回复确定后，如果 text/stdout 与即将
         # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
         self.store.remove_duplicate_reply_output(run_id, reply)
-        self.store.update_chat_run(run_id, "done", backend_id=backend.id)
         # 主控回复中的 @ 才会分派；执行角色回复自动返回主控(深度 +1)。
         self.post(channel.id, role_id, reply, author_type="agent",
                   reply_to=msg_id, root_id=root_id, depth=depth + 1,
                   runtime_id=backend.id, model=backend.model, effort=cfg.effort)
+        self.store.update_chat_run(run_id, "done", backend_id=backend.id)
 
     def _request_runtime_interaction(self, run_id: int, backend_id: str,
                                      kind: str, payload: dict,
@@ -519,7 +574,8 @@ class ChatEngine:
 
         history_records = []
         trigger_message = self.store.get_message(msg_id)
-        for m in self.store.recent_messages(channel.id, HISTORY_WINDOW):
+        for m in self.store.recent_messages(
+                channel.id, HISTORY_WINDOW, channel.context_start_message_id):
             if m["id"] != msg_id and is_orchestrator:
                 history_records.append(
                     self._message_record(m, role, project, known_roles))
@@ -582,7 +638,7 @@ class ChatEngine:
         )
         prompt = common_prompt + "\n" + recovery_prompt
 
-        session_key = f"{channel.id}::{role.id}"
+        session_key = self._session_key(channel, role.id)
 
         def _compatible_session(value: Optional[dict]) -> bool:
             return bool(
@@ -636,7 +692,8 @@ class ChatEngine:
         )
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
-            prompt=prompt, workdir=str(workdir), runtime_policy=runtime_policy,
+            prompt=prompt, workdir=str(workdir), project_id=channel.project_id or "",
+            role_id=role.id, runtime_policy=runtime_policy,
             env=env, timeout=CHAT_TIMEOUT,
             effort=role.effort,
             session_key=session_key, session_id=session_id,
@@ -688,6 +745,7 @@ class ChatEngine:
 
         record = {
             "id": int(message.get("id", 0)),
+            "kind": str(message.get("kind") or "message"),
             "author": {
                 "id": "执行角色" if redact_author else author,
                 "type": author_type,
@@ -745,6 +803,7 @@ class ChatEngine:
                         "name": channel.name,
                         "project_id": channel.project_id,
                         "purpose": channel.purpose,
+                        "context_start_message_id": channel.context_start_message_id,
                     },
                     "message_count": len(records),
                     "last_message_id": records[-1]["id"] if records else None,

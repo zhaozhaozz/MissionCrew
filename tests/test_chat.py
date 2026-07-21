@@ -4,10 +4,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from missioncrew.api import create_app
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.core.models import Channel, DEFAULT_MAX_CHAIN_RUNS, Project
-from missioncrew.runtime import adapters
+from missioncrew.runtime import adapters, runtime_manager
 
 
 @pytest.fixture()
@@ -313,6 +315,55 @@ def test_runtime_session_is_reused_per_channel_and_role(chat, seeded):
     adapters.get_adapter("mock").run(other_cfg)
     assert seeded.get_chat_session("webshop:other::dev")["runtime_session_id"] \
         == "mock:webshop:other::dev"
+
+
+def test_clear_context_stops_sessions_and_resets_recent_history(
+        chat, seeded, monkeypatch):
+    old_message = seeded.add_message(
+        "general", "human", "human", "旧上下文，不应再自动注入", [])
+    seeded.put_chat_session(
+        "general::lead", "general", "lead", "std-1", "mock", "/work",
+        "old-native-session", "old-context")
+    stopped = []
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda backend, session_key="": stopped.append(
+            (backend.id, session_key)) or 1)
+
+    result = chat.clear_context("general")
+
+    channel = seeded.get_channel("general")
+    marker = seeded.get_message(result["marker_id"])
+    assert channel.context_start_message_id == marker["id"]
+    assert marker["kind"] == "context_boundary"
+    assert seeded.chat_sessions_for_channel("general") == []
+    assert ("std-1", "general::lead") in stopped
+    assert old_message < marker["id"]
+
+    seeded.add_message("general", "human", "human", "新上下文第一条", [])
+    trigger = seeded.add_message(
+        "general", "human", "human", "请只基于新上下文回答", ["lead"])
+    cfg = chat._assemble(
+        channel, seeded.get_role("webshop", "lead"),
+        seeded.get_backend("std-1"), trigger)
+    history = _prompt_json_section(
+        cfg.prompt, "最近对话(JSON,按消息边界格式化)")
+    assert [item["content"] for item in history] == ["新上下文第一条"]
+    assert not cfg.session_id
+    assert cfg.session_key == f"general::lead::context-{marker['id']}"
+    assert (cfg.project_id, cfg.role_id) == ("webshop", "lead")
+
+
+def test_clear_context_api_rejects_active_run(seeded, monkeypatch):
+    trigger = seeded.add_message("general", "human", "human", "仍在运行", [])
+    seeded.add_chat_run("general", "lead", trigger, trigger, 0)
+    monkeypatch.setattr(runtime_manager, "stop", lambda *_args, **_kwargs: 0)
+    client = TestClient(create_app())
+
+    response = client.post("/api/chat/general/clear-context")
+
+    assert response.status_code == 409
+    assert "正在运行" in response.json()["detail"]
 
 
 def test_project_context_update_replaces_context_in_existing_session(chat, seeded):

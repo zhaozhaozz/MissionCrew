@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -84,7 +85,8 @@ def test_manager_persists_runtime_usage_history(store, tmp_path):
         task_id="task-history", stage_name="chat",
         backend=Backend(id="runtime-history", name="Runtime", adapter="recording",
                         model="model-a"),
-        prompt="work", workdir=str(tmp_path), session_key="channel::role",
+        prompt="work", workdir=str(tmp_path), project_id="project-a", role_id="lead",
+        session_key="channel::role",
         effort="high",
     )
 
@@ -96,6 +98,7 @@ def test_manager_persists_runtime_usage_history(store, tmp_path):
         "backend_id": "runtime-history", "adapter": "recording",
         "mode": "persistent", "transport": "test-rpc",
         "task_id": "task-history", "stage_name": "chat",
+        "project_id": "project-a", "role_id": "lead",
         "session_key": "channel::role", "model": "model-a", "effort": "high",
         "status": "succeeded", "success": True,
     }
@@ -117,6 +120,27 @@ def test_runtime_usage_reconciles_dead_owner_as_interrupted(store, monkeypatch):
     assert history[0]["status"] == "interrupted"
     assert history[0]["success"] is False
     assert history[0]["finished_at"] is not None
+
+
+def test_existing_runtime_usage_table_gets_project_and_role_columns(tmp_path):
+    path = tmp_path / "legacy.sqlite3"
+    connection = sqlite3.connect(path)
+    connection.execute("""CREATE TABLE runtime_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, backend_id TEXT NOT NULL,
+      adapter TEXT NOT NULL, mode TEXT NOT NULL, transport TEXT NOT NULL,
+      task_id TEXT DEFAULT '', stage_name TEXT DEFAULT '', session_key TEXT DEFAULT '',
+      model TEXT DEFAULT '', effort TEXT DEFAULT '', workdir TEXT DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'running', success INTEGER, summary TEXT DEFAULT '',
+      owner_pid INTEGER NOT NULL, started_at REAL NOT NULL, finished_at REAL
+    )""")
+    connection.commit()
+    connection.close()
+
+    from missioncrew.core.store import Store
+    legacy = Store(path)
+    columns = {row["name"] for row in legacy._query(
+        "PRAGMA table_info(runtime_usage)")}
+    assert {"project_id", "role_id"} <= columns
 
 
 @pytest.mark.parametrize(("adapter", "mode", "transport"), [
@@ -188,7 +212,8 @@ def test_builtin_cli_stop_terminates_tracked_process(tmp_path):
     backend = Backend(id="cli-stop", name="CLI", adapter="custom")
     config = ExecutionConfig(
         task_id="task", stage_name="chat", backend=backend, prompt="work",
-        workdir=str(tmp_path), session_key="channel::role")
+        workdir=str(tmp_path), project_id="project-a", role_id="dev",
+        session_key="channel::role")
     process = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         start_new_session=True)
@@ -198,10 +223,13 @@ def test_builtin_cli_stop_terminates_tracked_process(tmp_path):
         status = manager.status([backend])
         assert status["summary"]["one_shot"] == 1
         assert status["backends"][0]["state"] == "running"
+        assert status["backends"][0]["projects"] == ["project-a"]
+        assert status["backends"][0]["roles"] == ["dev"]
         instance = status["instances"][0]
         assert instance["transport"] == "cli-command"
         assert instance["mode"] == "one_shot"
         assert instance["pid"] == process.pid
+        assert (instance["project_id"], instance["role_id"]) == ("project-a", "dev")
         assert manager.stop(backend, "channel::role") == 1
         assert process.poll() is not None
         assert manager.status([backend])["summary"]["live_instances"] == 0

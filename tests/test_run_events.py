@@ -96,7 +96,7 @@ def test_existing_message_table_gets_execution_metadata_columns(tmp_path):
     from missioncrew.core.store import Store
     legacy = Store(path)
     columns = {row["name"] for row in legacy._query("PRAGMA table_info(messages)")}
-    assert {"runtime_id", "model", "effort"} <= columns
+    assert {"runtime_id", "model", "effort", "kind"} <= columns
 
 
 # ---- CLI 适配器:stream-json 解析出思考/工具/文本,普通 CLI 按行透传 ----
@@ -276,4 +276,9 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert "model=${message.model" in js
     assert "effort=${message.effort" in js
     assert "MESSAGE_FOLD_AT" in js and "toggleMessageBody" in js
+    assert "renderRunEvent" in js and "latestEventId" in js
+    assert 'body.querySelectorAll(".re-fold[open]")' in js
+    assert "RUN_INPUT_FOLD_AT" not in js
+    assert "/clear-context" in js and 'm.kind === "context_boundary"' in js
+    assert "清除上下文" in client.get("/").text
     assert '<span class="via">agent</span>' not in js

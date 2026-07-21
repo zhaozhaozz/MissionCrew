@@ -60,10 +60,13 @@ function renderRuntimeStatusPayload(data) {
   const backends = [...(data.backends || [])].sort((a, b) =>
     (stateOrder[a.state] ?? 9) - (stateOrder[b.state] ?? 9) || a.id.localeCompare(b.id));
   document.getElementById("runtime-status-backends").innerHTML =
-    `<tr><th>Runtime</th><th>状态</th><th>实例</th><th>持久</th><th>单次</th><th>正在执行</th></tr>` +
+    `<tr><th>Runtime</th><th>状态</th><th>项目</th><th>角色</th><th>实例</th>` +
+    `<th>持久</th><th>单次</th><th>正在执行</th></tr>` +
     backends.map(backend => `<tr>
       <td><b>${esc(backend.id)}</b><br><span class="muted">${esc(backend.adapter)}</span></td>
       <td>${runtimeStateBadge(backend.state)}</td>
+      <td>${esc((backend.projects || []).join(", ") || "—")}</td>
+      <td>${esc((backend.roles || []).map(role => "@" + role).join(", ") || "—")}</td>
       <td>${backend.instances}</td><td>${backend.persistent}</td>
       <td>${backend.one_shot}</td><td>${backend.running}</td></tr>`).join("");
 
@@ -71,7 +74,7 @@ function renderRuntimeStatusPayload(data) {
   const instances = data.instances || [];
   document.getElementById("runtime-status-instances").innerHTML =
     `<tr><th>状态</th><th>Runtime / 连接</th><th>模式</th><th>PID</th>` +
-    `<th>会话</th><th>任务</th><th>工作目录</th><th>存活 / 最近活动</th></tr>` +
+    `<th>项目 / 角色</th><th>会话</th><th>任务</th><th>工作目录</th><th>存活 / 最近活动</th></tr>` +
     (instances.map(instance => `<tr>
       <td>${runtimeStateBadge(instance.state)}</td>
       <td><b>${esc(instance.backend_id)}</b><br><span class="muted">` +
@@ -79,6 +82,8 @@ function renderRuntimeStatusPayload(data) {
       <td><span class="pill">${instance.mode === "persistent" ? "持久实例" : "单次执行"}</span>` +
         `<br><span class="muted">${esc(instance.executable || "—")}</span></td>
       <td><code>${instance.pid || "—"}</code></td>
+      <td>${esc(instance.project_id || "—")}` +
+        `${instance.role_id ? `<br><span class="muted">@${esc(instance.role_id)}</span>` : ""}</td>
       <td class="runtime-session-cell">${runtimeSessionCell(instance)}</td>
       <td>${esc(instance.task_id || "—")}` +
         `${instance.stage_name ? `<br><span class="muted">${esc(instance.stage_name)}</span>` : ""}` +
@@ -87,7 +92,7 @@ function renderRuntimeStatusPayload(data) {
         `${esc(instance.workdir || "—")}</code></td>
       <td>${runtimeAge(instance.started_at, now)}` +
         `<br><span class="muted">${runtimeAge(instance.last_activity, now)} 前</span></td>
-    </tr>`).join("") || `<tr><td colspan="8" class="empty runtime-empty">当前没有 Runtime 实例；发起任务后会实时出现。</td></tr>`);
+    </tr>`).join("") || `<tr><td colspan="9" class="empty runtime-empty">当前没有 Runtime 实例；发起任务后会实时出现。</td></tr>`);
 
   document.getElementById("runtime-status-updated").textContent =
     `更新于 ${new Date(now * 1000).toLocaleTimeString()}`;
@@ -98,7 +103,7 @@ function renderRuntimeHistoryPayload(data) {
   document.getElementById("runtime-history-count").textContent = history.length;
   document.getElementById("runtime-status-history").innerHTML =
     `<tr><th>结果</th><th>开始时间</th><th>Runtime / 连接</th><th>模式</th>` +
-    `<th>任务</th><th>模型</th><th>耗时</th></tr>` +
+    `<th>项目 / 角色</th><th>任务</th><th>模型</th><th>耗时</th></tr>` +
     (history.map(item => `<tr>
       <td title="${esc(item.summary || "")}">${runtimeStateBadge(item.status)}</td>
       <td>${new Date(item.started_at * 1000).toLocaleString()}</td>
@@ -106,13 +111,15 @@ function renderRuntimeHistoryPayload(data) {
         `${esc(RUNTIME_TRANSPORT_LABELS[item.transport] || item.transport || item.adapter)}</span></td>
       <td><span class="pill">${item.mode === "persistent" ? "持久实例" : "单次执行"}</span>` +
         `${item.session_key ? `<br><code title="${esc(item.session_key)}">${esc(item.session_key)}</code>` : ""}</td>
+      <td>${esc(item.project_id || "—")}` +
+        `${item.role_id ? `<br><span class="muted">@${esc(item.role_id)}</span>` : ""}</td>
       <td>${esc(item.task_id || "—")}` +
         `${item.stage_name ? `<br><span class="muted">${esc(item.stage_name)}</span>` : ""}</td>
       <td>${esc(item.model || "默认")}` +
         `${item.effort ? `<br><span class="muted">effort=${esc(item.effort)}</span>` : ""}</td>
       <td>${runtimeDuration(item.duration_seconds)}</td>
     </tr>`).join("") ||
-      `<tr><td colspan="7" class="empty runtime-empty">尚无 Runtime 使用记录。</td></tr>`);
+      `<tr><td colspan="8" class="empty runtime-empty">尚无 Runtime 使用记录。</td></tr>`);
 }
 
 async function renderRuntimeHistory(force = false) {

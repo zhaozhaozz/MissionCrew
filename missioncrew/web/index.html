@@ -97,7 +97,10 @@
     <div id="chat-view">
       <div id="msgs"><div class="chat-empty empty">还没有消息:@角色 布置工作(不 @ 时默认交给项目主控),对话会显示在这里</div></div>
       <div id="composer">
-        <div id="role-bar"></div>
+        <div id="chat-composer-head">
+          <div id="role-bar"></div>
+          <button class="ghost compact" type="button" onclick="clearChatContext()">清除上下文</button>
+        </div>
         <div id="input-row">
           <textarea id="input" placeholder="给角色布置工作,例如:@dev 修复购物车金额错误,完成后请 @reviewer 评审;不 @ 任何角色时默认交给项目主控   (Enter 发送,Shift+Enter 换行)"></textarea>
           <button class="send" onclick="send()">发送</button>

@@ -92,6 +92,8 @@ class _CodexSession:
         self.last_activity = self.created_at
         self.last_task_id = ""
         self.last_stage_name = ""
+        self.last_project_id = ""
+        self.last_role_id = ""
         self.last_model = ""
 
     def compatible(self, backend: Backend, workdir: str) -> bool:
@@ -187,6 +189,8 @@ class _CodexSession:
             self.last_activity = time.time()
             self.last_task_id = config.task_id
             self.last_stage_name = config.stage_name
+            self.last_project_id = config.project_id
+            self.last_role_id = config.role_id
             self.last_model = config.backend.model
             prompt = adapters._session_input(config, recovery=not bool(config.session_id))
             adapters._emit_execution_start(config.emit, [*self.command], prompt)
@@ -257,6 +261,7 @@ class _CodexSession:
             session_key=self.session_key if self.persistent else "",
             native_session_id=self.thread_id, workdir=self.workdir,
             task_id=self.last_task_id, stage_name=self.last_stage_name,
+            project_id=self.last_project_id, role_id=self.last_role_id,
             model=self.last_model, executable=Path(self.command[0]).name,
             started_at=self.created_at, last_activity=self.last_activity,
         )

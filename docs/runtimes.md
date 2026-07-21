@@ -57,11 +57,13 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 页面下方的「使用历史」来自独立的 `GET /api/runtime/history`，记录的是每次 `RuntimeManager.start()` 调用，而不是进程实例生命周期。`RuntimeProvider.execution_info()` 声明该次调用的 `persistent` / `one_shot` 形态与 transport；统一管理器在调用 provider 前写入 `running`，返回后更新为 `succeeded` 或 `failed`。记录包含 Runtime、任务/阶段、session key、模型、effort、工作目录、起止时间和耗时，保存在平台 SQLite 中，因此服务重启后仍保留。若服务退出时调用尚未结束，后续读取会在确认原所属进程已经消失后标记为 `interrupted`。页面显示最近 100 条并每三秒刷新一次历史列表。
 
+`ExecutionConfig`、`RuntimeInstance` 与 `runtime_usage` 同时携带 `project_id` 和 `role_id`。因此全局后端概览会聚合当前实例所属的项目和角色，实例表与历史表也直接显示这两个字段；结构化任务只有项目没有角色，非项目调用两者可以为空。
+
 ## 接入技术
 
 ### 逐 Runtime 会话复用矩阵
 
-聊天会话统一以 `channel::role` 为键，但每个 Runtime 的原生接口不同。下表中的“后续轮次”都只发送最新 MissionCrew 公共上下文和当前触发消息，不再重复回放最近对话；只有新建会话、原会话无法恢复或没有可靠原生接口时，才发送包含最近对话 JSON 的恢复输入。
+聊天会话在一个上下文周期内以 `channel::role` 为键，但每个 Runtime 的原生接口不同。用户点击「清除上下文」后，平台先确认频道没有运行中的 Agent，再停止该频道各角色的持久实例、删除 `chat_sessions`，写入可见的 `context_boundary` 分隔消息，并把后续 key 切换为 `channel::role::context-<marker-id>`；因此固定 session id 或稳定目录型 CLI 也不会重新连接清除前的上下文。最近对话只选择分隔消息之后的记录，旧消息和完整历史文件仍保留供人类查看或 Agent 按需读取。下表中的“后续轮次”都只发送最新 MissionCrew 公共上下文和当前触发消息，不再重复回放最近对话；只有新建会话、原会话无法恢复或没有可靠原生接口时，才发送包含最近对话 JSON 的恢复输入。
 
 | Runtime / adapter | 首轮如何创建 | 后续轮次如何复用 | 会话 ID 来源与进程生命周期 |
 |---|---|---|---|
@@ -106,6 +108,8 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `deny`：平台拒绝请求；Codex 同时使用 `approvalPolicy=never` 与配置的 sandbox，使不可批准的越权操作直接失败。
 
 自动批准和 sandbox 是两层：批准请求不等于忽略文件系统边界。Codex 对额外目录或网络的 `item/permissions/requestApproval` 会回传请求的精确 permission profile；Claude 使用 `updatedInput` 继续获准的工具调用。所有交互都设有与本轮相同的截止时间，超时按取消处理。
+
+聊天中的每条 Runtime 过程事件都渲染为可折叠项，包括输入、思考、命令、工具结果、日志、用量和交互请求。每个运行卡采用单项展开：首次载入时只展开最新事件；收到新的事件 id 时自动收起上一项并展开新项；用户手动展开任一旧项时会收起同卡片中的其他项。相同事件的流式内容追加不会被误判为新项。
 
 ### 打印模式 CLI(`CliAdapter`)
 

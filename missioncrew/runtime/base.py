@@ -43,6 +43,8 @@ class RuntimeInstance:
     workdir: str = ""
     task_id: str = ""
     stage_name: str = ""
+    project_id: str = ""
+    role_id: str = ""
     model: str = ""
     executable: str = ""
     started_at: float = 0.0

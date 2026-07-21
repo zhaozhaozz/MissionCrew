@@ -188,6 +188,11 @@
   .date-sep { text-align: center; margin: 20px 0 16px; animation: fadeUp .18s ease; }
   .date-sep span { background: var(--bg-soft); color: var(--muted); font-size: 11.5px;
                    padding: 3px 14px; border-radius: 999px; }
+  .context-boundary { display: flex; align-items: center; gap: 12px; margin: 22px 0;
+                      color: var(--muted); font-size: 12px; }
+  .context-boundary::before, .context-boundary::after { content: ""; height: 1px;
+                                                        background: var(--line); flex: 1; }
+  .context-boundary span { white-space: nowrap; }
   @keyframes blink { 50% { opacity: .2; } }
   /* 运行过程卡片:内联在触发消息下方,可折叠;过程流按事件类型着色 */
   .run-card { margin: -8px 0 16px 40px; max-width: 840px; font-size: 12.5px;
@@ -254,7 +259,9 @@
 
   #composer { flex: none; border-top: 1px solid var(--line); padding: 12px 24px 14px;
               background: var(--card); }
-  #role-bar { margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+  #chat-composer-head { margin-bottom: 8px; display: flex; align-items: flex-start;
+                        justify-content: space-between; gap: 10px; }
+  #role-bar { display: flex; flex-wrap: wrap; gap: 6px; }
   #role-bar button { display: inline-flex; align-items: center; gap: 6px; margin-right: 0;
                      background: var(--card-2); border: 1px solid var(--line); color: var(--text-2);
                      border-radius: 999px; padding: 3px 12px; font-size: 12.5px; cursor: pointer;

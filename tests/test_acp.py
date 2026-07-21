@@ -112,6 +112,7 @@ def _chat_cfg(tmp_path, saved, emit=None, shape="config"):
     return ExecutionConfig(
         task_id="chat", stage_name="chat", backend=backend,
         prompt="公共\n恢复历史\n当前任务", workdir=str(tmp_path), timeout=30,
+        project_id="project-a", role_id="lead",
         session_key="channel::role", session_id=saved.get("id", ""),
         common_prompt="公共上下文", turn_prompt="当前任务",
         recovery_prompt="最近对话\n当前任务", context_version="v1",
@@ -134,6 +135,7 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
         active = acp.active_instances("kimi")
         assert len(active) == 1 and active[0].mode == "persistent"
         assert active[0].state == "idle" and active[0].session_key == "channel::role"
+        assert (active[0].project_id, active[0].role_id) == ("project-a", "lead")
         second_events = []
         second = adapters.AcpAdapter("kimi").run(
             _chat_cfg(tmp_path, saved,

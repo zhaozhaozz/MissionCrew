@@ -368,6 +368,7 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
         backend.id for backend in seeded.list_backends()}
     assert set(data["summary"]) >= {
         "backends", "live_instances", "running", "persistent", "one_shot"}
+    assert all("projects" in row and "roles" in row for row in data["backends"])
     html = client.get("/").text
     router = client.get("/assets/js/router.js").text
     js = client.get("/assets/js/runtime-status.js").text
@@ -380,6 +381,7 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
     usage_id = seeded.start_runtime_usage(
         backend_id="codex", adapter="codex", mode="persistent",
         transport="codex-app-server", task_id="chat:42", stage_name="chat",
+        project_id="webshop", role_id="lead",
         session_key="general::lead", model="gpt-test", effort="high",
         workdir="/work/project",
     )
@@ -388,9 +390,11 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
     assert history[0]["backend_id"] == "codex"
     assert history[0]["status"] == "succeeded"
     assert history[0]["mode"] == "persistent"
+    assert (history[0]["project_id"], history[0]["role_id"]) == ("webshop", "lead")
     assert 'id="runtime-status-history"' in html
     assert "/api/runtime/history?limit=100" in js
     assert "使用历史" in html and "已中断" in js
+    assert "backend.projects" in js and "instance.project_id" in js
     assert "setInterval(pollRuntimeStatus, 1000)" in client.get(
         "/assets/js/main.js").text
 

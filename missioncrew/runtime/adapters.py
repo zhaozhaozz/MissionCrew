@@ -44,6 +44,8 @@ class _ActiveProcess:
     workdir: str
     task_id: str
     stage_name: str
+    project_id: str
+    role_id: str
     model: str
     executable: str
     started_at: float
@@ -76,6 +78,7 @@ def _track_process(cfg: ExecutionConfig, proc: subprocess.Popen,
             session_key=cfg.session_key, process=proc,
             workdir=str(Path(cfg.workdir).expanduser().resolve()),
             task_id=cfg.task_id, stage_name=cfg.stage_name,
+            project_id=cfg.project_id, role_id=cfg.role_id,
             model=cfg.backend.model, executable=executable,
             started_at=time.time(),
         )
@@ -100,6 +103,7 @@ def active_execution_instances(backend_id: str = "") -> list[RuntimeInstance]:
         pid=active.process.pid, session_key=active.session_key,
         workdir=active.workdir, task_id=active.task_id,
         stage_name=active.stage_name, model=active.model,
+        project_id=active.project_id, role_id=active.role_id,
         executable=active.executable, started_at=active.started_at,
         last_activity=active.started_at,
     ) for active in active_items
@@ -741,6 +745,7 @@ class AcpAdapter:
             recovery_prompt=recovery_prompt, save_session=cfg.save_session,
             context_version=cfg.context_version, runtime_id=cfg.backend.id,
             task_id=cfg.task_id, stage_name=cfg.stage_name,
+            project_id=cfg.project_id, role_id=cfg.role_id,
         )
         try:
             _diagnostic_log_path(cfg, self.adapter_name).write_text(text)
