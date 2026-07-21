@@ -25,6 +25,23 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 每个工具在检测表中还带默认能力位、档位与单次成本估算,注册时自动填充;这些属性服务于结构化任务的阶段路由与配额记账,聊天角色不用它们做路由。
 
+## 统一 Runtime 抽象边界
+
+业务模块只依赖 `missioncrew.runtime.runtime_manager` 和统一领域对象，不允许导入 `runtime.adapters`、调用 `get_adapter()`，也不允许根据 `ACP_SERVE_COMMANDS` 等原始执行器常量分支。CLI、ACP、Mock 的命令、协议和进程细节由 `RuntimeProvider` 实现封装在 Runtime 包内部。
+
+统一控制面提供以下操作：
+
+- `start(ExecutionConfig) -> RunResult`：启动一次 Runtime 执行，过程事件与最终结果使用统一格式。
+- `stop(Backend, session_key="") -> int`：停止指定 Runtime 的活动 CLI 进程、ACP 一次性执行或长驻会话。
+- `supports_session()` / `capabilities()`：查询实际会话复用和生命周期能力，聊天层不再猜测后端类型。
+- `list_models()`、`effort_options()`：统一模型和推理力度管理。
+- `detect_report()`、`detect_backends()`、`update()`、`refresh_installation()`：统一发现、注册、升级和版本探测。
+- `register(adapter, provider)`：为新 Runtime 或插件注册实现，不修改聊天、任务、API 或 CLI 调用链。
+
+`ExecutionConfig.runtime_policy` 是后端无关的执行策略，包含 `readable_paths`、`writable_paths`、`skill_paths` 和 `RuntimePermissions`。权限目前统一表达为审批模式 `auto|prompt|deny`、文件系统模式 `read-only|workspace-write|full-access`、网络模式 `inherit|allow|deny`。Runtime manager 会生成 `MISSIONCREW_READABLE_DIRS`、`MISSIONCREW_WRITABLE_DIRS`、`MISSIONCREW_SKILL_DIRS`、`MISSIONCREW_RUNTIME_PERMISSIONS`，provider 再把可支持的策略翻译为命令参数或 ACP 权限响应。`allowed_dirs` 仅作为旧构造入口的兼容字段。
+
+项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。
+
 ## 接入技术
 
 ### 逐 Runtime 会话复用矩阵
@@ -138,7 +155,8 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 接入新工具
 
-1. **打印模式 CLI**:在 `KNOWN_CLIS` 加检测项(二进制名、adapter 名、默认能力/档位/成本),在 `DEFAULT_COMMANDS` 加命令模板(带非交互参数);
-2. **ACP 工具**:检测项之外,在 `ACP_SERVE_COMMANDS` 加 serve 命令即可,`get_adapter` 会自动路由到 `AcpAdapter`;
-3. 可选:`UPDATE_SPECS` 声明升级渠道;`KNOWN_MODELS` 预置模型阶梯(需要差异化记账时);模型可枚举的工具在 `list_runtime_models` 加发现分支;
-4. 二进制不在 PATH 或需要特殊参数时,注册后编辑 `Backend.command` 整体覆盖默认命令。
+1. 实现 `RuntimeProvider` 的 `start`、`stop`、`capabilities` 和 `list_models`，通过 `runtime_manager.register(adapter, provider)` 注册。业务层不增加 adapter 条件分支。
+2. 如果复用内置打印模式或 ACP executor，只在 Runtime 包内部补充命令模板、会话参数和权限翻译；原始 executor 不对主程序导出。
+3. 在 Runtime manager 内补充二进制发现、模型目录和升级策略；模型、effort 与 capability 均通过统一查询接口暴露。
+4. 为 provider 增加契约测试，并保留“`missioncrew/runtime` 之外不得导入原始执行器”的架构边界测试。
+5. 自定义 `Backend.command` 仍可覆盖默认命令，但 provider 必须明确声明这种配置是否能可靠复用原生 session。

@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -21,6 +22,7 @@ import subprocess
 import threading
 import uuid
 from collections import deque
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +33,8 @@ from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 
 _CLI_SESSION_LOCKS: dict[str, threading.Lock] = {}
 _CLI_SESSION_LOCKS_GUARD = threading.Lock()
+_ACTIVE_PROCESSES: dict[int, tuple[str, str, subprocess.Popen]] = {}
+_ACTIVE_PROCESSES_GUARD = threading.Lock()
 
 # 默认命令中能够可靠恢复原生会话的打印模式 Runtime。Backend.command 是
 # 完整命令覆盖，平台不会猜测其参数语义；自定义模板暂走完整恢复 Prompt。
@@ -44,6 +48,47 @@ _CLI_SESSION_ADAPTERS = (_FIXED_ID_SESSIONS | _CAPTURED_ID_SESSIONS
 def _named_session_lock(key: str) -> threading.Lock:
     with _CLI_SESSION_LOCKS_GUARD:
         return _CLI_SESSION_LOCKS.setdefault(key, threading.Lock())
+
+
+def _track_process(cfg: ExecutionConfig, proc: subprocess.Popen) -> None:
+    with _ACTIVE_PROCESSES_GUARD:
+        _ACTIVE_PROCESSES[id(proc)] = (cfg.backend.id, cfg.session_key, proc)
+
+
+def _untrack_process(proc: subprocess.Popen) -> None:
+    with _ACTIVE_PROCESSES_GUARD:
+        _ACTIVE_PROCESSES.pop(id(proc), None)
+
+
+def stop_active_executions(backend_id: str, session_key: str = "") -> int:
+    """停止指定 Runtime 的活动 CLI 进程；由统一 Runtime manager 调用。"""
+    targets: list[subprocess.Popen] = []
+    with _ACTIVE_PROCESSES_GUARD:
+        for key, (active_backend, active_session, proc) in list(
+                _ACTIVE_PROCESSES.items()):
+            if proc.poll() is not None:
+                _ACTIVE_PROCESSES.pop(key, None)
+                continue
+            if active_backend == backend_id and (
+                    not session_key or active_session == session_key):
+                targets.append(proc)
+                _ACTIVE_PROCESSES.pop(key, None)
+    for proc in targets:
+        _kill_process_group(proc)
+    return len(targets)
+
+
+def close_active_executions() -> None:
+    """服务退出时清理仍在运行的打印模式子进程。"""
+    with _ACTIVE_PROCESSES_GUARD:
+        targets = [proc for _, _, proc in _ACTIVE_PROCESSES.values()
+                   if proc.poll() is None]
+        _ACTIVE_PROCESSES.clear()
+    for proc in targets:
+        _kill_process_group(proc)
+
+
+atexit.register(close_active_executions)
 
 
 def _session_input(cfg: ExecutionConfig, recovery: bool) -> str:
@@ -94,6 +139,16 @@ def _session_missing(text: str) -> bool:
     return bool(re.search(
         r"(?:session|conversation|thread).{0,40}(?:not found|不存在|invalid|unknown)",
         text, re.I | re.S))
+
+
+def supports_native_session(backend: Backend) -> bool:
+    """返回当前配置是否能可靠复用原生会话，不向业务层暴露后端常量。"""
+    if backend.adapter == "mock":
+        return True
+    if not backend.command:
+        return (backend.adapter in _CLI_SESSION_ADAPTERS
+                or backend.adapter in ACP_SERVE_COMMANDS)
+    return backend.adapter in ACP_SERVE_COMMANDS
 
 # 各适配器的默认命令模板；除 prompt/model/effort 外，workdir 与
 # allowed_dirs 由平台按本次项目动态渲染。
@@ -371,6 +426,48 @@ def render_command(template: list[str], prompt: str, model: str,
     return cmd
 
 
+def _remove_command_option(command: list[str], flag: str,
+                           *, has_value: bool = False) -> list[str]:
+    result: list[str] = []
+    skip = False
+    for token in command:
+        if skip:
+            skip = False
+            continue
+        if token == flag:
+            skip = has_value
+            continue
+        result.append(token)
+    return result
+
+
+def _apply_permission_policy(command: list[str], adapter_name: str,
+                             cfg: ExecutionConfig) -> list[str]:
+    """把统一权限意图翻译为已知 Runtime 的原生命令参数。"""
+    permissions = cfg.runtime_policy.permissions
+    result = list(command)
+    if permissions.approval != "auto":
+        for flag, has_value in (
+                ("--permission-mode", True), ("--always-approve", False),
+                ("--allow-all-tools", False), ("--force", False),
+                ("--yolo", False), ("--trust-all-tools", False)):
+            result = _remove_command_option(result, flag, has_value=has_value)
+
+    if adapter_name == "codex" and "--sandbox" in result:
+        index = result.index("--sandbox") + 1
+        if index < len(result):
+            result[index] = {
+                "read-only": "read-only",
+                "workspace-write": "workspace-write",
+                "full-access": "danger-full-access",
+            }[permissions.filesystem]
+    elif (permissions.filesystem == "read-only"
+          and adapter_name in {"claude_code", "codebuddy"}):
+        result = _remove_command_option(result, "--permission-mode", has_value=True)
+        result.extend(["--permission-mode", "plan"])
+    return result
+
+
 def _additional_allowed_dirs(workdir: str, allowed_dirs: list[str]) -> list[str]:
     """去掉已位于主工作根内的目录，其余目录需要 Runtime 显式授权。"""
     root = Path(workdir).expanduser().resolve()
@@ -395,6 +492,15 @@ def _runtime_env(cfg: ExecutionConfig, adapter_name: str) -> dict:
     workdir = str(Path(cfg.workdir).expanduser().resolve())
     env = {**os.environ, **cfg.env, "PWD": workdir}
     env["MISSIONCREW_ALLOWED_DIRS"] = json.dumps(cfg.allowed_dirs, ensure_ascii=False)
+    policy = cfg.runtime_policy
+    env.setdefault("MISSIONCREW_READABLE_DIRS", json.dumps(
+        policy.readable_paths, ensure_ascii=False))
+    env.setdefault("MISSIONCREW_WRITABLE_DIRS", json.dumps(
+        policy.writable_paths, ensure_ascii=False))
+    env.setdefault("MISSIONCREW_SKILL_DIRS", json.dumps(
+        policy.skill_paths, ensure_ascii=False))
+    env.setdefault("MISSIONCREW_RUNTIME_PERMISSIONS", json.dumps(
+        asdict(policy.permissions), ensure_ascii=False))
     if adapter_name != "opencode":
         return env
 
@@ -568,6 +674,8 @@ class AcpAdapter:
             allowed_dirs=_additional_allowed_dirs(workdir, cfg.allowed_dirs),
             workdir=workdir,
         )
+        if not cfg.backend.command:
+            cmd = _apply_permission_policy(cmd, self.adapter_name, cfg)
         # ACP 的真实输入由协议层在确定“复用 / load / 新建恢复”后上报；这里
         # 只打印 serve 命令，避免先展示一个最终没有发送的 Prompt。
         if cfg.emit is not None:
@@ -583,7 +691,7 @@ class AcpAdapter:
             model=cfg.backend.model, timeout=cfg.timeout, emit=cfg.emit,
             session_key=cfg.session_key, session_id=cfg.session_id,
             recovery_prompt=recovery_prompt, save_session=cfg.save_session,
-            context_version=cfg.context_version,
+            context_version=cfg.context_version, runtime_id=cfg.backend.id,
         )
         try:
             _diagnostic_log_path(cfg, self.adapter_name).write_text(text)
@@ -866,6 +974,10 @@ class CliAdapter:
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
             allowed_dirs=extra_dirs, workdir=workdir,
         )
+        if using_default:
+            cmd = _apply_permission_policy(cmd, self.adapter_name, cfg)
+            command_preview = _apply_permission_policy(
+                command_preview, self.adapter_name, cfg)
         structured_json = False
         if cfg.session_key and using_default and self.adapter_name in _CLI_SESSION_ADAPTERS:
             cmd, structured_json = _apply_cli_session_args(
@@ -893,6 +1005,7 @@ class CliAdapter:
                 encoding="utf-8", errors="replace", bufsize=1,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
+            _track_process(cfg, proc)
         except FileNotFoundError:
             return RunResult(False, f"命令不存在: {template[0]}(后端 {cfg.backend.id})")
         out_tail: deque = deque(maxlen=400)   # 原始输出尾部(诊断日志)
@@ -955,6 +1068,7 @@ class CliAdapter:
             proc.wait(timeout=cfg.timeout)
         except subprocess.TimeoutExpired:
             _kill_process_group(proc)
+            _untrack_process(proc)
             for r in readers:
                 r.join(timeout=3)
             _write_log()
@@ -984,6 +1098,7 @@ class CliAdapter:
                 emit("status", "Runtime 未返回可恢复的会话 id；下一轮将使用恢复上下文新建会话。\n")
         elif reused and _session_missing(out + "\n" + "\n".join(err_full)):
             _clear_session(cfg)
+        _untrack_process(proc)
         return RunResult(proc.returncode == 0, out[-300:], output=out)
 
 

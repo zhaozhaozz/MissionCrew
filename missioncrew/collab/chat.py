@@ -20,7 +20,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
-from ..runtime import adapters
+from ..runtime import runtime_manager
 from ..core.config import mc_home
 from .documents import library_for, safe_relative_path
 from .workspace import (chat_workspace_dir, platform_history_dir,
@@ -28,7 +28,7 @@ from .workspace import (chat_workspace_dir, platform_history_dir,
                         write_task_files)
 from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
                            BoardWidget, Channel, ExecutionConfig,
-                           GuidelineDocument, ProjectSkill, Role)
+                           GuidelineDocument, ProjectSkill, Role, RuntimePolicy)
 from .project_context import (project_allowed_dirs, render_project_context,
                               write_guideline_context)
 from .skills import save_project_skill
@@ -319,7 +319,7 @@ class ChatEngine:
         cfg.emit = lambda kind, text: self.store.append_run_event(run_id, kind, text)
         library = library_for(channel.project_id or "")
         library.commit_changes("platform", "Capture external document changes before chat run")
-        result = adapters.get_adapter(backend.adapter).run(cfg)
+        result = runtime_manager.start(cfg)
         revision = library.commit_changes(
             f"role:{role.id}", f"Documents updated from channel {channel.name}")
         if revision:   # Agent 直接写目录的改动也进平台审计,与 API 写入口径一致
@@ -506,8 +506,7 @@ class ChatEngine:
         saved_session = self.store.get_chat_session(session_key)
         # 自定义打印命令的参数语义未知，不能猜测 resume 标志；若从默认命令
         # 切到自定义模板，先丢弃旧原生 id，避免以后切回时恢复一段缺轮次的历史。
-        native_session_supported = (
-            not backend.command or backend.adapter in adapters.ACP_SERVE_COMMANDS)
+        native_session_supported = runtime_manager.supports_session(backend)
         if saved_session and not native_session_supported:
             self.store.delete_chat_session(session_key)
             saved_session = None
@@ -541,9 +540,14 @@ class ChatEngine:
             )
 
         env["MISSIONCREW_SESSION_KEY"] = session_key
+        runtime_policy = RuntimePolicy(
+            readable_paths=list(allowed_dirs),
+            writable_paths=list(allowed_dirs),
+            skill_paths=[str(workspace.skills)] if workspace is not None else [],
+        )
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
-            prompt=prompt, workdir=str(workdir), allowed_dirs=allowed_dirs,
+            prompt=prompt, workdir=str(workdir), runtime_policy=runtime_policy,
             env=env, timeout=CHAT_TIMEOUT,
             effort=role.effort,
             session_key=session_key, session_id=session_id,

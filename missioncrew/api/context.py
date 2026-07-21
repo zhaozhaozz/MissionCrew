@@ -17,7 +17,7 @@ from ..core import seed as seed_mod
 from ..core.config import db_path
 from ..core.models import Project
 from ..core.store import Store
-from ..runtime import adapters
+from ..runtime import runtime_manager
 from ..taskflow.engine import Engine
 
 MENTION_ID_RE = re.compile(r"[\w-]+")
@@ -55,7 +55,7 @@ class ApiContext:
             cached = self.model_catalog_cache.get(backend.id)
             if cached and not refresh and time.time() - cached[0] < 600:
                 return cached[1]
-        models = adapters.list_runtime_models(backend)
+        models = runtime_manager.list_models(backend)
         with self.model_catalog_guard:
             self.model_catalog_cache[backend.id] = (time.time(), models)
         return models

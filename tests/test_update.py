@@ -116,7 +116,8 @@ def test_update_api_refreshes_version(client, seeded, monkeypatch):
     seeded.put_backend(Backend(id="codex", name="codex", adapter="codex",
                                binary_path="/usr/bin/codex", version="0.144.4"))
     monkeypatch.setattr(adapters, "run_update", lambda b, timeout=600: (True, "done"))
-    monkeypatch.setattr("missioncrew.api.backends.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr("missioncrew.runtime.manager.shutil.which",
+                        lambda name: "/usr/bin/codex")
     monkeypatch.setattr(adapters, "_cli_version", lambda binary: "0.144.5")
     r = client.post("/api/backends/codex/update").json()
     assert r["ok"] and r["old_version"] == "0.144.4" and r["version"] == "0.144.5"
@@ -125,6 +126,20 @@ def test_update_api_refreshes_version(client, seeded, monkeypatch):
 
 def test_update_api_unknown_backend_404(client):
     assert client.post("/api/backends/ghost/update").status_code == 404
+
+
+def test_stop_api_uses_runtime_lifecycle_interface(client, seeded, monkeypatch):
+    from missioncrew.runtime import runtime_manager
+
+    called = []
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda backend, session_key="": called.append((backend.id, session_key)) or 2)
+    response = client.post(
+        "/api/backends/std-1/stop?session_key=general%3A%3Adev")
+    assert response.status_code == 200
+    assert response.json() == {"ok": True, "stopped": 2}
+    assert called == [("std-1", "general::dev")]
 
 
 def test_tools_endpoint_exposes_updatable(client, seeded):
@@ -175,7 +190,8 @@ def test_update_concurrency_returns_409(client, seeded, monkeypatch):
         return True, "done"
 
     monkeypatch.setattr(adapters, "run_update", slow_update)
-    monkeypatch.setattr("missioncrew.api.backends.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr("missioncrew.runtime.manager.shutil.which",
+                        lambda name: "/usr/bin/codex")
     monkeypatch.setattr(adapters, "_cli_version", lambda binary: "1.0.1")
     results = {}
     t = threading.Thread(target=lambda: results.update(
@@ -214,7 +230,8 @@ def test_update_does_not_clobber_concurrent_writes(client, seeded, monkeypatch):
         return True, "done"
 
     monkeypatch.setattr(adapters, "run_update", update_with_concurrent_write)
-    monkeypatch.setattr("missioncrew.api.backends.shutil.which", lambda name: "/usr/bin/codex")
+    monkeypatch.setattr("missioncrew.runtime.manager.shutil.which",
+                        lambda name: "/usr/bin/codex")
     monkeypatch.setattr(adapters, "_cli_version", lambda binary: "1.0.1")
     r = client.post("/api/backends/codex/update").json()
     assert r["ok"] and r["version"] == "1.0.1"

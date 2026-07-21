@@ -9,7 +9,7 @@ from typing import Optional
 import typer
 import yaml
 
-from .runtime import adapters
+from .runtime import runtime_manager
 from .core import seed as seed_mod
 from .collab.chat import ChatEngine
 from .core.config import db_path, mc_home
@@ -222,13 +222,13 @@ def backend_list():
 @backend_app.command("detect")
 def backend_detect(register: bool = typer.Option(True, help="检测到后立即注册")):
     """扫描本机已安装的 Agent CLI 工具(仿 Multica Runtime:工具+版本+状态)。"""
-    report = adapters.detect_report()
+    report = runtime_manager.detect_report()
     for item in report:
         if item["installed"]:
             typer.echo(f"  ✓ {item['binary']:<14} {item['version'] or '?':<12} {item['path']}")
         else:
             typer.echo(f"  - {item['binary']:<14} 未安装")
-    found = adapters.detect_backends(report)
+    found = runtime_manager.detect_backends(report)
     if not found:
         raise typer.Exit(1)
     if register:
@@ -352,7 +352,7 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
         known_models = {str(m.get("name", "")) for m in backend.models}
         if known_models and r.model not in known_models:
             raise typer.BadParameter(f"@{r.id} 的模型不属于 runtime {r.runtime_id}")
-        if r.effort and r.effort not in adapters.EFFORT_SUPPORT.get(backend.adapter, []):
+        if r.effort and r.effort not in runtime_manager.effort_options(backend):
             raise typer.BadParameter(
                 f"@{r.id} 的 effort={r.effort} 不受 runtime {r.runtime_id} 支持")
         store.put_role(r)

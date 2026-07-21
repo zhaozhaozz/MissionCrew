@@ -4,7 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from ..core.models import ROLE_ABILITIES, Role
-from ..runtime.adapters import EFFORT_SUPPORT
+from ..runtime import runtime_manager
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import (RoleInput, RoleReorder, RoleTemplateInput,
                       RoleTemplateReorder)
@@ -35,7 +35,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 raise HTTPException(
                     400, f"模型 {body.model or '(CLI 默认)'} 不属于 runtime {body.runtime_id}")
         if body.effort:
-            allowed = EFFORT_SUPPORT.get(backend.adapter, [])
+            allowed = runtime_manager.effort_options(backend)
             if not allowed:
                 raise HTTPException(400, f"runtime {body.runtime_id} 不支持 effort(推理力度)配置")
             if body.effort not in allowed:

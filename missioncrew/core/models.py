@@ -504,8 +504,7 @@ class Role:
     description: str = ""         # 人格与领域上下文(自由文本,不锁定)
     runtime_id: str = ""             # 固定 runtime(后端注册表 id)
     model: str = ""                  # 固定模型;"" 表示显式使用 CLI 默认模型
-    effort: str = ""                 # 推理力度;"" = CLI 默认。仅支持 effort 的
-                                     # runtime 可设(adapters.EFFORT_SUPPORT)
+    effort: str = ""                 # 推理力度;"" = Runtime 默认，由统一抽象层校验
     capabilities: list[str] = field(default_factory=list)  # 固定能力选项,见 ROLE_ABILITIES
     preference: str = ""                   # 工作偏好:自由文本(如"前端"/"后端,偏好 React")
     color: str = ""                        # 看板/聊天中的标识色
@@ -619,6 +618,44 @@ class RunResult:
 
 
 @dataclass
+class RuntimePermissions:
+    """Runtime 无关的权限意图，由 Runtime 层翻译为各后端参数。"""
+
+    approval: str = "auto"          # auto | prompt | deny
+    filesystem: str = "workspace-write"  # read-only | workspace-write | full-access
+    network: str = "inherit"        # inherit | allow | deny
+
+    def __post_init__(self):
+        choices = {
+            "approval": {"auto", "prompt", "deny"},
+            "filesystem": {"read-only", "workspace-write", "full-access"},
+            "network": {"inherit", "allow", "deny"},
+        }
+        for field_name, allowed in choices.items():
+            value = getattr(self, field_name)
+            if value not in allowed:
+                raise ValueError(
+                    f"Runtime 权限 {field_name}={value!r} 必须是 {sorted(allowed)} 之一")
+
+
+@dataclass
+class RuntimePolicy:
+    """一次执行的统一访问策略；主程序不需要知道后端的原生权限参数。"""
+
+    readable_paths: list[str] = field(default_factory=list)
+    writable_paths: list[str] = field(default_factory=list)
+    skill_paths: list[str] = field(default_factory=list)
+    permissions: RuntimePermissions = field(default_factory=RuntimePermissions)
+
+    def allowed_paths(self) -> list[str]:
+        found: list[str] = []
+        for path in [*self.readable_paths, *self.writable_paths]:
+            if path and path not in found:
+                found.append(path)
+        return found
+
+
+@dataclass
 class ExecutionConfig:
     """装配后的执行配置:平台决定'在什么约束下执行'的最终产物。"""
 
@@ -628,8 +665,9 @@ class ExecutionConfig:
     prompt: str
     workdir: str
     # 项目显式登记、允许 Runtime 读写的本地目录。workdir 是主工作根，
-    # allowed_dirs 是额外的多仓/文档库边界，由各适配器翻译成原生参数。
+    # allowed_dirs 是旧构造入口；Runtime manager 会把统一策略翻译为后端参数。
     allowed_dirs: list[str] = field(default_factory=list)
+    runtime_policy: RuntimePolicy = field(default_factory=RuntimePolicy)
     env: dict = field(default_factory=dict)
     timeout: int = 3600
     effort: str = ""      # 推理力度(聊天执行由角色填入;任务阶段暂不使用)
@@ -651,3 +689,11 @@ class ExecutionConfig:
     # 运行过程回调 (kind, text):适配器在执行期间实时上报思考/工具/输出等
     # 事件,None 表示调用方不关心过程(如结构化任务阶段)
     emit: Optional[Callable[[str, str], None]] = None
+
+    def __post_init__(self):
+        # 兼容旧的 allowed_dirs 构造入口；新代码只需提供统一策略。
+        if self.allowed_dirs and not self.runtime_policy.allowed_paths():
+            self.runtime_policy.readable_paths = list(self.allowed_dirs)
+            self.runtime_policy.writable_paths = list(self.allowed_dirs)
+        elif self.runtime_policy.allowed_paths():
+            self.allowed_dirs = self.runtime_policy.allowed_paths()

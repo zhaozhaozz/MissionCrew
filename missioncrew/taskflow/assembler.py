@@ -10,7 +10,8 @@ from pathlib import Path
 
 from ..core.config import workspaces_dir
 from ..collab.documents import library_for
-from ..core.models import Backend, ExecutionConfig, Project, Task, TaskStage
+from ..core.models import (Backend, ExecutionConfig, Project, RuntimePolicy,
+                           Task, TaskStage)
 from ..collab.project_context import project_allowed_dirs, render_project_context
 from ..collab.workspace import prepare_agent_workspace, task_workspace_dir
 from ..core.store import Store
@@ -80,13 +81,17 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
         produces=", ".join(stage.produces) or "无强制要求",
         resources_section=resources_section,
     )
+    allowed_dirs = project_allowed_dirs(project, library, workspace.root)
     return ExecutionConfig(
         task_id=task.id,
         stage_name=stage.name,
         backend=backend,
         prompt=prompt,
         workdir=str(ws),
-        allowed_dirs=project_allowed_dirs(project, library, workspace.root),
+        runtime_policy=RuntimePolicy(
+            readable_paths=list(allowed_dirs), writable_paths=list(allowed_dirs),
+            skill_paths=[str(workspace.skills)],
+        ),
         env={
             **env,
             "MISSIONCREW_WORKSPACE": str(workspace.root),

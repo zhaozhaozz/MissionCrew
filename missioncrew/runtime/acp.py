@@ -37,6 +37,11 @@ class _AcpClient:
         self.deadline = time.time() + timeout
         self.chunks: list[str] = []          # agent_message_chunk 文本
         self._raw_emit = emit or (lambda kind, text: None)
+        try:
+            permissions = json.loads(env.get("MISSIONCREW_RUNTIME_PERMISSIONS", "{}"))
+        except json.JSONDecodeError:
+            permissions = {}
+        self.approval_mode = str(permissions.get("approval", "auto"))
 
         def _safe_emit(kind: str, text: str) -> None:
             # 上报失败只丢事件:读循环死亡会让所有 pending 请求挂到超时
@@ -107,7 +112,8 @@ class _AcpClient:
     def _handle_agent_request(self, msg: dict) -> None:
         """应答 agent -> client 方向的请求,平台是无头的,权限自动决策。"""
         if msg["method"] == "session/request_permission":
-            option = _pick_permission_option((msg.get("params") or {}).get("options") or [])
+            option = _pick_permission_option(
+                (msg.get("params") or {}).get("options") or [], self.approval_mode)
             if option is not None:
                 self.emit("status", f"权限请求:自动选择 {option}\n")
                 self._write({"jsonrpc": "2.0", "id": msg["id"],
@@ -136,7 +142,7 @@ class _AcpClient:
         try:
             self._write({"jsonrpc": "2.0", "id": rid,
                          "method": method, "params": params})
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             self._pending.pop(rid, None)
             raise AcpError(f"{method} 写入失败: {exc}") from exc
         remaining = self.deadline - time.time()
@@ -169,6 +175,7 @@ class _AcpClient:
 @dataclass
 class _LiveSession:
     client: _AcpClient
+    runtime_id: str
     session_id: str
     signature: tuple
     last_used: float
@@ -179,6 +186,8 @@ _LIVE_SESSIONS: dict[str, _LiveSession] = {}
 _LIVE_SESSIONS_GUARD = threading.Lock()
 _SESSION_LOCKS: dict[str, threading.Lock] = {}
 _SESSION_LOCKS_GUARD = threading.Lock()
+_ONE_SHOT_CLIENTS: dict[int, tuple[str, _AcpClient]] = {}
+_ONE_SHOT_CLIENTS_GUARD = threading.Lock()
 _SESSION_IDLE_SECONDS = 1800
 
 
@@ -223,20 +232,44 @@ def close_sessions() -> None:
     with _LIVE_SESSIONS_GUARD:
         sessions = list(_LIVE_SESSIONS.values())
         _LIVE_SESSIONS.clear()
-    for live in sessions:
-        live.client.close()
+    with _ONE_SHOT_CLIENTS_GUARD:
+        one_shots = [client for _, client in _ONE_SHOT_CLIENTS.values()]
+        _ONE_SHOT_CLIENTS.clear()
+    for client in [*(live.client for live in sessions), *one_shots]:
+        client.close()
+
+
+def stop_runtime_sessions(runtime_id: str, session_key: str = "") -> int:
+    """停止指定 Runtime 的 ACP 长驻会话和一次性执行。"""
+    live_clients: list[_AcpClient] = []
+    with _LIVE_SESSIONS_GUARD:
+        for key, live in list(_LIVE_SESSIONS.items()):
+            if live.runtime_id == runtime_id and (not session_key or key == session_key):
+                live_clients.append(_LIVE_SESSIONS.pop(key).client)
+    one_shots: list[_AcpClient] = []
+    if not session_key:
+        with _ONE_SHOT_CLIENTS_GUARD:
+            for key, (active_runtime, client) in list(_ONE_SHOT_CLIENTS.items()):
+                if active_runtime == runtime_id:
+                    one_shots.append(client)
+                    _ONE_SHOT_CLIENTS.pop(key, None)
+    for client in [*live_clients, *one_shots]:
+        client.close()
+    return len(live_clients) + len(one_shots)
 
 
 atexit.register(close_sessions)
 
 
-def _pick_permission_option(options: list[dict]) -> Optional[str]:
+def _pick_permission_option(options: list[dict], approval: str = "auto") -> Optional[str]:
     """从 agent 提供的选项里挑安全项:单次允许 > 会话允许 > 单次拒绝。
 
     必须选 agent 实际提供的 optionId(ACP 契约是"从这些选项里挑"),
     编造的 id 会被当作拒绝。
     """
-    for kind in ("allow_once", "allow_always", "reject_once"):
+    order = (("allow_once", "allow_always", "reject_once")
+             if approval == "auto" else ("reject_once", "reject_always"))
+    for kind in order:
         for o in options:
             if o.get("kind") == kind and o.get("optionId"):
                 return o["optionId"]
@@ -293,12 +326,14 @@ def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
 
 
 def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
-                  model: str, timeout: int,
+                  model: str, timeout: int, runtime_id: str,
                   emit: Optional[Callable[[str, str], None]]) -> tuple[bool, str]:
     try:
         client = _AcpClient(cmd, workdir, env, timeout, emit=emit)
     except OSError as e:
         return False, f"ACP 进程启动失败: {e}"
+    with _ONE_SHOT_CLIENTS_GUARD:
+        _ONE_SHOT_CLIENTS[id(client)] = (runtime_id, client)
     try:
         initialize_result = _initialize(client)
         session_id, _ = _new_or_load_session(client, workdir, "", initialize_result)
@@ -306,6 +341,8 @@ def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
     except AcpError as e:
         return False, str(e)
     finally:
+        with _ONE_SHOT_CLIENTS_GUARD:
+            _ONE_SHOT_CLIENTS.pop(id(client), None)
         client.close()
 
 
@@ -315,7 +352,7 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                session_key: str = "", session_id: str = "",
                recovery_prompt: str = "",
                save_session: Optional[Callable[[str, str], None]] = None,
-               context_version: str = "") -> tuple[bool, str]:
+               context_version: str = "", runtime_id: str = "") -> tuple[bool, str]:
     """完成一轮 ACP prompt，并按 channel×role 复用长驻原生会话。
 
     无 ``session_key`` 时保持一次性调用。长驻进程不存在（包括服务重启）时，
@@ -323,7 +360,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
     ``recovery_prompt``，避免把缺失的历史当成已恢复。
     """
     if not session_key:
-        return _run_one_shot(cmd, prompt, workdir, env, model, timeout, emit)
+        return _run_one_shot(
+            cmd, prompt, workdir, env, model, timeout, runtime_id, emit)
 
     _cleanup_idle_sessions()
     signature = _client_signature(cmd, workdir, env)
@@ -349,7 +387,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                 except Exception:
                     client.close()
                     raise
-                live = _LiveSession(client, runtime_session_id, signature, time.time())
+                live = _LiveSession(
+                    client, runtime_id, runtime_session_id, signature, time.time())
                 with _LIVE_SESSIONS_GUARD:
                     _LIVE_SESSIONS[session_key] = live
 

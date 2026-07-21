@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from . import assembler, resources, router, workflow
-from ..runtime import adapters
+from ..runtime import runtime_manager
 from ..collab.documents import library_for
 from ..collab.workspace import sync_task_files, write_task_files
 from ..core.models import Task, TaskStage, new_id
@@ -122,7 +122,7 @@ class Engine:
 
         library = library_for(project.id)
         library.commit_changes("platform", "Capture external document changes before task run")
-        result = adapters.get_adapter(backend.adapter).run(cfg)
+        result = runtime_manager.start(cfg)
         revision = library.commit_changes(
             f"task:{task.id}", f"Documents updated in stage {stage.name}")
         if revision:   # 执行中的文档改动进平台审计,与 API 写入口径一致

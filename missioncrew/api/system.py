@@ -5,7 +5,7 @@ from fastapi import FastAPI
 
 from ..collab.skills import sync_all_project_skill_libraries
 from ..core.models import BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER
-from ..runtime.adapters import EFFORT_SUPPORT
+from ..runtime import runtime_manager
 from .context import ApiContext
 
 
@@ -30,4 +30,4 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def traits():
         return {"abilities": ROLE_ABILITIES, "tiers": TIER_ORDER,
                 "board_widget_types": sorted(BOARD_WIDGET_TYPES),
-                "effort_options": EFFORT_SUPPORT}   # adapter -> 可选推理力度档位
+                "effort_options": runtime_manager.effort_catalog()}

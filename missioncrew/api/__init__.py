@@ -6,15 +6,24 @@
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
+from ..runtime import runtime_manager
 from . import (backends, boards, chat, documents, guidelines, projects,
                resources, roles, spa, system, tasks)
 from .context import ApiContext
 
 
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    yield
+    runtime_manager.shutdown()
+
+
 def create_app() -> FastAPI:
-    app = FastAPI(title="MissionCrew", version="0.2.0")
+    app = FastAPI(title="MissionCrew", version="0.2.0", lifespan=_lifespan)
     ctx = ApiContext.build()
     for module in (system, chat, roles, projects, resources, guidelines,
                    documents, boards, backends, tasks):

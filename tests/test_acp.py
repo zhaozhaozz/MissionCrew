@@ -4,6 +4,7 @@ from pathlib import Path
 
 from missioncrew.runtime import adapters
 from missioncrew.runtime import acp
+from missioncrew.runtime import runtime_manager
 from missioncrew.runtime.acp import _pick_permission_option
 from missioncrew.core.models import Backend, ExecutionConfig
 
@@ -56,6 +57,8 @@ def test_permission_option_preference():
         [{"optionId": "no", "kind": "reject_once"}]) == "no"  # 无允许项选单次拒绝
     assert _pick_permission_option(
         [{"optionId": "never", "kind": "reject_always"}]) is None  # 永久拒绝不可选
+    assert _pick_permission_option(opts + [
+        {"optionId": "no", "kind": "reject_once"}], "deny") == "no"
 
 
 def test_acp_list_models_from_config_options():
@@ -105,6 +108,19 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
         assert ("input", "公共上下文\n当前任务") in second_events
         assert all("最近对话" not in text for kind, text in second_events
                    if kind == "input")
+    finally:
+        acp.close_sessions()
+
+
+def test_runtime_manager_stops_acp_live_session(tmp_path):
+    saved = {}
+    backend = Backend(id="kimi-stop", name="k", adapter="kimi",
+                      command=[sys.executable, FAKE])
+    config = _chat_cfg(tmp_path, saved)
+    config.backend = backend
+    try:
+        assert runtime_manager.start(config).success
+        assert runtime_manager.stop(backend, "channel::role") == 1
     finally:
         acp.close_sessions()
 

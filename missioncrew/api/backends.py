@@ -1,15 +1,13 @@
 """Runtime(后端)端点:注册表管理、检测、模型目录与升级。"""
 from __future__ import annotations
 
-import shutil
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 
 from ..core import seed as seed_mod
 from ..core.models import TIER_ORDER
-from ..runtime import adapters
+from ..runtime import runtime_manager
 from .context import ApiContext
 from .schemas import BackendInput
 
@@ -59,7 +57,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.get("/api/backends/tools")
     def tools():
         """支持的工具矩阵 + 安装/注册状态(仿 Multica Runtime 页;不探测版本,快速渲染)。"""
-        report = adapters.detect_report(with_version=False)
+        report = runtime_manager.detect_report(with_version=False)
         registered = {b.id: b for b in store.list_backends()}
         project_names = {p.id: p.name for p in store.list_projects()}
         role_users: dict[str, list[dict]] = {}
@@ -101,7 +99,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "version": (b.version if b else "") or "",
                 "path": (b.binary_path if b and b.binary_path else item["path"]),
                 "models": [m.get("name") or "(默认)" for m in (b.models if b else [])],
-                "updatable": bool(b and adapters.update_plan(b)),
+                "updatable": bool(b and runtime_manager.update_plan(b)),
+                "operations": (runtime_manager.capabilities(b).to_dict() if b else {}),
                 **usage(item["id"]),
             })
         # 注册表里的非内置工具(mock/自定义)也列出来
@@ -111,7 +110,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "installed": True, "path": b.binary_path, "version": b.version,
                 "registered": True, "enabled": b.enabled,
                 "models": [m.get("name") or "(默认)" for m in b.models],
-                "updatable": bool(adapters.update_plan(b)),
+                "updatable": bool(runtime_manager.update_plan(b)),
+                "operations": runtime_manager.capabilities(b).to_dict(),
                 **usage(b.id),
             })
         # API 也保证已安装项优先，避免已打开页面仍运行旧版前端渲染逻辑时
@@ -136,19 +136,19 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def check_updates():
         """并行查询各工具的最新发布版本,与已装版本比对(仅注册且已安装的工具)。"""
         backends = [b for b in store.list_backends()
-                    if b.adapter in adapters.UPDATE_SPECS and b.binary_path]
+                    if runtime_manager.can_check_updates(b)]
         with ThreadPoolExecutor(max_workers=8) as pool:
             latest = dict(zip(
                 (b.id for b in backends),
-                pool.map(lambda b: adapters.fetch_latest_version(b.adapter), backends),
+                pool.map(runtime_manager.fetch_latest_version, backends),
             ))
         results = []
         for b in backends:
             lv = latest.get(b.id, "")
             results.append({
                 "id": b.id, "installed": b.version, "latest": lv,
-                "update_available": adapters.is_newer(lv, b.version),
-                "updatable": adapters.update_plan(b) is not None,
+                "update_available": runtime_manager.is_newer(lv, b.version),
+                "updatable": runtime_manager.update_plan(b) is not None,
             })
         return results
 
@@ -167,18 +167,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 raise HTTPException(409, "该工具正在更新中,请等待完成")
             ctx.updating_backends.add(backend_id)
         try:
-            ok, log = adapters.run_update(b)
+            ok, log = runtime_manager.update(b)
             old_version = b.version
             # 更新可长达数分钟:重取最新记录,只补检测字段,
             # 避免过期快照覆盖窗口期内的配额扣减/启停等修改
             fresh = store.get_backend(backend_id)
             if fresh is None:
                 raise HTTPException(409, "后端在更新期间被删除")
-            binary = Path(fresh.binary_path).name if fresh.binary_path else fresh.adapter
-            new_path = shutil.which(binary)
-            if new_path:   # 原生更新器可能切换版本目录
-                fresh.binary_path = new_path
-                fresh.version = adapters._cli_version(binary)
+            fresh = runtime_manager.refresh_installation(fresh)
+            if fresh.binary_path:
                 store.put_backend(fresh)
             store.audit("human", "backend_update", detail=(
                 f"backend={backend_id} ok={ok} {old_version} -> {fresh.version}"))
@@ -190,9 +187,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.post("/api/backends/detect")
     def detect():
-        report = adapters.detect_report()   # 含版本探测
+        report = runtime_manager.detect_report()   # 含版本探测
         added, updated = [], []
-        for b in adapters.detect_backends(report):
+        for b in runtime_manager.detect_backends(report):
             existing = store.get_backend(b.id)
             if existing is None:
                 store.put_backend(b)
@@ -209,9 +206,21 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         return {"found": [i["id"] for i in report if i["installed"]],
                 "added": added, "updated": updated}
 
+    @app.post("/api/backends/{backend_id}/stop")
+    def stop_backend(backend_id: str, session_key: str = ""):
+        """通过统一 Runtime 生命周期接口停止活动执行或会话。"""
+        backend = store.get_backend(backend_id)
+        if backend is None:
+            raise HTTPException(404, "后端不存在")
+        stopped = runtime_manager.stop(backend, session_key)
+        store.audit("human", "backend_stopped", detail=(
+            f"backend={backend_id} session={session_key or '*'} stopped={stopped}"))
+        return {"ok": True, "stopped": stopped}
+
     @app.delete("/api/backends/{backend_id}")
     def delete_backend(backend_id: str):
-        if store.get_backend(backend_id) is None:
+        backend = store.get_backend(backend_id)
+        if backend is None:
             raise HTTPException(404, "后端不存在")
         users = [r for r in store.list_roles() if r.runtime_id == backend_id]
         templates = [r for r in store.list_role_templates() if r.runtime_id == backend_id]
@@ -221,6 +230,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 *(f"全局角色模板/@{r.id}" for r in templates),
             ])
             raise HTTPException(409, f"runtime 仍被角色使用,请先修改角色: {names}")
+        runtime_manager.stop(backend)
         store.delete_backend(backend_id)
         store.audit("human", "backend_deleted", detail=f"backend={backend_id}")
         return {"ok": True}
