@@ -360,10 +360,10 @@ function renderRunEvent(run, event, openEventId) {
     }
   }
   const open = String(event.id) === openEventId ? " open" : "";
-  return `<details class="re re-fold ${meta.cls}" data-event-id="${event.id}"${open}>
-    <summary><span class="re-k">${esc(meta.label)}</span>
-      <span class="re-fold-size">${esc(preview)}</span></summary>
-    <div class="re-content">${content}</div></details>`;
+  return `<details class="re re-fold ${meta.cls}" data-event-id="${event.id}"${open}>` +
+    `<summary><span class="re-k">${esc(meta.label)}</span>` +
+    `<span class="re-fold-size">${esc(preview)}</span></summary>` +
+    `<div class="re-content">${content}</div></details>`;
 }
 
 async function sendRuntimeInteraction(runId, requestId, decision, answers = {}) {

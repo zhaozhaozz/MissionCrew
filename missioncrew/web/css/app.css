@@ -217,7 +217,9 @@
               margin-right: 7px; vertical-align: 1px; }
   .re-command, .re-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
                            font-size: 12px; color: var(--text-2); }
-  .re-fold { border: 1px solid var(--line); border-radius: 6px; padding: 0 8px 8px; }
+  /* 结构节点使用 normal，避免模板缩进被外层 pre-wrap 渲染成展开后的空白行。 */
+  .re-fold { border: 1px solid var(--line); border-radius: 6px; padding: 0 8px 8px;
+             white-space: normal; }
   .re-fold > summary { cursor: pointer; user-select: none; list-style: none;
                        display: flex; align-items: center; gap: 7px; padding-top: 7px;
                        white-space: normal; }

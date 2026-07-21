@@ -271,6 +271,7 @@ def test_chat_run_events_flow_to_api(seeded):
 def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     client = TestClient(create_app())
     js = client.get("/assets/js/sidebar.js").text
+    css = client.get("/assets/css/app.css").text
     assert "agentExecutionLabel" in js
     assert "runtime=${message.runtime_id" in js
     assert "model=${message.model" in js
@@ -278,6 +279,8 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert "MESSAGE_FOLD_AT" in js and "toggleMessageBody" in js
     assert "renderRunEvent" in js and "latestEventId" in js
     assert 'body.querySelectorAll(".re-fold[open]")' in js
+    assert (".re-fold { border:" in css
+            and "padding: 0 8px 8px;\n             white-space: normal;" in css)
     assert "RUN_INPUT_FOLD_AT" not in js
     assert "/clear-context" in js and 'm.kind === "context_boundary"' in js
     assert "清除上下文" in client.get("/").text
