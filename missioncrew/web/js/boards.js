@@ -5,6 +5,17 @@
 let currentCustomBoard = null;
 let customBoardEditing = false;
 let boardEditorVisible = false;
+let customBoardRenderSignature = null;
+let boardWidgetRenderToken = 0;
+
+function currentCustomBoardStateSignature() {
+  const board = projBoards().find(value => value.id === currentCustomBoard) || null;
+  return JSON.stringify([currentProject, currentCustomBoard, boardEditorVisible, board]);
+}
+
+function boardHasLiveWidgets(board) {
+  return (board?.layout || []).some(widget => widget.content?.source);
+}
 
 // 把面板需求交给项目主控:发到项目的 general 频道,全程可见
 async function requestBoard() {
@@ -34,6 +45,12 @@ function renderCustomBoards(force = false) {
   if (currentCustomBoard && !boards.some(b => b.id === currentCustomBoard))
     currentCustomBoard = null;
   if (!currentCustomBoard && boards.length) currentCustomBoard = boards[0].id;
+  const board = boards.find(value => value.id === currentCustomBoard);
+  const signature = currentCustomBoardStateSignature();
+  if (!force && signature === customBoardRenderSignature) {
+    if (boardHasLiveWidgets(board)) renderBoardWidgets(board.layout || []);
+    return;
+  }
   const sel = document.getElementById("custom-board-select");
   if (!sel) return;
   sel.innerHTML = boards.length ? boards.map(b =>
@@ -60,6 +77,7 @@ function renderCustomBoardEditor() {
   const preview = document.getElementById("custom-board-preview");
   if (!form || !preview) return;
   const board = projBoards().find(b => b.id === currentCustomBoard);
+  customBoardRenderSignature = currentCustomBoardStateSignature();
   if (!board) {
     form.style.display = "none";
     preview.innerHTML = `<div class="empty" style="grid-column:1/-1">还没有面板:在上方描述你想要的面板,交给主控创建。</div>`;
@@ -308,6 +326,8 @@ function renderWidgetContent(w, resolved) {
 }
 
 async function renderBoardWidgets(layout) {
+  const renderToken = ++boardWidgetRenderToken;
+  const preview = document.getElementById("custom-board-preview");
   const widgets = Array.isArray(layout) ? layout : [];
   // 有数据源的卡片:批量向平台解析(保存态与预览态共用同一端点)
   let resolved = {};
@@ -321,10 +341,13 @@ async function renderBoardWidgets(layout) {
       if (r.ok) resolved = await r.json();
     } catch (e) { /* ignore */ }
   }
-  document.getElementById("custom-board-preview").innerHTML = widgets.map(w =>
-    `<section class="widget" style="grid-column:${Number(w.x || 0) + 1}/span ${Number(w.width || 6)};grid-row:${Number(w.y || 0) + 1}/span ${Number(w.height || 4)}">
+  if (renderToken !== boardWidgetRenderToken || !preview) return;
+  const scrollState = captureKeyedScrollPositions(preview);
+  preview.innerHTML = widgets.map(w =>
+    `<section class="widget" data-scroll-key="widget:${esc(w.id)}" style="grid-column:${Number(w.x || 0) + 1}/span ${Number(w.width || 6)};grid-row:${Number(w.y || 0) + 1}/span ${Number(w.height || 4)}">
       <span class="widget-type">${esc(w.type)}${w.content?.source ? " · 实时" : ""}</span><h3>${esc(w.title || w.id)}</h3>${renderWidgetContent(w, resolved[w.id])}</section>`
   ).join("") || `<div class="empty" style="grid-column:1/-1">面板中还没有组件。</div>`;
+  restoreKeyedScrollPositions(preview, scrollState);
 }
 
 async function saveCustomBoard() {

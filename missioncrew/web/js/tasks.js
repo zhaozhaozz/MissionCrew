@@ -7,6 +7,7 @@ const COLS = [
 ];
 
 function renderBoard() {
+  const scrollState = captureScrollPositions(["#board-view"]);
   document.getElementById("board").innerHTML = COLS.map(col => {
     const items = projTasks().filter(col.match);
     const cards = items.map(t => {
@@ -23,6 +24,7 @@ function renderBoard() {
     return `<section class="col"><h2><span class="col-dot" style="background:${col.color}"></span>
       ${col.title}<span class="col-count">${items.length}</span></h2>${cards}</section>`;
   }).join("");
+  restoreScrollPositions(scrollState);
 }
 
 async function openTask(id) {
@@ -77,4 +79,3 @@ async function approveTask(id, decision) {
   await loadOverview(); await openTask(id);
   toast(decision === "approved" ? "已批准" : "已拒绝", decision === "approved" ? "success" : "info");
 }
-

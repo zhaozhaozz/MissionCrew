@@ -621,6 +621,41 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "save_rule" not in js and "验证规则" not in html
 
 
+def test_background_refresh_preserves_scrollable_view_state(seeded):
+    client = _client(seeded)
+    ui = client.get("/assets/js/ui.js").text
+    router = client.get("/assets/js/router.js").text
+    configs = client.get("/assets/js/project-configs.js").text
+    documents = client.get("/assets/js/documents.js").text
+    boards = client.get("/assets/js/boards.js").text
+    tasks = client.get("/assets/js/tasks.js").text
+
+    for helper in ("captureScrollPositions", "restoreScrollPositions",
+                   "captureKeyedScrollPositions", "restoreKeyedScrollPositions",
+                   "isNearScrollBottom"):
+        assert f"function {helper}" in ui
+
+    assert "signature !== guidelineEditorSignature" in configs
+    assert "signature !== skillEditorSignature" in configs
+    assert 'root.dataset.itemKey === itemKey' in configs
+    assert '"#skill-markdown-preview"' in configs
+    assert '".skill-file-viewer-body"' in configs
+    assert "isNearScrollBottom(root)" in configs
+    assert "root.dataset.renderKey === renderKey" in configs
+
+    assert "renderDocuments(true)" in router
+    assert "signature !== docPaneRenderSignature" in documents
+    assert 'captureScrollPositions(["#doc-pane"])' in documents
+    assert "renderToken !== docPaneRenderToken" in documents
+
+    assert "signature === customBoardRenderSignature" in boards
+    assert "boardHasLiveWidgets(board)" in boards
+    assert 'data-scroll-key="widget:' in boards
+    assert "restoreKeyedScrollPositions(preview, scrollState)" in boards
+    assert 'captureScrollPositions(["#side-scroll"])' in router
+    assert 'captureScrollPositions(["#board-view"])' in tasks
+
+
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----
 
 def test_document_restore_creates_new_version(seeded):

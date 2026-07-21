@@ -58,9 +58,9 @@ function setProject(id) {
   docMode = "view"; docViewingRevision = null; docHistoryOpen = false;
   docCollapsed.clear();
   renderSidebar(); renderBoard(); renderCustomBoards();
-  loadDocFiles().then(renderSidebar);
   if (currentTab === "proj") renderProjSettings();
   if (currentTab === "docs") renderDocuments();
+  else loadDocFiles().then(changed => { if (changed) renderSidebar(); });
   renderProjectConfigPage(currentTab, true);
   const chans = projChannels();
   if (chans.length) selectChannel(chans[0].id, false);
@@ -119,9 +119,9 @@ async function loadOverview() {
     `<option value="${esc(p.id)}" ${p.id === currentProject ? "selected" : ""}>${esc(p.name || p.id)}</option>`).join("");
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   renderSidebar(); renderBoard(); renderCustomBoards();
-  loadDocFiles().then(renderSidebar);   // 文档分区的文件清单异步补齐
+  if (currentTab === "docs" && docMode === "view") renderDocuments(true);
+  else loadDocFiles().then(changed => { if (changed) renderSidebar(); });
   renderProjectConfigPage(currentTab);
-  if (currentTab === "docs" && docMode === "view") renderDocuments();
   updateConfigChatContext();
   const chans = projChannels();
   if ((!currentChan || !chans.some(c => c.id === currentChan)) && chans.length)
@@ -153,6 +153,7 @@ function _secState(sec, listId, countId, count) {
 }
 
 function renderSidebar() {
+  const scrollState = captureScrollPositions(["#side-scroll"]);
   // 频道 -> 聊天
   const chans = projChannels();
   if (!_secState("channels", "chan-list", "cnt-channels", chans.length))
@@ -217,4 +218,5 @@ function renderSidebar() {
   document.getElementById("role-bar").innerHTML = projRoles().map(r =>
     `<button onclick="insertMention('${r.id}')" title="${esc(r.description || "")}">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}</button>`).join("");
+  restoreScrollPositions(scrollState);
 }

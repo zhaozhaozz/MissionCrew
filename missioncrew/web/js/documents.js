@@ -3,12 +3,17 @@ let docFiles = [];   // 文档库文件清单缓存，供应用侧栏目录树�
 
 async function loadDocFiles() {
   // 轻量拉取文件清单以渲染应用侧栏，不渲染文档主区
-  if (!currentProject) return;
+  if (!currentProject) return false;
+  const projectId = currentProject;
+  const before = JSON.stringify(docFilesMeta || []);
   try {
-    const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
+    const d = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/documents`);
+    if (projectId !== currentProject) return false;
     docFilesMeta = d.files;
     docFiles = d.files.map(f => f.path);
+    return before !== JSON.stringify(docFilesMeta);
   } catch (e) { /* ignore */ }
+  return false;
 }
 
 // ---- 文档库:应用侧栏目录树 + 主区阅读/编辑 ----
@@ -18,6 +23,16 @@ let docMode = "view";             // view | edit | new
 let docViewingRevision = null;    // 查看历史版本时的 revision
 let docHistoryOpen = false;
 const docCollapsed = new Set();   // 收起的目录前缀
+let docPaneRenderSignature = null;
+let docPaneRenderToken = 0;
+let documentRefreshToken = 0;
+
+function currentDocPaneSignature() {
+  const meta = docFilesMeta.find(file => file.path === docSelected) || null;
+  return JSON.stringify([
+    currentProject, docSelected, docMode, docViewingRevision, docHistoryOpen, meta,
+  ]);
+}
 
 function docEncode(path) {
   return path.split("/").map(encodeURIComponent).join("/");
@@ -59,16 +74,23 @@ function openMarkdownDocumentLink(event, path) {
   return false;
 }
 
-async function renderDocuments() {
+async function renderDocuments(backgroundRefresh = false) {
   if (!currentProject || currentTab !== "docs") return;
-  const d = await api("GET", `/api/projects/${encodeURIComponent(currentProject)}/documents`);
+  const projectId = currentProject;
+  const refreshToken = ++documentRefreshToken;
+  const fileListBefore = JSON.stringify(docFilesMeta);
+  const d = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/documents`);
+  if (refreshToken !== documentRefreshToken || projectId !== currentProject
+      || currentTab !== "docs") return;
   docFilesMeta = d.files;
   docFiles = d.files.map(f => f.path);
   if (docSelected && !docFiles.includes(docSelected) && docMode !== "new") {
     docSelected = null; docMode = "view";
   }
-  renderSidebar();
-  await renderDocPane();
+  if (!backgroundRefresh || fileListBefore !== JSON.stringify(docFilesMeta)) renderSidebar();
+  const signature = currentDocPaneSignature();
+  if (!backgroundRefresh || signature !== docPaneRenderSignature)
+    await renderDocPane(backgroundRefresh);
   updateConfigChatContext();
 }
 
@@ -132,10 +154,28 @@ function isMarkdownDoc(path) {
   return /\.(md|markdown|txt)$/i.test(path) || !path.includes(".");
 }
 
-async function renderDocPane() {
+async function renderDocPane(preserveScroll = false) {
   const pane = document.getElementById("doc-pane");
   if (!pane) return;
+  const renderToken = ++docPaneRenderToken;
+  const projectId = currentProject;
+  const selectedPath = docSelected;
+  const selectedMode = docMode;
+  const selectedRevision = docViewingRevision;
+  const stillCurrent = () => renderToken === docPaneRenderToken
+    && projectId === currentProject && selectedPath === docSelected
+    && selectedMode === docMode && selectedRevision === docViewingRevision;
+  let scrollState = [];
+  const captureScroll = () => {
+    scrollState = preserveScroll ? captureScrollPositions(["#doc-pane"]) : [];
+  };
+  const finish = () => {
+    docPaneRenderSignature = currentDocPaneSignature();
+    restoreScrollPositions(scrollState);
+    updateConfigChatContext();
+  };
   if (docMode === "new") {
+    captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>新建文档</b>
         <button class="action" onclick="saveDocument()">保存新版本</button>
@@ -146,12 +186,13 @@ async function renderDocPane() {
       <label>正文</label>
       <textarea id="doc-content" class="doc-editor" aria-label="文档正文"></textarea>`;
     document.getElementById("doc-new-path")?.focus();
-    updateConfigChatContext();
+    finish();
     return;
   }
   if (!docSelected) {
+    captureScroll();
     pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看。</div>`;
-    updateConfigChatContext();
+    finish();
     return;
   }
   const meta = docFilesMeta.find(f => f.path === docSelected);
@@ -160,14 +201,16 @@ async function renderDocPane() {
   if (docMode === "edit") {
     let content = "";
     const d = await api("GET",
-      `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
+      `/api/projects/${encodeURIComponent(projectId)}/documents/file/${docEncode(selectedPath)}`);
+    if (!stillCurrent()) return;
     content = d.content;
+    captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">编辑中</span>
         <button class="action" onclick="saveDocument()">保存新版本</button>
         <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
       <textarea id="doc-content" class="doc-editor" aria-label="文档正文">${esc(content)}</textarea>`;
-    updateConfigChatContext();
+    finish();
     return;
   }
   // 查看:渲染 markdown / 纯文本;支持查看历史版本
@@ -175,11 +218,14 @@ async function renderDocPane() {
   try {
     const rev = docViewingRevision ? `?revision=${encodeURIComponent(docViewingRevision)}` : "";
     d = await api("GET",
-      `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}${rev}`);
+      `/api/projects/${encodeURIComponent(projectId)}/documents/file/${docEncode(selectedPath)}${rev}`);
+    if (!stillCurrent()) return;
   } catch (e) {
+    if (!stillCurrent()) return;
+    captureScroll();
     pane.innerHTML = `<div class="doc-head"><b>${esc(docSelected)}</b></div>
       <div class="empty">无法在线查看(可能是二进制文件),可直接在文档库目录中操作。</div>`;
-    updateConfigChatContext();
+    finish();
     return;
   }
   const revBanner = docViewingRevision
@@ -190,14 +236,16 @@ async function renderDocPane() {
   const body = isMarkdownDoc(docSelected)
     ? `<article class="doc-body markdown-body">${miniMarkdown(d.content)}</article>`
     : `<pre style="white-space:pre-wrap;font-size:12.5px">${esc(d.content)}</pre>`;
+  captureScroll();
   pane.innerHTML = `
     <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
       <button class="action" onclick="docMode='edit';renderDocPane()">编辑</button>
       <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
       <button class="danger" onclick="deleteDocument()">删除</button></div>
     ${revBanner}${body}<div id="doc-history"></div>`;
-  if (docHistoryOpen) await showDocumentHistory();
-  updateConfigChatContext();
+  finish();
+  if (docHistoryOpen) await showDocumentHistory(renderToken);
+  if (!stillCurrent()) return;
 }
 
 function cancelDocEdit() {
@@ -239,10 +287,11 @@ async function toggleDocHistory() {
   await renderDocPane();
 }
 
-async function showDocumentHistory() {
+async function showDocumentHistory(renderToken = docPaneRenderToken) {
   if (!docSelected) return;
   const rows = await api("GET",
     `/api/projects/${encodeURIComponent(currentProject)}/documents/history?path=${encodeURIComponent(docSelected)}`);
+  if (renderToken !== docPaneRenderToken) return;
   const el = document.getElementById("doc-history");
   if (!el) return;
   el.innerHTML = `<h3>版本历史</h3><table>

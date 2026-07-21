@@ -256,17 +256,27 @@ function renderConfigChatThread(context) {
   if (!root) return;
   const thread = configChatThread(context);
   const entries = thread?.entries.slice(-16) || [];
+  const renderKey = `${context.key}:${JSON.stringify(entries.map(entry => [
+    entry.id, entry.author, entry.author_type, entry.content,
+  ]))}`;
+  if (root.dataset.renderKey === renderKey) return;
+  const sameContext = root.dataset.contextKey === context.key;
+  const shouldFollow = !sameContext || isNearScrollBottom(root);
+  const expanded = new Set([...root.querySelectorAll(".config-chat-message details[open]")]
+    .map(details => details.closest(".config-chat-message")?.dataset.messageId).filter(Boolean));
   root.classList.toggle("has-messages", Boolean(entries.length));
   root.innerHTML = entries.map(entry => {
     const long = entry.content.length > 1200;
     const body = long
-      ? `<details><summary>展开完整回复（${entry.content.length} 字符）</summary>` +
+      ? `<details ${expanded.has(String(entry.id)) ? "open" : ""}><summary>展开完整回复（${entry.content.length} 字符）</summary>` +
         `<div class="content">${esc(entry.content)}</div></details>`
       : `<div class="content">${esc(entry.content)}</div>`;
-    return `<div class="config-chat-message ${entry.author_type}">
+    return `<div class="config-chat-message ${entry.author_type}" data-message-id="${esc(entry.id)}">
       <span class="who">${entry.author_type === "human" ? "你" : "@" + esc(entry.author)}</span>${body}</div>`;
   }).join("");
-  if (entries.length) root.scrollTop = root.scrollHeight;
+  root.dataset.contextKey = context.key;
+  root.dataset.renderKey = renderKey;
+  if (entries.length && shouldFollow) root.scrollTop = root.scrollHeight;
 }
 
 function updateConfigChatContext() {
@@ -416,22 +426,36 @@ window.addEventListener("resize", applyConfigChatLayout);
 applyConfigChatLayout();
 
 /* ---- 准则文档 ---- */
+let guidelineEditorSignature = null;
+
+function guidelineEditorStateSignature(guideline) {
+  return JSON.stringify([currentProject, selectedGuidelineName, guideline || null]);
+}
+
 function renderGuidelinesPage(force = false) {
   const guidelines = projObj()?.guidelines || [];
   if (selectedGuidelineName === undefined
       || (selectedGuidelineName !== null
           && !guidelines.some(item => item.name === selectedGuidelineName)))
     selectedGuidelineName = guidelines[0]?.name ?? null;
-  if (force || !configEditorDirty.guidelines) renderGuidelineEditor();
+  const guideline = guidelines.find(item => item.name === selectedGuidelineName);
+  const signature = guidelineEditorStateSignature(guideline);
+  if (force || (!configEditorDirty.guidelines && signature !== guidelineEditorSignature))
+    renderGuidelineEditor(guideline, signature);
   updateConfigChatContext();
 }
 
-function renderGuidelineEditor() {
-  const guideline = (projObj()?.guidelines || []).find(
-    item => item.name === selectedGuidelineName);
+function renderGuidelineEditor(guideline = undefined, signature = undefined) {
+  if (guideline === undefined)
+    guideline = (projObj()?.guidelines || []).find(item => item.name === selectedGuidelineName);
   if (!guideline) guidelineMarkdownMode = "edit";
   const markdown = guideline?.markdown || GUIDELINE_MARKDOWN_PLACEHOLDER;
-  document.getElementById("guideline-editor").innerHTML = `
+  const root = document.getElementById("guideline-editor");
+  const itemKey = `${currentProject}:${selectedGuidelineName ?? "new"}`;
+  const scrollState = root.dataset.itemKey === itemKey
+    ? captureScrollPositions(["#guidelines-view", "#gf-content", "#guideline-markdown-preview"])
+    : [];
+  root.innerHTML = `
     <div class="guideline-toolbar">
       <div class="guideline-current-name"><span>名称</span>
         <code>${esc(guideline?.name || "在 frontmatter 中填写")}</code></div>
@@ -454,8 +478,11 @@ function renderGuidelineEditor() {
         spellcheck="false" oninput="markConfigDirty('guidelines');updateGuidelineMarkdownPreview()">${esc(markdown)}</textarea>
       <article class="guideline-markdown-preview markdown-body" id="guideline-markdown-preview"></article>
     </div>`;
+  root.dataset.itemKey = itemKey;
+  guidelineEditorSignature = signature ?? guidelineEditorStateSignature(guideline);
   updateGuidelineMarkdownPreview();
   setGuidelineMarkdownMode(guidelineMarkdownMode);
+  restoreScrollPositions(scrollState);
 }
 
 function markdownContentWithoutFrontmatter(markdown) {
@@ -552,6 +579,22 @@ async function deleteGuideline(name) {
 const SKILL_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
 let skillMarkdownMode = "preview";
 let skillFileTreeCollapsed = false;
+let skillEditorSignature = null;
+let skillLibraryLoad = null;
+
+function skillMetadataSignature(skills) {
+  return JSON.stringify((skills || []).map(skill => ({
+    id: skill.id, name: skill.name, description: skill.description,
+    instructions: skill.instructions, enabled: skill.enabled,
+  })));
+}
+
+function skillEditorStateSignature(skill, packageInfo) {
+  return JSON.stringify([
+    currentProject, selectedSkillId, skill || null,
+    packageInfo ? packageInfo.content_version : null,
+  ]);
+}
 
 function renderSkillsPage(force = false) {
   projectConfigLabel("skill-proj-label");
@@ -559,22 +602,36 @@ function renderSkillsPage(force = false) {
   if (selectedSkillId === undefined
       || (selectedSkillId !== null && !skills.some(item => item.id === selectedSkillId)))
     selectedSkillId = skills[0]?.id ?? null;
-  if (force || !configEditorDirty.skills) renderSkillEditor();
+  if (skillLibraryInfo?.project_id === currentProject
+      && skillMetadataSignature(skillLibraryInfo.skills) !== skillMetadataSignature(skills))
+    skillLibraryInfo = null;
+  const skill = skills.find(item => item.id === selectedSkillId);
+  const packageInfo = skill ? selectedSkillPackage() : null;
+  const signature = skillEditorStateSignature(skill, packageInfo);
+  if (force || (!configEditorDirty.skills && signature !== skillEditorSignature))
+    renderSkillEditor(skill, packageInfo, signature);
   renderSkillLibraryStatus();
   if (skillLibraryInfo?.project_id !== currentProject) loadSkillLibraryInfo();
   updateConfigChatContext();
 }
 
-async function loadSkillLibraryInfo() {
+function loadSkillLibraryInfo() {
   const projectId = currentProject;
-  if (!projectId) return;
-  try {
-    const info = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/skills/library`);
-    if (projectId !== currentProject) return;
-    skillLibraryInfo = { ...info, project_id: projectId };
-    renderSkillLibraryStatus();
-    if (!configEditorDirty.skills) renderSkillEditor();
-  } catch (_) { /* api() 已显示错误 */ }
+  if (!projectId) return Promise.resolve();
+  if (skillLibraryLoad?.projectId === projectId) return skillLibraryLoad.promise;
+  const request = (async () => {
+    try {
+      const info = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/skills/library`);
+      if (projectId !== currentProject) return;
+      skillLibraryInfo = { ...info, project_id: projectId };
+      renderSkillsPage();
+    } catch (_) { /* api() 已显示错误 */ }
+  })();
+  const tracked = request.finally(() => {
+    if (skillLibraryLoad?.promise === tracked) skillLibraryLoad = null;
+  });
+  skillLibraryLoad = { projectId, promise: tracked };
+  return tracked;
 }
 
 function renderSkillLibraryStatus() {
@@ -608,14 +665,24 @@ function selectedSkillPackage() {
     ? (skillLibraryInfo.skills || []).find(item => item.id === selectedSkillId) : null;
 }
 
-function renderSkillEditor() {
-  const skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
-  const packageInfo = skill ? selectedSkillPackage() : null;
+function renderSkillEditor(skill = undefined, packageInfo = undefined, signature = undefined) {
+  if (skill === undefined)
+    skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
+  if (packageInfo === undefined) packageInfo = skill ? selectedSkillPackage() : null;
   if (!skill) skillMarkdownMode = "edit";
   // 已存在的 Skill 必须等库信息带回 SKILL.md 原文再进入编辑，
   // 避免用字段重建的草稿覆盖 frontmatter 附加属性。
   const loading = Boolean(skill) && !packageInfo;
-  document.getElementById("skill-editor").innerHTML = `
+  const root = document.getElementById("skill-editor");
+  const itemKey = `${currentProject}:${selectedSkillId ?? "new"}`;
+  const scrollState = root.dataset.itemKey === itemKey
+    ? captureScrollPositions([
+      "#skills-view", "#sf-content", "#skill-markdown-preview",
+      ".skill-file-tree-scroll", ".skill-file-viewer-body",
+    ]) : [];
+  const viewerScrollState = scrollState.filter(
+    position => position.selector === ".skill-file-viewer-body");
+  root.innerHTML = `
     <div class="guideline-toolbar">
       ${skill
         ? `<div class="guideline-current-name"><span>id</span>
@@ -657,9 +724,13 @@ function renderSkillEditor() {
       </div>
       <div class="skill-file-viewer" id="skill-file-viewer" hidden></div>
     </div>`;
+  root.dataset.itemKey = itemKey;
+  skillEditorSignature = signature ?? skillEditorStateSignature(skill, packageInfo);
   updateSkillMarkdownPreview();
   setSkillMarkdownMode(skillMarkdownMode);
-  if (skill && skillOpenFile) openSkillFile(skillOpenFile);
+  restoreScrollPositions(scrollState.filter(
+    position => position.selector !== ".skill-file-viewer-body"));
+  if (skill && skillOpenFile) openSkillFile(skillOpenFile, viewerScrollState);
 }
 
 function skillFileTreeHtml(packageInfo) {
@@ -754,13 +825,16 @@ function isSkillMarkdownFile(path) {
   return /\.(?:md|markdown)$/i.test(path);
 }
 
-async function openSkillFile(path) {
+async function openSkillFile(path, restoreState = null) {
   if (!selectedSkillId) return;
   if (path.toLowerCase() === "skill.md") { closeSkillFile(); return; }
-  const data = await api("GET",
-    `/api/projects/${encodeURIComponent(currentProject)}/skills/` +
-    `${encodeURIComponent(selectedSkillId)}/file?path=${encodeURIComponent(path)}`);
+  const projectId = currentProject;
+  const skillId = selectedSkillId;
   skillOpenFile = path;
+  const data = await api("GET",
+    `/api/projects/${encodeURIComponent(projectId)}/skills/` +
+    `${encodeURIComponent(skillId)}/file?path=${encodeURIComponent(path)}`);
+  if (projectId !== currentProject || skillId !== selectedSkillId || skillOpenFile !== path) return;
   const viewer = document.getElementById("skill-file-viewer");
   if (!viewer) return;
   const body = isSkillMarkdownFile(path)
@@ -780,6 +854,7 @@ async function openSkillFile(path) {
     ?.setAttribute("hidden", "");
   document.querySelectorAll("#skill-file-tree .skill-tree-file").forEach(row =>
     row.classList.toggle("active", row.dataset.path === path));
+  restoreScrollPositions(restoreState);
 }
 
 function closeSkillFile() {

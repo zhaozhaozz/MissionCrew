@@ -95,6 +95,48 @@ function toast(msg, type = "info", ms = 3200) {
   document.getElementById("toasts").appendChild(el);
   setTimeout(dismiss, ms);
 }
+
+// 后台刷新可能替换滚动容器本身；按选择器记录位置，重建后恢复到新节点。
+function captureScrollPositions(selectors) {
+  return selectors.map(selector => {
+    const element = document.querySelector(selector);
+    return element ? { selector, top: element.scrollTop, left: element.scrollLeft } : null;
+  }).filter(Boolean);
+}
+
+function restoreScrollPositions(positions) {
+  for (const position of positions || []) {
+    const element = document.querySelector(position.selector);
+    if (!element) continue;
+    element.scrollTop = position.top;
+    element.scrollLeft = position.left;
+  }
+}
+
+function captureKeyedScrollPositions(root) {
+  if (!root) return [];
+  return [...root.querySelectorAll("[data-scroll-key]")].map(element => ({
+    key: element.dataset.scrollKey,
+    top: element.scrollTop,
+    left: element.scrollLeft,
+  }));
+}
+
+function restoreKeyedScrollPositions(root, positions) {
+  if (!root) return;
+  const elements = [...root.querySelectorAll("[data-scroll-key]")];
+  for (const position of positions || []) {
+    const element = elements.find(candidate => candidate.dataset.scrollKey === position.key);
+    if (!element) continue;
+    element.scrollTop = position.top;
+    element.scrollLeft = position.left;
+  }
+}
+
+function isNearScrollBottom(element, threshold = 40) {
+  return !element || element.scrollHeight - element.scrollTop - element.clientHeight < threshold;
+}
+
 let overview = {
   projects: [], tasks: [], roles: [], role_templates: [],
   channels: [], backends: [], boards: [],
