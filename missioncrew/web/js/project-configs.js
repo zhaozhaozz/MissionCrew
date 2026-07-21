@@ -463,6 +463,15 @@ function markdownContentWithoutFrontmatter(markdown) {
   return marker >= 0 ? markdown.slice(marker + 4).replace(/^\r?\n/, "") : markdown;
 }
 
+function skillMarkdownPreviewHtml(markdown) {
+  const marker = markdown.startsWith("---\n") ? markdown.indexOf("\n---", 4) : -1;
+  if (marker < 0) return miniMarkdown(markdown);
+  const frontmatter = markdown.slice(0, marker + 4);
+  const content = markdown.slice(marker + 4).replace(/^\r?\n/, "");
+  return `<pre class="markdown-frontmatter"><code class="language-yaml">${
+    esc(frontmatter)}</code></pre>${miniMarkdown(content)}`;
+}
+
 function updateGuidelineMarkdownPreview() {
   const preview = document.getElementById("guideline-markdown-preview");
   if (!preview) return;
@@ -699,8 +708,8 @@ function toggleSkillFileTree() {
 function updateSkillMarkdownPreview() {
   const preview = document.getElementById("skill-markdown-preview");
   if (!preview) return;
-  const content = markdownContentWithoutFrontmatter(valueOf("sf-content"));
-  preview.innerHTML = content.trim() ? miniMarkdown(content)
+  const markdown = valueOf("sf-content");
+  preview.innerHTML = markdown.trim() ? skillMarkdownPreviewHtml(markdown)
     : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
 }
 
@@ -734,7 +743,7 @@ async function openSkillFile(path) {
   if (!viewer) return;
   const body = isSkillMarkdownFile(path)
     ? `<article class="skill-file-viewer-body markdown-body">${
-        miniMarkdown(markdownContentWithoutFrontmatter(data.content))}</article>`
+        skillMarkdownPreviewHtml(data.content)}</article>`
     : `<pre class="skill-file-viewer-body">${esc(data.content)}</pre>`;
   viewer.innerHTML = `
     <div class="skill-file-viewer-head">
