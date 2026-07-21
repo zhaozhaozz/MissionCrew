@@ -561,6 +561,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     router = client.get("/assets/js/router.js").text
     documents = client.get("/assets/js/documents.js").text
     boards = client.get("/assets/js/boards.js").text
+    markdown = client.get("/assets/js/markdown.js").text
     main = client.get("/assets/js/main.js").text
 
     for view in ("guidelines-view", "skills-view", "docs-view"):
@@ -588,6 +589,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
         assert removed not in html
     assert "config-generator" not in html
     assert "project-configs.js" in html
+    assert "markdown.js" in html
+    assert html.index("/assets/js/markdown.js") < html.index("/assets/js/project-configs.js")
     assert '"guidelines", "skills"' in router and '"rules"' not in router
     assert "projPanels()" in router and "builtin-badge" in router
     assert 'tab === "board" || tab === "custom"' in router
@@ -614,8 +617,16 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "只需回答，不要写入" in js
     assert "setInterval(pollConfigChat, 2000)" in main
     assert "openMarkdownDocumentLink" in documents
-    assert all(markup in boards for markup in (
+    assert all(markup in markdown for markup in (
         "markdownInline", "<blockquote>", "<pre><code", "markdown-table-wrap"))
+    assert "markdownPreviewHtml(markdown)" in js
+    assert "markdownPreviewHtml(d.content)" in documents
+    assert "markdownPreviewHtml(c.markdown || c.text" in boards
+    assert js.count("markdownPreviewHtml(") >= 3
+    assert "markdownContentWithoutFrontmatter" not in js
+    assert "skillMarkdownPreviewHtml" not in js
+    assert "miniMarkdown(" not in js and "miniMarkdown(" not in documents
+    assert "miniMarkdown(" not in boards
     assert all(action in js for action in (
         "save_guideline", "save_skill", "write_document"))
     assert "save_rule" not in js and "验证规则" not in html

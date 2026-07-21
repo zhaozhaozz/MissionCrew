@@ -485,47 +485,11 @@ function renderGuidelineEditor(guideline = undefined, signature = undefined) {
   restoreScrollPositions(scrollState);
 }
 
-function markdownContentWithoutFrontmatter(markdown) {
-  const marker = markdown.startsWith("---\n") ? markdown.indexOf("\n---", 4) : -1;
-  return marker >= 0 ? markdown.slice(marker + 4).replace(/^\r?\n/, "") : markdown;
-}
-
-function skillFrontmatterTableHtml(source) {
-  const rows = [];
-  let current = null;
-  for (const line of source.replace(/\r\n?/g, "\n").split("\n")) {
-    const property = line.match(/^([A-Za-z_][\w.-]*):(?:[ \t]*(.*))?$/);
-    if (property) {
-      current = { key: property[1], value: property[2] || "" };
-      rows.push(current);
-    } else if (current) {
-      const continuation = line.replace(/^(?: {2}|\t)/, "");
-      current.value += `${current.value ? "\n" : ""}${continuation}`;
-    } else if (line.trim()) {
-      current = { key: "YAML", value: line };
-      rows.push(current);
-    }
-  }
-  return `<div class="markdown-table-wrap"><table class="markdown-frontmatter-table">
-    <thead><tr><th>属性</th><th>值</th></tr></thead>
-    <tbody>${rows.map(row => `<tr><th scope="row">${esc(row.key)}</th>
-      <td><code class="markdown-frontmatter-value">${esc(row.value)}</code></td></tr>`).join("")}</tbody>
-  </table></div>`;
-}
-
-function skillMarkdownPreviewHtml(markdown) {
-  const marker = markdown.startsWith("---\n") ? markdown.indexOf("\n---", 4) : -1;
-  if (marker < 0) return miniMarkdown(markdown);
-  const frontmatter = skillFrontmatterTableHtml(markdown.slice(4, marker));
-  const content = markdown.slice(marker + 4).replace(/^\r?\n/, "");
-  return `${frontmatter}${miniMarkdown(content)}`;
-}
-
 function updateGuidelineMarkdownPreview() {
   const preview = document.getElementById("guideline-markdown-preview");
   if (!preview) return;
-  const content = markdownContentWithoutFrontmatter(valueOf("gf-content"));
-  preview.innerHTML = content.trim() ? miniMarkdown(content)
+  const markdown = valueOf("gf-content");
+  preview.innerHTML = markdown.trim() ? markdownPreviewHtml(markdown)
     : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
 }
 
@@ -802,7 +766,7 @@ function updateSkillMarkdownPreview() {
   const preview = document.getElementById("skill-markdown-preview");
   if (!preview) return;
   const markdown = valueOf("sf-content");
-  preview.innerHTML = markdown.trim() ? skillMarkdownPreviewHtml(markdown)
+  preview.innerHTML = markdown.trim() ? markdownPreviewHtml(markdown)
     : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
 }
 
@@ -839,7 +803,7 @@ async function openSkillFile(path, restoreState = null) {
   if (!viewer) return;
   const body = isSkillMarkdownFile(path)
     ? `<article class="skill-file-viewer-body markdown-body">${
-        skillMarkdownPreviewHtml(data.content)}</article>`
+        markdownPreviewHtml(data.content)}</article>`
     : `<pre class="skill-file-viewer-body">${esc(data.content)}</pre>`;
   viewer.innerHTML = `
     <div class="skill-file-viewer-head">

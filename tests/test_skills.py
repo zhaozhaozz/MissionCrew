@@ -232,6 +232,7 @@ def test_skill_page_exposes_all_import_modes(seeded):
     client = TestClient(create_app())
     html = client.get("/").text
     js = client.get("/assets/js/project-configs.js").text
+    markdown = client.get("/assets/js/markdown.js").text
     sidebar = client.get("/assets/js/sidebar.js").text
 
     assert 'id="skill-zip-input"' in html
@@ -243,12 +244,12 @@ def test_skill_page_exposes_all_import_modes(seeded):
     assert "直接投放目录" in js and "skillFolderImportOpen" in js
     assert "function isSkillMarkdownFile(path)" in js
     assert "/\\.(?:md|markdown)$/i.test(path)" in js
-    assert "function skillFrontmatterTableHtml(source)" in js
-    assert "function skillMarkdownPreviewHtml(markdown)" in js
-    assert 'class="markdown-frontmatter-table"' in js
-    assert "<th>属性</th><th>值</th>" in js
-    assert 'class="markdown-frontmatter-value"' in js
-    assert "skillMarkdownPreviewHtml(data.content)" in js
+    assert "function markdownPreviewHtml(markdown" in markdown
+    assert "function markdownFrontmatterTableHtml(source)" in markdown
+    assert 'class="markdown-frontmatter-table"' in markdown
+    assert "<th>属性</th><th>值</th>" in markdown
+    assert 'class="markdown-frontmatter-value"' in markdown
+    assert "markdownPreviewHtml(data.content)" in js
     assert 'class="skill-file-viewer-body markdown-body"' in js
     assert 'class="skill-file-viewer-body">${esc(data.content)}' in js
     assert "openFormDialog" not in js

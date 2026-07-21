@@ -234,7 +234,7 @@ async function renderDocPane(preserveScroll = false) {
         <button class="ghost" onclick="docViewingRevision=null;renderDocPane()">返回最新</button></div>`
     : "";
   const body = isMarkdownDoc(docSelected)
-    ? `<article class="doc-body markdown-body">${miniMarkdown(d.content)}</article>`
+    ? `<article class="doc-body markdown-body">${markdownPreviewHtml(d.content)}</article>`
     : `<pre style="white-space:pre-wrap;font-size:12.5px">${esc(d.content)}</pre>`;
   captureScroll();
   pane.innerHTML = `
