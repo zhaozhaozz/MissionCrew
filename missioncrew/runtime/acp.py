@@ -18,7 +18,10 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Optional
+
+from .base import RuntimeInstance
 
 
 class AcpError(Exception):
@@ -29,6 +32,9 @@ class _AcpClient:
     def __init__(self, cmd: list[str], cwd: str, env: dict, timeout: int,
                  emit: Optional[Callable[[str, str], None]] = None):
         env = {**env, "PWD": cwd}
+        self.command = list(cmd)
+        self.cwd = cwd
+        self.started_at = time.time()
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, cwd=cwd, env=env,
@@ -180,13 +186,25 @@ class _LiveSession:
     signature: tuple
     last_used: float
     busy: bool = False
+    task_id: str = ""
+    stage_name: str = ""
+    model: str = ""
+
+
+@dataclass
+class _OneShotClient:
+    runtime_id: str
+    client: _AcpClient
+    task_id: str = ""
+    stage_name: str = ""
+    model: str = ""
 
 
 _LIVE_SESSIONS: dict[str, _LiveSession] = {}
 _LIVE_SESSIONS_GUARD = threading.Lock()
 _SESSION_LOCKS: dict[str, threading.Lock] = {}
 _SESSION_LOCKS_GUARD = threading.Lock()
-_ONE_SHOT_CLIENTS: dict[int, tuple[str, _AcpClient]] = {}
+_ONE_SHOT_CLIENTS: dict[int, _OneShotClient] = {}
 _ONE_SHOT_CLIENTS_GUARD = threading.Lock()
 _SESSION_IDLE_SECONDS = 1800
 
@@ -233,7 +251,7 @@ def close_sessions() -> None:
         sessions = list(_LIVE_SESSIONS.values())
         _LIVE_SESSIONS.clear()
     with _ONE_SHOT_CLIENTS_GUARD:
-        one_shots = [client for _, client in _ONE_SHOT_CLIENTS.values()]
+        one_shots = [item.client for item in _ONE_SHOT_CLIENTS.values()]
         _ONE_SHOT_CLIENTS.clear()
     for client in [*(live.client for live in sessions), *one_shots]:
         client.close()
@@ -249,13 +267,56 @@ def stop_runtime_sessions(runtime_id: str, session_key: str = "") -> int:
     one_shots: list[_AcpClient] = []
     if not session_key:
         with _ONE_SHOT_CLIENTS_GUARD:
-            for key, (active_runtime, client) in list(_ONE_SHOT_CLIENTS.items()):
-                if active_runtime == runtime_id:
-                    one_shots.append(client)
+            for key, active in list(_ONE_SHOT_CLIENTS.items()):
+                if active.runtime_id == runtime_id:
+                    one_shots.append(active.client)
                     _ONE_SHOT_CLIENTS.pop(key, None)
     for client in [*live_clients, *one_shots]:
         client.close()
     return len(live_clients) + len(one_shots)
+
+
+def active_instances(runtime_id: str = "") -> list[RuntimeInstance]:
+    """返回 ACP 长驻 session 与一次性 stdio client 的实时快照。"""
+    with _LIVE_SESSIONS_GUARD:
+        live_items = list(_LIVE_SESSIONS.items())
+    with _ONE_SHOT_CLIENTS_GUARD:
+        one_shots = list(_ONE_SHOT_CLIENTS.values())
+    instances = []
+    for session_key, live in live_items:
+        if runtime_id and live.runtime_id != runtime_id:
+            continue
+        client = live.client
+        alive = client.proc.poll() is None
+        instances.append(RuntimeInstance(
+            instance_id=f"acp:{live.runtime_id}:{session_key}",
+            backend_id=live.runtime_id, adapter="acp",
+            mode="persistent", transport="acp-stdio",
+            state=("running" if alive and live.busy else
+                   "idle" if alive else "disconnected"),
+            pid=client.proc.pid if alive else None,
+            session_key=session_key, native_session_id=live.session_id,
+            workdir=client.cwd, task_id=live.task_id,
+            stage_name=live.stage_name, model=live.model,
+            executable=Path(client.command[0]).name,
+            started_at=client.started_at, last_activity=live.last_used,
+        ))
+    for active in one_shots:
+        if runtime_id and active.runtime_id != runtime_id:
+            continue
+        client = active.client
+        if client.proc.poll() is not None:
+            continue
+        instances.append(RuntimeInstance(
+            instance_id=f"acp-one-shot:{client.proc.pid}",
+            backend_id=active.runtime_id, adapter="acp",
+            mode="one_shot", transport="acp-stdio", state="running",
+            pid=client.proc.pid, workdir=client.cwd,
+            task_id=active.task_id, stage_name=active.stage_name,
+            model=active.model, executable=Path(client.command[0]).name,
+            started_at=client.started_at, last_activity=client.started_at,
+        ))
+    return instances
 
 
 atexit.register(close_sessions)
@@ -327,13 +388,15 @@ def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
 
 def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
                   model: str, timeout: int, runtime_id: str,
-                  emit: Optional[Callable[[str, str], None]]) -> tuple[bool, str]:
+                  emit: Optional[Callable[[str, str], None]],
+                  task_id: str = "", stage_name: str = "") -> tuple[bool, str]:
     try:
         client = _AcpClient(cmd, workdir, env, timeout, emit=emit)
     except OSError as e:
         return False, f"ACP 进程启动失败: {e}"
     with _ONE_SHOT_CLIENTS_GUARD:
-        _ONE_SHOT_CLIENTS[id(client)] = (runtime_id, client)
+        _ONE_SHOT_CLIENTS[id(client)] = _OneShotClient(
+            runtime_id, client, task_id, stage_name, model)
     try:
         initialize_result = _initialize(client)
         session_id, _ = _new_or_load_session(client, workdir, "", initialize_result)
@@ -352,7 +415,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                session_key: str = "", session_id: str = "",
                recovery_prompt: str = "",
                save_session: Optional[Callable[[str, str], None]] = None,
-               context_version: str = "", runtime_id: str = "") -> tuple[bool, str]:
+               context_version: str = "", runtime_id: str = "",
+               task_id: str = "", stage_name: str = "") -> tuple[bool, str]:
     """完成一轮 ACP prompt，并按 channel×role 复用长驻原生会话。
 
     无 ``session_key`` 时保持一次性调用。长驻进程不存在（包括服务重启）时，
@@ -361,7 +425,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
     """
     if not session_key:
         return _run_one_shot(
-            cmd, prompt, workdir, env, model, timeout, runtime_id, emit)
+            cmd, prompt, workdir, env, model, timeout, runtime_id, emit,
+            task_id, stage_name)
 
     _cleanup_idle_sessions()
     signature = _client_signature(cmd, workdir, env)
@@ -388,11 +453,16 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                     client.close()
                     raise
                 live = _LiveSession(
-                    client, runtime_id, runtime_session_id, signature, time.time())
+                    client, runtime_id, runtime_session_id, signature, time.time(),
+                    task_id=task_id, stage_name=stage_name, model=model)
                 with _LIVE_SESSIONS_GUARD:
                     _LIVE_SESSIONS[session_key] = live
 
             live.busy = True
+            live.task_id = task_id
+            live.stage_name = stage_name
+            live.model = model
+            live.last_used = time.time()
             live.client.begin_turn(timeout, emit)
             actual_prompt = prompt if recovered else (recovery_prompt or prompt)
             reply = _prompt_turn(live.client, live.session_id, actual_prompt, model)
@@ -421,7 +491,7 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
 
 
 def list_models(cmd: list[str], env: Optional[dict] = None,
-                timeout: int = 30) -> list[str]:
+                timeout: int = 30, runtime_id: str = "") -> list[str]:
     """向 ACP 工具查询可用模型:一次性会话,从 session/new 响应解析模型目录。
 
     兼容两种形态:kimi 等返回 configOptions(category=model 的 select 选项);
@@ -436,6 +506,10 @@ def list_models(cmd: list[str], env: Optional[dict] = None,
         client = _AcpClient(cmd, workdir, env or dict(os.environ), timeout)
     except OSError:
         return []
+    if runtime_id:
+        with _ONE_SHOT_CLIENTS_GUARD:
+            _ONE_SHOT_CLIENTS[id(client)] = _OneShotClient(
+                runtime_id, client, "model-catalog", "discovery")
     try:
         client.request("initialize", {
             "protocolVersion": 1,
@@ -461,4 +535,6 @@ def list_models(cmd: list[str], env: Optional[dict] = None,
     except AcpError:
         return []
     finally:
+        with _ONE_SHOT_CLIENTS_GUARD:
+            _ONE_SHOT_CLIENTS.pop(id(client), None)
         client.close()

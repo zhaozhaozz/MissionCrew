@@ -110,6 +110,7 @@
   .side-nav.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .side-nav .sec-act { margin-left: auto; }
   #side-bottom .side-nav { margin: 0; }
+  #side-bottom .side-nav + .side-nav { margin-top: 3px; }
   #sidebar h2 { font-size: 11px; color: var(--muted); text-transform: uppercase;
                 letter-spacing: .07em; margin: 12px 0 4px; font-weight: 600; }
   /* 项目内容的并列可折叠分区 */
@@ -446,6 +447,40 @@
   .danger:hover { background: var(--bad-soft); }
   .section { margin-bottom: 34px; scroll-margin-top: 56px; }
   .section > h2 { font-size: 14.5px; margin: 0 0 10px; display: flex; align-items: center; }
+  /* 系统全局 Runtime 状态：一秒轮询，表格保持紧凑并允许横向滚动。 */
+  .runtime-status-head { display: flex; align-items: flex-start; justify-content: space-between;
+                         gap: 18px; margin-bottom: 18px; }
+  .runtime-status-head h2 { margin-bottom: 3px; }
+  .runtime-status-head p { margin: 0; }
+  .runtime-status-actions { display: flex; align-items: center; gap: 10px; flex: none; }
+  .runtime-live-label { display: inline-flex; align-items: center; gap: 5px; margin-left: 8px;
+                        color: var(--ok); font-size: 11px; font-weight: 600; }
+  .runtime-live-label i, .runtime-state i { width: 7px; height: 7px; border-radius: 50%;
+                                            background: currentColor; flex: none; }
+  .runtime-live-label i { animation: blink 1.2s infinite; }
+  .runtime-status-cards { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr));
+                          gap: 12px; margin-bottom: 24px; }
+  .runtime-stat-card { display: grid; gap: 2px; padding: 13px 15px; border: 1px solid var(--line);
+                       border-radius: 10px; background: var(--card); box-shadow: var(--shadow-sm); }
+  .runtime-stat-card > span, .runtime-stat-card small { color: var(--muted); }
+  .runtime-stat-card strong { font-size: 24px; line-height: 1.25; }
+  .runtime-table-wrap { width: 100%; overflow-x: auto; }
+  .runtime-state { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+                   color: var(--muted); }
+  .runtime-state.running, .runtime-state.starting { color: var(--accent); }
+  .runtime-state.idle { color: var(--ok); }
+  .runtime-state.disconnected { color: var(--warn); }
+  .runtime-state.disabled { color: var(--bad); }
+  .runtime-state.running i, .runtime-state.starting i { animation: blink 1.2s infinite; }
+  .runtime-session-cell code { display: inline-block; max-width: 260px; overflow: hidden;
+                               text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; }
+  .runtime-path { display: block; max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+                  white-space: nowrap; }
+  .runtime-empty { text-align: center; padding: 28px 12px !important; }
+  @media (max-width: 900px) {
+    .runtime-status-cards { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
+    .runtime-status-head { flex-direction: column; }
+  }
   .content-topbar-actions { flex: 0 1 auto; display: flex;
                             justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
   .ghost.compact { flex: none; padding: 3px 9px; font-size: 12px; }

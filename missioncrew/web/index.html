@@ -87,6 +87,7 @@
       </div>
     </div>
     <div id="side-bottom">
+      <div class="side-nav" id="nav-runtime-status" onclick="switchTab('runtime-status')">◉ 运行状态</div>
       <div class="side-nav" id="nav-settings" onclick="switchTab('settings')">⚙ 全局设置</div>
     </div>
   </aside>
@@ -196,6 +197,29 @@
     <div id="docs-view" class="page">
       <div class="section content-workspace">
         <div class="doc-pane" id="doc-pane"></div>
+      </div>
+    </div>
+
+    <div id="runtime-status-view" class="page">
+      <div class="section runtime-status-head">
+        <div>
+          <h2>Runtime 运行状态 <span class="runtime-live-label"><i></i>实时</span></h2>
+          <p class="muted">系统全局视图，不受当前项目影响。统一显示原生持久会话、ACP stdio 实例和一次性命令执行。</p>
+        </div>
+        <div class="runtime-status-actions">
+          <span class="muted" id="runtime-status-updated">尚未载入</span>
+          <button class="ghost compact" onclick="renderRuntimeStatus(true)">立即刷新</button>
+        </div>
+      </div>
+      <div class="runtime-status-cards" id="runtime-status-cards"></div>
+      <div class="section">
+        <h2>后端概览</h2>
+        <div class="runtime-table-wrap"><table class="mgr" id="runtime-status-backends"></table></div>
+      </div>
+      <div class="section">
+        <h2>当前实例</h2>
+        <p class="muted">持久实例在空闲时仍保留进程与原生 session/thread；单次执行结束后会立即从列表消失。</p>
+        <div class="runtime-table-wrap"><table class="mgr" id="runtime-status-instances"></table></div>
       </div>
     </div>
 
@@ -320,6 +344,7 @@
 <script src="/assets/js/roles.js"></script>
 <script src="/assets/js/channels.js"></script>
 <script src="/assets/js/settings-runtime.js"></script>
+<script src="/assets/js/runtime-status.js"></script>
 <script src="/assets/js/main.js"></script>
 </body>
 </html>

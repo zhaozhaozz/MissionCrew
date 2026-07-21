@@ -130,8 +130,17 @@ def test_builtin_cli_stop_terminates_tracked_process(tmp_path):
         start_new_session=True)
     try:
         adapters._track_process(config, process)
-        assert RuntimeManager().stop(backend, "channel::role") == 1
+        manager = RuntimeManager()
+        status = manager.status([backend])
+        assert status["summary"]["one_shot"] == 1
+        assert status["backends"][0]["state"] == "running"
+        instance = status["instances"][0]
+        assert instance["transport"] == "cli-command"
+        assert instance["mode"] == "one_shot"
+        assert instance["pid"] == process.pid
+        assert manager.stop(backend, "channel::role") == 1
         assert process.poll() is not None
+        assert manager.status([backend])["summary"]["live_instances"] == 0
     finally:
         if process.poll() is None:
             process.kill()

@@ -31,4 +31,5 @@
 loadOverview();
 setInterval(pollMessages, 2000);
 setInterval(pollConfigChat, 2000);
+setInterval(pollRuntimeStatus, 1000);
 setInterval(() => loadOverview().catch(() => {}), 8000);  // 服务重启间隙静默跳过

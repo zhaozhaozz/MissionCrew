@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import asdict
+import time
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Optional
 
 from . import adapters as _executors
-from .base import RuntimeCapabilities, RuntimeProvider
+from .base import RuntimeCapabilities, RuntimeInstance, RuntimeProvider
 from ..core.models import Backend, ExecutionConfig, RunResult
 
 
@@ -35,6 +36,13 @@ class _BuiltinProvider(RuntimeProvider):
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return _executors.list_runtime_models(backend, timeout=timeout)
+
+    def instances(self, backend: Backend) -> list[RuntimeInstance]:
+        instances = _executors.active_execution_instances(backend.id)
+        if backend.adapter in _executors.ACP_SERVE_COMMANDS:
+            instances.extend(_executors.acp.active_instances(backend.id))
+        return [replace(instance, adapter=backend.adapter)
+                for instance in instances]
 
 
 class RuntimeManager:
@@ -113,6 +121,58 @@ class RuntimeManager:
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return self.provider_for(backend).list_models(backend, timeout=timeout)
+
+    def status(self, backends: list[Backend]) -> dict:
+        """聚合所有 provider 的实时实例，不向 API 暴露原始执行器。"""
+        all_instances: list[RuntimeInstance] = []
+        backend_rows = []
+        for backend in backends:
+            instances = self.provider_for(backend).instances(backend)
+            all_instances.extend(instances)
+            running = sum(instance.state in {"starting", "running"}
+                          for instance in instances)
+            connected = sum(instance.state != "disconnected"
+                            for instance in instances)
+            persistent = sum(instance.mode == "persistent"
+                             for instance in instances)
+            one_shot = sum(instance.mode == "one_shot"
+                           for instance in instances)
+            state = ("running" if running else "idle" if connected else
+                     "disabled" if not backend.enabled else "stopped")
+            backend_rows.append({
+                "id": backend.id, "name": backend.name,
+                "adapter": backend.adapter, "enabled": backend.enabled,
+                "state": state, "running": running,
+                "instances": len(instances), "connected": connected,
+                "persistent": persistent, "one_shot": one_shot,
+            })
+        state_order = {"running": 0, "starting": 1, "idle": 2,
+                       "disconnected": 3}
+        all_instances.sort(key=lambda instance: (
+            state_order.get(instance.state, 9), instance.backend_id,
+            0 if instance.mode == "persistent" else 1,
+            instance.started_at,
+        ))
+        live = [instance for instance in all_instances
+                if instance.state != "disconnected"]
+        return {
+            "generated_at": time.time(),
+            "summary": {
+                "backends": len(backends),
+                "connected_backends": sum(row["connected"] > 0
+                                          for row in backend_rows),
+                "tracked_instances": len(all_instances),
+                "live_instances": len(live),
+                "running": sum(instance.state in {"starting", "running"}
+                               for instance in all_instances),
+                "persistent": sum(instance.mode == "persistent"
+                                  for instance in live),
+                "one_shot": sum(instance.mode == "one_shot"
+                                for instance in live),
+            },
+            "backends": backend_rows,
+            "instances": [instance.to_dict() for instance in all_instances],
+        }
 
     def effort_options(self, backend: Backend) -> list[str]:
         return list(_executors.EFFORT_SUPPORT.get(backend.adapter, []))

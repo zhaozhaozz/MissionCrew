@@ -20,20 +20,36 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 import uuid
 from collections import deque
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
 from . import acp
+from .base import RuntimeInstance
 from ..taskflow.assembler import MANIFEST
 from ..core.config import mc_home
 from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
 
 _CLI_SESSION_LOCKS: dict[str, threading.Lock] = {}
 _CLI_SESSION_LOCKS_GUARD = threading.Lock()
-_ACTIVE_PROCESSES: dict[int, tuple[str, str, subprocess.Popen]] = {}
+@dataclass
+class _ActiveProcess:
+    backend_id: str
+    adapter: str
+    session_key: str
+    process: subprocess.Popen
+    workdir: str
+    task_id: str
+    stage_name: str
+    model: str
+    executable: str
+    started_at: float
+
+
+_ACTIVE_PROCESSES: dict[int, _ActiveProcess] = {}
 _ACTIVE_PROCESSES_GUARD = threading.Lock()
 
 # 默认命令中能够可靠恢复原生会话的打印模式 Runtime。Backend.command 是
@@ -50,9 +66,19 @@ def _named_session_lock(key: str) -> threading.Lock:
         return _CLI_SESSION_LOCKS.setdefault(key, threading.Lock())
 
 
-def _track_process(cfg: ExecutionConfig, proc: subprocess.Popen) -> None:
+def _track_process(cfg: ExecutionConfig, proc: subprocess.Popen,
+                   command: Optional[list[str]] = None) -> None:
     with _ACTIVE_PROCESSES_GUARD:
-        _ACTIVE_PROCESSES[id(proc)] = (cfg.backend.id, cfg.session_key, proc)
+        executable = Path((command or [cfg.backend.binary_path or
+                                       cfg.backend.adapter])[0]).name
+        _ACTIVE_PROCESSES[id(proc)] = _ActiveProcess(
+            backend_id=cfg.backend.id, adapter=cfg.backend.adapter,
+            session_key=cfg.session_key, process=proc,
+            workdir=str(Path(cfg.workdir).expanduser().resolve()),
+            task_id=cfg.task_id, stage_name=cfg.stage_name,
+            model=cfg.backend.model, executable=executable,
+            started_at=time.time(),
+        )
 
 
 def _untrack_process(proc: subprocess.Popen) -> None:
@@ -60,18 +86,37 @@ def _untrack_process(proc: subprocess.Popen) -> None:
         _ACTIVE_PROCESSES.pop(id(proc), None)
 
 
+def active_execution_instances(backend_id: str = "") -> list[RuntimeInstance]:
+    """返回当前仍在运行的一次性 CLI 子进程快照。"""
+    with _ACTIVE_PROCESSES_GUARD:
+        for key, active in list(_ACTIVE_PROCESSES.items()):
+            if active.process.poll() is not None:
+                _ACTIVE_PROCESSES.pop(key, None)
+        active_items = list(_ACTIVE_PROCESSES.values())
+    return [RuntimeInstance(
+        instance_id=f"cli:{active.process.pid}",
+        backend_id=active.backend_id, adapter=active.adapter,
+        mode="one_shot", transport="cli-command", state="running",
+        pid=active.process.pid, session_key=active.session_key,
+        workdir=active.workdir, task_id=active.task_id,
+        stage_name=active.stage_name, model=active.model,
+        executable=active.executable, started_at=active.started_at,
+        last_activity=active.started_at,
+    ) for active in active_items
+        if not backend_id or active.backend_id == backend_id]
+
+
 def stop_active_executions(backend_id: str, session_key: str = "") -> int:
     """停止指定 Runtime 的活动 CLI 进程；由统一 Runtime manager 调用。"""
     targets: list[subprocess.Popen] = []
     with _ACTIVE_PROCESSES_GUARD:
-        for key, (active_backend, active_session, proc) in list(
-                _ACTIVE_PROCESSES.items()):
-            if proc.poll() is not None:
+        for key, active in list(_ACTIVE_PROCESSES.items()):
+            if active.process.poll() is not None:
                 _ACTIVE_PROCESSES.pop(key, None)
                 continue
-            if active_backend == backend_id and (
-                    not session_key or active_session == session_key):
-                targets.append(proc)
+            if active.backend_id == backend_id and (
+                    not session_key or active.session_key == session_key):
+                targets.append(active.process)
                 _ACTIVE_PROCESSES.pop(key, None)
     for proc in targets:
         _kill_process_group(proc)
@@ -81,8 +126,8 @@ def stop_active_executions(backend_id: str, session_key: str = "") -> int:
 def close_active_executions() -> None:
     """服务退出时清理仍在运行的打印模式子进程。"""
     with _ACTIVE_PROCESSES_GUARD:
-        targets = [proc for _, _, proc in _ACTIVE_PROCESSES.values()
-                   if proc.poll() is None]
+        targets = [active.process for active in _ACTIVE_PROCESSES.values()
+                   if active.process.poll() is None]
         _ACTIVE_PROCESSES.clear()
     for proc in targets:
         _kill_process_group(proc)
@@ -695,6 +740,7 @@ class AcpAdapter:
             session_key=cfg.session_key, session_id=cfg.session_id,
             recovery_prompt=recovery_prompt, save_session=cfg.save_session,
             context_version=cfg.context_version, runtime_id=cfg.backend.id,
+            task_id=cfg.task_id, stage_name=cfg.stage_name,
         )
         try:
             _diagnostic_log_path(cfg, self.adapter_name).write_text(text)
@@ -1008,7 +1054,7 @@ class CliAdapter:
                 encoding="utf-8", errors="replace", bufsize=1,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
-            _track_process(cfg, proc)
+            _track_process(cfg, proc, cmd)
         except FileNotFoundError:
             return RunResult(False, f"命令不存在: {template[0]}(后端 {cfg.backend.id})")
         out_tail: deque = deque(maxlen=400)   # 原始输出尾部(诊断日志)
@@ -1216,5 +1262,5 @@ def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
     if adapter in ACP_SERVE_COMMANDS:
         template = backend.command or ACP_SERVE_COMMANDS[adapter]
         cmd = render_command(template, "", backend.model, allowed_dirs=[])
-        return acp.list_models(cmd, timeout=timeout)
+        return acp.list_models(cmd, timeout=timeout, runtime_id=backend.id)
     return []

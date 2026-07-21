@@ -4,13 +4,14 @@ from __future__ import annotations
 import json
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
-from .base import RuntimeCapabilities, RuntimeProvider
+from .base import RuntimeCapabilities, RuntimeInstance, RuntimeProvider
 from .native import RuntimeProtocolError, emit_json, safe_emit
 
 
@@ -132,11 +133,12 @@ def _answer_values(response: dict, question_id: str, index: int) -> list[str]:
 
 class _ClaudeSession:
     def __init__(self, command: list[str], backend_id: str,
-                 session_key: str, workdir: str):
+                 session_key: str, workdir: str, persistent: bool):
         self.command = command
         self.backend_id = backend_id
         self.session_key = session_key
         self.workdir = str(Path(workdir).expanduser().resolve())
+        self.persistent = persistent
         self.process = None
         self.session_id = ""
         self._signature = ""
@@ -152,6 +154,11 @@ class _ClaudeSession:
         self._control_pending: dict[str, tuple[threading.Event, dict]] = {}
         self._stderr_tail: list[str] = []
         self._resume_attempt = ""
+        self.created_at = time.time()
+        self.last_activity = self.created_at
+        self.last_task_id = ""
+        self.last_stage_name = ""
+        self.last_model = ""
 
     def compatible(self, backend: Backend, workdir: str) -> bool:
         return (self.backend_id == backend.id
@@ -243,6 +250,10 @@ class _ClaudeSession:
             recovery = not bool(config.session_id or self.session_id)
             prompt = adapters._session_input(config, recovery=recovery)
             self._active_config = config
+            self.last_activity = time.time()
+            self.last_task_id = config.task_id
+            self.last_stage_name = config.stage_name
+            self.last_model = config.backend.model
             self._result = {}
             self._output = []
             self._saw_partial_text = False
@@ -291,7 +302,26 @@ class _ClaudeSession:
             except Exception as exc:
                 return RunResult(False, str(exc)[-300:])
             finally:
+                self.last_activity = time.time()
                 self._active_config = None
+
+    def snapshot(self) -> RuntimeInstance:
+        alive = self.alive
+        state = ("running" if alive and self._active_config else
+                 "idle" if alive else
+                 "starting" if self._active_config else "disconnected")
+        return RuntimeInstance(
+            instance_id=f"claude:{self.backend_id}:{self.session_key}",
+            backend_id=self.backend_id, adapter="claude_code",
+            mode="persistent" if self.persistent else "one_shot",
+            transport="claude-stream-json", state=state,
+            pid=self.process.pid if alive else None,
+            session_key=self.session_key if self.persistent else "",
+            native_session_id=self.session_id, workdir=self.workdir,
+            task_id=self.last_task_id, stage_name=self.last_stage_name,
+            model=self.last_model, executable=Path(self.command[0]).name,
+            started_at=self.created_at, last_activity=self.last_activity,
+        )
 
     def _read_stdout(self) -> None:
         process = self.process
@@ -559,7 +589,7 @@ class ClaudeRuntimeProvider(RuntimeProvider):
             if not session:
                 session = _ClaudeSession(
                     self._command(config.backend), config.backend.id, key,
-                    config.workdir)
+                    config.workdir, persistent=not ephemeral)
                 self._sessions[key] = session
         try:
             return session.run(config)
@@ -604,6 +634,15 @@ class ClaudeRuntimeProvider(RuntimeProvider):
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return self.fallback.list_models(backend, timeout)
+
+    def instances(self, backend: Backend) -> list[RuntimeInstance]:
+        fallback = self.fallback.instances(backend)
+        if backend.command:
+            return fallback
+        with self._guard:
+            sessions = [session for session in self._sessions.values()
+                        if session.backend_id == backend.id]
+        return [*fallback, *(session.snapshot() for session in sessions)]
 
     def shutdown(self) -> None:
         with self._guard:

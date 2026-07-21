@@ -44,6 +44,17 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。
 
+## 实时运行状态
+
+系统左侧的「运行状态」是全局页面，每秒轮询 `GET /api/runtime/status`。页面不读取各后端内部结构，而是由 `RuntimeManager.status()` 聚合每个 `RuntimeProvider.instances()` 返回的统一 `RuntimeInstance` 快照，因此新增 provider 只需实现实例枚举，不需要修改页面分支。
+
+快照区分两种生命周期：
+
+- `persistent`：服务进程内长驻并可复用的 Claude stream-json、Codex app-server 或 ACP stdio session。运行中显示 `running`，轮次结束但进程仍在时显示 `idle`，进程异常退出但实例记录尚在时显示 `disconnected`。
+- `one_shot`：任务阶段、兼容打印模式、自定义命令和无 session key 的 ACP 调用。子进程存在时显示 `running`，退出后立即从状态页移除。
+
+每个实例统一提供 backend、adapter、transport、PID、session key、原生 session/thread id、任务与阶段、模型、工作目录、启动时间和最近活动时间。打印模式通过活动进程注册表上报；ACP 同时上报长驻池与一次性 client；Claude/Codex 原生 provider 直接上报其会话对象。页面的后端概览始终列出全部已注册 Runtime，即使当前没有进程，也会明确显示未运行或已停用。
+
 ## 接入技术
 
 ### 逐 Runtime 会话复用矩阵

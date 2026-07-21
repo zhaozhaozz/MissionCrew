@@ -31,3 +31,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         return {"abilities": ROLE_ABILITIES, "tiers": TIER_ORDER,
                 "board_widget_types": sorted(BOARD_WIDGET_TYPES),
                 "effort_options": runtime_manager.effort_catalog()}
+
+    @app.get("/api/runtime/status")
+    def runtime_status():
+        """系统级 Runtime 实例快照；前端轮询实现实时状态页。"""
+        return runtime_manager.status(store.list_backends())

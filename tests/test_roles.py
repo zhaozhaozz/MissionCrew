@@ -362,6 +362,25 @@ def test_global_settings_exposes_new_project_role_templates(client):
     assert "editGlobalRoleTemplate" in js
 
 
+def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, seeded):
+    data = client.get("/api/runtime/status").json()
+    assert {row["id"] for row in data["backends"]} == {
+        backend.id for backend in seeded.list_backends()}
+    assert set(data["summary"]) >= {
+        "backends", "live_instances", "running", "persistent", "one_shot"}
+    html = client.get("/").text
+    router = client.get("/assets/js/router.js").text
+    js = client.get("/assets/js/runtime-status.js").text
+    assert 'id="nav-runtime-status"' in html
+    assert 'id="runtime-status-view"' in html
+    assert '"runtime-status"' in router
+    assert "/api/runtime/status" in js
+    assert "Claude stream-json" in js and "Codex app-server" in js
+    assert "ACP stdio" in js and "命令行执行" in js
+    assert "setInterval(pollRuntimeStatus, 1000)" in client.get(
+        "/assets/js/main.js").text
+
+
 def test_project_role_form_can_import_global_template(client):
     html = client.get("/").text
     js = client.get("/assets/js/roles.js").text

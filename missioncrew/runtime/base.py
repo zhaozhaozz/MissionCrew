@@ -27,6 +27,31 @@ class RuntimeCapabilities:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class RuntimeInstance:
+    """一个当前由 MissionCrew 进程持有的 Runtime 实例快照。"""
+
+    instance_id: str
+    backend_id: str
+    adapter: str
+    mode: str                 # persistent | one_shot
+    transport: str            # 原生双向协议、ACP stdio 或一次性 CLI
+    state: str                # starting | running | idle | disconnected
+    pid: int | None = None
+    session_key: str = ""
+    native_session_id: str = ""
+    workdir: str = ""
+    task_id: str = ""
+    stage_name: str = ""
+    model: str = ""
+    executable: str = ""
+    started_at: float = 0.0
+    last_activity: float = 0.0
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 class RuntimeProvider(ABC):
     """Runtime provider 契约；后端原生协议只在此边界之后可见。"""
 
@@ -52,3 +77,7 @@ class RuntimeProvider(ABC):
     def interrupt(self, backend: Backend, session_key: str = "") -> int:
         """中断匹配会话的当前 turn，但保留可继续复用的会话。"""
         return 0
+
+    def instances(self, backend: Backend) -> list[RuntimeInstance]:
+        """返回当前活动或长驻实例；无状态 provider 默认没有实例。"""
+        return []

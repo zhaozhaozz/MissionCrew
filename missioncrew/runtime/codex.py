@@ -10,7 +10,7 @@ from typing import Optional
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
-from .base import RuntimeCapabilities, RuntimeProvider
+from .base import RuntimeCapabilities, RuntimeInstance, RuntimeProvider
 from .native import (JsonLineProcess, RuntimeProtocolError, emit_json,
                      safe_emit)
 
@@ -69,11 +69,12 @@ def _question_answers(response: dict, questions: list[dict]) -> dict:
 
 class _CodexSession:
     def __init__(self, command: list[str], backend_id: str,
-                 session_key: str, workdir: str):
+                 session_key: str, workdir: str, persistent: bool):
         self.command = command
         self.backend_id = backend_id
         self.session_key = session_key
         self.workdir = str(Path(workdir).expanduser().resolve())
+        self.persistent = persistent
         self.client: Optional[JsonLineProcess] = None
         self.thread_id = ""
         self._signature = ""
@@ -86,6 +87,11 @@ class _CodexSession:
         self._output: list[str] = []
         self._saw_text_delta = False
         self._restarting_client = False
+        self.created_at = time.time()
+        self.last_activity = self.created_at
+        self.last_task_id = ""
+        self.last_stage_name = ""
+        self.last_model = ""
 
     def compatible(self, backend: Backend, workdir: str) -> bool:
         return (self.backend_id == backend.id
@@ -177,6 +183,10 @@ class _CodexSession:
                 self.close()
                 self.thread_id = ""
             self._active_config = config
+            self.last_activity = time.time()
+            self.last_task_id = config.task_id
+            self.last_stage_name = config.stage_name
+            self.last_model = config.backend.model
             prompt = adapters._session_input(config, recovery=not bool(config.session_id))
             adapters._emit_execution_start(config.emit, [*self.command], prompt)
             self._turn_done.clear()
@@ -227,7 +237,28 @@ class _CodexSession:
             except Exception as exc:
                 return RunResult(False, str(exc)[-300:])
             finally:
+                self.last_activity = time.time()
                 self._active_config = None
+
+    def snapshot(self) -> RuntimeInstance:
+        client = self.client
+        alive = bool(client and client.alive)
+        state = ("running" if alive and self._active_config else
+                 "idle" if alive else
+                 "starting" if self._active_config else "disconnected")
+        process = client.process if client else None
+        return RuntimeInstance(
+            instance_id=f"codex:{self.backend_id}:{self.session_key}",
+            backend_id=self.backend_id, adapter="codex",
+            mode="persistent" if self.persistent else "one_shot",
+            transport="codex-app-server", state=state,
+            pid=process.pid if process and process.poll() is None else None,
+            session_key=self.session_key if self.persistent else "",
+            native_session_id=self.thread_id, workdir=self.workdir,
+            task_id=self.last_task_id, stage_name=self.last_stage_name,
+            model=self.last_model, executable=Path(self.command[0]).name,
+            started_at=self.created_at, last_activity=self.last_activity,
+        )
 
     def _notification(self, method: str, params: dict) -> None:
         config = self._active_config
@@ -440,7 +471,7 @@ class CodexRuntimeProvider(RuntimeProvider):
             if not session:
                 session = _CodexSession(
                     self._command(config.backend), config.backend.id, key,
-                    config.workdir)
+                    config.workdir, persistent=not ephemeral)
                 self._sessions[key] = session
         try:
             return session.run(config)
@@ -514,6 +545,15 @@ class CodexRuntimeProvider(RuntimeProvider):
             return self.fallback.list_models(backend, timeout)
         finally:
             client.close()
+
+    def instances(self, backend: Backend) -> list[RuntimeInstance]:
+        fallback = self.fallback.instances(backend)
+        if backend.command:
+            return fallback
+        with self._guard:
+            sessions = [session for session in self._sessions.values()
+                        if session.backend_id == backend.id]
+        return [*fallback, *(session.snapshot() for session in sessions)]
 
     def shutdown(self) -> None:
         with self._guard:

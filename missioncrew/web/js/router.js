@@ -1,7 +1,7 @@
 /* ---- URL 路由:/<项目>/<视图>[/<频道>](History API,干净 URL),
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
 const TABS = ["chat", "board", "custom", "docs", "guidelines", "skills",
-              "proj", "settings"];
+              "proj", "runtime-status", "settings"];
 
 function parsePath() {
   // 兼容旧的 hash 链接(/#/default/settings):路径为根时读 hash
@@ -78,10 +78,14 @@ function switchTab(tab) {
   document.getElementById("guidelines-view").style.display = tab === "guidelines" ? "block" : "none";
   document.getElementById("skills-view").style.display = tab === "skills" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
+  document.getElementById("runtime-status-view").style.display =
+    tab === "runtime-status" ? "block" : "none";
   document.getElementById("settings-view").style.display = tab === "settings" ? "block" : "none";
   // 全局设置是独立导航项；项目设置是 ⚙；项目内容位于可折叠分区。
   // 任务看板是面板分区中的内置项，因此 board/custom 都激活面板标题。
   document.getElementById("nav-settings").classList.toggle("active", tab === "settings");
+  document.getElementById("nav-runtime-status").classList.toggle(
+    "active", tab === "runtime-status");
   document.getElementById("proj-cfg").classList.toggle("active", tab === "proj");
   document.getElementById("sec-channels").classList.toggle("active", tab === "chat");
   document.getElementById("sec-boards").classList.toggle(
@@ -95,6 +99,7 @@ function switchTab(tab) {
   renderProjectConfigPage(tab);
   renderSidebar();
   if (tab === "settings") renderGlobalSettings();
+  if (tab === "runtime-status") renderRuntimeStatus(true);
   updateConfigChatContext();
   syncUrl();
 }

@@ -10,6 +10,7 @@ argv[1] 控制 session/new 的模型目录形态:缺省 = kimi 形态(configOpti
 """
 import json
 import sys
+import time
 
 
 def send(obj):
@@ -69,6 +70,8 @@ def main():
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
         elif method == "session/prompt":
             prompt_count += 1
+            if shape == "slow":
+                time.sleep(1)
             text = msg["params"]["prompt"][0]["text"]
             # 思考与工具调用通知:验证客户端把运行过程实时上报
             send({"jsonrpc": "2.0", "method": "session/update", "params": {

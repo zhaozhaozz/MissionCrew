@@ -90,6 +90,13 @@ def test_native_provider_reuses_process_and_session(
                                       else "codex-thread")
         launches = (tmp_path / f"{adapter}.launches").read_text().splitlines()
         assert len(launches) == 1
+        instances = provider.instances(Backend(
+            id=adapter, name=adapter, adapter=adapter))
+        assert len(instances) == 1
+        assert instances[0].mode == "persistent"
+        assert instances[0].state == "idle"
+        assert instances[0].pid
+        assert instances[0].native_session_id == saved["id"]
         kinds = {kind for kind, _ in events}
         assert {"status", "thinking", "tool", "text"} <= kinds
         if adapter == "codex":

@@ -1,5 +1,7 @@
 """ACP stdio 协议:客户端流程、权限自动决策、适配器路由。"""
 import sys
+import threading
+import time
 from pathlib import Path
 
 from missioncrew.runtime import adapters
@@ -74,6 +76,36 @@ def test_acp_list_models_from_trae_models_block():
     assert models == ["GLM-5.2", "Kimi-K2.6"]
 
 
+def test_acp_one_shot_execution_appears_in_runtime_status(tmp_path):
+    result = {}
+
+    def run():
+        result["value"] = acp.run_prompt(
+            [sys.executable, FAKE, "slow"], "work", str(tmp_path), {},
+            timeout=10, runtime_id="kimi", task_id="task",
+            stage_name="research")
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    instances = []
+    for _ in range(100):
+        instances = acp.active_instances("kimi")
+        if instances:
+            break
+        time.sleep(0.01)
+    try:
+        assert len(instances) == 1
+        instance = instances[0]
+        assert instance.mode == "one_shot"
+        assert instance.transport == "acp-stdio"
+        assert instance.state == "running" and instance.pid
+        assert (instance.task_id, instance.stage_name) == ("task", "research")
+    finally:
+        worker.join(timeout=10)
+        acp.close_sessions()
+    assert result["value"][0] is True
+
+
 def _chat_cfg(tmp_path, saved, emit=None, shape="config"):
     backend = Backend(id="kimi", name="k", adapter="kimi",
                       command=[sys.executable, FAKE, shape])
@@ -99,6 +131,9 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
         assert "轮次=1;new=1;load=0" in first.output
         assert saved["id"] == "s-test"
         assert ("input", "公共上下文\n最近对话\n当前任务") in first_events
+        active = acp.active_instances("kimi")
+        assert len(active) == 1 and active[0].mode == "persistent"
+        assert active[0].state == "idle" and active[0].session_key == "channel::role"
         second_events = []
         second = adapters.AcpAdapter("kimi").run(
             _chat_cfg(tmp_path, saved,
