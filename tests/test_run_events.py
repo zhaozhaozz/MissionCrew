@@ -281,6 +281,7 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert 'body.querySelectorAll(".re-fold[open]")' in js
     assert (".re-fold { border:" in css
             and "padding: 0 8px 8px;\n             white-space: normal;" in css)
+    assert 'flex: none; white-space: nowrap;' in css
     assert "RUN_INPUT_FOLD_AT" not in js
     assert "/clear-context" in js and 'm.kind === "context_boundary"' in js
     assert "清除上下文" in client.get("/").text

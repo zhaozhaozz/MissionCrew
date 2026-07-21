@@ -224,7 +224,8 @@
                        display: flex; align-items: center; gap: 7px; padding-top: 7px;
                        white-space: normal; }
   .re-fold > summary::-webkit-details-marker { display: none; }
-  .re-fold > summary::after { content: "展开"; margin-left: auto; color: var(--accent); }
+  .re-fold > summary::after { content: "展开"; margin-left: auto; color: var(--accent);
+                              flex: none; white-space: nowrap; }
   .re-fold[open] > summary::after { content: "收起"; }
   .re-fold-size { color: var(--muted); font-family: inherit; }
   .re-fold .re-content { margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--line);
