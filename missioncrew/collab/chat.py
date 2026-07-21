@@ -15,8 +15,10 @@ import hashlib
 import json
 import re
 import threading
+import time
+import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +46,17 @@ CONTROL_ID_RE = re.compile(r"[\w-]+")
 # 完成后转交,不立即触发;前序角色回复中 @ 到时才真正执行
 DEFER_MARKERS = ("完成后", "然后", "之后", "接着", "随后")
 DEFER_WINDOW = 8       # 顺序词与 @ 之间允许的最大字符距离
+
+
+@dataclass
+class _PendingInteraction:
+    run_id: int
+    backend_id: str
+    kind: str
+    event_id: int
+    payload: dict
+    ready: threading.Event = field(default_factory=threading.Event)
+    response: Optional[dict] = None
 
 # 提示词结构约定:人格(role_desc)是"选人用的专长画像",不是任务;
 # 任务只来自触发消息(由发起者——人类或调度角色——撰写的简报)
@@ -174,9 +187,33 @@ class ChatEngine:
         self._futures_lock = threading.Lock()
         self._history_lock = threading.Lock()
         self._chain_run_lock = threading.Lock()
+        self._interaction_lock = threading.Lock()
+        self._interactions: dict[str, _PendingInteraction] = {}
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
+
+    def respond_interaction(self, run_id: int, request_id: str,
+                            response: dict) -> None:
+        """由聊天 API 回答一个仍在等待的原生 Runtime 请求。"""
+        with self._interaction_lock:
+            pending = self._interactions.get(request_id)
+            if not pending or pending.run_id != run_id:
+                raise ValueError("交互请求不存在、已经处理或所属运行不匹配")
+            decision = str(response.get("decision") or "")
+            allowed = ({"submit", "cancel"} if pending.kind == "user_input_request"
+                       else {"approve", "approve_session", "deny", "cancel"})
+            if decision not in allowed:
+                raise ValueError(f"交互 decision 必须是 {sorted(allowed)} 之一")
+            answers = response.get("answers") or {}
+            if not isinstance(answers, dict):
+                raise ValueError("交互 answers 必须是对象")
+            pending.response = {
+                "decision": decision,
+                "answers": answers,
+                "reason": str(response.get("reason") or ""),
+            }
+            pending.ready.set()
 
     # ---- 对外入口 ----
     def post(self, channel_id: str, author: str, content: str,
@@ -318,6 +355,10 @@ class ChatEngine:
         cfg = self._assemble(channel, role, backend, msg_id)
         # 运行过程(思考/工具/输出)实时落库,前端在聊天流中内联展示
         cfg.emit = lambda kind, text: self.store.append_run_event(run_id, kind, text)
+        runtime_deadline = time.monotonic() + cfg.timeout
+        cfg.interact = lambda kind, payload: self._request_runtime_interaction(
+            run_id, backend.id, kind, payload,
+            max(0.1, runtime_deadline - time.monotonic()))
         library = library_for(channel.project_id or "")
         library.commit_changes("platform", "Capture external document changes before chat run")
         result = runtime_manager.start(cfg)
@@ -373,6 +414,53 @@ class ChatEngine:
         self.post(channel.id, role_id, reply, author_type="agent",
                   reply_to=msg_id, root_id=root_id, depth=depth + 1,
                   runtime_id=backend.id, model=backend.model, effort=cfg.effort)
+
+    def _request_runtime_interaction(self, run_id: int, backend_id: str,
+                                     kind: str, payload: dict,
+                                     timeout: float) -> dict:
+        """持久化待处理请求，并阻塞原生协议回调直到用户回答。"""
+        if not self.store.wait_chat_run_for_interaction(run_id, backend_id):
+            return {
+                "decision": "cancel", "answers": {},
+                "reason": "运行已经结束",
+            }
+        request_id = uuid.uuid4().hex
+        visible = {
+            **payload,
+            "request_id": request_id,
+            "status": "pending",
+        }
+        event_id = self.store.append_interaction_event(run_id, kind, visible)
+        pending = _PendingInteraction(
+            run_id=run_id, backend_id=backend_id, kind=kind,
+            event_id=event_id, payload=visible)
+        with self._interaction_lock:
+            self._interactions[request_id] = pending
+        self.store.audit(
+            "platform", "runtime_interaction_requested",
+            detail=f"run={run_id} kind={kind} request={request_id}")
+
+        answered = pending.ready.wait(timeout)
+        with self._interaction_lock:
+            self._interactions.pop(request_id, None)
+        response = pending.response if answered and pending.response else {
+            "decision": "cancel", "answers": {},
+            "reason": "等待用户回答超时",
+        }
+        # 不把回答正文写回事件，避免 secret input 或凭据进入日志。
+        resolved = {
+            **visible,
+            "status": "resolved" if answered else "timeout",
+            "decision": response["decision"],
+            "resolved_at": time.time(),
+        }
+        self.store.update_interaction_event(event_id, run_id, resolved)
+        self.store.resume_chat_run_after_interaction(run_id, backend_id)
+        self.store.audit(
+            "human" if answered else "platform", "runtime_interaction_resolved",
+            detail=(f"run={run_id} kind={kind} request={request_id} "
+                    f"decision={response['decision']}"))
+        return response
 
     # ---- 内部:固定执行组合与上下文装配 ----
     def _pick_backend(self, _channel: Channel, role: Role):

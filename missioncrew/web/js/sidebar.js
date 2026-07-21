@@ -231,6 +231,11 @@ const RUN_EVENT_META = {
   thinking:    { label: "思考", cls: "re-thinking" },
   tool:        { label: "工具", cls: "re-tool" },
   tool_result: { label: "结果", cls: "re-tool" },
+  plan:        { label: "计划", cls: "re-plan" },
+  file_change: { label: "文件", cls: "re-file" },
+  usage:       { label: "用量", cls: "re-status" },
+  permission_request: { label: "权限", cls: "re-interaction" },
+  user_input_request: { label: "提问", cls: "re-interaction" },
   text:        { label: "输出", cls: "re-text" },
   stdout:      { label: "输出", cls: "re-tool" },
   // stderr 是多数 Agent CLI 的进度/日志通道(codex 连思考都走这里),
@@ -256,13 +261,93 @@ function mergeRunInputEvents(events) {
 }
 
 function runSummary(run) {
-  const st = { queued: "排队中", running: "运行中", done: "已完成", failed: "失败" }[run.status] || run.status;
-  const live = run.status === "queued" || run.status === "running";
+  const st = { queued: "排队中", running: "运行中", waiting_user: "等待用户",
+               done: "已完成", failed: "失败" }[run.status] || run.status;
+  const live = ["queued", "running", "waiting_user"].includes(run.status);
   const secs = run.finished_at ? ` · ${Math.max(1, Math.round(run.finished_at - run.created_at))}s` : "";
   return `<span class="rc-dot ${live ? "live" : run.status}">●</span>
     <b style="color:${roleColor[run.role_id] || "var(--muted)"}">@${esc(run.role_id)}</b>
     <span class="muted">${run.backend_id ? esc(run.backend_id) : "…"} · ${st}${secs}</span>
     ${run.error ? `<span class="rc-err">${esc(run.error).slice(0, 120)}</span>` : ""}`;
+}
+
+function parseStructuredRunEvent(event) {
+  try { return JSON.parse(event.content); } catch (_) { return null; }
+}
+
+function interactionDetails(payload) {
+  const details = payload.details || {};
+  const label = payload.tool || details.reason || details.command || payload.request_type || "Runtime 请求";
+  const raw = Object.keys(details).length ? JSON.stringify(details, null, 2) : "";
+  return `<div class="ri-title">${esc(label)}</div>` +
+    (raw ? `<details class="ri-details"><summary>查看请求详情</summary><pre>${esc(raw)}</pre></details>` : "");
+}
+
+function renderPermissionRequest(run, event, payload) {
+  const status = payload.status || "pending";
+  const pending = status === "pending";
+  const statusLabel = { pending: "等待决定", auto_approved: "MissionCrew YOLO 已自动批准",
+    denied: "已按策略拒绝", resolved: `已处理：${payload.decision || ""}`,
+    timeout: "等待超时，已取消" }[status] || status;
+  const actions = !pending ? "" : `<div class="ri-actions">
+    <button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','approve')">批准一次</button>
+    ${payload.can_approve_session ? `<button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','approve_session')">本会话批准</button>` : ""}
+    <button class="danger" onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','deny')">拒绝</button>
+  </div>`;
+  return `<div class="re re-interaction" data-event-id="${event.id}">
+    <span class="re-k">权限</span><span class="ri-status ${esc(status)}">${esc(statusLabel)}</span>
+    ${interactionDetails(payload)}${actions}</div>`;
+}
+
+function renderUserInputRequest(run, event, payload) {
+  const pending = (payload.status || "pending") === "pending";
+  const questions = (payload.questions || []).map((question, index) => {
+    const qid = String(question.id ?? index);
+    const inputType = question.isSecret ? "password" : "text";
+    const optionType = question.multiSelect ? "checkbox" : "radio";
+    const options = (question.options || []).map(option => `<label class="ri-option">
+      <input type="${optionType}" name="ri-${esc(payload.request_id)}-${esc(qid)}"
+        value="${esc(option.label || option)}"> <span>${esc(option.label || option)}</span>
+      ${option.description ? `<small>${esc(option.description)}</small>` : ""}</label>`).join("");
+    return `<div class="ri-question" data-question-id="${esc(qid)}">
+      <b>${esc(question.header || `问题 ${index + 1}`)}</b>
+      <div>${esc(question.question || "")}</div>${options}
+      <input class="ri-other" type="${inputType}" placeholder="${options ? "其他回答（可选）" : "请输入回答"}">
+    </div>`;
+  }).join("");
+  const status = payload.status || "pending";
+  const actions = pending ? `<div class="ri-actions">
+    <button class="action" onclick="submitRuntimeAnswers(${run.id},'${esc(payload.request_id)}',this)">提交回答</button>
+    <button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','cancel')">取消</button>
+  </div>` : `<div class="ri-status ${esc(status)}">${status === "timeout" ? "等待超时，已取消" : "回答已提交"}</div>`;
+  return `<div class="re re-interaction" data-event-id="${event.id}">
+    <span class="re-k">提问</span>${questions}${actions}</div>`;
+}
+
+async function sendRuntimeInteraction(runId, requestId, decision, answers = {}) {
+  const card = runCards.get(runId);
+  card?.el.querySelectorAll(".ri-actions button").forEach(button => button.disabled = true);
+  try {
+    await api("POST", `/api/chat/runs/${runId}/interactions/${encodeURIComponent(requestId)}`,
+      { decision, answers });
+    if (card) card.key = null;
+    await pollMessages();
+  } catch (error) {
+    card?.el.querySelectorAll(".ri-actions button").forEach(button => button.disabled = false);
+  }
+}
+
+function submitRuntimeAnswers(runId, requestId, button) {
+  const root = button.closest(".re-interaction");
+  const answers = {};
+  root.querySelectorAll(".ri-question").forEach(question => {
+    const values = [...question.querySelectorAll("input[type=radio]:checked,input[type=checkbox]:checked")]
+      .map(input => input.value);
+    const other = question.querySelector(".ri-other")?.value.trim();
+    if (other) values.push(other);
+    answers[question.dataset.questionId] = values;
+  });
+  sendRuntimeInteraction(runId, requestId, "submit", answers);
 }
 
 async function renderRunEvents(run, card) {
@@ -281,6 +366,18 @@ async function renderRunEvents(run, card) {
       .map(el => el.dataset.eventId));
     body.innerHTML = mergeRunInputEvents(d.events).map(e => {
       const meta = RUN_EVENT_META[e.kind] || { label: e.kind, cls: "re-status" };
+      if (e.kind === "permission_request") {
+        const payload = parseStructuredRunEvent(e);
+        if (payload) return renderPermissionRequest(run, e, payload);
+      }
+      if (e.kind === "user_input_request") {
+        const payload = parseStructuredRunEvent(e);
+        if (payload) return renderUserInputRequest(run, e, payload);
+      }
+      if (e.kind === "usage") {
+        const payload = parseStructuredRunEvent(e);
+        if (payload) return `<div class="re ${meta.cls}"><span class="re-k">用量</span>${esc(JSON.stringify(payload))}</div>`;
+      }
       if (e.kind === "input" && e.content.length > RUN_INPUT_FOLD_AT) {
         const open = openInputs.has(String(e.id)) ? " open" : "";
         return `<details class="re re-fold ${meta.cls}" data-event-id="${e.id}"${open}>
@@ -323,7 +420,7 @@ function syncRuns(runs) {
       if (anchor) anchor.after(el); else pane.appendChild(el);
       runCards.set(run.id, card);
     }
-    const live = run.status === "queued" || run.status === "running";
+    const live = ["queued", "running", "waiting_user"].includes(run.status);
     const key = `${run.status}:${run.events_size}`;
     if (card.key !== key && !card.fetching) {
       card.el.querySelector("summary").innerHTML = runSummary(run);

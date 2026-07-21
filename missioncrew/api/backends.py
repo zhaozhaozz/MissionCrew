@@ -217,6 +217,18 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             f"backend={backend_id} session={session_key or '*'} stopped={stopped}"))
         return {"ok": True, "stopped": stopped}
 
+    @app.post("/api/backends/{backend_id}/interrupt")
+    def interrupt_backend(backend_id: str, session_key: str = ""):
+        """中断当前 turn，原生 session/thread 保持可复用。"""
+        backend = store.get_backend(backend_id)
+        if backend is None:
+            raise HTTPException(404, "后端不存在")
+        interrupted = runtime_manager.interrupt(backend, session_key)
+        store.audit("human", "backend_interrupted", detail=(
+            f"backend={backend_id} session={session_key or '*'} "
+            f"interrupted={interrupted}"))
+        return {"ok": True, "interrupted": interrupted}
+
     @app.delete("/api/backends/{backend_id}")
     def delete_backend(backend_id: str):
         backend = store.get_backend(backend_id)

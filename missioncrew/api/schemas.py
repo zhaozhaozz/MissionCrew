@@ -35,6 +35,12 @@ class PageContextInput(BaseModel):
     content: str = Field(max_length=2_000_000)
 
 
+class RuntimeInteractionInput(BaseModel):
+    decision: str
+    answers: dict = Field(default_factory=dict)
+    reason: str = ""
+
+
 class ChannelCreate(BaseModel):
     id: str
     name: str = ""

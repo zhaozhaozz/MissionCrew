@@ -227,6 +227,29 @@
   .re-log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
             font-size: 12px; color: var(--muted); }
   .re-status { color: var(--muted); }
+  .re-plan { color: var(--text-2); border-left: 2px solid var(--accent); padding-left: 8px; }
+  .re-file { color: var(--text-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .re-interaction { border: 1px solid var(--accent); border-radius: 8px;
+                    padding: 9px; background: var(--card); color: var(--text); }
+  .ri-title { margin-top: 7px; font-weight: 600; }
+  .ri-status { color: var(--muted); }
+  .ri-status.pending { color: var(--accent); }
+  .ri-status.denied, .ri-status.timeout { color: var(--bad); }
+  .ri-details { margin-top: 6px; color: var(--muted); }
+  .ri-details summary { cursor: pointer; }
+  .ri-details pre { max-height: 160px; overflow: auto; white-space: pre-wrap; }
+  .ri-question { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); }
+  .ri-question > div { margin: 3px 0 6px; }
+  .ri-option { display: flex; gap: 6px; align-items: baseline; margin: 4px 0; }
+  .ri-option small { color: var(--muted); }
+  .ri-other { width: 100%; box-sizing: border-box; margin-top: 5px; padding: 6px 8px;
+              border: 1px solid var(--line); border-radius: 6px;
+              background: var(--bg); color: var(--text); }
+  .ri-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .ri-actions button { padding: 4px 9px; border: 1px solid var(--line); border-radius: 6px;
+                       background: var(--card-2); color: var(--text); cursor: pointer; }
+  .ri-actions button.action { background: var(--accent); color: white; border-color: var(--accent); }
+  .ri-actions button.danger { color: var(--bad); }
 
   #composer { flex: none; border-top: 1px solid var(--line); padding: 12px 24px 14px;
               background: var(--card); }

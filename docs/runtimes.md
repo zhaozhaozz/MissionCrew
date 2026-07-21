@@ -2,7 +2,7 @@
 
 Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资源**:注册表存在 SQLite,所有项目共享；全局角色模板和项目角色都固定绑定某个 runtime 与模型，执行时直接使用,不做运行时路由。新项目复制当时的全局角色模板，首项作为默认主控，之后模板与项目角色独立维护。
 
-本文说明支持哪些工具、用什么技术接入、如何检测/升级、模型清单从哪来,以及如何接入新工具。所有事实以 `missioncrew/runtime/adapters.py` 与 `missioncrew/runtime/acp.py` 为准。
+本文说明支持哪些工具、用什么技术接入、如何检测/升级、模型清单从哪来,以及如何接入新工具。所有事实以 `missioncrew/runtime/` 下的 provider 与统一管理层为准。
 
 ## 支持的工具矩阵
 
@@ -10,8 +10,8 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 | 二进制 | adapter | 接入方式 | 升级方式 |
 |---|---|---|---|
-| `claude` | `claude_code` | 打印模式 CLI | npm(`@anthropic-ai/claude-code`)或 `claude update` |
-| `codex` | `codex` | 打印模式 CLI | npm(`@openai/codex`) |
+| `claude` | `claude_code` | 原生双向 stream-json | npm(`@anthropic-ai/claude-code`)或 `claude update` |
+| `codex` | `codex` | 原生 app-server | npm(`@openai/codex`) |
 | `grok` | `grok_build` | 打印模式 CLI | `grok update` |
 | `opencode` | `opencode` | 打印模式 CLI | npm(`opencode-ai`)或 `opencode upgrade` |
 | `copilot` | `copilot` | 打印模式 CLI | npm(`@github/copilot`) |
@@ -33,7 +33,9 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 - `start(ExecutionConfig) -> RunResult`：启动一次 Runtime 执行，过程事件与最终结果使用统一格式。
 - `stop(Backend, session_key="") -> int`：停止指定 Runtime 的活动 CLI 进程、ACP 一次性执行或长驻会话。
+- `interrupt(Backend, session_key="") -> int`：原生 provider 中断当前 turn，但保留 session/thread 供下一轮继续；不支持的 Runtime 返回 0。
 - `supports_session()` / `capabilities()`：查询实际会话复用和生命周期能力，聊天层不再猜测后端类型。
+- 原生 provider 还声明 `structured_events`、`user_interaction`、`permission_control` 和 `interrupt`，前端只按能力呈现操作，不判断 Claude/Codex 名称。
 - `list_models()`、`effort_options()`：统一模型和推理力度管理。
 - `detect_report()`、`detect_backends()`、`update()`、`refresh_installation()`：统一发现、注册、升级和版本探测。
 - `register(adapter, provider)`：为新 Runtime 或插件注册实现，不修改聊天、任务、API 或 CLI 调用链。
@@ -50,8 +52,8 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 | Runtime / adapter | 首轮如何创建 | 后续轮次如何复用 | 会话 ID 来源与进程生命周期 |
 |---|---|---|---|
-| Claude / `claude_code` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
-| Codex / `codex` | 执行 `codex exec`，从输出头部捕获原生 session/thread id | 新进程执行 `codex … exec resume <id> <prompt>` | Runtime 返回 ID；每轮一个 CLI 进程。首轮未返回 ID 时不保存，下一轮用恢复输入新建 |
+| Claude / `claude_code` | 启动双向 stream-json 进程，从 `system/init` 保存原生 session id | 服务存活时把下一条 user message 写入同一进程；进程或服务重启后以 `--resume <id>` 恢复 | Runtime 返回 ID；一个 `channel::role` 对应一个长驻进程。模型、effort、目录或环境变化时重启进程，但恢复同一 session |
+| Codex / `codex` | 启动 `codex app-server`，调用 `initialize → thread/start` | 同一进程、同一 thread 调用 `turn/start`；进程或服务重启后先 `thread/resume` | app-server 返回 thread id；一个 `channel::role` 对应一个长驻进程。恢复失败会明确结束本轮，不会静默创建新 thread |
 | Grok / `grok_build` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
 | OpenCode / `opencode` | 使用 `--format json` 启动，并从 JSON 事件捕获 session id | 新进程使用 `--session <id>`，继续保持 JSON 输出 | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | GitHub Copilot / `copilot` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程继续传同一个 `--session-id <id>` | 固定 ID；每轮一个 CLI 进程 |
@@ -64,13 +66,37 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 | Trae / `trae` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Mock / `mock` | 使用 `mock:<channel::role>` 作为确定性会话 ID | 在同一会话锁内复用该 ID | 无外部进程，仅用于测试和演示 |
 
-会话元数据保存在 SQLite `chat_sessions`：除原生 ID 外，还记录 backend id、adapter、解析后的 workdir 和最后成功接收的公共上下文版本。只有 backend、adapter、workdir 均兼容时才恢复；角色、频道或 backend 删除时同步清理。模型、effort 或项目设置变化不会换 session，而是在下一轮把新执行参数和完整新版公共上下文注入原会话。若 Runtime 明确报告 session/thread 不存在或无效，平台删除旧记录，下一轮用恢复输入新建。
+会话元数据保存在 SQLite `chat_sessions`：除原生 ID 外，还记录 backend id、adapter、解析后的 workdir 和最后成功接收的公共上下文版本。只有 backend、adapter、workdir 均兼容时才恢复；角色、频道或 backend 删除时同步清理。项目设置变化在下一轮把完整新版公共上下文注入原会话；Claude 的模型、effort、目录或进程环境变化会重启 OS 进程，但仍以原生 id 恢复同一会话。若 Claude/Codex 明确报告 session/thread 不存在或无效，本轮会失败并删除旧记录，绝不在同一轮静默新建；用户下一次明确重试时才使用恢复输入建立新会话。
 
-`Backend.command` 的处理取决于接入方式：ACP 自定义命令仍遵循统一协议，因此可以正常复用；打印模式自定义命令可能是任意 wrapper，平台无法安全猜测其 session 参数，所以不追加原生 resume 标志，也不沿用旧 ID，而是每轮发送完整恢复输入。若新增打印 Runtime，必须在 `DEFAULT_COMMANDS` 和会话策略集合中同时登记，并补首轮、续接和缺失 ID 的测试。
+`Backend.command` 的处理取决于接入方式：ACP 自定义命令仍遵循统一协议，因此可以正常复用；Claude/Codex 或打印模式的自定义命令可能是任意 wrapper，平台无法安全假定它支持 stream-json/app-server/session 参数，因此显式退回 `CliAdapter`，不沿用原生 provider 的能力。若新增打印 Runtime，必须在 `DEFAULT_COMMANDS` 和会话策略集合中同时登记，并补首轮、续接和缺失 ID 的测试。
+
+### Claude 双向 stream-json
+
+默认 Claude provider 启动官方 `claude`，同时使用 `--input-format stream-json`、`--output-format stream-json`、`--include-partial-messages` 和 `--permission-prompt-tool stdio`。stdin 在进程整个生命周期保持打开，每轮发送结构化 user message；stdout 的 system、assistant、user、stream event 和 result 被转换为状态、思考、工具、工具结果、文本与最终结果事件。
+
+`can_use_tool` control request 不由 Claude 终端自行决定，而是交给 MissionCrew。`AskUserQuestion`、`ask_user_question` 和 `request_user_input` 会生成聊天交互卡，用户回答后 provider 把 answers 写回原 control request，同一个 turn 继续执行。文件写入和联网工具会先经过统一策略硬检查，再进入 `auto|prompt|deny` 审批。非 `full-access` 模式同时通过临时 `--settings` 启用 Claude 的 OS 级 Bash sandbox，强制关闭 unsandboxed escape hatch；sandbox 不可用时执行失败，不降级成无隔离命令。执行超时或停止时通过 control request 发送 interrupt，必要时再清理进程组。
+
+### Codex app-server
+
+默认 Codex provider 不再执行 `codex exec`，而是为每个 `channel::role` 启动官方 `codex app-server`，使用省略 `jsonrpc` 字段的 JSONL 双向协议。连接先完成 `initialize/initialized`，再调用 `thread/start|thread/resume` 和 `turn/start`；agent message delta、reasoning delta、command、file change、plan、usage 和 turn completion 通知分别映射到聊天过程事件。
+
+每轮结构化传入 `cwd`、`model`、`effort`、`runtimeWorkspaceRoots`、`approvalPolicy` 和 `sandboxPolicy`。`workspaceWrite` 的 `writableRoots` 来自统一 `RuntimePolicy.writable_paths`，网络权限来自 `RuntimePermissions.network`。模型目录直接调用 app-server `model/list`，失败时才退回旧的 CLI 发现路径。
+
+### 聊天交互与 MissionCrew 权限接管
+
+原生 user-input/permission request 会以独立 JSON 事件持久化，聊天运行状态切换为 `waiting_user`。用户回答通过运行 id 与随机 request id 回传；原始回答只存在于内存中的待处理请求，不写入 run event，避免 secret input 或凭据进入日志。回答完成后原生请求收到 response，运行恢复为 `running`。
+
+统一审批模式的含义：
+
+- `auto`：MissionCrew YOLO。后端仍保持 request-approval 模式，平台逐次自动批准并保存不含敏感回答的审计事件；不使用 Claude `bypassPermissions` 或 Codex `danger-full-access + never` 绕开平台。
+- `prompt`：显示权限卡，支持批准一次、拒绝或取消；后端提供可持久化权限建议时额外显示“本会话批准”，Claude 会把原生 `permission_suggestions` 原样回传为 session 范围的 `updatedPermissions`。
+- `deny`：平台拒绝请求；Codex 同时使用 `approvalPolicy=never` 与配置的 sandbox，使不可批准的越权操作直接失败。
+
+自动批准和 sandbox 是两层：批准请求不等于忽略文件系统边界。Codex 对额外目录或网络的 `item/permissions/requestApproval` 会回传请求的精确 permission profile；Claude 使用 `updatedInput` 继续获准的工具调用。所有交互都设有与本轮相同的截止时间，超时按取消处理。
 
 ### 打印模式 CLI(`CliAdapter`)
 
-一次执行 = 一个子进程:按命令模板渲染参数,在频道工作目录内启动,收集 stdout/stderr,退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板在 `DEFAULT_COMMANDS` 中定义,`Backend.command` 可整体覆盖；自定义打印命令的参数语义未知，平台不会猜测其 resume 标志，而是每轮发送带最近对话的完整恢复 Prompt。
+未实现原生双向 provider 的工具仍使用打印模式：一次执行 = 一个子进程，按命令模板渲染参数，在频道工作目录内启动，收集 stdout/stderr，以退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板在 `DEFAULT_COMMANDS` 中定义，`Backend.command` 可整体覆盖；自定义打印命令的参数语义未知，平台不会猜测其 resume 标志，而是每轮发送带最近对话的完整恢复 Prompt。
 
 模板占位符(`render_command`):
 
@@ -81,7 +107,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `{allowed_dirs}` — 当前项目全部本地资源目录与文档库；会展开为重复的 `--add-dir <path>`；
 - `{workdir}` — 本次主工作目录，用于需要显式工作根参数的 CLI。
 
-默认模板统一带非交互参数(`--permission-mode acceptEdits`、`--sandbox workspace-write`、`--allow-all-tools`、`--always-approve` 等),保证无头执行不阻塞在确认提示上。Claude、Codex、Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则；Grok/OpenCode 同时显式传主工作目录；Cursor print 模式带 `--force`。诊断输出尾部落盘到独立 harness 工作区 `.missioncrew/runtime/last-output-<adapter>.log` 便于回查，不在业务代码仓生成日志；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
+打印模板统一带各 CLI 的非交互参数，保证无头执行不阻塞在终端确认提示上。Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则；Grok/OpenCode 同时显式传主工作目录；Cursor print 模式带 `--force`。Claude/Codex 仅在用户提供自定义 `Backend.command` 时走此兼容路径。诊断输出尾部落盘到独立 harness 工作区 `.missioncrew/runtime/last-output-<adapter>.log` 便于回查，不在业务代码仓生成日志；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
 
 ### ACP stdio(`AcpAdapter`,kimi / kiro / qoder / trae)
 
@@ -118,7 +144,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 1. **配置阶梯**(`Backend.models`):带档位与成本的条目,检测时自动播种、可在全局设置编辑。它的作用是差异化记账——执行时若角色模型命中阶梯条目,本次配额按该档成本扣减;`name=""` 条目表示 CLI 默认模型。
 2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟):
-   - codex:`codex debug models --bundled`(JSON 目录,过滤 `visibility=hide`);
+   - codex:默认通过 `codex app-server` 的 `model/list` 分页读取当前账号可用目录；协议启动失败时退回 `codex debug models --bundled`；
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);
    - ACP 工具:一次性会话,从 `session/new` 响应解析模型目录——kimi 形态是 `configOptions` 中 `category=model` 的 select 选项;trae 形态是 `models.availableModels`(`{modelId,...}` 列表,含 `currentModelId`,与 Multica 的解析对齐),同时兼容 `available_models`/`available` 与裸数组;
    - claude:CLI 无枚举命令,返回静态目录 `CLAUDE_MODEL_CATALOG`——稳定别名(haiku/sonnet/opus,自动跟随最新版)在前,`--model` 实际接受的具体型号在后;
@@ -131,7 +157,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 部分工具支持按次指定推理力度,支持矩阵在 `EFFORT_SUPPORT`(adapter → 允许档位):
 
 - claude:原生 `--effort` 标志,档位 low/medium/high/xhigh/max;
-- codex:配置覆盖 `-c model_reasoning_effort=<档位>`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 CLI 自行报错并照常回流到频道);
+- codex:原生 `turn/start.effort`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 app-server 自行报错并照常回流到频道);
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。
 
@@ -155,8 +181,9 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 接入新工具
 
-1. 实现 `RuntimeProvider` 的 `start`、`stop`、`capabilities` 和 `list_models`，通过 `runtime_manager.register(adapter, provider)` 注册。业务层不增加 adapter 条件分支。
+1. 实现 `RuntimeProvider` 的 `start`、`stop`、`capabilities` 和 `list_models`，通过 `runtime_manager.register(adapter, provider)` 注册。长驻 provider 还应实现 `shutdown`。业务层不增加 adapter 条件分支。
 2. 如果复用内置打印模式或 ACP executor，只在 Runtime 包内部补充命令模板、会话参数和权限翻译；原始 executor 不对主程序导出。
 3. 在 Runtime manager 内补充二进制发现、模型目录和升级策略；模型、effort 与 capability 均通过统一查询接口暴露。
-4. 为 provider 增加契约测试，并保留“`missioncrew/runtime` 之外不得导入原始执行器”的架构边界测试。
-5. 自定义 `Backend.command` 仍可覆盖默认命令，但 provider 必须明确声明这种配置是否能可靠复用原生 session。
+4. 双向协议统一通过 `ExecutionConfig.emit` 输出过程事件，通过 `ExecutionConfig.interact` 请求权限或用户输入；provider 不得直接依赖 Store、FastAPI 或 Web 数据结构。
+5. 为 provider 增加契约测试，并保留“`missioncrew/runtime` 之外不得导入原始执行器”的架构边界测试。测试使用确定性协议进程，不能依赖真实模型额度。
+6. 自定义 `Backend.command` 仍可覆盖默认命令，但 provider 必须明确声明这种配置是否能可靠复用原生 session；不满足原生协议时应显式降级能力。

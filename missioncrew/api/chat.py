@@ -6,7 +6,8 @@ from fastapi import FastAPI, HTTPException
 from ..collab.workspace import write_page_context_snapshot
 from ..core.models import Channel
 from .context import ApiContext
-from .schemas import ChannelCreate, MessageInput, PageContextInput
+from .schemas import (ChannelCreate, MessageInput, PageContextInput,
+                      RuntimeInteractionInput)
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -58,6 +59,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.get("/api/chat/runs/{run_id}/events")
     def run_events(run_id: int):
         return {"events": store.run_events(run_id)}
+
+    @app.post("/api/chat/runs/{run_id}/interactions/{request_id}")
+    def respond_runtime_interaction(run_id: int, request_id: str,
+                                    body: RuntimeInteractionInput):
+        try:
+            chat.respond_interaction(run_id, request_id, body.model_dump())
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"ok": True}
 
     @app.post("/api/chat/{channel_id}/messages")
     def post_message(channel_id: str, body: MessageInput):

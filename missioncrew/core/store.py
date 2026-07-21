@@ -472,9 +472,31 @@ class Store:
             (status, backend_id, error, finished, run_id),
         )
 
+    def resume_chat_run_after_interaction(self, run_id: int,
+                                          backend_id: str = "") -> None:
+        """只恢复仍在等待用户的运行，不能覆盖并发写入的终态。"""
+        self._execute(
+            "UPDATE chat_runs SET status='running', backend_id=? "
+            "WHERE id=? AND status='waiting_user'",
+            (backend_id, run_id),
+        )
+
+    def wait_chat_run_for_interaction(self, run_id: int,
+                                      backend_id: str = "") -> bool:
+        """把活动运行切到等待态；已经结束的运行不能被重新打开。"""
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE chat_runs SET status='waiting_user', backend_id=? "
+                "WHERE id=? AND status NOT IN ('done','failed')",
+                (backend_id, run_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
+
     def active_chat_runs(self, channel: str) -> list[dict]:
         return [dict(r) for r in self._query(
-            "SELECT * FROM chat_runs WHERE channel=? AND status IN ('queued','running') "
+            "SELECT * FROM chat_runs WHERE channel=? "
+            "AND status IN ('queued','running','waiting_user') "
             "ORDER BY id", (channel,))]
 
     def count_chain_runs(self, root_id: int) -> int:
@@ -512,9 +534,15 @@ class Store:
     # 换 kind 或单行超过上限时另起新行。前端按"行"整体重渲染,无需增量游标。
     RUN_EVENT_MAX = 8000
 
-    def append_run_event(self, run_id: int, kind: str, text: str) -> None:
+    def append_run_event(self, run_id: int, kind: str, text: str) -> Optional[int]:
         if not text:
-            return
+            return None
+        # JSON 事件必须保持一行一个对象；相邻权限/用量事件不能字符串拼接。
+        if kind in {"permission_request", "user_input_request", "usage"}:
+            return self._execute(
+                "INSERT INTO run_events(run_id, kind, content, created_at) "
+                "VALUES(?,?,?,?)", (run_id, kind, text, time.time()))
+        event_id: Optional[int] = None
         with self._lock:
             remaining = text
             while remaining:
@@ -528,13 +556,35 @@ class Store:
                     self._execute(
                         "UPDATE run_events SET content = content || ? WHERE id=?",
                         (chunk, last["id"]))
+                    event_id = int(last["id"])
                 else:
                     chunk, remaining = (remaining[: self.RUN_EVENT_MAX],
                                         remaining[self.RUN_EVENT_MAX:])
-                    self._execute(
+                    event_id = self._execute(
                         "INSERT INTO run_events(run_id, kind, content, created_at) "
                         "VALUES(?,?,?,?)",
                         (run_id, kind, chunk, time.time()))
+        return event_id
+
+    def append_interaction_event(self, run_id: int, kind: str,
+                                 payload: dict) -> int:
+        """交互请求必须独占一行，不能与相邻 JSON 事件拼接。"""
+        return self._execute(
+            "INSERT INTO run_events(run_id, kind, content, created_at) "
+            "VALUES(?,?,?,?)",
+            (run_id, kind, json.dumps(payload, ensure_ascii=False), time.time()),
+        )
+
+    def update_interaction_event(self, event_id: int, run_id: int,
+                                 payload: dict) -> bool:
+        """只更新指定 run 的交互行，避免跨运行猜测 request id。"""
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE run_events SET content=? WHERE id=? AND run_id=?",
+                (json.dumps(payload, ensure_ascii=False), event_id, run_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount == 1
 
     def run_events(self, run_id: int, limit: int = 200) -> list[dict]:
         rows = self._query(

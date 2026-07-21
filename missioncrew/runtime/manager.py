@@ -7,49 +7,13 @@ from __future__ import annotations
 
 import json
 import shutil
-from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
 from . import adapters as _executors
+from .base import RuntimeCapabilities, RuntimeProvider
 from ..core.models import Backend, ExecutionConfig, RunResult
-
-
-@dataclass(frozen=True)
-class RuntimeCapabilities:
-    """一个 Runtime 通过统一接口对外暴露的操作能力。"""
-
-    start: bool = True
-    stop: bool = True
-    session_reuse: bool = False
-    model_management: bool = True
-    skill_injection: bool = True
-    writable_paths: bool = True
-    permissions: bool = True
-
-    def to_dict(self) -> dict:
-        return asdict(self)
-
-
-class RuntimeProvider(ABC):
-    """Runtime provider 契约；新后端只需实现这个边界。"""
-
-    @abstractmethod
-    def start(self, config: ExecutionConfig) -> RunResult:
-        """启动一次执行并返回标准结果。"""
-
-    @abstractmethod
-    def stop(self, backend: Backend, session_key: str = "") -> int:
-        """停止匹配的活动执行/长驻会话，返回停止数量。"""
-
-    @abstractmethod
-    def capabilities(self, backend: Backend) -> RuntimeCapabilities:
-        """返回当前 Backend 配置实际支持的统一能力。"""
-
-    @abstractmethod
-    def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
-        """从 Runtime 查询模型目录。"""
 
 
 class _BuiltinProvider(RuntimeProvider):
@@ -79,6 +43,14 @@ class RuntimeManager:
     def __init__(self):
         self._providers: dict[str, RuntimeProvider] = {}
         self._builtin = _BuiltinProvider()
+        # 延迟导入避免 provider 与 manager 初始化互相依赖。业务层只会看到
+        # RuntimeManager，Claude/Codex 原生协议类不会越过 runtime 包边界。
+        from .claude import ClaudeRuntimeProvider
+        from .codex import CodexRuntimeProvider
+        self._providers.update({
+            "claude_code": ClaudeRuntimeProvider(self._builtin),
+            "codex": CodexRuntimeProvider(self._builtin),
+        })
 
     def register(self, adapter: str, provider: RuntimeProvider) -> None:
         """注册/覆盖一个 adapter provider，供插件或测试扩展。"""
@@ -119,8 +91,17 @@ class RuntimeManager:
     def stop(self, backend: Backend, session_key: str = "") -> int:
         return self.provider_for(backend).stop(backend, session_key)
 
+    def interrupt(self, backend: Backend, session_key: str = "") -> int:
+        return self.provider_for(backend).interrupt(backend, session_key)
+
     def shutdown(self) -> None:
         """停止所有内置 Runtime 进程，供服务生命周期调用。"""
+        seen: set[int] = set()
+        for provider in self._providers.values():
+            if id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            provider.shutdown()
         _executors.close_active_executions()
         _executors.acp.close_sessions()
 

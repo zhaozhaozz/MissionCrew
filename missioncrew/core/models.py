@@ -689,6 +689,9 @@ class ExecutionConfig:
     # 运行过程回调 (kind, text):适配器在执行期间实时上报思考/工具/输出等
     # 事件,None 表示调用方不关心过程(如结构化任务阶段)
     emit: Optional[Callable[[str, str], None]] = None
+    # 双向协议中的权限/用户输入请求。回调会阻塞当前原生请求，直到聊天 UI
+    # 返回 decision/answers；结构化任务未设置时 provider 按无头策略处理。
+    interact: Optional[Callable[[str, dict], dict]] = None
 
     def __post_init__(self):
         # 兼容旧的 allowed_dirs 构造入口；新代码只需提供统一策略。

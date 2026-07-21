@@ -137,7 +137,10 @@ def _refresh_session(cfg: ExecutionConfig) -> None:
 
 def _session_missing(text: str) -> bool:
     return bool(re.search(
-        r"(?:session|conversation|thread).{0,40}(?:not found|不存在|invalid|unknown)",
+        r"(?:(?:session|conversation|thread).{0,40}"
+        r"(?:not found|不存在|invalid|unknown)|"
+        r"(?:not found|不存在|invalid|unknown).{0,40}"
+        r"(?:session|conversation|thread))",
         text, re.I | re.S))
 
 
