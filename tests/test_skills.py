@@ -241,5 +241,9 @@ def test_skill_page_exposes_all_import_modes(seeded):
                      "importSkillFolder", "rescanSkillLibrary"):
         assert f"function {function}" in js
     assert "直接投放目录" in js and "skillFolderImportOpen" in js
+    assert "function isSkillMarkdownFile(path)" in js
+    assert "/\\.(?:md|markdown)$/i.test(path)" in js
+    assert 'class="skill-file-viewer-body markdown-body"' in js
+    assert 'class="skill-file-viewer-body">${esc(data.content)}' in js
     assert "openFormDialog" not in js
     assert 'targetInputId = "res-target"' in sidebar

@@ -719,6 +719,10 @@ function setSkillMarkdownMode(mode) {
 
 let skillOpenFile = null;
 
+function isSkillMarkdownFile(path) {
+  return /\.(?:md|markdown)$/i.test(path);
+}
+
 async function openSkillFile(path) {
   if (!selectedSkillId) return;
   if (path.toLowerCase() === "skill.md") { closeSkillFile(); return; }
@@ -728,6 +732,10 @@ async function openSkillFile(path) {
   skillOpenFile = path;
   const viewer = document.getElementById("skill-file-viewer");
   if (!viewer) return;
+  const body = isSkillMarkdownFile(path)
+    ? `<article class="skill-file-viewer-body markdown-body">${
+        miniMarkdown(markdownContentWithoutFrontmatter(data.content))}</article>`
+    : `<pre class="skill-file-viewer-body">${esc(data.content)}</pre>`;
   viewer.innerHTML = `
     <div class="skill-file-viewer-head">
       <code>${esc(path)}</code>
@@ -735,7 +743,7 @@ async function openSkillFile(path) {
       ${data.truncated ? `<span class="muted">文件过大，仅显示前 512 KB</span>` : ""}
       <button class="ghost compact" type="button" onclick="closeSkillFile()">返回 SKILL.md</button>
     </div>
-    <pre class="skill-file-viewer-body">${esc(data.content)}</pre>`;
+    ${body}`;
   viewer.hidden = false;
   document.querySelector("#skill-editor .guideline-markdown-surface")
     ?.setAttribute("hidden", "");

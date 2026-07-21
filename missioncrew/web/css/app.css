@@ -335,9 +335,9 @@
                                  overflow-wrap: anywhere; }
   .skill-file-viewer-body { flex: 1; min-height: 0; overflow: auto; margin: 0;
                             padding: 14px 16px; border: 1px solid var(--line);
-                            border-radius: 10px; background: var(--card);
-                            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                            font-size: 12.5px; line-height: 1.6; color: var(--text); }
+                            border-radius: 10px; background: var(--card); }
+  pre.skill-file-viewer-body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                               font-size: 12.5px; line-height: 1.6; color: var(--text); }
   .skill-tree-resize { position: absolute; z-index: 2; top: 0; right: 0; bottom: 0;
                        width: 8px; border-radius: 0 9px 9px 0;
                        cursor: col-resize; touch-action: none; }
