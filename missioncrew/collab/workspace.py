@@ -197,6 +197,24 @@ def _atomic_write_text(path: Path, content: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def write_page_context_snapshot(project_id: str, channel_id: str, role_id: str,
+                                page_kind: str, page_key: str, content: str) -> Path:
+    """把配置页正文写入目标角色工作区，并只向聊天消息暴露文件路径。"""
+    if page_kind not in {"guidelines", "docs"}:
+        raise ValueError("页面类型只支持 guidelines 或 docs")
+    key_digest = hashlib.sha256(page_key.encode("utf-8")).hexdigest()[:12]
+    content_digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    suffix = Path(page_key).suffix.lower()
+    if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
+        suffix = ".md" if page_kind == "guidelines" else ".txt"
+    directory = (chat_workspace_dir(project_id, channel_id, role_id)
+                 / "page-context" / page_kind)
+    path = directory / f"{key_digest}-{content_digest}{suffix}"
+    with _workspace_lock(directory):
+        _atomic_write_text(path, content)
+    return path.resolve()
+
+
 def _link_directory(link: Path, target: Path) -> None:
     """建立平台生成的目录链接，并修复指向旧位置的链接。"""
     target.mkdir(parents=True, exist_ok=True)

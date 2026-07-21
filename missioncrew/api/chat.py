@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.workspace import write_page_context_snapshot
 from ..core.models import Channel
 from .context import ApiContext
-from .schemas import ChannelCreate, MessageInput
+from .schemas import ChannelCreate, MessageInput, PageContextInput
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -65,6 +66,23 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         except ValueError as e:
             raise HTTPException(404, str(e))
         return {"id": msg_id}
+
+    @app.post("/api/chat/{channel_id}/page-context")
+    def write_page_context(channel_id: str, body: PageContextInput):
+        channel = store.get_channel(channel_id)
+        if channel is None:
+            raise HTTPException(404, "频道不存在")
+        if not channel.project_id:
+            raise HTTPException(400, "频道未归属项目")
+        project = ctx.must_project(channel.project_id)
+        try:
+            path = write_page_context_snapshot(
+                project.id, channel.id, project.orchestrator_role_id,
+                body.page_kind, body.page_key, body.content,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"path": str(path)}
 
     @app.delete("/api/chat/channels/{channel_id}")
     def delete_channel(channel_id: str):

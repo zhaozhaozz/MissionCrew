@@ -29,6 +29,12 @@ class MessageInput(BaseModel):
     content: str
 
 
+class PageContextInput(BaseModel):
+    page_kind: str = Field(max_length=32)
+    page_key: str = Field(max_length=1000)
+    content: str = Field(max_length=2_000_000)
+
+
 class ChannelCreate(BaseModel):
     id: str
     name: str = ""

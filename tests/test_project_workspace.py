@@ -601,13 +601,17 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "版本历史" in documents
     assert "documentSidebarHtml()" in router
     assert "sendConfigChat" in js and "pollConfigChat" in js
-    assert "currentConfigDraft" in js and "captureConfigChatSelection" in js
+    assert "currentConfigDraft" in js and "configPageSnapshot" in js
+    assert "stageConfigPage" in js and "captureConfigChatSelection" in js
     assert "startConfigChatResize" in js and "toggleConfigChatCollapsed" in js
     assert "CONFIG_CHAT_HEIGHT_KEY" in js and "CONFIG_CHAT_COLLAPSED_KEY" in js
     assert "guideline-markdown-preview markdown-body" in js
     assert "setGuidelineMarkdownMode" in js
     assert 'GUIDELINE_MARKDOWN_PLACEHOLDER = "---\\nname: \\ndescription: \\n---' in js
     assert "frontmatter_contract" in js and "current_draft.markdown" in js
+    assert "current_page.content_path" in js and 'read_from: "current_page.content_path"' in js
+    assert "current_page.document_path" in js
+    assert "docPaneContent" in documents
     assert "original_name: selectedGuidelineName" in js
     assert all(old not in js for old in ('id="gf-id"', 'id="gf-title"', 'id="gf-summary"'))
     assert "roleBindingPicker" not in js and "role_ids" not in js
@@ -630,6 +634,35 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert all(action in js for action in (
         "save_guideline", "save_skill", "write_document"))
     assert "save_rule" not in js and "验证规则" not in html
+
+
+def test_guideline_and_document_chat_context_is_staged_as_a_file(seeded):
+    client = _client(seeded)
+    markdown = "---\nname: api-style\ndescription: API changes\n---\n\n# API\n"
+    response = client.post("/api/chat/general/page-context", json={
+        "page_kind": "guidelines", "page_key": "api-style.md", "content": markdown,
+    })
+    assert response.status_code == 200
+    path = Path(response.json()["path"])
+    assert path.read_text(encoding="utf-8") == markdown
+    assert path.parent.name == "guidelines"
+    assert path.parent.parent.name == "page-context"
+    assert "/lead/.missioncrew/" in path.as_posix()
+
+    same = client.post("/api/chat/general/page-context", json={
+        "page_kind": "guidelines", "page_key": "api-style.md", "content": markdown,
+    })
+    assert same.json()["path"] == str(path)
+    document = client.post("/api/chat/general/page-context", json={
+        "page_kind": "docs", "page_key": "specs/design.md", "content": "# Draft\n",
+    })
+    document_path = Path(document.json()["path"])
+    assert document_path.read_text(encoding="utf-8") == "# Draft\n"
+    assert document_path.parent.name == "docs" and document_path.suffix == ".md"
+    invalid = client.post("/api/chat/general/page-context", json={
+        "page_kind": "skills", "page_key": "SKILL.md", "content": "secret",
+    })
+    assert invalid.status_code == 400
 
 
 def test_background_refresh_preserves_scrollable_view_state(seeded):

@@ -133,25 +133,10 @@ function guidelineFrontmatterValue(markdown, key) {
   return line ? line.slice(line.indexOf(":") + 1).trim().replace(/^(['"])(.*)\1$/, "$2") : "";
 }
 
-function clippedDraftText(value) {
-  const clipped = clippedConfigText(value);
-  return clipped.truncated ? `${clipped.text}\n…（草稿过长，已截断）` : clipped.text;
-}
-
 function currentConfigDraft(context) {
-  if (context.tab === "guidelines") return {
-    original_name: selectedGuidelineName,
-    markdown: clippedDraftText(valueOf("gf-content")),
-    frontmatter_contract: {
-      allowed_attributes: ["name", "description"],
-      source_of_truth: "后端直接从这份 Markdown frontmatter 读取，不使用 id/title/summary",
-    },
-    enabled: document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
-    unsaved_changes: configEditorDirty.guidelines,
-  };
   if (context.tab === "skills") return {
     id: selectedSkillId ?? valueOf("sf-id").trim(),
-    markdown: clippedDraftText(valueOf("sf-content")),
+    markdown: clippedConfigText(valueOf("sf-content")).text,
     frontmatter_contract: {
       required_attributes: ["name", "description"],
       source_of_truth: "后端直接从这份 SKILL.md frontmatter 读取 name、description；其他附加属性原样保留",
@@ -159,18 +144,55 @@ function currentConfigDraft(context) {
     enabled: document.getElementById("sf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.skills,
   };
-  return {
-    path: docMode === "new" ? valueOf("doc-new-path") : docSelected,
-    mode: docMode, viewing_revision: docViewingRevision,
-    content: document.getElementById("doc-content")
-      ? clippedDraftText(valueOf("doc-content")) : null,
-  };
+  return null;
 }
 
 function clippedConfigText(value, limit = 30000) {
   const text = String(value ?? "");
   return text.length <= limit ? { text, truncated: false }
                               : { text: text.slice(0, limit), truncated: true };
+}
+
+function configPageSnapshot(context) {
+  if (context.tab === "guidelines") {
+    const pageKey = selectedGuidelineName
+      || guidelineFrontmatterValue(valueOf("gf-content"), "name") || "new-guideline.md";
+    return {
+      pageKey: pageKey.endsWith(".md") ? pageKey : `${pageKey}.md`,
+      content: valueOf("gf-content"),
+      metadata: {
+        original_name: selectedGuidelineName,
+        enabled: document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
+        unsaved_changes: configEditorDirty.guidelines,
+      },
+    };
+  }
+  if (context.tab === "docs") {
+    const documentPath = docMode === "new" ? valueOf("doc-new-path").trim() : docSelected;
+    if (docPaneContentIdentity !== currentDocContentIdentity()) return null;
+    const editor = document.getElementById("doc-content");
+    const content = editor ? editor.value : docPaneContent;
+    if (!documentPath || content === null) return null;
+    return {
+      pageKey: documentPath,
+      content,
+      metadata: {
+        document_path: documentPath, mode: docMode,
+        viewing_revision: docViewingRevision,
+      },
+    };
+  }
+  return null;
+}
+
+async function stageConfigPage(channel, context) {
+  const snapshot = configPageSnapshot(context);
+  if (!snapshot) throw new Error("当前页面没有可提供给主控的文件内容");
+  const stored = await api(
+    "POST", `/api/chat/${encodeURIComponent(channel.id)}/page-context`, {
+      page_kind: context.tab, page_key: snapshot.pageKey, content: snapshot.content,
+    });
+  return { content_path: stored.path, ...snapshot.metadata };
 }
 
 function selectedLineRange(value, start, end) {
@@ -329,38 +351,46 @@ async function sendConfigChat() {
   if (!channel) { status.textContent = "当前项目没有频道，无法联系主控。"; return; }
   const selection = configChatSelection?.context_key === context.key
     ? configChatSelection : null;
-  const payload = {
-    page_kind: context.tab, page_label: context.label, current_item: context.item,
-    current_draft: currentConfigDraft(context),
-    selection: selection ? {
-      field: selection.field, line_start: selection.line_start,
-      line_end: selection.line_end, line_basis: selection.basis,
-      selected_text: selection.text, selected_text_truncated: selection.truncated,
-    } : null,
-    user_message: request,
-  };
-  // 草稿或选区中的 @role 只是正文，转成 JSON Unicode 转义，避免聊天提及解析器
-  // 把它误当成额外调度；整条消息只应触发开头显式指定的项目主控。
-  const serializedPayload = JSON.stringify(payload, null, 2).replace(/@/g, "\\u0040");
-  const guidelineEditingTip = context.tab === "guidelines"
-    ? `当前编辑对象是一份完整准则 Markdown 文件。current_draft.markdown 包含 YAML frontmatter 和正文；` +
-      `frontmatter 只使用 name、description，后端直接读取这两个属性。保存时把修改后的完整文件放入 ` +
-      `${context.action}.markdown，并在修改现有文件时传 original_name；不要使用 id、title、summary。`
-    : "";
-  const skillEditingTip = context.tab === "skills"
-    ? `当前编辑对象是一份完整 SKILL.md 文件。current_draft.markdown 包含 YAML frontmatter 和正文；` +
-      `frontmatter 必须含 name、description，其他附加属性保持原样。保存时把修改后的完整文件放入 ` +
-      `${context.action}.markdown，id 传 current_draft.id（Skill 目录名，不可修改）。`
-    : "";
-  const content = `@${project.orchestrator_role_id} 项目配置页协作消息（JSON）：\n` +
-    `${serializedPayload}\n\n` +
-    `这是围绕当前页面的对话：若用户只是提问、解释或讨论，只需回答，不要写入；` +
-    `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
-    `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
-    guidelineEditingTip + skillEditingTip;
-  input.value = "";
   status.textContent = `正在发送给 @${project.orchestrator_role_id}…`;
   try {
+    const fileBackedPage = context.tab === "guidelines" || context.tab === "docs";
+    const currentPage = fileBackedPage ? await stageConfigPage(channel, context) : null;
+    const selectionPayload = selection ? {
+      field: selection.field, line_start: selection.line_start,
+      line_end: selection.line_end, line_basis: selection.basis,
+      ...(fileBackedPage ? { read_from: "current_page.content_path" } : {
+        selected_text: selection.text, selected_text_truncated: selection.truncated,
+      }),
+    } : null;
+    const payload = {
+      page_kind: context.tab, page_label: context.label, current_item: context.item,
+      ...(fileBackedPage ? { current_page: currentPage }
+                         : { current_draft: currentConfigDraft(context) }),
+      selection: selectionPayload, user_message: request,
+    };
+    // Skill 草稿中的 @role 只是正文；JSON Unicode 转义避免被误判为额外调度。
+    const serializedPayload = JSON.stringify(payload, null, 2).replace(/@/g, "\\u0040");
+    const guidelineEditingTip = context.tab === "guidelines"
+      ? `当前准则正文没有内嵌在消息中；先读取 current_page.content_path。文件包含 YAML frontmatter 和正文，` +
+        `frontmatter 只使用 name、description。保存时把修改后的完整文件放入 ${context.action}.markdown，` +
+        `并在修改现有文件时传 current_page.original_name；不要使用 id、title、summary。`
+      : "";
+    const documentEditingTip = context.tab === "docs"
+      ? `当前文档正文没有内嵌在消息中；先读取 current_page.content_path。保存时把完整结果放入 ` +
+        `${context.action}.content，目标路径使用 current_page.document_path。`
+      : "";
+    const skillEditingTip = context.tab === "skills"
+      ? `当前编辑对象是一份完整 SKILL.md 文件。current_draft.markdown 包含 YAML frontmatter 和正文；` +
+        `frontmatter 必须含 name、description，其他附加属性保持原样。保存时把修改后的完整文件放入 ` +
+        `${context.action}.markdown，id 传 current_draft.id（Skill 目录名，不可修改）。`
+      : "";
+    const content = `@${project.orchestrator_role_id} 项目配置页协作消息（JSON）：\n` +
+      `${serializedPayload}\n\n` +
+      `这是围绕当前页面的对话：若用户只是提问、解释或讨论，只需回答，不要写入；` +
+      `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
+      `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
+      guidelineEditingTip + documentEditingTip + skillEditingTip;
+    input.value = "";
     const response = await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
       author: "human", content,
     });
@@ -377,7 +407,7 @@ async function sendConfigChat() {
     pollConfigChat();
   } catch (error) {
     input.value = request;
-    status.textContent = "发送失败，请重试。";
+    status.textContent = error.message || "发送失败，请重试。";
   }
 }
 

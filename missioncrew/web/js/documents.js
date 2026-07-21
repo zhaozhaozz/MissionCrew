@@ -26,6 +26,14 @@ const docCollapsed = new Set();   // 收起的目录前缀
 let docPaneRenderSignature = null;
 let docPaneRenderToken = 0;
 let documentRefreshToken = 0;
+let docPaneContent = null;        // 当前阅读页正文，供配置对话写入工作区快照
+let docPaneContentIdentity = null;
+
+function currentDocContentIdentity() {
+  return JSON.stringify(docMode === "new"
+    ? [currentProject, "new"]
+    : [currentProject, docSelected, docMode, docViewingRevision]);
+}
 
 function currentDocPaneSignature() {
   const meta = docFilesMeta.find(file => file.path === docSelected) || null;
@@ -162,6 +170,8 @@ async function renderDocPane(preserveScroll = false) {
   const selectedPath = docSelected;
   const selectedMode = docMode;
   const selectedRevision = docViewingRevision;
+  docPaneContent = null;
+  docPaneContentIdentity = null;
   const stillCurrent = () => renderToken === docPaneRenderToken
     && projectId === currentProject && selectedPath === docSelected
     && selectedMode === docMode && selectedRevision === docViewingRevision;
@@ -175,6 +185,8 @@ async function renderDocPane(preserveScroll = false) {
     updateConfigChatContext();
   };
   if (docMode === "new") {
+    docPaneContent = "";
+    docPaneContentIdentity = currentDocContentIdentity();
     captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>新建文档</b>
@@ -190,6 +202,7 @@ async function renderDocPane(preserveScroll = false) {
     return;
   }
   if (!docSelected) {
+    docPaneContent = null;
     captureScroll();
     pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看。</div>`;
     finish();
@@ -204,6 +217,8 @@ async function renderDocPane(preserveScroll = false) {
       `/api/projects/${encodeURIComponent(projectId)}/documents/file/${docEncode(selectedPath)}`);
     if (!stillCurrent()) return;
     content = d.content;
+    docPaneContent = content;
+    docPaneContentIdentity = currentDocContentIdentity();
     captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">编辑中</span>
@@ -223,11 +238,14 @@ async function renderDocPane(preserveScroll = false) {
   } catch (e) {
     if (!stillCurrent()) return;
     captureScroll();
+    docPaneContent = null;
     pane.innerHTML = `<div class="doc-head"><b>${esc(docSelected)}</b></div>
       <div class="empty">无法在线查看(可能是二进制文件),可直接在文档库目录中操作。</div>`;
     finish();
     return;
   }
+  docPaneContent = d.content;
+  docPaneContentIdentity = currentDocContentIdentity();
   const revBanner = docViewingRevision
     ? `<div class="muted" style="margin-bottom:8px">正在查看历史版本 ${esc(docViewingRevision.slice(0, 10))}
         <button class="ghost" data-rev="${esc(docViewingRevision)}" onclick="restoreDocumentVersion(this.dataset.rev)">恢复此版本</button>
