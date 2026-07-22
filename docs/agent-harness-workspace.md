@@ -67,7 +67,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ### `tasks/`
 
-`tasks/` 将项目任务物化为带 YAML frontmatter 的 Markdown。Agent 可以新建任务，也可以编辑既有任务的标题、描述、类型、标签、风险、密级和成本上限。执行结束后，平台校验并同步这些可编辑字段。
+`tasks/` 只存放项目任务记录，不是协作草稿、报告或证据目录。任务从第一行开始使用 YAML frontmatter；Agent 可以新建任务，也可以编辑既有任务的标题、描述、类型、标签、风险、密级和成本上限。执行结束后，平台校验并同步这些可编辑字段。没有声明 frontmatter 的普通 Markdown 不参与任务同步，也不会创建任务；此类内容应写入 `documents/` 下合适的草稿或报告目录。
 
 `status`、当前阶段、阶段结果和审批是平台控制字段，不能通过修改 Markdown 绕过。编辑既有任务时还应保留 `id` 和 `snapshot_updated_at`，平台用时间戳避免旧快照覆盖较新的任务状态。
 

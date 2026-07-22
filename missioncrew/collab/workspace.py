@@ -276,8 +276,8 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 
 ## 可用内容
 
-- `documents/`：项目版本化文档库，可直接创建和编辑 Markdown 或其他项目文档；平台会在执行后记录版本。
-- `tasks/`：项目任务的 Markdown 视图。可新建任务文件，也可编辑既有任务的标题、描述、类型、标签、风险和预算字段；平台会在执行后同步。状态、阶段和审批由平台管理。
+- `documents/`：项目版本化文档库，可直接创建和编辑 Markdown 或其他项目文档；协作草稿、报告和普通聊天产生的验证记录也放在这里，平台会在执行后记录版本。
+- `tasks/`：只存放项目任务的 Markdown 视图，不是草稿、报告或证据目录。任务文件必须从第一行开始使用下方 YAML frontmatter；平台会在执行后同步。状态、阶段和审批由平台管理。
 - `guidelines/`：项目准则 Markdown 快照；根据 description 判断是否需要读取。
 - `skills/`：已启用项目 Skill 的完整目录；先读 SKILL.md，再按需使用同目录 scripts/、references/、assets/ 等文件。
 - `project.md`：项目简介与资源索引。
@@ -315,8 +315,9 @@ max_tier: null
 `normal`、`high`；`max_tier` 可为空或 `economy`、`standard`、`expert`。
 编辑既有任务时保留 `id` 和 `snapshot_updated_at`，不要修改 `status` 或阶段字段。
 
-不要把业务源码或交付物写进 `.missioncrew`。只有项目文档、任务、证据和其他 harness
-协作资料属于这里。
+不要把业务源码或业务仓交付物写进 `.missioncrew`。正式项目文档和协作草稿写入
+`documents/`；结构化任务的阶段证据写入该任务工作区的 `evidence/`；`tasks/` 只写上述
+带 YAML frontmatter 的任务记录。
 """
 
 
@@ -353,11 +354,17 @@ def write_task_files(store: Store, project_id: str, directory: Path) -> None:
             _atomic_write_text(_task_path(directory, task.id), _render_task(task))
 
 
-def _parse_task_file(path: Path) -> tuple[dict, str]:
+def _parse_task_file(path: Path) -> tuple[dict, str] | None:
     text = path.read_text(encoding="utf-8")
+    # ``tasks/`` may contain an old collaboration artifact from before the
+    # directory contract was explicit. Only a leading YAML delimiter declares
+    # a Markdown file as a task candidate; malformed declared candidates still
+    # fail loudly below instead of silently disappearing from synchronization.
+    if not text.startswith(("---\n", "---\r\n")):
+        return None
     match = _FRONTMATTER_RE.match(text)
     if not match:
-        raise ValueError("任务 Markdown 必须以 YAML frontmatter 开头")
+        raise ValueError("任务 YAML frontmatter 缺少结束分隔符 ---")
     try:
         attributes = yaml.safe_load(match.group("header")) or {}
     except yaml.YAMLError as exc:
@@ -409,7 +416,10 @@ def sync_task_files(store: Store, project_id: str, directory: Path,
     errors: list[str] = []
     for path in sorted(directory.glob("*.md")):
         try:
-            attributes, description = _parse_task_file(path)
+            parsed = _parse_task_file(path)
+            if parsed is None:
+                continue
+            attributes, description = parsed
             values = _editable_task_values(attributes, description)
             raw_id = attributes.get("id")
             if raw_id is not None and not isinstance(raw_id, str):

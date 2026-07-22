@@ -862,6 +862,8 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert not (workspace / "docs").exists()
     assert "MissionCrew 是本地多 Agent harness" in cfg.prompt
     assert "不会进入业务源码或业务代码提交" in cfg.prompt
+    assert "协作草稿、报告和普通聊天产生的验证记录写入 `documents/`" in cfg.prompt
+    assert "普通 Markdown 不会创建任务" in cfg.prompt
     assert "MissionCrew 是一个本地 Agent harness" in (
         workspace / "README.md").read_text(encoding="utf-8")
     assert (workspace / "project.md").is_file()
@@ -1055,6 +1057,25 @@ def test_agents_can_create_and_edit_tasks_through_harness_workspace(seeded):
     updated = seeded.get_task(existing.id)
     assert updated.title == "更新后的任务"
     assert updated.description == "更新后的描述"
+
+
+def test_task_sync_ignores_plain_markdown_but_rejects_broken_frontmatter(seeded,
+                                                                         tmp_path):
+    """普通协作稿不是任务；显式声明但损坏的任务候选仍应给出错误。"""
+    tasks_dir = tmp_path / "tasks"
+    tasks_dir.mkdir()
+    plain = tasks_dir / "review-report.md"
+    plain.write_text("# 审阅报告\n\n这不是任务。\n", encoding="utf-8")
+
+    assert sync_task_files(seeded, "webshop", tasks_dir, "role:dev") == []
+    assert plain.is_file()
+    assert not any(task.title == "审阅报告" for task in seeded.list_tasks())
+
+    broken = tasks_dir / "broken-task.md"
+    broken.write_text("---\ntitle: 未闭合的任务\n", encoding="utf-8")
+    assert sync_task_files(seeded, "webshop", tasks_dir, "role:dev") == [
+        "broken-task.md: 任务 YAML frontmatter 缺少结束分隔符 ---"
+    ]
 
 
 # ---- 面板卡片:通用展示原语 + 平台数据源(AgentDesk 式) ----

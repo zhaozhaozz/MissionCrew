@@ -165,7 +165,8 @@ def render_project_context(project: Project, library: DocumentLibrary,
         (f"# MissionCrew 工作区\n目录：{workspace_dir}\n"
          "也可通过环境变量 MISSIONCREW_WORKSPACE 获取。该 `.missioncrew` 目录位于"
          "业务代码仓之外，其中的文件不会进入业务源码或业务代码提交。"
-         "项目文档和任务可按需在这里创建、编辑；业务源码仍在当前工作目录或项目代码仓中修改。")
+         "项目文档和任务可按需在这里创建、编辑；业务源码仍在当前工作目录或项目代码仓中修改。"
+         "协作草稿、报告和普通聊天产生的验证记录写入 `documents/`，不要写入 `tasks/`。")
         if workspace_dir is not None else
         "# MissionCrew 工作区\n（本次执行未提供独立工作区）",
         f"# 项目上下文：{project.name}",
@@ -188,12 +189,15 @@ def render_project_context(project: Project, library: DocumentLibrary,
         "先根据 description 判断相关性，仅在任务需要时读取对应的 Markdown 文件；不要预加载全部正文。",
         f"# 项目文档库\n内部读写目录：{documents_dir}\n"
         f"对外资源 URL：{documents_url}/<文档库相对路径>\n"
-        "所有角色可在该普通目录中读写文档；平台会在每次执行后记录 Git 版本。\n"
+        "所有角色可在该普通目录中读写正式文档、协作草稿、报告和普通聊天产生的验证记录；"
+        "平台会在每次执行后记录 Git 版本。\n"
         "准则和 Skill 正文中的相对 Markdown 链接均以此目录为根；仅在任务需要时读取链接文件，不要预加载。\n"
         f"最终回复引用项目文档时必须写成 `[标题]({documents_url}/路径)`；"
         "不得输出内部读写目录、`.missioncrew` 真实路径或 `file://` 链接。",
         (f"# 项目任务文件\n目录：{tasks_dir}\n"
-         "可读取全部项目任务 Markdown，也可新建或编辑任务；平台会在执行后同步。"
+         "该目录只存放项目任务记录，不是草稿、报告或证据目录。可读取全部项目任务 Markdown，"
+         "也可新建或编辑任务；任务文件必须从第一行开始使用 YAML frontmatter，格式见工作区 "
+         "README.md。平台只同步声明了 frontmatter 的任务候选；普通 Markdown 不会创建任务。"
          "任务状态、阶段、审批等系统字段由平台管理，不通过文件修改。")
         if tasks_dir is not None else "# 项目任务文件\n（本次执行未物化）",
         "# 本次可读写目录\n以下项目资源和 MissionCrew workspace 已显式授权，可直接读写：\n"
