@@ -61,7 +61,7 @@ MissionCrew 是一个**多项目管理器**,项目之间互不相干(类似 Mult
 |---|---|---|---|
 | `claude` (Claude Code) | `claude_code` | 打印模式 | haiku(经济)/ 默认(标准)/ opus(专家) |
 | `codex` (OpenAI Codex) | `codex` | 打印模式(`codex exec` 工作区沙箱) | CLI 默认 |
-| `grok` (Grok Build) | `grok_build` | 打印模式(`grok -p`,自动批准工具调用) | CLI 默认 |
+| `grok` (Grok Build) | `grok_build` | ACP stdio(`grok agent stdio`,结构化过程与会话复用) | CLI 默认 |
 | `opencode` | `opencode` | 打印模式 | CLI 默认 |
 | `copilot` (GitHub Copilot CLI) | `copilot` | 打印模式 | CLI 默认 |
 | `cursor-agent` (Cursor) | `cursor` | 打印模式 | CLI 默认 |

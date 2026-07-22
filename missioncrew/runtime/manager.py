@@ -31,8 +31,11 @@ class _BuiltinProvider(RuntimeProvider):
         return stopped
 
     def capabilities(self, backend: Backend) -> RuntimeCapabilities:
+        is_acp = backend.adapter in _executors.ACP_SERVE_COMMANDS
         return RuntimeCapabilities(
             session_reuse=_executors.supports_native_session(backend),
+            structured_events=is_acp,
+            permission_control=is_acp,
         )
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:

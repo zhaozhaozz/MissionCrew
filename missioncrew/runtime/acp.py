@@ -1,6 +1,6 @@
 """ACP(Agent Client Protocol)stdio 客户端。
 
-kimi / kiro / qoder / trae 等 CLI 不走"命令行传 prompt"的打印模式,而是作为
+Grok / kimi / kiro / qoder / trae 等 CLI 不走"命令行传 prompt"的打印模式,而是作为
 JSON-RPC 服务挂在 stdio 上(换行分隔的 JSON-RPC 2.0)。流程:
 
     initialize -> session/new|session/load -> [session/set_model] -> session/prompt

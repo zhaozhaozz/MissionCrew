@@ -1,19 +1,19 @@
-"""Grok Build 后端的命令模板、自动检测与更新方式。"""
+"""Grok Build 后端的 ACP 命令、自动检测与更新方式。"""
 
 from missioncrew.runtime import adapters
+from missioncrew.runtime.manager import RuntimeManager
 from missioncrew.core.models import Backend
 
 
-def test_grok_command_uses_headless_automation_mode():
-    template = adapters.DEFAULT_COMMANDS["grok_build"]
+def test_grok_command_uses_acp_stdio_mode():
+    template = adapters.ACP_SERVE_COMMANDS["grok_build"]
 
-    assert adapters.render_command(template, "修复登录问题", "grok-build") == [
-        "grok", "-p", "修复登录问题", "--model", "grok-build",
-        "--always-approve", "--no-auto-update",
+    assert adapters.render_command(
+        template, "", "grok-build", workdir="/work/project") == [
+        "grok", "--cwd", "/work/project", "agent", "--always-approve",
+        "--no-leader", "stdio",
     ]
-    assert adapters.render_command(template, "修复登录问题", "") == [
-        "grok", "-p", "修复登录问题", "--always-approve", "--no-auto-update",
-    ]
+    assert isinstance(adapters.get_adapter("grok_build"), adapters.AcpAdapter)
 
 
 def test_grok_detection_creates_routable_backend(monkeypatch):
@@ -38,3 +38,14 @@ def test_grok_uses_native_updater():
                       binary_path="/home/u/.grok/bin/grok")
 
     assert adapters.update_plan(backend) == ("self", ["grok", "update"])
+
+
+def test_grok_reports_structured_acp_capabilities():
+    backend = Backend(id="grok", name="Grok Build", adapter="grok_build")
+
+    capabilities = RuntimeManager().capabilities(backend)
+
+    assert capabilities.session_reuse
+    assert capabilities.structured_events
+    assert capabilities.permission_control
+    assert not capabilities.interrupt

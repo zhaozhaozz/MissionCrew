@@ -174,6 +174,7 @@ def test_existing_runtime_usage_table_gets_project_and_role_columns(tmp_path):
 @pytest.mark.parametrize(("adapter", "mode", "transport"), [
     ("claude_code", "persistent", "claude-stream-json"),
     ("codex", "persistent", "codex-app-server"),
+    ("grok_build", "persistent", "acp-stdio"),
     ("kimi", "persistent", "acp-stdio"),
     ("opencode", "one_shot", "cli-command"),
 ])

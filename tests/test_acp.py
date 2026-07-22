@@ -46,7 +46,7 @@ def test_acp_process_start_failure_is_reported(tmp_path):
 
 
 def test_acp_tools_use_acp_adapter():
-    for name in ("kimi", "kiro", "qoder", "trae"):
+    for name in ("grok_build", "kimi", "kiro", "qoder", "trae"):
         assert isinstance(adapters.get_adapter(name), adapters.AcpAdapter)
     assert isinstance(adapters.get_adapter("claude_code"), adapters.CliAdapter)
 

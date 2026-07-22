@@ -536,18 +536,21 @@ def test_all_runtime_commands_apply_directory_policy():
         assert all(path in rendered[name] for path in dirs)
     assert [arg for arg in rendered["copilot"] if arg.startswith("--add-dir=")] == [
         f"--add-dir={path}" for path in dirs]
-    assert rendered["grok_build"][rendered["grok_build"].index("--cwd") + 1] == workdir
     assert rendered["opencode"][rendered["opencode"].index("--dir") + 1] == workdir
     assert "--force" in rendered["cursor"]
     assert rendered["pi"][:2] == ["pi", "-p"]
 
     acp_commands = {
-        name: adapters.render_command(template, "", "", allowed_dirs=dirs)
+        name: adapters.render_command(
+            template, "", "", allowed_dirs=dirs, workdir=workdir)
         for name, template in adapters.ACP_SERVE_COMMANDS.items()
     }
     for name in ("kimi", "qoder", "trae"):
         assert acp_commands[name].count("--add-dir") == len(dirs)
         assert all(path in acp_commands[name] for path in dirs)
+    assert acp_commands["grok_build"][
+        acp_commands["grok_build"].index("--cwd") + 1] == workdir
+    assert acp_commands["grok_build"][-1] == "stdio"
     assert "--trust-all-tools" in acp_commands["kiro"]
 
 

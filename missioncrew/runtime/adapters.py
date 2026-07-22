@@ -4,9 +4,9 @@
 读取;聊天协作的回复取自适配器输出。
 
 本地 Agent CLI 支持矩阵(参考 Multica 的本地 agent 列表):
-- 打印模式:claude、codex、grok、opencode、copilot、cursor-agent、codebuddy、pi
+- 打印模式:claude、codex、opencode、copilot、cursor-agent、codebuddy、pi
   (命令行直接传 prompt,{prompt}/{model} 占位符渲染)
-- ACP stdio 协议:kimi、kiro、qoder、trae(CLI 作为 JSON-RPC 服务挂在
+- ACP stdio 协议:grok、kimi、kiro、qoder、trae(CLI 作为 JSON-RPC 服务挂在
   stdio 上,见 acp.py;Backend.command 可覆盖默认的 serve 命令)
 """
 from __future__ import annotations
@@ -56,7 +56,7 @@ _ACTIVE_PROCESSES_GUARD = threading.Lock()
 
 # 默认命令中能够可靠恢复原生会话的打印模式 Runtime。Backend.command 是
 # 完整命令覆盖，平台不会猜测其参数语义；自定义模板暂走完整恢复 Prompt。
-_FIXED_ID_SESSIONS = {"claude_code", "grok_build", "copilot", "codebuddy"}
+_FIXED_ID_SESSIONS = {"claude_code", "copilot", "codebuddy"}
 _CAPTURED_ID_SESSIONS = {"codex", "opencode", "cursor"}
 _DIRECTORY_SESSIONS = {"pi"}
 _CLI_SESSION_ADAPTERS = (_FIXED_ID_SESSIONS | _CAPTURED_ID_SESSIONS
@@ -214,8 +214,6 @@ DEFAULT_COMMANDS = {
     "codex": ["codex", "exec", "--sandbox", "workspace-write", "--add-dir",
               "{allowed_dirs}", "-m", "{model}",
               "-c", "model_reasoning_effort={effort}", "{prompt}"],
-    "grok_build": ["grok", "-p", "{prompt}", "--model", "{model}",
-                   "--cwd", "{workdir}", "--always-approve", "--no-auto-update"],
     "opencode": ["opencode", "run", "--dir", "{workdir}",
                  "--model", "{model}", "{prompt}"],
     "copilot": ["copilot", "-p", "{prompt}", "--model", "{model}",
@@ -231,6 +229,10 @@ DEFAULT_COMMANDS = {
 # ACP 协议工具的 serve 命令(来自 Multica 各后端的实际调用参数);
 # Backend.command 可整体覆盖(ACP 命令没有 {prompt} 占位符,prompt 走协议)
 ACP_SERVE_COMMANDS = {
+    # Grok 的 print 模式按无换行 token flush，通用逐行读取器无法实时消费；
+    # 原生 ACP 同时提供正文、思考、工具、权限和可复用 session 生命周期。
+    "grok_build": ["grok", "--cwd", "{workdir}", "agent",
+                   "--always-approve", "--no-leader", "stdio"],
     "kimi": ["kimi", "--add-dir", "{allowed_dirs}", "acp"],
     "kiro": ["kiro-cli", "acp", "--trust-all-tools"],
     "qoder": ["qodercli", "--add-dir", "{allowed_dirs}", "--yolo", "--acp"],
@@ -961,8 +963,6 @@ def _apply_cli_session_args(adapter_name: str, cmd: list[str], session_id: str,
     """把各 CLI 不同的 create/resume 参数翻译到已渲染命令。"""
     if adapter_name == "claude_code":
         return [*cmd, "--resume" if reused else "--session-id", session_id], False
-    if adapter_name == "grok_build":
-        return [*cmd, "--resume" if reused else "--session-id", session_id], False
     if adapter_name == "codebuddy":
         return [*cmd, "--resume" if reused else "--session-id", session_id], False
     if adapter_name == "copilot":
@@ -1256,7 +1256,7 @@ def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
 
     - codex:`codex debug models --bundled`(JSON 目录)
     - opencode:`opencode models`(行式目录)
-    - ACP 工具(kimi/kiro/qoder/trae):一次性会话,session/new 返回目录
+    - ACP 工具(grok/kimi/kiro/qoder/trae):一次性会话,session/new 返回目录
     - claude:CLI 无枚举命令,返回静态目录(别名 + 具体型号,对齐 Multica);
       mock:返回配置阶梯(测试/演示)
     """

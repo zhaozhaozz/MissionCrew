@@ -65,7 +65,6 @@ def test_every_default_print_runtime_has_a_session_strategy():
 def test_resume_arguments_for_all_print_runtime_strategies(tmp_path):
     fixed = {
         "claude_code": "--resume",
-        "grok_build": "--resume",
         "codebuddy": "--resume",
         "copilot": "--session-id",
     }
