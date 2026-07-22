@@ -7,7 +7,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 - 源码仓库的 `docs/` 是 MissionCrew 本身的开发与使用文档，随源码提交。本文件就位于这个目录。
 - Agent harness 的 `.missioncrew/documents/` 是某个 MissionCrew 项目的版本化文档入口，供执行中的 Agent 读写。它位于平台数据根，不在业务源码仓内。
 
-因此，源码仓使用 `docs/` 不代表运行时入口也应叫 `docs/`。运行时读写入口的稳定名称是 `documents/`，环境变量是 `MISSIONCREW_DOCUMENTS_DIR`；向频道或 Web 暴露的入口是 `MISSIONCREW_DOCUMENTS_URL`。
+因此，源码仓使用 `docs/` 不代表运行时入口也应叫 `docs/`。运行时读写入口的稳定名称是 `documents/`，环境变量是 `MISSIONCREW_DOCUMENTS_DIR`；向频道或 Web 暴露的项目资源前缀是 `MISSIONCREW_PROJECT_URL`，文档入口另有便捷变量 `MISSIONCREW_DOCUMENTS_URL`。
 
 ## 工作目录与 harness 目录
 
@@ -48,6 +48,22 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 ```
 
 例如 `[架构说明](/resources/science_agent/documents/architecture/current.md)`。该 URL 可点击、刷新和复制，不包含平台数据目录；Web 会把它解析为对应项目的文档页。平台发布 Agent 回复前还会把误输出的文档库真实路径规范化为资源 URL，前端则兼容已经保存的历史路径链接。
+
+## 统一资源 URL
+
+频道、任务、面板、准则、Skill 和文档使用同一组项目级资源 URL。聊天 Markdown、平台动作回执和 API 的 `resource_url` 都使用这些地址；点击、刷新、复制以及浏览器前进/后退会恢复对应项目和条目。
+
+| 资源 | URL |
+| --- | --- |
+| 频道 | `/resources/<project>/channels/<channel-id>` |
+| 结构化任务 | `/resources/<project>/tasks/<task-id>` |
+| 自定义面板 | `/resources/<project>/dashboards/<board-id>` |
+| 内置任务看板 | `/resources/<project>/dashboards/tasks` |
+| 准则 | `/resources/<project>/guidelines/<name>` |
+| Skill / Skill 内文件 | `/resources/<project>/skills/<skill-id>[/<relative-path>]` |
+| 项目文档 | `/resources/<project>/documents/<relative-path>` |
+
+`channel-id` 和 `board-id` 使用项目内短 ID，URL 不暴露数据库使用的 `<project>:<id>` 命名空间。`dashboards` 是面板的公开资源类型；Web 读取旧式 `boards`、`dashboard` 或 `panels` 地址时会规范化为它。真实目录只用于 Runtime 工具调用，不能用来替代这些 Web URL。
 
 ### `tasks/`
 
@@ -90,6 +106,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 | 变量 | 含义 |
 | --- | --- |
 | `MISSIONCREW_WORKSPACE` | 当前角色或任务的 `.missioncrew/` 根目录 |
+| `MISSIONCREW_PROJECT_URL` | 当前项目的 Web 资源 URL 前缀，即 `/resources/<project>` |
 | `MISSIONCREW_DOCUMENTS_DIR` | 当前项目文档入口，即 `.missioncrew/documents/` |
 | `MISSIONCREW_DOCUMENTS_URL` | 当前项目文档的 Web 资源 URL 根；最终回复用它构造链接 |
 | `MISSIONCREW_GUIDELINES_DIR` | 已启用准则 Markdown 目录 |
@@ -112,4 +129,4 @@ Runtime 的实际 `PWD` 仍是 `workdir`。支持原生多目录授权的适配�
 - 新增可写文件时，应明确它属于共享项目资料、角色隔离状态还是结构化任务状态，并据此选择目录。
 - 修改项目设置后，刷新物化文件和持久公共上下文，不能让复用会话继续使用旧配置。
 - 业务代码和交付物写入 `workdir` 或项目资源仓；项目文档、任务协作资料和阶段证据才写入 harness 工作区。
-- Agent 回复不得发布 `.missioncrew` 文档真实路径或 `file://` 链接；使用 `/resources/<project>/documents/<path>`。
+- Agent 回复不得发布 `.missioncrew` 真实路径或 `file://` 链接；引用平台资源时使用 `/resources/<project>/<resource-type>/<id-or-path>`。

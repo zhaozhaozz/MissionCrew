@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import library_for
+from ..collab.resource_urls import dashboard_resource_url
 from ..core.models import BOARD_WIDGET_TYPES, Board, BoardWidget
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import BoardInput, WidgetDataInput
@@ -17,7 +18,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.get("/api/projects/{project_id}/boards")
     def list_boards(project_id: str):
         ctx.must_project(project_id)
-        return [board.to_dict() for board in store.list_boards(project_id)]
+        return [{**board.to_dict(),
+                 "resource_url": dashboard_resource_url(project_id, board.id)}
+                for board in store.list_boards(project_id)]
 
     def _resolve_widget_source(project_id: str, source: dict):
         """解析卡片数据源:卡片是通用展示原语,领域数据从平台实时取。"""
@@ -123,7 +126,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             board.layout = widgets
         store.put_board(board)
         store.audit(actor, "board_saved", detail=f"project={project_id} board={board_id}")
-        return board.to_dict()
+        return {**board.to_dict(),
+                "resource_url": dashboard_resource_url(project_id, board.id)}
 
     @app.delete("/api/projects/{project_id}/boards/{board_id}")
     def delete_board(project_id: str, board_id: str,

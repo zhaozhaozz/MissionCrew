@@ -2,53 +2,147 @@
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
 const TABS = ["chat", "board", "custom", "docs", "guidelines", "skills",
               "proj", "runtime-status", "settings"];
+let routeApplying = false;
+
+function emptyRoute(project = null, tab = "chat") {
+  return { project, tab, chan: null, doc: null, task: null, dashboard: null,
+           guideline: undefined, skill: undefined, skillFile: null };
+}
 
 function parsePath() {
   // 兼容旧的 hash 链接(/#/default/settings):路径为根时读 hash
   const raw = location.pathname !== "/" ? location.pathname
             : location.hash.replace(/^#/, "");
-  const parts = raw.replace(/^\/+/, "").split("/").map(decodeURIComponent);
-  if (parts[0] === "resources" && parts[2] === "documents")
-    return { project: parts[1] || null, tab: "docs", chan: null,
-             doc: parts.slice(3).join("/") || null };
-  return { project: parts[0] || null,
-           tab: TABS.includes(parts[1]) ? parts[1] : "chat",
-           chan: parts.slice(2).join("/") || null, doc: null };
+  const resource = missionCrewResourceReference(raw);
+  if (resource) {
+    const route = emptyRoute(resource.projectId);
+    const [id, ...rest] = resource.segments;
+    if (resource.type === "documents") {
+      route.tab = "docs"; route.doc = resource.segments.join("/") || null;
+    } else if (resource.type === "channels") {
+      route.tab = "chat"; route.chan = id || null;
+    } else if (resource.type === "tasks") {
+      route.tab = "board"; route.task = id || null;
+    } else if (resource.type === "dashboards") {
+      route.tab = !id || id === "tasks" ? "board" : "custom";
+      route.dashboard = id || "tasks";
+    } else if (resource.type === "guidelines") {
+      route.tab = "guidelines"; route.guideline = id || null;
+    } else if (resource.type === "skills") {
+      route.tab = "skills"; route.skill = id || null;
+      route.skillFile = rest.join("/") || null;
+    }
+    return route;
+  }
+  const parts = raw.replace(/^\/+/, "").split("/").map(value => {
+    try { return decodeURIComponent(value); } catch (_) { return value; }
+  });
+  return { ...emptyRoute(parts[0] || null,
+             TABS.includes(parts[1]) ? parts[1] : "chat"),
+           chan: parts.slice(2).join("/") || null };
 }
 
 function syncUrl(push = true) {
   // 首次路由还原完成前不写 URL:否则加载期的默认频道选择会先把
   // 原始地址(如 /default/settings)覆写成 chat,刷新就回不去了
-  if (!routeRestored || !currentProject) return;
+  if (!routeRestored || routeApplying || !currentProject) return;
   let path = `/${encodeURIComponent(currentProject)}/${currentTab}`;
-  if (currentTab === "chat" && currentChan) path += `/${encodeURIComponent(currentChan)}`;
-  if (currentTab === "docs" && docSelected && docMode === "view" && !docViewingRevision)
-    path = missionCrewDocumentUrl(currentProject, docSelected);
+  if (currentTab === "chat" && currentChan)
+    path = missionCrewResourceUrl(currentProject, "channels",
+      currentChan.replace(`${currentProject}:`, ""));
+  if (currentTab === "board")
+    path = currentTaskId
+      ? missionCrewResourceUrl(currentProject, "tasks", currentTaskId)
+      : missionCrewResourceUrl(currentProject, "dashboards", "tasks");
+  if (currentTab === "custom")
+    path = missionCrewResourceUrl(currentProject, "dashboards",
+      ...(currentCustomBoard ? [currentCustomBoard.replace(`${currentProject}:`, "")] : []));
+  if (currentTab === "docs" && docMode === "view" && !docViewingRevision)
+    path = missionCrewDocumentUrl(currentProject, docSelected || "");
+  if (currentTab === "guidelines")
+    path = missionCrewResourceUrl(currentProject, "guidelines",
+      ...(selectedGuidelineName ? [selectedGuidelineName] : []));
+  if (currentTab === "skills")
+    path = missionCrewResourceUrl(currentProject, "skills",
+      ...(selectedSkillId ? [selectedSkillId] : []),
+      ...(selectedSkillId && skillOpenFile ? skillOpenFile.split("/") : []));
   if (location.pathname === path && !location.hash) return;
   if (push) history.pushState(null, "", path);      // 用户操作:产生历史记录
   else history.replaceState(null, "", path);        // 规范化:不产生历史记录
 }
 
-function applyRoute() {
+async function applyRoute() {
   const r = parsePath();
   if (!r.project) { syncUrl(false); return; }
   if (!overview.projects.some(p => p.id === r.project)) {
     syncUrl(false);
     return;
   }
-  if (r.project !== currentProject) setProject(r.project, false);
-  if (r.chan && r.chan !== currentChan && projChannels().some(c => c.id === r.chan))
-    selectChannel(r.chan, false);
-  const documentChanged = r.tab === "docs" && r.doc !== docSelected;
-  if (r.tab === "docs") {
-    docSelected = r.doc;
-    docMode = "view";
-    docViewingRevision = null;
-    docHistoryOpen = false;
+  routeApplying = true;
+  try {
+    if (r.project !== currentProject) setProject(r.project, false);
+
+    if (r.tab === "chat") {
+      const channel = projChannels().find(item =>
+        item.id === r.chan || item.id === `${r.project}:${r.chan}`)
+        || (!r.chan ? projChannels()[0] : null);
+      if (channel && channel.id !== currentChan) selectChannel(channel.id, false);
+      if (channel?.archived && channelFilter === "active") {
+        channelFilter = "all";
+        localStorage.setItem("mc.channelFilter", channelFilter);
+      }
+    }
+
+    const documentChanged = r.tab === "docs" && r.doc !== docSelected;
+    if (r.tab === "docs") {
+      docSelected = r.doc;
+      docMode = "view";
+      docViewingRevision = null;
+      docHistoryOpen = false;
+    }
+    if (r.tab === "custom") {
+      const board = projBoards().find(item =>
+        item.id === r.dashboard || item.id === `${r.project}:${r.dashboard}`);
+      currentCustomBoard = board?.id || null;
+      customBoardEditing = false;
+      boardEditorVisible = false;
+    }
+    if (r.tab === "guidelines")
+      selectedGuidelineName = (projObj()?.guidelines || [])
+        .some(item => item.name === r.guideline) ? r.guideline : undefined;
+    if (r.tab === "skills") {
+      selectedSkillId = (projObj()?.skills || [])
+        .some(item => item.id === r.skill) ? r.skill : undefined;
+      skillOpenFile = selectedSkillId ? r.skillFile : null;
+    }
+
+    if (r.tab !== "board" || !r.task) closeTaskDialog(false);
+    if (r.tab !== currentTab) switchTab(r.tab);
+    else if (documentChanged) await renderDocuments();
+    else if (r.tab === "custom") renderCustomBoards(true);
+    else if (r.tab === "guidelines") renderGuidelinesPage(true);
+    else if (r.tab === "skills") renderSkillsPage(true);
+
+    if (r.tab === "board" && r.task) {
+      const task = projTasks().find(item => item.id === r.task);
+      if (task) await openTask(task.id, false);
+    }
+  } finally {
+    routeApplying = false;
   }
-  if (r.tab !== currentTab) switchTab(r.tab);
-  else if (documentChanged) renderDocuments();
-  syncUrl(false);   // 规范化(清掉无效项目/频道段、旧 hash)
+  syncUrl(false);   // 规范化(清掉无效项目/资源段、旧 hash)
+}
+
+function openMissionCrewResourceLink(event, target) {
+  event.preventDefault();
+  const resource = missionCrewResourceReference(target);
+  if (!resource || !overview.projects.some(project => project.id === resource.projectId)) {
+    toast("找不到 MissionCrew 资源", "error");
+    return false;
+  }
+  history.pushState(null, "", resource.url);
+  void applyRoute();
+  return false;
 }
 
 window.addEventListener("popstate", applyRoute);
@@ -73,6 +167,7 @@ function setProject(id, updateRoute = true) {
   docFiles = []; docFilesMeta = []; docSelected = null;
   docMode = "view"; docViewingRevision = null; docHistoryOpen = false;
   docCollapsed.clear();
+  closeTaskDialog(false);
   renderSidebar(); renderBoard(); renderCustomBoards();
   if (currentTab === "proj") renderProjSettings();
   if (currentTab === "docs") renderDocuments();

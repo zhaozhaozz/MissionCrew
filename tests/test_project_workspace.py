@@ -11,6 +11,12 @@ from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import (document_resource_url, library_for,
                                           normalize_document_resource_urls)
 from missioncrew.collab.project_context import guideline_context_dir
+from missioncrew.collab.resource_urls import (channel_resource_url,
+                                              dashboard_resource_url,
+                                              guideline_resource_url,
+                                              missioncrew_project_url,
+                                              skill_resource_url,
+                                              task_resource_url)
 from missioncrew.collab.skills import (materialize_project_skills,
                                        project_skill_library_dir)
 from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
@@ -103,6 +109,8 @@ def test_orchestrator_can_create_task_channel_and_dynamic_board(seeded):
     assert seeded.get_channel("webshop:qa").purpose == "测试闭环"
     assert seeded.get_board("webshop:quality") is not None
     assert "missioncrew-action" not in reply and "平台操作" in reply
+    assert "[#QA](/resources/webshop/channels/qa)" in reply
+    assert "[质量面板](/resources/webshop/dashboards/quality)" in reply
 
 
 def test_document_library_versions_and_context_use_links_on_demand(seeded):
@@ -138,7 +146,6 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     runtime_revision = library.commit_changes("role:dev", "Runtime document update")
     assert runtime_revision
     assert library.history("runtime-note.md")[0]["actor"] == "role:dev"
-
     project = seeded.get_project("webshop")
     project.skills.append(ProjectSkill(
         id="checkout-dev", name="结算开发",
@@ -177,6 +184,8 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in chat_cfg.prompt
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_URL"] == \
         "/resources/webshop/documents"
+    assert chat_cfg.env["MISSIONCREW_PROJECT_URL"] == "/resources/webshop"
+    assert "/resources/webshop/dashboards/<面板 id>" in chat_cfg.prompt
     assert "最终回复引用项目文档时必须写成" in chat_cfg.prompt
     assert "不得输出内部读写目录" in chat_cfg.prompt
     guideline_dir = Path(chat_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
@@ -206,6 +215,7 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert task_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in task_cfg.prompt
     assert task_cfg.env["MISSIONCREW_DOCUMENTS_URL"] == \
         "/resources/webshop/documents"
+    assert task_cfg.env["MISSIONCREW_PROJECT_URL"] == "/resources/webshop"
     assert task_cfg.env["MISSIONCREW_GUIDELINES_DIR"] in task_cfg.prompt
     task_guideline_dir = Path(task_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
     assert task_guideline_dir != guideline_dir
@@ -224,6 +234,58 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert not (updated_dir / "stale.md").exists()
     assert not (updated_dir.parent / "guidelines.json").exists()
     assert (updated_dir / "dev-guide.md").read_text().endswith("\n开发准则第二版\n")
+
+
+def test_all_missioncrew_resources_have_stable_web_urls(seeded):
+    client = _client(seeded)
+    created_channel = client.post("/api/chat/channels", json={
+        "id": "release", "project_id": "webshop", "actor_role_id": "lead",
+    }).json()
+    created_board = client.post("/api/projects/webshop/boards", json={
+        "id": "delivery", "name": "交付面板", "actor_role_id": "lead",
+    }).json()
+    created_task = client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "验证统一资源 URL",
+    }).json()
+    guideline = client.post("/api/projects/webshop/guidelines", json={
+        "markdown": "---\nname: release-check\ndescription: 发布前检查\n---\n",
+        "actor_role_id": "lead",
+    }).json()
+    skill = client.post("/api/projects/webshop/skills", json={
+        "id": "release-helper",
+        "markdown": "---\nname: Release helper\ndescription: 发布辅助\n---\n",
+        "actor_role_id": "lead",
+    }).json()
+
+    assert missioncrew_project_url("webshop") == "/resources/webshop"
+    assert created_channel["resource_url"] == "/resources/webshop/channels/release"
+    assert created_board["resource_url"] == "/resources/webshop/dashboards/delivery"
+    assert created_task["resource_url"] == task_resource_url(
+        "webshop", created_task["id"])
+    assert guideline["resource_url"] == "/resources/webshop/guidelines/release-check"
+    assert skill["resource_url"] == "/resources/webshop/skills/release-helper"
+    assert skill_resource_url(
+        "webshop", "release-helper", "references/使用说明.md"
+    ) == "/resources/webshop/skills/release-helper/references/%E4%BD%BF%E7%94%A8%E8%AF%B4%E6%98%8E.md"
+    assert channel_resource_url("webshop", "webshop:release") == created_channel["resource_url"]
+    assert dashboard_resource_url("webshop", "webshop:delivery") == created_board["resource_url"]
+    assert guideline_resource_url("webshop", "release-check") == guideline["resource_url"]
+
+    overview = client.get("/api/overview").json()
+    assert next(item for item in overview["channels"]
+                if item["id"] == "webshop:release")["resource_url"] == created_channel["resource_url"]
+    assert next(item for item in overview["boards"]
+                if item["id"] == "webshop:delivery")["resource_url"] == created_board["resource_url"]
+    project = next(item for item in overview["projects"] if item["id"] == "webshop")
+    assert next(item for item in project["guidelines"]
+                if item["name"] == "release-check")["resource_url"] == guideline["resource_url"]
+    assert next(item for item in project["skills"]
+                if item["id"] == "release-helper")["resource_url"] == skill["resource_url"]
+
+    for url in (created_channel["resource_url"], created_board["resource_url"],
+                created_task["resource_url"], guideline["resource_url"],
+                skill["resource_url"], "/resources/webshop/dashboards/tasks"):
+        assert client.get(url).status_code == 200
 
 
 def test_document_resource_url_replaces_internal_agent_paths(tmp_path):
@@ -570,6 +632,8 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     assert library_for("webshop").read("specs/generated.md") == "# Generated\n"
     assert "missioncrew-action" not in reply
     assert "已保存准则文档" in reply
+    assert "[api-style](/resources/webshop/guidelines/api-style)" in reply
+    assert "[本地 CI](/resources/webshop/skills/local-ci)" in reply
     assert ("已保存文档 [specs/generated.md]"
             "(/resources/webshop/documents/specs/generated.md)") in reply
 
@@ -667,9 +731,13 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "setInterval(pollConfigChat, 2000)" in main
     assert "openMarkdownDocumentLink" in documents
     assert "revealMissionCrewDocument" in documents
-    assert 'parts[0] === "resources"' in router
-    assert "missionCrewDocumentUrl(currentProject, docSelected)" in router
+    assert "missionCrewResourceReference(raw)" in router
+    assert 'missionCrewDocumentUrl(currentProject, docSelected || "")' in router
     assert "missionCrewDocumentReference" in markdown
+    assert "missionCrewResourceReference" in markdown
+    assert "openMissionCrewResourceLink" in markdown
+    for resource_type in ("channels", "tasks", "dashboards", "guidelines", "skills"):
+        assert f'"{resource_type}"' in router
     assert 'href="${esc(resource.url)}"' in markdown
     assert all(markup in markdown for markup in (
         "markdownInline", "<blockquote>", "<pre><code", "markdown-table-wrap"))

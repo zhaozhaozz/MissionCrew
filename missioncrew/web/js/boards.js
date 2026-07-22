@@ -64,6 +64,7 @@ function selectCustomBoard(id) {
   boardEditorVisible = false;
   currentCustomBoard = id || null;
   renderCustomBoardEditor();
+  syncUrl();
 }
 
 function toggleBoardEditor() {

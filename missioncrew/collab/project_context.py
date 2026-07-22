@@ -8,6 +8,8 @@ import tempfile
 import threading
 
 from .documents import DocumentLibrary, document_resource_url
+from .resource_urls import (guideline_resource_url, missioncrew_project_url,
+                            skill_resource_url)
 from .skills import project_skill_library_dir, skill_directory_version
 from ..core.config import projects_dir
 from ..core.models import GuidelineDocument, Project, ProjectSkill
@@ -100,19 +102,23 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary,
     return found
 
 
-def _render_guideline_summary(doc: GuidelineDocument, path: Path) -> str:
+def _render_guideline_summary(project_id: str, doc: GuidelineDocument,
+                              path: Path) -> str:
     content_version = hashlib.sha256(
         doc.render_markdown().encode("utf-8")).hexdigest()[:16]
     description = " ".join(doc.description.split()) or "（未填写 description）"
     return (f"- `{doc.name}` · {description} "
-            f"· 内容版本 `{content_version}` · 全文 `{path}`")
+            f"· 内容版本 `{content_version}` · 全文 `{path}` "
+            f"· Web `{guideline_resource_url(project_id, doc.name)}`")
 
 
-def _render_skill_summary(skill: ProjectSkill, path: Path, canonical: Path) -> str:
+def _render_skill_summary(project_id: str, skill: ProjectSkill, path: Path,
+                          canonical: Path) -> str:
     description = " ".join(skill.description.split()) or "（未填写 description）"
     version = skill_directory_version(canonical)
     return (f"- `{skill.id}` · {skill.name or skill.id} · {description} "
-            f"· 内容版本 `{version}` · 入口 `{path}`")
+            f"· 内容版本 `{version}` · 入口 `{path}` "
+            f"· Web `{skill_resource_url(project_id, skill.id)}`")
 
 
 def render_project_context(project: Project, library: DocumentLibrary,
@@ -130,7 +136,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
     if project.dev_guidelines:
         legacy_guidelines.append(f"## 开发准则（兼容字段）\n{project.dev_guidelines}")
     guideline_summaries = [
-        _render_guideline_summary(doc, guideline_files[doc.name])
+        _render_guideline_summary(project.id, doc, guideline_files[doc.name])
         for doc in project.guidelines if doc.enabled
     ]
     documents_dir = (workspace_dir / "documents" if workspace_dir is not None
@@ -141,6 +147,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
     canonical_skills = project_skill_library_dir(project.id)
     skill_summaries = [
         _render_skill_summary(
+            project.id,
             skill,
             (skills_dir / skill.id / "SKILL.md") if skills_dir is not None
             else canonical_skills / skill.id / "SKILL.md",
@@ -149,6 +156,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
         for skill in project.skills if skill.enabled
     ]
     allowed_dirs = project_allowed_dirs(project, library, workspace_dir)
+    project_url = missioncrew_project_url(project.id)
     dirs_section = "\n".join(f"- {path}" for path in allowed_dirs) or "（无本地目录）"
     return "\n\n".join([
         "# MissionCrew 简介\n"
@@ -161,6 +169,16 @@ def render_project_context(project: Project, library: DocumentLibrary,
         if workspace_dir is not None else
         "# MissionCrew 工作区\n（本次执行未提供独立工作区）",
         f"# 项目上下文：{project.name}",
+        "# MissionCrew 资源 URL\n"
+        f"项目资源前缀：{project_url}\n"
+        "聊天中引用平台资源时使用可点击的 Markdown 链接：\n"
+        f"- 频道：`{project_url}/channels/<频道 id>`\n"
+        f"- 任务：`{project_url}/tasks/<任务 id>`\n"
+        f"- 面板：`{project_url}/dashboards/<面板 id>`（内置任务看板 id 为 `tasks`）\n"
+        f"- 准则：`{project_url}/guidelines/<name>`\n"
+        f"- Skill：`{project_url}/skills/<id>`\n"
+        f"- 文档：`{project_url}/documents/<文档库相对路径>`\n"
+        "这些 URL 是 Web 标识，不是文件路径；不要把内部 `.missioncrew` 路径或 `file://` 链接发到聊天中。",
         ("# 项目兼容准则\n" + "\n\n".join(legacy_guidelines))
         if legacy_guidelines else "# 项目兼容准则\n（未配置）",
         "# 项目准则索引\n"

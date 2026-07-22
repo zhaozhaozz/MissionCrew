@@ -216,7 +216,9 @@ def test_skill_file_read_endpoint_serves_text_and_rejects_escape(seeded):
                        params={"path": "scripts/check.sh"})
     assert shown.status_code == 200
     assert shown.json() == {
-        "path": "scripts/check.sh", "content": "echo first\n", "truncated": False}
+        "path": "scripts/check.sh", "content": "echo first\n", "truncated": False,
+        "resource_url": "/resources/webshop/skills/browser-check/scripts/check.sh",
+    }
 
     assert client.get("/api/projects/webshop/skills/browser-check/file",
                       params={"path": "../escape"}).status_code == 404

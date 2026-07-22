@@ -542,7 +542,7 @@ function editGuideline(name) {
   configChatSelection = null;
   configEditorDirty.guidelines = false;
   if (currentTab !== "guidelines") switchTab("guidelines");
-  else renderGuidelinesPage(true);
+  else { renderGuidelinesPage(true); syncUrl(); }
 }
 
 async function saveGuideline() {
@@ -849,6 +849,7 @@ async function openSkillFile(path, restoreState = null) {
   document.querySelectorAll("#skill-file-tree .skill-tree-file").forEach(row =>
     row.classList.toggle("active", row.dataset.path === path));
   restoreScrollPositions(restoreState);
+  syncUrl();
 }
 
 function closeSkillFile() {
@@ -859,6 +860,7 @@ function closeSkillFile() {
     ?.removeAttribute("hidden");
   document.querySelectorAll("#skill-file-tree .skill-tree-file.active")
     .forEach(row => row.classList.remove("active"));
+  syncUrl();
 }
 
 function editSkill(id) {
@@ -868,7 +870,7 @@ function editSkill(id) {
   configChatSelection = null;
   configEditorDirty.skills = false;
   if (currentTab !== "skills") switchTab("skills");
-  else renderSkillsPage(true);
+  else { renderSkillsPage(true); syncUrl(); }
 }
 
 async function saveSkill() {

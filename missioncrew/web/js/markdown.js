@@ -1,11 +1,27 @@
 /* ---- 统一 Markdown 阅读组件 ----
    所有文档型预览共用安全正文渲染和 YAML front matter 属性表。 */
-function missionCrewDocumentUrl(projectId, path = "") {
-  const base = `/resources/${encodeURIComponent(projectId)}/documents`;
-  return path ? `${base}/${String(path).split("/").map(encodeURIComponent).join("/")}` : base;
+const MISSIONCREW_RESOURCE_TYPES = new Set([
+  "documents", "channels", "tasks", "dashboards", "guidelines", "skills",
+]);
+
+function canonicalMissionCrewResourceType(type) {
+  return ({ boards: "dashboards", dashboard: "dashboards", panels: "dashboards" })[type]
+    || type;
 }
 
-function missionCrewDocumentReference(target) {
+function missionCrewResourceUrl(projectId, type, ...segments) {
+  const resourceType = canonicalMissionCrewResourceType(String(type || ""));
+  if (!projectId || !MISSIONCREW_RESOURCE_TYPES.has(resourceType)) return "";
+  const parts = ["resources", projectId, resourceType, ...segments.filter(Boolean)];
+  return "/" + parts.map(value => encodeURIComponent(String(value))).join("/");
+}
+
+function missionCrewDocumentUrl(projectId, path = "") {
+  return missionCrewResourceUrl(
+    projectId, "documents", ...String(path).split("/").filter(Boolean));
+}
+
+function missionCrewResourceReference(target) {
   const raw = String(target || "").trim();
   let pathname = raw.split(/[?#]/, 1)[0].replace(/\\/g, "/");
   if (/^https?:\/\//i.test(pathname)) {
@@ -15,23 +31,39 @@ function missionCrewDocumentReference(target) {
       pathname = parsed.pathname;
     } catch (_) { return null; }
   }
-  let decoded = pathname;
-  try { decoded = decodeURIComponent(pathname); } catch (_) { /* 保留原值 */ }
-  let match = decoded.match(/^\/resources\/([^/]+)\/documents(?:\/(.+))?$/);
-  if (match) {
-    const projectId = match[1], path = match[2] || "";
-    return { projectId, path, url: missionCrewDocumentUrl(projectId, path) };
+  const rawParts = pathname.replace(/^\/+/, "").split("/");
+  const decode = value => {
+    try { return decodeURIComponent(value); } catch (_) { return value; }
+  };
+  if (rawParts[0] === "resources" && rawParts[1] && rawParts[2]) {
+    const projectId = decode(rawParts[1]);
+    const type = canonicalMissionCrewResourceType(decode(rawParts[2]));
+    const segments = rawParts.slice(3).filter(Boolean).map(decode);
+    if (MISSIONCREW_RESOURCE_TYPES.has(type)) {
+      return { projectId, type, segments,
+               url: missionCrewResourceUrl(projectId, type, ...segments) };
+    }
   }
   // 历史消息曾发布平台真实路径。只识别 MissionCrew 自有文档入口，
   // 立即转换成资源 URL；任意其他绝对路径仍不会成为可点击链接。
-  match = decoded.match(/(?:^|\/)\.missioncrew\/projects\/([^/]+)\/documents\/(.+)$/);
+  let decoded = pathname;
+  try { decoded = decodeURIComponent(pathname); } catch (_) { /* 保留原值 */ }
+  let match = decoded.match(/(?:^|\/)\.missioncrew\/projects\/([^/]+)\/documents\/(.+)$/);
   if (!match)
     match = decoded.match(/(?:^|\/)\.missioncrew\/agent-workspaces\/([^/]+)\/.*?\/\.missioncrew\/documents\/(.+)$/);
   if (match) {
     const projectId = match[1], path = match[2];
-    return { projectId, path, url: missionCrewDocumentUrl(projectId, path) };
+    const segments = path.split("/").filter(Boolean);
+    return { projectId, type: "documents", segments,
+             url: missionCrewResourceUrl(projectId, "documents", ...segments) };
   }
   return null;
+}
+
+function missionCrewDocumentReference(target) {
+  const resource = missionCrewResourceReference(target);
+  if (!resource || resource.type !== "documents") return null;
+  return { ...resource, path: resource.segments.join("/") };
 }
 
 function markdownInline(source) {
@@ -43,10 +75,10 @@ function markdownInline(source) {
     (_, label, target) => {
       const safeLabel = markdownInline(label);
       const href = target.trim();
-      const resource = missionCrewDocumentReference(href);
+      const resource = missionCrewResourceReference(href);
       if (resource)
-        return hold(`<a href="${esc(resource.url)}" data-doc-link="${esc(resource.url)}" ` +
-          `onclick="return openMarkdownDocumentLink(event,this.dataset.docLink)">${safeLabel}</a>`);
+        return hold(`<a href="${esc(resource.url)}" data-resource-link="${esc(resource.url)}" ` +
+          `onclick="return openMissionCrewResourceLink(event,this.dataset.resourceLink)">${safeLabel}</a>`);
       if (/^(https?:\/\/|mailto:)/i.test(href))
         return hold(`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`);
       if (href.startsWith("#")) return hold(`<a href="${esc(href)}">${safeLabel}</a>`);

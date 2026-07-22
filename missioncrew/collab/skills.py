@@ -19,6 +19,7 @@ import yaml
 
 from ..core.config import projects_dir
 from ..core.models import Project, ProjectSkill
+from .resource_urls import skill_resource_url
 
 if TYPE_CHECKING:
     from ..core.store import Store
@@ -288,6 +289,7 @@ def skill_library_info(store: Store, project: Project) -> dict:
         skill_file = _skill_file(directory) or directory / "SKILL.md"
         skills.append({
             **asdict(skill),
+            "resource_url": skill_resource_url(project.id, skill.id),
             "path": str(directory),
             "skill_file": str(skill_file),
             "markdown": (skill_file.read_text(encoding="utf-8")

@@ -120,7 +120,11 @@ function openBoardFromSidebar(id) {
   currentCustomBoard = id;
   customBoardEditing = false;
   boardEditorVisible = false;
-  switchTab("custom");
+  if (currentTab === "custom") {
+    renderCustomBoards(true);
+    renderSidebar();
+    syncUrl();
+  } else switchTab("custom");
 }
 
 function openPanelFromSidebar(kind, id) {

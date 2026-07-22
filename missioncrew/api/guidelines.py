@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException, Request
 
 from ..collab.project_context import write_guideline_context
+from ..collab.resource_urls import guideline_resource_url, skill_resource_url
 from ..collab.skills import (delete_project_skill, import_skill_folder,
                              import_skill_zip, project_skill_library_dir,
                              read_skill_file, save_project_skill,
@@ -21,7 +22,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/projects/{project_id}/guidelines")
     def list_guidelines(project_id: str):
-        return [g.to_dict() for g in ctx.must_project(project_id).guidelines]
+        return [{**g.to_dict(),
+                 "resource_url": guideline_resource_url(project_id, g.name)}
+                for g in ctx.must_project(project_id).guidelines]
 
     @app.post("/api/projects/{project_id}/guidelines")
     def save_guideline(project_id: str, body: GuidelineInput):
@@ -43,7 +46,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         write_guideline_context(project)
         store.audit(actor, "guideline_saved",
                     detail=f"project={project_id} guideline={guideline.name}")
-        return guideline.to_dict()
+        return {**guideline.to_dict(),
+                "resource_url": guideline_resource_url(project_id, guideline.name)}
 
     @app.delete("/api/projects/{project_id}/guidelines/{guideline_name}")
     def delete_guideline(project_id: str, guideline_name: str,
@@ -64,7 +68,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def list_skills(project_id: str):
         project = ctx.must_project(project_id)
         project, _ = sync_project_skill_library(store, project)
-        return [s.__dict__ for s in project.skills]
+        return [{**s.__dict__, "resource_url": skill_resource_url(project_id, s.id)}
+                for s in project.skills]
 
     @app.get("/api/projects/{project_id}/skills/library")
     def get_skill_library(project_id: str):
@@ -78,11 +83,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, "Skill id 只能包含字母、数字、下划线、连字符")
         try:
             if body.markdown is not None:
-                return save_project_skill_markdown(
+                saved = save_project_skill_markdown(
                     store, project, body.id, body.markdown,
-                    enabled=body.enabled, actor=actor).__dict__
+                    enabled=body.enabled, actor=actor)
+                return {**saved.__dict__,
+                        "resource_url": skill_resource_url(project_id, saved.id)}
             skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id", "markdown"}))
-            return save_project_skill(store, project, skill, actor=actor).__dict__
+            saved = save_project_skill(store, project, skill, actor=actor)
+            return {**saved.__dict__,
+                    "resource_url": skill_resource_url(project_id, saved.id)}
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
@@ -100,7 +109,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return {"path": path, "content": content, "truncated": truncated}
+        return {"path": path, "content": content, "truncated": truncated,
+                "resource_url": skill_resource_url(project_id, skill_id, path)}
 
     @app.post("/api/projects/{project_id}/skills/import-folder")
     def import_skills_from_folder(project_id: str, body: SkillFolderImport):

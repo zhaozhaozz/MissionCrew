@@ -5,6 +5,19 @@ const COLS = [
   { title: "阻塞 / 失败", color: "var(--bad)", match: t => ["blocked", "failed"].includes(t.status) },
   { title: "已完成", color: "var(--ok)", match: t => t.status === "done" },
 ];
+let currentTaskId = null;
+
+function closeTaskDialog(updateRoute = true) {
+  currentTaskId = null;
+  if (dlg.open) dlg.close();
+  if (updateRoute) syncUrl();
+}
+
+dlg.addEventListener("close", () => {
+  if (!currentTaskId) return;
+  currentTaskId = null;
+  syncUrl();
+});
 
 function renderBoard() {
   const scrollState = captureScrollPositions(["#board-view"]);
@@ -27,9 +40,11 @@ function renderBoard() {
   restoreScrollPositions(scrollState);
 }
 
-async function openTask(id) {
+async function openTask(id, updateRoute = true) {
   const d = await (await fetch(`/api/tasks/${id}`)).json();
   const t = d.task;
+  if (!t || t.project_id !== currentProject) return;
+  currentTaskId = t.id;
   document.getElementById("dlg-title").textContent = `${t.id} · ${t.title}`;
   const stages = t.stages.map((s, i) => `<tr>
       <td>${i === t.stage_index ? "▶" : ""}</td><td>${esc(s.name)}</td><td>${esc(s.kind)}</td>
@@ -63,6 +78,7 @@ async function openTask(id) {
   }
   document.getElementById("dlg-actions").innerHTML = actions.join("");
   dlg.showModal();
+  if (updateRoute) syncUrl();
 }
 
 async function advanceTask(id) {

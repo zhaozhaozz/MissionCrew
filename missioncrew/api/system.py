@@ -6,6 +6,10 @@ import time
 from fastapi import FastAPI
 
 from ..collab.skills import sync_all_project_skill_libraries
+from ..collab.resource_urls import (channel_resource_url,
+                                    dashboard_resource_url,
+                                    guideline_resource_url,
+                                    skill_resource_url, task_resource_url)
 from ..core.models import BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER
 from ..runtime import runtime_manager
 from .context import ApiContext
@@ -18,14 +22,34 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def overview():
         # 用户可直接向项目 skills/ 投放目录；轮询总览时自动发现并同步。
         sync_all_project_skill_libraries(store)
+
+        def project_data(project):
+            data = project.to_dict()
+            data["guidelines"] = [
+                {**item, "resource_url": guideline_resource_url(project.id, item["name"])}
+                for item in data["guidelines"]
+            ]
+            data["skills"] = [
+                {**item, "resource_url": skill_resource_url(project.id, item["id"])}
+                for item in data["skills"]
+            ]
+            return data
+
         return {
-            "projects": [p.to_dict() for p in store.list_projects()],
+            "projects": [project_data(p) for p in store.list_projects()],
             "backends": [b.to_dict() for b in store.list_backends()],
-            "tasks": [t.to_dict() for t in store.list_tasks()],
+            "tasks": [{**t.to_dict(),
+                       "resource_url": task_resource_url(t.project_id, t.id)}
+                      for t in store.list_tasks()],
             "roles": [r.to_dict() for r in store.list_roles()],
             "role_templates": [r.to_dict() for r in store.list_role_templates()],
-            "channels": [c.to_dict() for c in store.list_channels()],
-            "boards": [b.to_dict() for b in store.list_boards()],
+            "channels": [{**c.to_dict(), **(
+                {"resource_url": channel_resource_url(c.project_id, c.id)}
+                if c.project_id else {})}
+                for c in store.list_channels()],
+            "boards": [{**b.to_dict(),
+                        "resource_url": dashboard_resource_url(b.project_id, b.id)}
+                       for b in store.list_boards()],
         }
 
     @app.get("/api/traits")

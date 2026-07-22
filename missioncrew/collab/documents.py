@@ -7,9 +7,9 @@ import subprocess
 import threading
 import time
 from pathlib import Path, PurePosixPath
-from urllib.parse import quote
 
 from ..core.config import projects_dir
+from .resource_urls import missioncrew_resource_url
 
 _PROJECT_ID_RE = re.compile(r"[\w-]+")
 _REVISION_RE = re.compile(r"[0-9a-fA-F]{7,40}")
@@ -36,13 +36,11 @@ def safe_relative_path(value: str) -> str:
 
 def document_resource_url(project_id: str, relative: str | None = None) -> str:
     """返回不暴露平台数据目录的、可由 Web 打开的项目文档 URL。"""
-    if not _PROJECT_ID_RE.fullmatch(project_id):
-        raise ValueError("项目 id 只能包含字母、数字、下划线、连字符")
-    base = f"/resources/{quote(project_id, safe='')}/documents"
+    base = missioncrew_resource_url(project_id, "documents")
     if relative is None:
         return base
     rel = safe_relative_path(relative)
-    return base + "/" + "/".join(quote(part, safe="") for part in rel.split("/"))
+    return missioncrew_resource_url(project_id, "documents", *rel.split("/"))
 
 
 def normalize_document_resource_urls(text: str, project_id: str,

@@ -170,6 +170,8 @@ class GuidelineDocument:
         if isinstance(value, str):
             return cls(name=value, description=value)
         data = dict(value)
+        # resource_url 是 API 的只读导航字段；项目配置整对象回传时忽略。
+        data.pop("resource_url", None)
         if "markdown" in data:
             return cls.from_markdown(str(data["markdown"]), bool(data.get("enabled", True)))
 
@@ -229,6 +231,8 @@ class ProjectSkill:
         if isinstance(value, str):
             return cls(id=value, name=value)
         data = dict(value)
+        # resource_url 是 API 的只读导航字段；项目配置整对象回传时忽略。
+        data.pop("resource_url", None)
         # 旧版按文件、Runtime 或角色预装配；升级后把文件引用转成 Markdown
         # 链接、把补充说明并入正文，仅丢弃绑定条件，由执行者自行判断。
         instructions = str(data.get("instructions", ""))

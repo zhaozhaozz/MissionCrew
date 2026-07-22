@@ -7,6 +7,7 @@ import time
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import normalize_document_resource_urls
+from ..collab.resource_urls import channel_resource_url
 from ..collab.workspace import write_page_context_snapshot
 from ..core.config import projects_dir
 from ..core.models import Channel
@@ -20,7 +21,14 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/chat/channels")
     def channels():
-        return [c.to_dict() for c in store.list_channels()]
+        return [{**c.to_dict(), **(
+            {"resource_url": channel_resource_url(c.project_id, c.id)}
+            if c.project_id else {})}
+            for c in store.list_channels()]
+
+    def channel_data(channel: Channel) -> dict:
+        return {**channel.to_dict(),
+                "resource_url": channel_resource_url(channel.project_id, channel.id)}
 
     @app.post("/api/chat/channels")
     def create_channel(body: ChannelCreate):
@@ -37,7 +45,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                     purpose=body.purpose, created_by_role_id=body.actor_role_id or "")
         store.put_channel(c)
         store.audit(actor, "channel_created", detail=f"project={body.project_id} channel={cid}")
-        return c.to_dict()
+        return channel_data(c)
 
     def mutable_channel(channel_id: str) -> Channel:
         channel = store.get_channel(channel_id)
@@ -61,7 +69,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                         detail=f"channel={channel_id} stopped_runtimes={stopped}")
         else:
             stopped = 0
-        return {**channel.to_dict(), "stopped_runtimes": stopped}
+        return {**channel_data(channel), "stopped_runtimes": stopped}
 
     @app.post("/api/chat/channels/{channel_id}/restore")
     def restore_channel(channel_id: str):
@@ -73,7 +81,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             channel.archived_at = 0.0
             store.put_channel(channel)
             store.audit("human", "channel_restored", detail=f"channel={channel_id}")
-        return channel.to_dict()
+        return channel_data(channel)
 
     @app.get("/api/chat/{channel_id}/messages")
     def messages(channel_id: str, after_id: int = 0):
@@ -112,7 +120,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                             original[:end], project.id, [document_root]))
                     item["content"] = normalized
         return {
-            "channel": channel.to_dict(),
+            "channel": channel_data(channel),
             "messages": items,
             "active_runs": store.active_chat_runs(channel_id),
             # 最近执行记录(含已结束):前端按 events_size 变化拉取过程事件
@@ -143,7 +151,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             )
         except ValueError as e:
             raise HTTPException(409 if "已归档" in str(e) else 400, str(e))
-        return {"id": msg_id}
+        channel = store.get_channel(channel_id)
+        return {"id": msg_id,
+                "resource_url": channel_resource_url(channel.project_id, channel.id)}
 
     @app.post("/api/chat/{channel_id}/clear-context")
     def clear_context(channel_id: str):

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ..core.config import workspaces_dir
 from ..collab.documents import document_resource_url, library_for
+from ..collab.resource_urls import missioncrew_project_url
 from ..core.models import (Backend, ExecutionConfig, Project, RuntimePolicy,
                            Task, TaskStage)
 from ..collab.project_context import project_allowed_dirs, render_project_context
@@ -98,6 +99,7 @@ def assemble(task: Task, stage: TaskStage, project: Project, backend: Backend,
             "MISSIONCREW_WORKSPACE": str(workspace.root),
             "MISSIONCREW_DOCUMENTS_DIR": str(workspace.documents),
             "MISSIONCREW_DOCUMENTS_URL": document_resource_url(project.id),
+            "MISSIONCREW_PROJECT_URL": missioncrew_project_url(project.id),
             "MISSIONCREW_GUIDELINES_DIR": str(workspace.guidelines),
             "MISSIONCREW_SKILLS_DIR": str(workspace.skills),
             "MISSIONCREW_TASKS_DIR": str(workspace.tasks),

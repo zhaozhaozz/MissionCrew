@@ -21,6 +21,7 @@ import yaml
 from ..core.config import mc_home
 from ..core.models import Project, Task, TIER_ORDER, new_id
 from .documents import document_resource_url
+from .resource_urls import missioncrew_project_url
 from .skills import project_skill_library_dir, sync_project_skill_library
 
 if TYPE_CHECKING:
@@ -283,7 +284,12 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 {history}
 ## 对外引用
 
-`documents/` 是 Runtime 的内部读写入口。向频道回复项目文档时，使用
+`.missioncrew` 下的目录是 Runtime 内部读写入口。向频道回复 MissionCrew 资源时，
+使用 `{missioncrew_project_url(project_id)}/<资源类型>/<稳定标识>`；频道、任务、面板、
+准则、Skill、文档的类型依次为 `channels`、`tasks`、`dashboards`、`guidelines`、
+`skills`、`documents`。
+
+向频道回复项目文档时，使用
 `{document_resource_url(project_id)}/<文档库相对路径>`，例如
 `[设计说明]({document_resource_url(project_id)}/specs/design.md)`。不要在回复中输出
 本工作区绝对路径、`.missioncrew` 真实路径或 `file://` 链接。

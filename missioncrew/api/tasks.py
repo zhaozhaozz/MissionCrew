@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.resource_urls import task_resource_url
 from .context import ApiContext
 from .schemas import ApprovalInput, TaskCreate
 
@@ -18,7 +19,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                                    body.security_level, body.max_tier)
         except ValueError as e:
             raise HTTPException(400, str(e))
-        return t.to_dict()
+        return {**t.to_dict(), "resource_url": task_resource_url(t.project_id, t.id)}
 
     @app.get("/api/tasks/{task_id}")
     def task_detail(task_id: str):
@@ -26,7 +27,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if t is None:
             raise HTTPException(404, "任务不存在")
         return {
-            "task": t.to_dict(),
+            "task": {**t.to_dict(),
+                     "resource_url": task_resource_url(t.project_id, t.id)},
             "evidence": store.list_evidence(task_id),
             "runs": store.list_runs(task_id),
             "approvals": store.list_approvals(task_id),
@@ -39,8 +41,11 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             reports = engine.run(task_id)
         except ValueError as e:
             raise HTTPException(404, str(e))
+        task = reports[-1].task if reports else store.get_task(task_id)
         return {"messages": [r.message for r in reports],
-                "task": reports[-1].task.to_dict() if reports else None}
+                "task": ({**task.to_dict(),
+                          "resource_url": task_resource_url(task.project_id, task.id)}
+                         if task else None)}
 
     @app.post("/api/tasks/{task_id}/approve")
     def approve(task_id: str, body: ApprovalInput):
@@ -51,4 +56,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, str(e))
         t = store.get_task(task_id)
         return {"messages": [r.message for r in reports],
-                "task": t.to_dict() if t else None}
+                "task": ({**t.to_dict(),
+                          "resource_url": task_resource_url(t.project_id, t.id)}
+                         if t else None)}

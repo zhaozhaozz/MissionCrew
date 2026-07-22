@@ -27,6 +27,9 @@ from ..runtime import runtime_manager
 from ..core.config import mc_home
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
+from .resource_urls import (channel_resource_url, dashboard_resource_url,
+                            guideline_resource_url, missioncrew_project_url,
+                            skill_resource_url)
 from .workspace import (chat_workspace_dir, platform_history_dir,
                         prepare_agent_workspace, sync_task_files,
                         write_task_files)
@@ -674,6 +677,7 @@ class ChatEngine:
                 env["MISSIONCREW_WORKSPACE"] = str(workspace.root)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(workspace.documents)
                 env["MISSIONCREW_DOCUMENTS_URL"] = document_resource_url(project.id)
+                env["MISSIONCREW_PROJECT_URL"] = missioncrew_project_url(project.id)
                 env["MISSIONCREW_GUIDELINES_DIR"] = str(workspace.guidelines)
                 env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
@@ -997,18 +1001,22 @@ class ChatEngine:
         channels = "\n".join(
             f"- {_short(c.id)}(#{c.name}):{c.purpose or '无用途说明'}"
             + (f";工作目录 {c.workdir}" if c.workdir else "")
+            + f";Web {channel_resource_url(project.id, c.id)}"
             for c in self.store.list_channels(
                 project.id, include_archived=False)) or "(无)"
         boards = "\n".join(
             f"- {_short(b.id)}({b.name}):{b.description or '无描述'};组件 "
             + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
+            + f";Web {dashboard_resource_url(project.id, b.id)}"
             for b in self.store.list_boards(project.id)) or "(无)"
         guidelines = "\n".join(
             f"- {g.name}:{g.description or '未填写 description'}"
             f"{'[停用]' if not g.enabled else ''}"
+            f";Web {guideline_resource_url(project.id, g.name)}"
             for g in project.guidelines) or "(无)"
         skills = "\n".join(
             f"- {s.id}({s.name or s.id}){'[停用]' if not s.enabled else ''}"
+            f";Web {skill_resource_url(project.id, s.id)}"
             for s in project.skills) or "(无)"
         runtimes = "\n".join(
             f"- {backend.id}: adapter={backend.adapter};"
@@ -1055,7 +1063,9 @@ class ChatEngine:
                     )
                     self.store.put_channel(channel)
                     where = f"(工作目录 {workdir})" if workdir else ""
-                    reports.append(f"已创建频道 #{channel.name}{where}")
+                    reports.append(
+                        f"已创建频道 [#{channel.name}]"
+                        f"({channel_resource_url(project_id, channel.id)}){where}")
                     self.store.audit(role_id, "channel_created",
                                      detail=f"project={project_id} channel={item_id}")
                 elif kind in ("create_board", "update_board"):
@@ -1071,7 +1081,9 @@ class ChatEngine:
                     board.name = str(action.get("name", board.name or raw_id))
                     board.description = str(action.get("description", board.description))
                     self.store.put_board(board)
-                    reports.append(f"已{'创建' if kind == 'create_board' else '更新'}面板 {board.name}")
+                    reports.append(
+                        f"已{'创建' if kind == 'create_board' else '更新'}面板 "
+                        f"[{board.name}]({dashboard_resource_url(project_id, board.id)})")
                     self.store.audit(role_id, kind,
                                      detail=f"project={project_id} board={item_id}")
                 elif kind == "delete_board":
@@ -1129,7 +1141,8 @@ class ChatEngine:
             write_guideline_context(project)
             self.store.audit(role_id, "guideline_saved",
                              detail=f"project={project.id} guideline={guideline.name}")
-            return f"已保存准则文档 {guideline.name}"
+            return (f"已保存准则文档 [{guideline.name}]"
+                    f"({guideline_resource_url(project.id, guideline.name)})")
 
         raw_id = str(action.get("id", "")).strip()
         if not CONTROL_ID_RE.fullmatch(raw_id):
@@ -1140,7 +1153,8 @@ class ChatEngine:
                 raise ValueError("save_skill.markdown 必须是字符串")
             saved = save_project_skill_markdown(
                 self.store, project, raw_id, markdown, enabled=enabled, actor=role_id)
-            return f"已保存 Skill {saved.name or raw_id}"
+            return (f"已保存 Skill [{saved.name or raw_id}]"
+                    f"({skill_resource_url(project.id, saved.id)})")
         skill = ProjectSkill(
             id=raw_id, name=str(action.get("name", "")),
             description=str(action.get("description", "")),
@@ -1148,7 +1162,8 @@ class ChatEngine:
             enabled=enabled,
         )
         saved = save_project_skill(self.store, project, skill, actor=role_id)
-        return f"已保存 Skill {saved.name or raw_id}"
+        return (f"已保存 Skill [{saved.name or raw_id}]"
+                f"({skill_resource_url(project.id, saved.id)})")
 
     def _action_post_message(self, project_id: str, role_id: str, action: dict,
                              root_id: int, depth: int) -> str:
@@ -1168,7 +1183,8 @@ class ChatEngine:
                   root_id=root_id, depth=depth + 1)
         self.store.audit(role_id, "orchestrator_post",
                          detail=f"project={project_id} channel={channel.id}")
-        return f"已在 #{channel.name} 发布消息"
+        return (f"已在 [#{channel.name}]"
+                f"({channel_resource_url(project_id, channel.id)}) 发布消息")
 
     @staticmethod
     def _resolve_channel_workdir(project, requested: str) -> Optional[str]:
