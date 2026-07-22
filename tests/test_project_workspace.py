@@ -706,6 +706,11 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "openFormDialog" not in js
     assert "uiPrompt" not in documents
     assert 'id="doc-new-path"' in documents
+    assert 'id="doc-upload-input"' in html and "type=\"file\" multiple" in html
+    assert "beginDocumentUpload" in documents and "uploadDocuments" in documents
+    assert "/documents/upload?" in documents and 'overwrite: String(' in documents
+    assert "downloadDocument" in documents and "/documents/download/" in documents
+    assert "该文件不是 UTF-8 文本" in documents
     assert "documentSidebarHtml" in documents
     assert "版本历史" in documents
     assert "documentSidebarHtml()" in router
@@ -932,6 +937,79 @@ def test_binary_document_read_returns_415(seeded):
     library.commit_changes("human", "add binary")
     r = client.get("/api/projects/webshop/documents/file/image.bin")
     assert r.status_code == 415
+
+
+def test_document_upload_preserves_bytes_versions_and_conflict_safety(seeded):
+    client = _client(seeded)
+    upload_url = "/api/projects/webshop/documents/upload"
+    first_content = b"\x89PNG\x00\xff\xfe first"
+    first = client.post(
+        upload_url, params={"path": "assets/sample.png"}, content=first_content)
+    assert first.status_code == 200
+    first_body = first.json()
+    assert first_body["path"] == "assets/sample.png"
+    assert first_body["size"] == len(first_content)
+    assert first_body["resource_url"] == \
+        "/resources/webshop/documents/assets/sample.png"
+    assert library_for("webshop").read_bytes("assets/sample.png") == first_content
+
+    conflict = client.post(
+        upload_url, params={"path": "assets/sample.png"}, content=b"rejected")
+    assert conflict.status_code == 409
+    assert library_for("webshop").read_bytes("assets/sample.png") == first_content
+
+    second_content = b"\x89PNG\x00 second"
+    second = client.post(
+        upload_url,
+        params={"path": "assets/sample.png", "overwrite": "true"},
+        content=second_content,
+    )
+    assert second.status_code == 200
+    assert second.json()["revision"] != first_body["revision"]
+
+    latest = client.get(
+        "/api/projects/webshop/documents/download/assets/sample.png")
+    assert latest.status_code == 200 and latest.content == second_content
+    assert latest.headers["content-type"].startswith("image/png")
+    assert "filename*=UTF-8''sample.png" in latest.headers["content-disposition"]
+    assert latest.headers["x-content-type-options"] == "nosniff"
+    old = client.get(
+        "/api/projects/webshop/documents/download/assets/sample.png",
+        params={"revision": first_body["revision"]},
+    )
+    assert old.status_code == 200 and old.content == first_content
+    restored = client.post("/api/projects/webshop/documents/restore", json={
+        "path": "assets/sample.png",
+        "revision": first_body["revision"],
+        "actor": "alice",
+    })
+    assert restored.status_code == 200
+    assert library_for("webshop").read_bytes("assets/sample.png") == first_content
+
+    text = client.post(
+        upload_url, params={"path": "assets/readme.md"}, content=b"# Uploaded\n")
+    assert text.status_code == 200
+    read = client.get(
+        "/api/projects/webshop/documents/file/assets/readme.md").json()
+    assert read["content"] == "# Uploaded\n"
+    assert client.post(
+        upload_url, params={"path": "../escape.bin"}, content=b"no").status_code == 400
+    assert client.post(
+        upload_url, params={"path": "assets"}, content=b"no").status_code == 400
+    audits = [row for row in seeded.list_audit(limit=50)
+              if row["action"] == "document_uploaded"]
+    assert len(audits) == 3
+    assert all("project=webshop" in row["detail"] for row in audits)
+
+
+def test_document_upload_enforces_size_limit(seeded, monkeypatch):
+    monkeypatch.setattr("missioncrew.api.documents.MAX_DOCUMENT_UPLOAD_BYTES", 3)
+    response = _client(seeded).post(
+        "/api/projects/webshop/documents/upload",
+        params={"path": "too-large.bin"}, content=b"1234",
+    )
+    assert response.status_code == 413
+    assert not (library_for("webshop").root / "too-large.bin").exists()
 
 
 def test_agent_document_writes_are_audited(seeded):

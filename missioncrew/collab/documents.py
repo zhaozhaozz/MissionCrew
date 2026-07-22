@@ -149,6 +149,25 @@ class DocumentLibrary:
             raise FileNotFoundError(f"文档不存在: {rel}")
         return path.read_text(encoding="utf-8")
 
+    def read_bytes(self, relative: str, revision: str | None = None) -> bytes:
+        """读取任意文档字节，供二进制下载和历史版本下载使用。"""
+        with self._lock:
+            rel, path = self._path(relative)
+            if revision:
+                if not _REVISION_RE.fullmatch(revision):
+                    raise ValueError("版本号不合法")
+                proc = subprocess.run(
+                    ["git", f"--git-dir={self.repo}", f"--work-tree={self.root}",
+                     "show", f"{revision}:{rel}"],
+                    check=False, capture_output=True,
+                )
+                if proc.returncode:
+                    raise FileNotFoundError(f"版本 {revision} 中不存在文档 {rel}")
+                return proc.stdout
+            if not path.is_file() or path.is_symlink():
+                raise FileNotFoundError(f"文档不存在: {rel}")
+            return path.read_bytes()
+
     def write(self, relative: str, content: str, actor: str = "human",
               message: str = "") -> str:
         with self._lock:
@@ -156,6 +175,19 @@ class DocumentLibrary:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
             return self.commit_changes(actor, message or f"Update {rel}")
+
+    def write_bytes(self, relative: str, content: bytes, actor: str = "human",
+                    message: str = "", overwrite: bool = False) -> str:
+        """保存上传的原始字节并记录文档库版本。"""
+        with self._lock:
+            rel, path = self._path(relative)
+            if path.exists() and not path.is_file():
+                raise ValueError(f"文档路径不是普通文件: {rel}")
+            if path.is_file() and not overwrite:
+                raise FileExistsError(f"文档已存在: {rel}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+            return self.commit_changes(actor, message or f"Upload {rel}")
 
     def delete(self, relative: str, actor: str = "human") -> str:
         with self._lock:
@@ -168,10 +200,10 @@ class DocumentLibrary:
     def restore(self, relative: str, revision: str, actor: str = "human") -> str:
         """把某文件恢复到历史版本(作为新版本写入,历史保持完整可追溯)。"""
         with self._lock:
-            content = self.read(relative, revision)   # 版本/文件不存在时抛错
+            content = self.read_bytes(relative, revision)  # 兼容文本和二进制
             rel, path = self._path(relative)
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
+            path.write_bytes(content)
             return self.commit_changes(actor, f"Restore {rel} to {revision[:10]}")
 
     def commit_changes(self, actor: str, message: str, allow_empty: bool = False) -> str:

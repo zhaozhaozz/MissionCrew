@@ -1,13 +1,19 @@
 """版本化文档库端点:文件树、历史、读写与版本恢复。"""
 from __future__ import annotations
 
+import mimetypes
+from pathlib import PurePosixPath
 from typing import Optional
+from urllib.parse import quote
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 
 from ..collab.documents import document_resource_url, library_for
 from .context import ApiContext
 from .schemas import DocumentRestore, DocumentWrite
+
+
+MAX_DOCUMENT_UPLOAD_BYTES = 50 * 1024 * 1024
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -32,6 +38,62 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
+    @app.post("/api/projects/{project_id}/documents/upload")
+    async def upload_document(project_id: str, request: Request, path: str,
+                              overwrite: bool = False, actor: str = "human"):
+        """接收单个文件原始字节；多文件上传由前端逐个调用并独立版本化。"""
+        ctx.must_project(project_id)
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_DOCUMENT_UPLOAD_BYTES:
+                    raise HTTPException(413, "单个上传文件不能超过 50 MB")
+            except ValueError:
+                raise HTTPException(400, "Content-Length 不合法")
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_DOCUMENT_UPLOAD_BYTES:
+                raise HTTPException(413, "单个上传文件不能超过 50 MB")
+            content.extend(chunk)
+        library = library_for(project_id)
+        try:
+            revision = library.write_bytes(
+                path, bytes(content), actor=actor, message=f"Upload {path}",
+                overwrite=overwrite)
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        store.audit(actor, "document_uploaded",
+                    detail=(f"project={project_id} path={path} "
+                            f"size={len(content)} revision={revision}"))
+        return {"path": path, "size": len(content),
+                "resource_url": document_resource_url(project_id, path),
+                "revision": revision}
+
+    @app.get("/api/projects/{project_id}/documents/download/{file_path:path}")
+    def download_document(project_id: str, file_path: str,
+                          revision: Optional[str] = None):
+        """下载文本或二进制文档；可指定历史 revision。"""
+        ctx.must_project(project_id)
+        try:
+            content = library_for(project_id).read_bytes(file_path, revision)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        filename = PurePosixPath(file_path).name
+        media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": (
+                    f"attachment; filename*=UTF-8''{quote(filename, safe='')}"),
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     @app.get("/api/projects/{project_id}/documents/file/{file_path:path}")
     def read_document(project_id: str, file_path: str, revision: Optional[str] = None):
         ctx.must_project(project_id)
@@ -53,8 +115,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         ctx.must_project(project_id)
         try:
             revision = library_for(project_id).restore(body.path, body.revision, body.actor)
-        except UnicodeDecodeError:   # ValueError 子类,先捕获
-            raise HTTPException(415, "二进制文件请直接在文档库目录中恢复")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except FileNotFoundError as exc:

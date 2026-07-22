@@ -165,6 +165,103 @@ function selectDocument(path) {
   renderSidebar(); renderDocPane(); syncUrl();
 }
 
+function documentLibraryButtons() {
+  return `<button class="ghost compact" type="button" onclick="beginDocumentUpload()">上传文件</button>
+    <button class="ghost compact" type="button" onclick="newDocument()">＋ 新建</button>`;
+}
+
+function beginDocumentUpload() {
+  if (!currentProject) return;
+  if (currentTab !== "docs") switchTab("docs");
+  const input = document.getElementById("doc-upload-input");
+  if (!input) return;
+  input.value = "";
+  input.click();
+}
+
+function currentDocumentDirectory() {
+  if (!docSelected) return "";
+  return docSelected.split("/").slice(0, -1).join("/");
+}
+
+async function uploadDocuments(input) {
+  const files = [...(input.files || [])];
+  if (!files.length || !currentProject) return;
+  const projectId = currentProject;
+  try {
+    const directory = currentDocumentDirectory();
+    const uploads = files.map(file => {
+      const filename = file.name.replace(/\\/g, "/").split("/").pop();
+      return { file, path: [directory, filename].filter(Boolean).join("/") };
+    });
+    if (uploads.some(item => !item.path || item.path.split("/")
+      .some(part => !part || part === "." || part === ".."))) {
+      await uiAlert("上传文件名不合法。");
+      return;
+    }
+    if (new Set(uploads.map(item => item.path)).size !== uploads.length) {
+      await uiAlert("选择的文件中有重名文件，请分批上传。");
+      return;
+    }
+    const existing = new Set(docFiles);
+    const conflicts = uploads.filter(item => existing.has(item.path)).map(item => item.path);
+    if (conflicts.length) {
+      const shown = conflicts.slice(0, 8).join("\n");
+      const more = conflicts.length > 8 ? `\n…另有 ${conflicts.length - 8} 个` : "";
+      const confirmed = await uiConfirm(
+        `以下文档已存在，继续会创建覆盖它们的新版本：\n${shown}${more}`,
+        "覆盖已有文档");
+      if (!confirmed) return;
+    }
+
+    const conflictSet = new Set(conflicts);
+    const uploaded = [], errors = [];
+    for (const item of uploads) {
+      const query = new URLSearchParams({
+        path: item.path,
+        overwrite: String(conflictSet.has(item.path)),
+      });
+      try {
+        const response = await fetch(
+          `/api/projects/${encodeURIComponent(projectId)}/documents/upload?${query}`, {
+            method: "POST",
+            headers: { "Content-Type": item.file.type || "application/octet-stream" },
+            body: item.file,
+          });
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({}));
+          errors.push(`${item.path}: ${detail.detail || `HTTP ${response.status}`}`);
+          continue;
+        }
+        uploaded.push((await response.json()).path);
+      } catch (error) {
+        errors.push(`${item.path}: ${error.message || error}`);
+      }
+    }
+    if (projectId !== currentProject) return;
+    await renderDocuments();
+    if (uploaded.length) {
+      docSelected = uploaded[0];
+      docMode = "view";
+      docViewingRevision = null;
+      docHistoryOpen = false;
+      renderSidebar();
+      await renderDocPane();
+      syncUrl();
+    }
+    if (errors.length) {
+      toast(`已上传 ${uploaded.length} 个文件，${errors.length} 个失败：\n${errors.slice(0, 3).join("\n")}`,
+        "error", 7000);
+    } else {
+      toast(`已上传 ${uploaded.length} 个文件并记录文档版本`, "success", 5000);
+    }
+  } catch (error) {
+    toast(`上传失败：${error.message || error}`, "error", 7000);
+  } finally {
+    input.value = "";
+  }
+}
+
 function newDocument() {
   if (!currentProject) return;
   docSelected = null; docMode = "new";
@@ -177,6 +274,32 @@ function newDocument() {
 
 function isMarkdownDoc(path) {
   return /\.(md|markdown|txt)$/i.test(path) || !path.includes(".");
+}
+
+function documentDownloadUrl(path = docSelected, revision = docViewingRevision) {
+  let url = `/api/projects/${encodeURIComponent(currentProject)}/documents/download/${docEncode(path)}`;
+  if (revision) url += `?revision=${encodeURIComponent(revision)}`;
+  return url;
+}
+
+function downloadDocument() {
+  if (!docSelected) return;
+  const link = document.createElement("a");
+  link.href = documentDownloadUrl();
+  link.download = docSelected.split("/").pop();
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function fetchDocumentPayload(url) {
+  const response = await fetch(url);
+  if (response.status === 415) return { binary: true, data: null };
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || `读取失败 (${response.status})`);
+  }
+  return { binary: false, data: await response.json() };
 }
 
 async function renderDocPane(preserveScroll = false) {
@@ -221,7 +344,9 @@ async function renderDocPane(preserveScroll = false) {
   if (!docSelected) {
     docPaneContent = null;
     captureScroll();
-    pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看。</div>`;
+    pane.innerHTML = `<div class="doc-head"><span class="guideline-toolbar-spacer"></span>
+        ${documentLibraryButtons()}</div>
+      <div class="empty">从左侧目录树选择一个文档查看，或上传已有文件。</div>`;
     finish();
     return;
   }
@@ -246,34 +371,52 @@ async function renderDocPane(preserveScroll = false) {
     return;
   }
   // 查看:渲染 markdown / 纯文本;支持查看历史版本
-  let d;
+  let d, binary = false;
   try {
     const rev = docViewingRevision ? `?revision=${encodeURIComponent(docViewingRevision)}` : "";
-    d = await api("GET",
+    const payload = await fetchDocumentPayload(
       `/api/projects/${encodeURIComponent(projectId)}/documents/file/${docEncode(selectedPath)}${rev}`);
+    d = payload.data;
+    binary = payload.binary;
     if (!stillCurrent()) return;
   } catch (e) {
     if (!stillCurrent()) return;
     captureScroll();
     docPaneContent = null;
     pane.innerHTML = `<div class="doc-head"><b>${esc(docSelected)}</b></div>
-      <div class="empty">无法在线查看(可能是二进制文件),可直接在文档库目录中操作。</div>`;
+      <div class="empty">${esc(e.message || "无法在线查看文档")}</div>`;
     finish();
     return;
   }
-  docPaneContent = d.content;
-  docPaneContentIdentity = currentDocContentIdentity();
   const revBanner = docViewingRevision
     ? `<div class="muted" style="margin-bottom:8px">正在查看历史版本 ${esc(docViewingRevision.slice(0, 10))}
         <button class="ghost" data-rev="${esc(docViewingRevision)}" onclick="restoreDocumentVersion(this.dataset.rev)">恢复此版本</button>
         <button class="ghost" onclick="docViewingRevision=null;renderDocPane()">返回最新</button></div>`
     : "";
+  if (binary) {
+    captureScroll();
+    pane.innerHTML = `
+      <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
+        ${documentLibraryButtons()}
+        <button class="action" onclick="downloadDocument()">下载</button>
+        <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
+        <button class="danger" onclick="deleteDocument()">删除</button></div>
+      ${revBanner}<div class="empty">该文件不是 UTF-8 文本，不能在线编辑；可以下载原文件。</div>
+      <div id="doc-history"></div>`;
+    finish();
+    if (docHistoryOpen) await showDocumentHistory(renderToken);
+    if (!stillCurrent()) return;
+    return;
+  }
+  docPaneContent = d.content;
+  docPaneContentIdentity = currentDocContentIdentity();
   const body = isMarkdownDoc(docSelected)
     ? `<article class="doc-body markdown-body">${markdownPreviewHtml(d.content)}</article>`
     : `<pre style="white-space:pre-wrap;font-size:12.5px">${esc(d.content)}</pre>`;
   captureScroll();
   pane.innerHTML = `
     <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
+      ${documentLibraryButtons()}
       <button class="action" onclick="docMode='edit';renderDocPane()">编辑</button>
       <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
       <button class="danger" onclick="deleteDocument()">删除</button></div>

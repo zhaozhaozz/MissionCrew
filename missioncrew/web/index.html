@@ -61,6 +61,7 @@
         <h2 class="sec-head" id="sec-docs" onclick="toggleSection('docs')">
           <span class="caret">▾</span>文档<span class="count" id="cnt-docs"></span>
           <span class="sec-act">
+            <button class="icon-btn" title="上传文档" onclick="event.stopPropagation();beginDocumentUpload()">⇧</button>
             <button class="icon-btn" title="新建文档" onclick="event.stopPropagation();quickNewDocument()">＋</button>
             <button class="icon-btn" title="打开文档库" onclick="event.stopPropagation();switchTab('docs')">🗂</button>
           </span></h2>
@@ -228,6 +229,8 @@
 
     <div id="docs-view" class="page">
       <div class="section content-workspace">
+        <input id="doc-upload-input" type="file" multiple hidden
+          onchange="uploadDocuments(this)">
         <div class="doc-pane" id="doc-pane"></div>
       </div>
     </div>
