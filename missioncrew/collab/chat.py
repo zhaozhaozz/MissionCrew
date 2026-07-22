@@ -25,7 +25,8 @@ from typing import Optional
 
 from ..runtime import runtime_manager
 from ..core.config import mc_home
-from .documents import library_for, safe_relative_path
+from .documents import (document_resource_url, library_for,
+                        normalize_document_resource_urls, safe_relative_path)
 from .workspace import (chat_workspace_dir, platform_history_dir,
                         prepare_agent_workspace, sync_task_files,
                         write_task_files)
@@ -77,6 +78,8 @@ CHAT_COMMON_BODY = """\
 # 回复要求
 - 只完成触发消息交代的工作;信息不足时在回复中提出,不要臆测扩大范围。
 - 你的最终回复会被完整、原样发布到聊天频道,人类可以看到。
+- 引用 MissionCrew 项目文档时使用项目上下文给出的 `/resources/...` URL；
+  不要把内部 `.missioncrew` 路径、绝对文件路径或 `file://` 链接发布到频道。
 - 回复用中文,先说结论,再简述做了什么;不要贴大段日志。
 {collaboration_section}
 """
@@ -435,21 +438,29 @@ class ChatEngine:
         try:
             self._execute_inner(run_id, channel, role_id, msg_id, root_id, depth)
         except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
+            error = str(e)
+            project = self.store.get_project(channel.project_id or "")
+            if project:
+                error = normalize_document_resource_urls(
+                    error, project.id, [library_for(project.id).root])
             try:
                 self._post_failure(channel, role_id, msg_id, root_id, depth,
-                                   f"@{role_id} 执行出错: {e}")
+                                   f"@{role_id} 执行出错: {error}")
             finally:
-                self.store.update_chat_run(run_id, "failed", error=str(e))
+                self.store.update_chat_run(run_id, "failed", error=error)
 
     def _post_failure(self, channel: Channel, role_id: str, msg_id: int,
                       root_id: int, depth: int, content: str) -> None:
         """公开执行失败；非主控失败也自动交回主控决定后续动作。"""
+        project = self.store.get_project(channel.project_id or "")
+        if project:
+            content = normalize_document_resource_urls(
+                content, project.id, [library_for(project.id).root])
         result_depth = depth + 1
         failure_id = self.store.add_message(
             channel.id, "platform", "platform", content, [], msg_id, root_id,
             result_depth)
         self._write_channel_history(channel)
-        project = self.store.get_project(channel.project_id or "")
         orchestrator = project.orchestrator_role_id if project else ""
         if (orchestrator and role_id != orchestrator
                 and self.store.get_role(channel.project_id or "", orchestrator)):
@@ -481,13 +492,28 @@ class ChatEngine:
                                 f"backend={backend.id} depth={depth} {trace}")
 
         cfg = self._assemble(channel, role, backend, msg_id)
+        project = self.store.get_project(channel.project_id or "")
+        library = library_for(channel.project_id or "")
+        document_roots = [
+            library.root, cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", "")]
+        document_markers = [str(root) for root in document_roots if str(root)]
+
+        def _emit(kind: str, text: str):
+            may_contain_document_path = (
+                ".missioncrew" in text
+                or any(marker in text for marker in document_markers))
+            if (project and may_contain_document_path
+                    and kind in {"text", "stdout", "stderr", "tool", "tool_result"}):
+                text = normalize_document_resource_urls(
+                    text, project.id, document_roots)
+            return self.store.append_run_event(run_id, kind, text)
+
         # 运行过程(思考/工具/输出)实时落库,前端在聊天流中内联展示
-        cfg.emit = lambda kind, text: self.store.append_run_event(run_id, kind, text)
+        cfg.emit = _emit
         runtime_deadline = time.monotonic() + cfg.timeout
         cfg.interact = lambda kind, payload: self._request_runtime_interaction(
             run_id, backend.id, kind, payload,
             max(0.1, runtime_deadline - time.monotonic()))
-        library = library_for(channel.project_id or "")
         library.commit_changes("platform", "Capture external document changes before chat run")
         result = runtime_manager.start(cfg)
         revision = library.commit_changes(
@@ -515,20 +541,22 @@ class ChatEngine:
                                 result.success)
 
         if not result.success:
+            public_summary = (normalize_document_resource_urls(
+                result.summary, project.id, document_roots)
+                if project else result.summary)
             try:
                 self._post_failure(
                     channel, role_id, msg_id, root_id, depth,
-                    f"@{role_id}(后端 {backend.id})执行失败: {result.summary}")
+                    f"@{role_id}(后端 {backend.id})执行失败: {public_summary}")
             finally:
                 self.store.update_chat_run(
-                    run_id, "failed", backend_id=backend.id, error=result.summary)
+                    run_id, "failed", backend_id=backend.id, error=public_summary)
             return
 
         reply = (result.output or result.summary or "(无输出)").strip()
         if task_sync_errors:
             reply += ("\n\n(MissionCrew 任务文件同步失败："
                       + "；".join(task_sync_errors) + ")")
-        project = self.store.get_project(channel.project_id or "")
         if project and role.id == project.orchestrator_role_id:
             reply = self._apply_orchestrator_actions(project, role.id, reply,
                                                      root_id=root_id, depth=depth)
@@ -536,6 +564,15 @@ class ChatEngine:
             # 非主控回复中的控制动作:剥离并明示未执行,避免读者误以为已生效
             reply = ACTION_RE.sub("", reply).strip()
             reply += "\n\n(检测到平台控制动作,但只有项目主控可以执行,未生效)"
+        if project:
+            reply = normalize_document_resource_urls(
+                reply, project.id, document_roots)
+            self.store.rewrite_run_events(
+                run_id,
+                lambda content: normalize_document_resource_urls(
+                    content, project.id, document_roots),
+                {"text", "stdout", "stderr", "tool", "tool_result"},
+            )
         # 运行中先实时展示模型输出；最终回复确定后，如果 text/stdout 与即将
         # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
         self.store.remove_duplicate_reply_output(run_id, reply)
@@ -636,6 +673,7 @@ class ChatEngine:
                     project, library, workspace.root)
                 env["MISSIONCREW_WORKSPACE"] = str(workspace.root)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(workspace.documents)
+                env["MISSIONCREW_DOCUMENTS_URL"] = document_resource_url(project.id)
                 env["MISSIONCREW_GUIDELINES_DIR"] = str(workspace.guidelines)
                 env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
@@ -808,6 +846,20 @@ class ChatEngine:
         content = str(message.get("content", ""))
         mentions = self._decoded_mentions(message)
         mention_spans = self._decoded_mention_spans(message)
+        if project:
+            document_root = mc_home() / "projects" / project.id / "documents"
+            original_content = content
+            content = normalize_document_resource_urls(
+                original_content, project.id, [document_root])
+            if content != original_content:
+                for span in mention_spans:
+                    start, end = span.get("start"), span.get("end")
+                    if type(start) is not int or type(end) is not int:
+                        continue
+                    span["start"] = len(normalize_document_resource_urls(
+                        original_content[:start], project.id, [document_root]))
+                    span["end"] = len(normalize_document_resource_urls(
+                        original_content[:end], project.id, [document_root]))
         orchestrator_id = project.orchestrator_role_id if project else ""
         known_roles = (known_roles if known_roles is not None else
                        ({r.id for r in self.store.list_roles(project.id)}
@@ -901,7 +953,8 @@ class ChatEngine:
                     "messages": records,
                 }
 
-            canonical_records = [self._message_record(m) for m in messages]
+            canonical_records = [
+                self._message_record(m, project=project) for m in messages]
             self._atomic_write_json(canonical, _payload(canonical_records))
             if visible_path != canonical:
                 known_roles = {r.id for r in self.store.list_roles(project.id)}
@@ -1051,7 +1104,8 @@ class ChatEngine:
             )
             self.store.audit(role_id, "document_saved",
                              detail=f"project={project.id} path={path} revision={revision}")
-            return f"已保存文档 {path}"
+            return (f"已保存文档 [{path}]"
+                    f"({document_resource_url(project.id, path)})")
 
         enabled = action.get("enabled", True)
         if not isinstance(enabled, bool):
@@ -1108,6 +1162,8 @@ class ChatEngine:
         channel = self.store.get_channel(cid) or self.store.get_channel(raw)
         if channel is None or channel.project_id != project_id:
             raise ValueError(f"频道不存在或不属于本项目: {raw}")
+        content = normalize_document_resource_urls(
+            content, project_id, [library_for(project_id).root])
         self.post(channel.id, role_id, content, author_type="agent",
                   root_id=root_id, depth=depth + 1)
         self.store.audit(role_id, "orchestrator_post",

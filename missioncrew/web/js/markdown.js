@@ -1,5 +1,39 @@
 /* ---- 统一 Markdown 阅读组件 ----
    所有文档型预览共用安全正文渲染和 YAML front matter 属性表。 */
+function missionCrewDocumentUrl(projectId, path = "") {
+  const base = `/resources/${encodeURIComponent(projectId)}/documents`;
+  return path ? `${base}/${String(path).split("/").map(encodeURIComponent).join("/")}` : base;
+}
+
+function missionCrewDocumentReference(target) {
+  const raw = String(target || "").trim();
+  let pathname = raw.split(/[?#]/, 1)[0].replace(/\\/g, "/");
+  if (/^https?:\/\//i.test(pathname)) {
+    try {
+      const parsed = new URL(pathname);
+      if (parsed.origin !== location.origin) return null;
+      pathname = parsed.pathname;
+    } catch (_) { return null; }
+  }
+  let decoded = pathname;
+  try { decoded = decodeURIComponent(pathname); } catch (_) { /* 保留原值 */ }
+  let match = decoded.match(/^\/resources\/([^/]+)\/documents(?:\/(.+))?$/);
+  if (match) {
+    const projectId = match[1], path = match[2] || "";
+    return { projectId, path, url: missionCrewDocumentUrl(projectId, path) };
+  }
+  // 历史消息曾发布平台真实路径。只识别 MissionCrew 自有文档入口，
+  // 立即转换成资源 URL；任意其他绝对路径仍不会成为可点击链接。
+  match = decoded.match(/(?:^|\/)\.missioncrew\/projects\/([^/]+)\/documents\/(.+)$/);
+  if (!match)
+    match = decoded.match(/(?:^|\/)\.missioncrew\/agent-workspaces\/([^/]+)\/.*?\/\.missioncrew\/documents\/(.+)$/);
+  if (match) {
+    const projectId = match[1], path = match[2];
+    return { projectId, path, url: missionCrewDocumentUrl(projectId, path) };
+  }
+  return null;
+}
+
 function markdownInline(source) {
   const tokens = [];
   const hold = html => `\uE000${tokens.push(html) - 1}\uE001`;
@@ -9,6 +43,10 @@ function markdownInline(source) {
     (_, label, target) => {
       const safeLabel = markdownInline(label);
       const href = target.trim();
+      const resource = missionCrewDocumentReference(href);
+      if (resource)
+        return hold(`<a href="${esc(resource.url)}" data-doc-link="${esc(resource.url)}" ` +
+          `onclick="return openMarkdownDocumentLink(event,this.dataset.docLink)">${safeLabel}</a>`);
       if (/^(https?:\/\/|mailto:)/i.test(href))
         return hold(`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`);
       if (href.startsWith("#")) return hold(`<a href="${esc(href)}">${safeLabel}</a>`);

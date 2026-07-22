@@ -6,7 +6,9 @@ import time
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.documents import normalize_document_resource_urls
 from ..collab.workspace import write_page_context_snapshot
+from ..core.config import projects_dir
 from ..core.models import Channel
 from .context import ApiContext
 from .schemas import (ChannelCreate, MessageInput, PageContextInput,
@@ -79,6 +81,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if channel is None:
             raise HTTPException(404, "频道不存在")
         items = store.list_messages(channel_id, after_id)
+        project = store.get_project(channel.project_id or "")
+        document_root = projects_dir() / project.id / "documents" if project else None
         # 新消息持久化执行当时的组合；无法从旧执行事件迁移的历史消息才用
         # 当前角色配置兜底，避免页面继续只显示笼统的 "agent"。
         for item in items:
@@ -93,6 +97,20 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 item["mention_spans"] = json.loads(item.get("mention_spans") or "[]")
             except (json.JSONDecodeError, TypeError):
                 item["mention_spans"] = []
+            if project and document_root:
+                original = str(item.get("content", ""))
+                normalized = normalize_document_resource_urls(
+                    original, project.id, [document_root])
+                if normalized != original:
+                    for span in item["mention_spans"]:
+                        start, end = span.get("start"), span.get("end")
+                        if type(start) is not int or type(end) is not int:
+                            continue
+                        span["start"] = len(normalize_document_resource_urls(
+                            original[:start], project.id, [document_root]))
+                        span["end"] = len(normalize_document_resource_urls(
+                            original[:end], project.id, [document_root]))
+                    item["content"] = normalized
         return {
             "channel": channel.to_dict(),
             "messages": items,

@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from missioncrew.runtime import adapters
 from missioncrew.taskflow import assembler
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.collab.documents import library_for
+from missioncrew.collab.documents import (document_resource_url, library_for,
+                                          normalize_document_resource_urls)
 from missioncrew.collab.project_context import guideline_context_dir
 from missioncrew.collab.skills import (materialize_project_skills,
                                        project_skill_library_dir)
@@ -116,6 +117,17 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert [row["actor"] for row in history[:2]] == ["bob", "alice"]
     old = client.get(url + f"?revision={history[1]['revision']}").json()
     assert old["content"] == "# Checkout v1\n"
+    assert old["resource_url"] == \
+        "/resources/webshop/documents/specs/checkout.md"
+    listing = client.get("/api/projects/webshop/documents").json()
+    assert "root" not in listing
+    assert listing["resource_url"] == "/resources/webshop/documents"
+    assert next(item for item in listing["files"]
+                if item["path"] == "specs/checkout.md")["resource_url"] == \
+        "/resources/webshop/documents/specs/checkout.md"
+    resource_page = client.get(
+        "/resources/webshop/documents/specs/checkout.md")
+    assert resource_page.status_code == 200 and "MissionCrew" in resource_page.text
     # HTTP 客户端会自行规范化 `..` URL；直接验证服务层的真实路径边界。
     with pytest.raises(ValueError, match="相对路径"):
         library_for("webshop").write("../escape.md", "no")
@@ -163,6 +175,10 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "# Checkout v2" not in chat_cfg.prompt  # 链接文件不再预注入
     assert "仅在任务需要时读取链接文件" in chat_cfg.prompt
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in chat_cfg.prompt
+    assert chat_cfg.env["MISSIONCREW_DOCUMENTS_URL"] == \
+        "/resources/webshop/documents"
+    assert "最终回复引用项目文档时必须写成" in chat_cfg.prompt
+    assert "不得输出内部读写目录" in chat_cfg.prompt
     guideline_dir = Path(chat_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
     dev_guideline = guideline_dir / "dev-guide.md"
     tester_guideline = guideline_dir / "tester-guide.md"
@@ -188,6 +204,8 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "开发相关任务准则" not in task_cfg.prompt
     assert "结合当前任务自行判断哪些条目适用" in task_cfg.prompt
     assert task_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in task_cfg.prompt
+    assert task_cfg.env["MISSIONCREW_DOCUMENTS_URL"] == \
+        "/resources/webshop/documents"
     assert task_cfg.env["MISSIONCREW_GUIDELINES_DIR"] in task_cfg.prompt
     task_guideline_dir = Path(task_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
     assert task_guideline_dir != guideline_dir
@@ -206,6 +224,25 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert not (updated_dir / "stale.md").exists()
     assert not (updated_dir.parent / "guidelines.json").exists()
     assert (updated_dir / "dev-guide.md").read_text().endswith("\n开发准则第二版\n")
+
+
+def test_document_resource_url_replaces_internal_agent_paths(tmp_path):
+    root = tmp_path / ".missioncrew" / "projects" / "science_agent" / "documents"
+    canonical = root / "architecture" / "current design.md"
+    assert document_resource_url(
+        "science_agent", "architecture/current design.md") == \
+        "/resources/science_agent/documents/architecture/current%20design.md"
+    reply = (
+        f"正式文档：[架构]({canonical})\n"
+        "兼容入口：[/doc](/srv/.missioncrew/agent-workspaces/science_agent/"
+        "channels/general/lead/.missioncrew/documents/architecture/current.md)\n"
+        "业务源码：/home/test/code/company/science_agent/server.ts"
+    )
+    normalized = normalize_document_resource_urls(reply, "science_agent", [root])
+    assert str(root) not in normalized and "agent-workspaces" not in normalized
+    assert "/resources/science_agent/documents/architecture/current design.md" in normalized
+    assert "/resources/science_agent/documents/architecture/current.md" in normalized
+    assert "/home/test/code/company/science_agent/server.ts" in normalized
 
 
 def test_guideline_and_skill_management_have_no_binding_fields(seeded):
@@ -532,7 +569,9 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     assert not hasattr(project, "rules")
     assert library_for("webshop").read("specs/generated.md") == "# Generated\n"
     assert "missioncrew-action" not in reply
-    assert "已保存准则文档" in reply and "已保存文档 specs/generated.md" in reply
+    assert "已保存准则文档" in reply
+    assert ("已保存文档 [specs/generated.md]"
+            "(/resources/webshop/documents/specs/generated.md)") in reply
 
     # 旧 save_rule 动作已被移除；其他配置仍执行各自的字段校验。
     update = chat._apply_orchestrator_actions(
@@ -627,6 +666,11 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "只需回答，不要写入" in js
     assert "setInterval(pollConfigChat, 2000)" in main
     assert "openMarkdownDocumentLink" in documents
+    assert "revealMissionCrewDocument" in documents
+    assert 'parts[0] === "resources"' in router
+    assert "missionCrewDocumentUrl(currentProject, docSelected)" in router
+    assert "missionCrewDocumentReference" in markdown
+    assert 'href="${esc(resource.url)}"' in markdown
     assert all(markup in markdown for markup in (
         "markdownInline", "<blockquote>", "<pre><code", "markdown-table-wrap"))
     assert "markdownPreviewHtml(markdown)" in js

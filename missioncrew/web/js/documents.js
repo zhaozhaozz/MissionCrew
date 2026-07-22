@@ -46,8 +46,10 @@ function docEncode(path) {
   return path.split("/").map(encodeURIComponent).join("/");
 }
 
-function normalizedDocumentLink(path) {
-  const raw = path.split(/[?#]/, 1)[0];
+function resolvedDocumentLink(path) {
+  const resource = missionCrewDocumentReference(path);
+  if (resource) return resource;
+  const raw = String(path || "").split(/[?#]/, 1)[0];
   let decoded = raw;
   try { decoded = decodeURIComponent(raw); } catch (_) { /* 保留原始路径 */ }
   const base = currentTab === "docs" && docSelected && !decoded.startsWith("/")
@@ -58,28 +60,41 @@ function normalizedDocumentLink(path) {
     if (part === "..") parts.pop();
     else parts.push(part);
   }
-  return parts.join("/");
+  const target = parts.join("/");
+  return { projectId: currentProject, path: target,
+           url: missionCrewDocumentUrl(currentProject, target) };
 }
 
 function openMarkdownDocumentLink(event, path) {
   event.preventDefault();
-  const target = normalizedDocumentLink(path);
-  if (!target || !docFiles.includes(target)) {
-    toast(`找不到项目文档：${target || path}`, "error");
-    return false;
+  void revealMissionCrewDocument(path);
+  return false;
+}
+
+async function revealMissionCrewDocument(path) {
+  const target = resolvedDocumentLink(path);
+  if (!target?.projectId || !overview.projects.some(p => p.id === target.projectId)) {
+    toast("找不到 MissionCrew 项目文档", "error");
+    return;
   }
-  docSelected = target;
+  if (target.projectId !== currentProject) setProject(target.projectId, false);
+  await loadDocFiles();
+  if (target.path && !docFiles.includes(target.path)) {
+    toast(`找不到项目文档：${target.projectId}/${target.path}`, "error");
+    return;
+  }
+  docSelected = target.path || null;
   docMode = "view";
   docViewingRevision = null;
   docHistoryOpen = false;
   configChatSelection = null;
   if (currentTab === "docs") {
     renderSidebar();
-    renderDocPane();
+    await renderDocPane();
+    syncUrl();
   } else {
     switchTab("docs");
   }
-  return false;
 }
 
 async function renderDocuments(backgroundRefresh = false) {
@@ -94,6 +109,7 @@ async function renderDocuments(backgroundRefresh = false) {
   docFiles = d.files.map(f => f.path);
   if (docSelected && !docFiles.includes(docSelected) && docMode !== "new") {
     docSelected = null; docMode = "view";
+    syncUrl(false);
   }
   if (!backgroundRefresh || fileListBefore !== JSON.stringify(docFilesMeta)) renderSidebar();
   const signature = currentDocPaneSignature();
@@ -146,7 +162,7 @@ function selectDocument(path) {
   docSelected = path; docMode = "view";
   configChatSelection = null;
   docViewingRevision = null; docHistoryOpen = false;
-  renderSidebar(); renderDocPane();
+  renderSidebar(); renderDocPane(); syncUrl();
 }
 
 function newDocument() {
@@ -156,6 +172,7 @@ function newDocument() {
   docViewingRevision = null; docHistoryOpen = false;
   renderSidebar();
   renderDocPane();
+  syncUrl();
 }
 
 function isMarkdownDoc(path) {
@@ -287,6 +304,7 @@ async function saveDocument() {
   });
   docMode = "view";
   await renderDocuments();
+  syncUrl();
   toast("文档已保存为新版本", "success");
 }
 
@@ -297,6 +315,7 @@ async function deleteDocument() {
   docSelected = null; docMode = "view";
   configChatSelection = null;
   await renderDocuments();
+  syncUrl();
   toast("文档已删除", "success");
 }
 

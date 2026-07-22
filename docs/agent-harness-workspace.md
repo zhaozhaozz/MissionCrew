@@ -7,7 +7,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 - 源码仓库的 `docs/` 是 MissionCrew 本身的开发与使用文档，随源码提交。本文件就位于这个目录。
 - Agent harness 的 `.missioncrew/documents/` 是某个 MissionCrew 项目的版本化文档入口，供执行中的 Agent 读写。它位于平台数据根，不在业务源码仓内。
 
-因此，源码仓使用 `docs/` 不代表运行时入口也应叫 `docs/`。运行时入口的稳定名称是 `documents/`，环境变量是 `MISSIONCREW_DOCUMENTS_DIR`。
+因此，源码仓使用 `docs/` 不代表运行时入口也应叫 `docs/`。运行时读写入口的稳定名称是 `documents/`，环境变量是 `MISSIONCREW_DOCUMENTS_DIR`；向频道或 Web 暴露的入口是 `MISSIONCREW_DOCUMENTS_URL`。
 
 ## 工作目录与 harness 目录
 
@@ -40,6 +40,14 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 `documents/` 是指向项目文档工作树的符号链接。Agent 可以直接创建、读取和编辑 Markdown 或其他项目资料；聊天或任务执行前后，平台检查变化并记录到该文档库自己的 Git 历史。该历史不属于业务代码仓。
 
 准则和 Skill 中需要引用项目文档时，使用普通 Markdown 链接。Agent 根据任务按需读取链接目标，不需要平台维护额外的引用清单。
+
+内部路径只用于 Runtime 工具访问，不是 Web 地址。聊天回复和 API 使用根相对资源 URL：
+
+```text
+/resources/<project-id>/documents/<文档库相对路径>
+```
+
+例如 `[架构说明](/resources/science_agent/documents/architecture/current.md)`。该 URL 可点击、刷新和复制，不包含平台数据目录；Web 会把它解析为对应项目的文档页。平台发布 Agent 回复前还会把误输出的文档库真实路径规范化为资源 URL，前端则兼容已经保存的历史路径链接。
 
 ### `tasks/`
 
@@ -83,6 +91,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 | --- | --- |
 | `MISSIONCREW_WORKSPACE` | 当前角色或任务的 `.missioncrew/` 根目录 |
 | `MISSIONCREW_DOCUMENTS_DIR` | 当前项目文档入口，即 `.missioncrew/documents/` |
+| `MISSIONCREW_DOCUMENTS_URL` | 当前项目文档的 Web 资源 URL 根；最终回复用它构造链接 |
 | `MISSIONCREW_GUIDELINES_DIR` | 已启用准则 Markdown 目录 |
 | `MISSIONCREW_SKILLS_DIR` | 已启用 Skill 目录 |
 | `MISSIONCREW_TASKS_DIR` | 项目任务 Markdown 目录 |
@@ -103,3 +112,4 @@ Runtime 的实际 `PWD` 仍是 `workdir`。支持原生多目录授权的适配�
 - 新增可写文件时，应明确它属于共享项目资料、角色隔离状态还是结构化任务状态，并据此选择目录。
 - 修改项目设置后，刷新物化文件和持久公共上下文，不能让复用会话继续使用旧配置。
 - 业务代码和交付物写入 `workdir` 或项目资源仓；项目文档、任务协作资料和阶段证据才写入 harness 工作区。
+- Agent 回复不得发布 `.missioncrew` 文档真实路径或 `file://` 链接；使用 `/resources/<project>/documents/<path>`。

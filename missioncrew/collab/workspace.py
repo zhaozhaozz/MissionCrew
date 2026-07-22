@@ -20,6 +20,7 @@ import yaml
 
 from ..core.config import mc_home
 from ..core.models import Project, Task, TIER_ORDER, new_id
+from .documents import document_resource_url
 from .skills import project_skill_library_dir, sync_project_skill_library
 
 if TYPE_CHECKING:
@@ -256,7 +257,8 @@ def _render_project_file(project: Project) -> str:
     )
 
 
-def _render_workspace_readme(workspace: AgentWorkspace, *, has_history: bool) -> str:
+def _render_workspace_readme(workspace: AgentWorkspace, project_id: str,
+                             *, has_history: bool) -> str:
     history = (
         "- `channel-history.json`：当前频道的完整历史；执行角色看到的是脱敏视图。\n"
         if has_history else "")
@@ -279,6 +281,13 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 - `skills/`：已启用项目 Skill 的完整目录；先读 SKILL.md，再按需使用同目录 scripts/、references/、assets/ 等文件。
 - `project.md`：项目简介与资源索引。
 {history}
+## 对外引用
+
+`documents/` 是 Runtime 的内部读写入口。向频道回复项目文档时，使用
+`{document_resource_url(project_id)}/<文档库相对路径>`，例如
+`[设计说明]({document_resource_url(project_id)}/specs/design.md)`。不要在回复中输出
+本工作区绝对路径、`.missioncrew` 真实路径或 `file://` 链接。
+
 ## 新建任务格式
 
 在 `tasks/` 新建任意 `.md` 文件，省略 `id` 和所有系统字段：
@@ -495,8 +504,9 @@ def prepare_agent_workspace(store: Store, project: Project,
 
         write_task_files(store, project.id, workspace.tasks)
         _atomic_write_text(root / "project.md", _render_project_file(project))
-        _atomic_write_text(root / "README.md",
-                           _render_workspace_readme(workspace, has_history=has_history))
+        _atomic_write_text(
+            root / "README.md",
+            _render_workspace_readme(workspace, project.id, has_history=has_history))
         error_file = root / "task-sync-errors.log"
         error_file.unlink(missing_ok=True)
         return workspace, []

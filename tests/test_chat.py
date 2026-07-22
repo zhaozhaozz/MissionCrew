@@ -8,7 +8,9 @@ from fastapi.testclient import TestClient
 
 from missioncrew.api import create_app
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.core.models import Channel, DEFAULT_MAX_CHAIN_RUNS, Project
+from missioncrew.collab.documents import library_for
+from missioncrew.core.models import (Channel, DEFAULT_MAX_CHAIN_RUNS, Project,
+                                     RunResult)
 from missioncrew.runtime import adapters, runtime_manager
 
 
@@ -35,6 +37,53 @@ def test_mention_triggers_agent_reply(chat, seeded):
     assert agents[0]["reply_to"] == msgs[0]["id"]
     assert agents[0]["root_id"] == msgs[0]["id"]
     assert json.loads(agents[0]["mentions"]) == ["lead"]
+
+
+def test_agent_document_links_are_published_as_resource_urls(
+        chat, seeded, monkeypatch):
+    library = library_for("webshop")
+    document = library.root / "architecture" / "current.md"
+    output = f"正式文档：[current.md]({document})"
+
+    def _start(config):
+        config.emit("tool_result", f"已写入 {document}")
+        config.emit("text", output)
+        return RunResult(True, "ok", output=output)
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
+
+    chat.post("general", "human", "@[dev] 发布文档。")
+    chat.wait_idle()
+
+    replies = [m["content"] for m in _log(seeded) if m["author_type"] == "agent"]
+    assert replies
+    assert all(str(library.root) not in reply for reply in replies)
+    assert all("[current.md](/resources/webshop/documents/architecture/current.md)"
+               in reply for reply in replies)
+    events = seeded._query("SELECT kind, content FROM run_events ORDER BY id")
+    assert all(str(library.root) not in event["content"] for event in events)
+    assert all(event["kind"] != "text" for event in events)
+    assert any("/resources/webshop/documents/architecture/current.md"
+               in event["content"] for event in events)
+
+    legacy_content = f"旧链接：[current.md]({document}) @dev"
+    mention_start = legacy_content.index("@dev")
+    legacy_id = seeded.add_message(
+        "general", "lead", "agent", legacy_content, ["dev"],
+        mention_spans=[{
+            "role_id": "dev", "start": mention_start,
+            "end": mention_start + len("@dev"),
+        }])
+    api_messages = TestClient(create_app()).get(
+        "/api/chat/general/messages").json()["messages"]
+    legacy = next(message for message in api_messages if message["id"] == legacy_id)
+    assert str(library.root) not in legacy["content"]
+    assert "/resources/webshop/documents/architecture/current.md" in legacy["content"]
+    normalized_mention = legacy["content"].index("@dev")
+    assert legacy["mention_spans"] == [{
+        "role_id": "dev", "start": normalized_mention,
+        "end": normalized_mention + len("@dev"),
+    }]
 
 
 def test_plain_and_unknown_mentions_are_text_and_fall_back_to_lead(chat, seeded):

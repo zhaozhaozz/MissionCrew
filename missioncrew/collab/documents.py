@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path, PurePosixPath
+from urllib.parse import quote
 
 from ..core.config import projects_dir
 
@@ -31,6 +32,57 @@ def safe_relative_path(value: str) -> str:
     if path.parts[0] == ".git" or "\x00" in raw:
         raise ValueError("文档路径不合法")
     return path.as_posix()
+
+
+def document_resource_url(project_id: str, relative: str | None = None) -> str:
+    """返回不暴露平台数据目录的、可由 Web 打开的项目文档 URL。"""
+    if not _PROJECT_ID_RE.fullmatch(project_id):
+        raise ValueError("项目 id 只能包含字母、数字、下划线、连字符")
+    base = f"/resources/{quote(project_id, safe='')}/documents"
+    if relative is None:
+        return base
+    rel = safe_relative_path(relative)
+    return base + "/" + "/".join(quote(part, safe="") for part in rel.split("/"))
+
+
+def normalize_document_resource_urls(text: str, project_id: str,
+                                     local_roots: list[str | Path]) -> str:
+    """把 Agent 回复里的文档库真实目录替换成 MissionCrew 资源 URL。
+
+    Runtime 仍需真实路径读写，但频道消息、动作消息和失败摘要不能把平台
+    数据目录当成 Web 链接发布。workspace 符号链接使用单独模式兼容。
+    """
+    normalized = str(text)
+    resource_root = document_resource_url(project_id)
+    roots: set[str] = set()
+    for value in local_roots:
+        if not str(value):
+            continue
+        path = Path(value).expanduser()
+        roots.add(str(path).rstrip("/"))
+        try:
+            roots.add(str(path.resolve()).rstrip("/"))
+        except OSError:
+            pass
+    for root in sorted(roots, key=len, reverse=True):
+        if root:
+            normalized = re.sub(
+                re.escape(root) + r"(?=$|[/\s`\"'()<>\[\]])",
+                resource_root, normalized)
+
+    # Agent 常回显 harness 中的 documents 符号链接，而不是它解析后的真实
+    # 文档库目录。只替换链接根；后续相对路径原样保留为资源 URL 路径。
+    safe_project = re.escape(project_id)
+    workspace_root = re.compile(
+        rf"/?[^\s`\"'()<>\[\]]*?\.missioncrew/agent-workspaces/"
+        rf"{safe_project}/[^\s`\"'()<>\[\]]*?/\.missioncrew/documents"
+    )
+    normalized = workspace_root.sub(resource_root, normalized)
+    task_root = re.compile(
+        r"/?[^\s`\"'()<>\[\]]*?\.missioncrew/workspaces/"
+        r"[^\s`\"'()<>\[\]]*?/\.missioncrew/documents"
+    )
+    return task_root.sub(resource_root, normalized)
 
 
 class DocumentLibrary:

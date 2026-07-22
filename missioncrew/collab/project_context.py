@@ -7,7 +7,7 @@ import re
 import tempfile
 import threading
 
-from .documents import DocumentLibrary
+from .documents import DocumentLibrary, document_resource_url
 from .skills import project_skill_library_dir, skill_directory_version
 from ..core.config import projects_dir
 from ..core.models import GuidelineDocument, Project, ProjectSkill
@@ -135,6 +135,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
     ]
     documents_dir = (workspace_dir / "documents" if workspace_dir is not None
                      else library.root)
+    documents_url = document_resource_url(project.id)
     tasks_dir = workspace_dir / "tasks" if workspace_dir is not None else None
     skills_dir = workspace_dir / "skills" if workspace_dir is not None else None
     canonical_skills = project_skill_library_dir(project.id)
@@ -167,9 +168,12 @@ def render_project_context(project: Project, library: DocumentLibrary,
         + f"\n准则 Markdown 目录：{guideline_dir}\n"
         "也可通过环境变量 MISSIONCREW_GUIDELINES_DIR 获取该目录。"
         "先根据 description 判断相关性，仅在任务需要时读取对应的 Markdown 文件；不要预加载全部正文。",
-        f"# 项目文档库\n目录：{documents_dir}\n"
+        f"# 项目文档库\n内部读写目录：{documents_dir}\n"
+        f"对外资源 URL：{documents_url}/<文档库相对路径>\n"
         "所有角色可在该普通目录中读写文档；平台会在每次执行后记录 Git 版本。\n"
-        "准则和 Skill 正文中的相对 Markdown 链接均以此目录为根；仅在任务需要时读取链接文件，不要预加载。",
+        "准则和 Skill 正文中的相对 Markdown 链接均以此目录为根；仅在任务需要时读取链接文件，不要预加载。\n"
+        f"最终回复引用项目文档时必须写成 `[标题]({documents_url}/路径)`；"
+        "不得输出内部读写目录、`.missioncrew` 真实路径或 `file://` 链接。",
         (f"# 项目任务文件\n目录：{tasks_dir}\n"
          "可读取全部项目任务 Markdown，也可新建或编辑任务；平台会在执行后同步。"
          "任务状态、阶段、审批等系统字段由平台管理，不通过文件修改。")

@@ -11,7 +11,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .models import Backend, Board, Channel, Project, Resource, Role, Task
 
@@ -746,6 +746,25 @@ class Store:
             "SELECT id, kind, content, created_at FROM run_events "
             "WHERE run_id=? ORDER BY id DESC LIMIT ?", (run_id, limit))
         return [dict(r) for r in reversed(rows)]
+
+    def rewrite_run_events(self, run_id: int, transform: Callable[[str], str],
+                           kinds: set[str]) -> int:
+        """在最终发布前改写已合并的文本事件，覆盖跨 chunk 的敏感路径。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT id, kind, content FROM run_events WHERE run_id=?",
+                (run_id,),
+            ).fetchall()
+            changed = [
+                (updated, row["id"])
+                for row in rows if row["kind"] in kinds
+                if (updated := transform(str(row["content"]))) != row["content"]
+            ]
+            if changed:
+                self._conn.executemany(
+                    "UPDATE run_events SET content=? WHERE id=?", changed)
+                self._conn.commit()
+            return len(changed)
 
     def remove_duplicate_reply_output(self, run_id: int, reply: str) -> int:
         """删除与最终 Agent 回复完全相同的 text/stdout 事件，避免聊天流重复。"""

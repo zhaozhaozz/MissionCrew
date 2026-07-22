@@ -8,9 +8,12 @@ function parsePath() {
   const raw = location.pathname !== "/" ? location.pathname
             : location.hash.replace(/^#/, "");
   const parts = raw.replace(/^\/+/, "").split("/").map(decodeURIComponent);
+  if (parts[0] === "resources" && parts[2] === "documents")
+    return { project: parts[1] || null, tab: "docs", chan: null,
+             doc: parts.slice(3).join("/") || null };
   return { project: parts[0] || null,
            tab: TABS.includes(parts[1]) ? parts[1] : "chat",
-           chan: parts.slice(2).join("/") || null };
+           chan: parts.slice(2).join("/") || null, doc: null };
 }
 
 function syncUrl(push = true) {
@@ -19,6 +22,8 @@ function syncUrl(push = true) {
   if (!routeRestored || !currentProject) return;
   let path = `/${encodeURIComponent(currentProject)}/${currentTab}`;
   if (currentTab === "chat" && currentChan) path += `/${encodeURIComponent(currentChan)}`;
+  if (currentTab === "docs" && docSelected && docMode === "view" && !docViewingRevision)
+    path = missionCrewDocumentUrl(currentProject, docSelected);
   if (location.pathname === path && !location.hash) return;
   if (push) history.pushState(null, "", path);      // 用户操作:产生历史记录
   else history.replaceState(null, "", path);        // 规范化:不产生历史记录
@@ -27,17 +32,28 @@ function syncUrl(push = true) {
 function applyRoute() {
   const r = parsePath();
   if (!r.project) { syncUrl(false); return; }
-  if (r.project !== currentProject && overview.projects.some(p => p.id === r.project))
-    setProject(r.project);
+  if (!overview.projects.some(p => p.id === r.project)) {
+    syncUrl(false);
+    return;
+  }
+  if (r.project !== currentProject) setProject(r.project, false);
   if (r.chan && r.chan !== currentChan && projChannels().some(c => c.id === r.chan))
     selectChannel(r.chan, false);
+  const documentChanged = r.tab === "docs" && r.doc !== docSelected;
+  if (r.tab === "docs") {
+    docSelected = r.doc;
+    docMode = "view";
+    docViewingRevision = null;
+    docHistoryOpen = false;
+  }
   if (r.tab !== currentTab) switchTab(r.tab);
+  else if (documentChanged) renderDocuments();
   syncUrl(false);   // 规范化(清掉无效项目/频道段、旧 hash)
 }
 
 window.addEventListener("popstate", applyRoute);
 
-function setProject(id) {
+function setProject(id, updateRoute = true) {
   currentProject = id;
   localStorage.setItem("mc.project", id);
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
@@ -64,7 +80,7 @@ function setProject(id) {
   renderProjectConfigPage(currentTab, true);
   const chans = projChannels();
   if (chans.length) selectChannel(chans[0].id, false);
-  syncUrl();
+  if (updateRoute) syncUrl();
 }
 
 function switchTab(tab) {

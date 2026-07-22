@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 
-from ..collab.documents import library_for
+from ..collab.documents import document_resource_url, library_for
 from .context import ApiContext
 from .schemas import DocumentRestore, DocumentWrite
 
@@ -17,7 +17,11 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def list_documents(project_id: str):
         ctx.must_project(project_id)
         library = library_for(project_id)
-        return {"root": str(library.root), "files": library.list_files(),
+        files = [
+            {**item, "resource_url": document_resource_url(project_id, item["path"])}
+            for item in library.list_files()
+        ]
+        return {"resource_url": document_resource_url(project_id), "files": files,
                 "history": library.history(limit=20)}
 
     @app.get("/api/projects/{project_id}/documents/history")
@@ -39,7 +43,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, str(exc))
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc))
-        return {"path": file_path, "revision": revision, "content": content}
+        return {"path": file_path,
+                "resource_url": document_resource_url(project_id, file_path),
+                "revision": revision, "content": content}
 
     @app.post("/api/projects/{project_id}/documents/restore")
     def restore_document(project_id: str, body: DocumentRestore):
@@ -56,7 +62,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         store.audit(body.actor, "document_restored",
                     detail=f"project={project_id} path={body.path} "
                            f"from={body.revision[:10]} new={revision[:10]}")
-        return {"path": body.path, "revision": revision}
+        return {"path": body.path,
+                "resource_url": document_resource_url(project_id, body.path),
+                "revision": revision}
 
     @app.put("/api/projects/{project_id}/documents/file/{file_path:path}")
     def write_document(project_id: str, file_path: str, body: DocumentWrite):
@@ -68,7 +76,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, str(exc))
         store.audit(body.actor, "document_saved",
                     detail=f"project={project_id} path={file_path} revision={revision}")
-        return {"path": file_path, "revision": revision}
+        return {"path": file_path,
+                "resource_url": document_resource_url(project_id, file_path),
+                "revision": revision}
 
     @app.delete("/api/projects/{project_id}/documents/file/{file_path:path}")
     def delete_document(project_id: str, file_path: str, actor: str = "human"):
@@ -81,4 +91,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, str(exc))
         store.audit(actor, "document_deleted",
                     detail=f"project={project_id} path={file_path} revision={revision}")
-        return {"ok": True, "revision": revision}
+        return {"ok": True,
+                "resource_url": document_resource_url(project_id, file_path),
+                "revision": revision}

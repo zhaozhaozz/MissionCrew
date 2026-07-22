@@ -12,7 +12,7 @@ from typing import Optional
 
 from . import assembler, resources, router, workflow
 from ..runtime import runtime_manager
-from ..collab.documents import library_for
+from ..collab.documents import library_for, normalize_document_resource_urls
 from ..collab.workspace import sync_task_files, write_task_files
 from ..core.models import Task, TaskStage, new_id
 from ..core.store import Store
@@ -123,6 +123,12 @@ class Engine:
         library = library_for(project.id)
         library.commit_changes("platform", "Capture external document changes before task run")
         result = runtime_manager.start(cfg)
+        document_roots = [
+            library.root, cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", "")]
+        result.summary = normalize_document_resource_urls(
+            result.summary, project.id, document_roots)
+        result.output = normalize_document_resource_urls(
+            result.output, project.id, document_roots)
         revision = library.commit_changes(
             f"task:{task.id}", f"Documents updated in stage {stage.name}")
         if revision:   # 执行中的文档改动进平台审计,与 API 写入口径一致
