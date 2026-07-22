@@ -707,6 +707,9 @@ class ExecutionConfig:
     # 双向协议中的权限/用户输入请求。回调会阻塞当前原生请求，直到聊天 UI
     # 返回 decision/answers；结构化任务未设置时 provider 按无头策略处理。
     interact: Optional[Callable[[str, dict], dict]] = None
+    # 执行在 Runtime 自己的 session 锁后仍可能排队；真正启动 turn/进程前
+    # 再检查一次，保证频道停止不会只中断当前轮、却放行同会话的下一轮。
+    cancelled: Optional[Callable[[], bool]] = None
 
     def __post_init__(self):
         # 兼容旧的 allowed_dirs 构造入口；新代码只需提供统一策略。
@@ -715,3 +718,6 @@ class ExecutionConfig:
             self.runtime_policy.writable_paths = list(self.allowed_dirs)
         elif self.runtime_policy.allowed_paths():
             self.allowed_dirs = self.runtime_policy.allowed_paths()
+
+    def cancellation_requested(self) -> bool:
+        return bool(self.cancelled and self.cancelled())

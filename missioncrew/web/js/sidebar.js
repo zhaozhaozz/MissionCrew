@@ -306,6 +306,7 @@ function insertMention(id) {
 function selectChannel(id, jump = true) {
   currentChan = id; lastMsgId = 0; lastMsgDate = "";
   runCards.clear();
+  updateChatRunControls([]);
   document.getElementById("msgs").innerHTML = "";
   if (jump && currentTab !== "chat") switchTab("chat");
   renderSidebar(); pollMessages();
@@ -447,7 +448,7 @@ function mergeRunInputEvents(events) {
 
 function runSummary(run) {
   const st = { queued: "排队中", running: "运行中", waiting_user: "等待用户",
-               done: "已完成", failed: "失败" }[run.status] || run.status;
+               done: "已完成", failed: "失败", stopped: "已停止" }[run.status] || run.status;
   const live = ["queued", "running", "waiting_user"].includes(run.status);
   const secs = run.finished_at ? ` · ${Math.max(1, Math.round(run.finished_at - run.created_at))}s` : "";
   return `<span class="rc-dot ${live ? "live" : run.status}">●</span>
@@ -485,7 +486,7 @@ function renderPermissionRequest(run, event, payload) {
   const pending = status === "pending";
   const statusLabel = { pending: "等待决定", auto_approved: "MissionCrew YOLO 已自动批准",
     denied: "已按策略拒绝", resolved: `已处理：${payload.decision || ""}`,
-    timeout: "等待超时，已取消" }[status] || status;
+    timeout: "等待超时，已取消", stopped: "频道运行已停止" }[status] || status;
   const actions = !pending ? "" : `<div class="ri-actions">
     <button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','approve')">批准一次</button>
     ${payload.can_approve_session ? `<button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','approve_session')">本会话批准</button>` : ""}
@@ -515,7 +516,9 @@ function renderUserInputRequest(run, event, payload) {
   const actions = pending ? `<div class="ri-actions">
     <button class="action" onclick="submitRuntimeAnswers(${run.id},'${esc(payload.request_id)}',this)">提交回答</button>
     <button onclick="sendRuntimeInteraction(${run.id},'${esc(payload.request_id)}','cancel')">取消</button>
-  </div>` : `<div class="ri-status ${esc(status)}">${status === "timeout" ? "等待超时，已取消" : "回答已提交"}</div>`;
+  </div>` : `<div class="ri-status ${esc(status)}">${{
+    timeout: "等待超时，已取消", stopped: "频道运行已停止",
+  }[status] || "回答已提交"}</div>`;
   return `${questions}${actions}`;
 }
 
@@ -677,6 +680,19 @@ function syncRuns(runs) {
   if (nearBottom) pane.scrollTop = pane.scrollHeight;
 }
 
+function updateChatRunControls(activeRuns = []) {
+  const button = document.getElementById("stop-chat-btn");
+  if (!button) return;
+  const count = activeRuns.filter(run =>
+    ["queued", "running", "waiting_user"].includes(run.status)).length;
+  button.hidden = count === 0;
+  button.dataset.runCount = String(count);
+  button.textContent = count > 1 ? `停止全部 (${count})` : "停止 Agent";
+  const archived = Boolean(projChannels().find(
+    channel => channel.id === currentChan)?.archived);
+  button.disabled = archived;
+}
+
 async function pollMessages() {
   if (!currentChan) return;
   const chan = currentChan;   // 响应落地时可能已切频道:丢弃过期响应
@@ -694,6 +710,7 @@ async function pollMessages() {
     }
     appendMessages(d.messages);
     syncRuns(d.runs || []);
+    updateChatRunControls(d.active_runs || []);
     const pane = document.getElementById("msgs");
     if (!pane.children.length)
       pane.innerHTML = `<div class="chat-empty empty">还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。</div>`;
@@ -799,6 +816,32 @@ async function clearChatContext() {
   await pollMessages();
   toast(`上下文已清除${result.stopped_runtimes ? `，已停止 ${result.stopped_runtimes} 个持久实例` : ""}`,
         "success");
+}
+
+async function stopChannelAgents() {
+  if (!currentChan) return;
+  const button = document.getElementById("stop-chat-btn");
+  const count = Number(button?.dataset.runCount || 0);
+  if (!count) return;
+  if (!await uiConfirm(
+      `停止当前频道中正在排队、运行或等待交互的 ${count} 个 Agent？已完成的文件修改不会自动回滚。`,
+      "停止频道 Agent")) return;
+  button.disabled = true;
+  try {
+    const result = await api("POST", `/api/chat/${currentChan}/stop`);
+    await pollMessages();
+    if (!result.stopped_runs) {
+      toast("当前频道已经没有运行中的 Agent", "success");
+      return;
+    }
+    const runtimeText = result.interrupted_runtimes || result.stopped_runtimes
+      ? `；已中断 ${result.interrupted_runtimes} 个当前 turn，终止 ${result.stopped_runtimes} 个 Runtime`
+      : "";
+    toast(`已停止 ${result.stopped_runs} 个 Agent 运行${runtimeText}`,
+      result.runtime_errors ? "error" : "success", 6000);
+  } finally {
+    if (!button.hidden) button.disabled = false;
+  }
 }
 
 const inputBox = document.getElementById("input");

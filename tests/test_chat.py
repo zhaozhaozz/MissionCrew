@@ -1,7 +1,9 @@
 """聊天协作:@ 触发、级联、防环、失败可见性。"""
 import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -525,6 +527,114 @@ def test_clear_context_api_rejects_active_run(seeded, monkeypatch):
 
     assert response.status_code == 409
     assert "正在运行" in response.json()["detail"]
+
+
+def test_stop_channel_api_marks_every_run_and_uses_native_interrupt(
+        seeded, monkeypatch):
+    trigger = seeded.add_message("general", "human", "human", "并行任务", [])
+    dev_run = seeded.add_chat_run("general", "dev", trigger, trigger, 0)
+    expert_run = seeded.add_chat_run("general", "expert", trigger, trigger, 0)
+    queued_run = seeded.add_chat_run("general", "lead", trigger, trigger, 0)
+    seeded.update_chat_run(dev_run, "running", backend_id="std-1")
+    seeded.update_chat_run(expert_run, "running", backend_id="exp-1")
+    assert seeded.wait_chat_run_for_interaction(expert_run, "exp-1")
+
+    interrupted = []
+    monkeypatch.setattr(
+        runtime_manager, "capabilities",
+        lambda _backend: SimpleNamespace(interrupt=True))
+    monkeypatch.setattr(
+        runtime_manager, "interrupt",
+        lambda backend, session_key="": interrupted.append(
+            (backend.id, session_key)) or 1)
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda *_args, **_kwargs: pytest.fail("原生 interrupt 可用时不应关闭会话"))
+
+    client = TestClient(create_app())
+    response = client.post("/api/chat/general/stop")
+
+    assert response.status_code == 200
+    assert response.json()["stopped_runs"] == 3
+    assert response.json()["interrupted_runtimes"] == 2
+    assert sorted(interrupted) == [
+        ("exp-1", "general::expert"), ("std-1", "general::dev")]
+    assert seeded.active_chat_runs("general") == []
+    rows = seeded._query(
+        "SELECT id,status,finished_at FROM chat_runs WHERE id IN (?,?,?) ORDER BY id",
+        (dev_run, expert_run, queued_run))
+    assert [row["status"] for row in rows] == ["stopped"] * 3
+    assert all(row["finished_at"] for row in rows)
+    assert all(any(event["kind"] == "status" and "用户已停止" in event["content"]
+                   for event in seeded.run_events(run_id))
+               for run_id in (dev_run, expert_run, queued_run))
+    marker = seeded.list_messages("general")[-1]
+    assert marker["kind"] == "agent_stop" and "3 个 Agent" in marker["content"]
+    assert client.post("/api/chat/general/stop").json()["stopped_runs"] == 0
+    assert client.post("/api/chat/missing/stop").status_code == 404
+
+
+def test_stop_channel_prevents_late_reply_and_queued_agent_start(
+        seeded, monkeypatch):
+    chat = ChatEngine(seeded, max_workers=1)
+    started = threading.Event()
+    release = threading.Event()
+    starts = []
+
+    def blocking_start(config):
+        starts.append(config.role_id)
+        started.set()
+        assert release.wait(5)
+        return RunResult(True, "late result", output="这个回复不应发布")
+
+    stopped = []
+    monkeypatch.setattr(runtime_manager, "start", blocking_start)
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda backend, session_key="": stopped.append(
+            (backend.id, session_key)) or 1)
+
+    chat.post("general", "human", "@[dev] @[expert] 同时执行")
+    assert started.wait(5)
+    result = chat.stop_channel_agents("general")
+    release.set()
+    chat.wait_idle()
+
+    assert result["stopped_runs"] == 2
+    assert result["stopped_runtimes"] == 1
+    assert starts == ["dev"]  # 第二个 future 尚在队列，停止后不能再启动 Runtime
+    assert stopped == [(seeded.get_role("webshop", "dev").runtime_id,
+                        "general::dev")]
+    assert {row["status"] for row in seeded.chat_runs_for_channel("general")} \
+        == {"stopped"}
+    messages = seeded.list_messages("general")
+    assert not [message for message in messages if message["author_type"] == "agent"]
+    assert messages[-1]["kind"] == "agent_stop"
+
+
+def test_stop_channel_closes_native_instance_when_turn_is_not_registered(
+        seeded, monkeypatch):
+    trigger = seeded.add_message("general", "human", "human", "启动中", [])
+    run_id = seeded.add_chat_run("general", "dev", trigger, trigger, 0)
+    backend_id = seeded.get_role("webshop", "dev").runtime_id
+    seeded.update_chat_run(run_id, "running", backend_id=backend_id)
+    chat = ChatEngine(seeded)
+    stopped = []
+    monkeypatch.setattr(
+        runtime_manager, "capabilities",
+        lambda _backend: SimpleNamespace(interrupt=True))
+    monkeypatch.setattr(runtime_manager, "interrupt", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda backend, session_key="": stopped.append(
+            (backend.id, session_key)) or 1)
+
+    result = chat.stop_channel_agents("general")
+
+    assert result["interrupted_runtimes"] == 0
+    assert result["stopped_runtimes"] == 1
+    assert stopped == [(backend_id, "general::dev")]
+    assert not seeded.chat_run_is_active(run_id)
 
 
 def test_project_context_update_replaces_context_in_existing_session(chat, seeded):

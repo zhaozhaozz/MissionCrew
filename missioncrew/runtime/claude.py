@@ -252,6 +252,8 @@ class _ClaudeSession:
 
     def run(self, config: ExecutionConfig) -> RunResult:
         with self._run_lock:
+            if config.cancellation_requested():
+                return RunResult(False, "执行已停止")
             adapters._refresh_session(config)
             if self.session_id and not config.session_id:
                 self.close()
@@ -276,8 +278,14 @@ class _ClaudeSession:
             self._result_ready.clear()
             try:
                 self._ensure_process(config)
+                if config.cancellation_requested():
+                    self.close()
+                    return RunResult(False, "执行已停止")
                 adapters._emit_execution_start(
                     config.emit, [*self.command, "--input-format", "stream-json"], prompt)
+                if config.cancellation_requested():
+                    self.close()
+                    return RunResult(False, "执行已停止")
                 self._write({
                     "type": "user",
                     "message": {"role": "user", "content": prompt},

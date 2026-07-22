@@ -424,13 +424,16 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                save_session: Optional[Callable[[str, str], None]] = None,
                context_version: str = "", runtime_id: str = "",
                task_id: str = "", stage_name: str = "",
-               project_id: str = "", role_id: str = "") -> tuple[bool, str]:
+               project_id: str = "", role_id: str = "",
+               cancelled: Optional[Callable[[], bool]] = None) -> tuple[bool, str]:
     """完成一轮 ACP prompt，并按 channel×role 复用长驻原生会话。
 
     无 ``session_key`` 时保持一次性调用。长驻进程不存在（包括服务重启）时，
     仅在 Runtime 声明 loadSession 能力后恢复持久化 id；否则创建新会话并使用
     ``recovery_prompt``，避免把缺失的历史当成已恢复。
     """
+    if cancelled and cancelled():
+        return False, "执行已停止"
     if not session_key:
         return _run_one_shot(
             cmd, prompt, workdir, env, model, timeout, runtime_id, emit,
@@ -439,6 +442,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
     _cleanup_idle_sessions()
     signature = _client_signature(cmd, workdir, env)
     with _session_lock(session_key):
+        if cancelled and cancelled():
+            return False, "执行已停止"
         with _LIVE_SESSIONS_GUARD:
             live = _LIVE_SESSIONS.get(session_key)
         if live is not None and (
@@ -467,6 +472,11 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                 with _LIVE_SESSIONS_GUARD:
                     _LIVE_SESSIONS[session_key] = live
 
+            if cancelled and cancelled():
+                _drop_live_session(session_key, live)
+                live = None
+                return False, "执行已停止"
+
             live.busy = True
             live.task_id = task_id
             live.stage_name = stage_name
@@ -474,6 +484,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
             live.role_id = role_id
             live.model = model
             live.last_used = time.time()
+            if cancelled and cancelled():
+                return False, "执行已停止"
             live.client.begin_turn(timeout, emit)
             actual_prompt = prompt if recovered else (recovery_prompt or prompt)
             reply = _prompt_turn(live.client, live.session_id, actual_prompt, model)

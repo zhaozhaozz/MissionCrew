@@ -124,7 +124,12 @@
       <div id="composer">
         <div id="chat-composer-head">
           <div id="role-bar"></div>
-          <button class="ghost compact" id="clear-context-btn" type="button" onclick="clearChatContext()">清除上下文</button>
+          <div class="chat-composer-actions">
+            <button class="danger compact" id="stop-chat-btn" type="button" hidden
+              onclick="stopChannelAgents()">停止全部</button>
+            <button class="ghost compact" id="clear-context-btn" type="button"
+              onclick="clearChatContext()">清除上下文</button>
+          </div>
         </div>
         <div id="input-row">
           <div id="input-wrap">

@@ -633,8 +633,12 @@ class MockAdapter:
         if "# 聊天协作请求" in cfg.prompt:
             if cfg.session_key:
                 with _named_session_lock(cfg.session_key):
+                    if cfg.cancellation_requested():
+                        return RunResult(False, "执行已停止")
                     _refresh_session(cfg)
                     return self._chat(cfg)
+            if cfg.cancellation_requested():
+                return RunResult(False, "执行已停止")
             return self._chat(cfg)
         return self._task_stage(cfg)
 
@@ -746,6 +750,7 @@ class AcpAdapter:
             context_version=cfg.context_version, runtime_id=cfg.backend.id,
             task_id=cfg.task_id, stage_name=cfg.stage_name,
             project_id=cfg.project_id, role_id=cfg.role_id,
+            cancelled=cfg.cancelled,
         )
         try:
             _diagnostic_log_path(cfg, self.adapter_name).write_text(text)
@@ -1003,8 +1008,12 @@ class CliAdapter:
         if (cfg.session_key and using_default
                 and self.adapter_name in _CLI_SESSION_ADAPTERS):
             with _named_session_lock(cfg.session_key):
+                if cfg.cancellation_requested():
+                    return RunResult(False, "执行已停止")
                 _refresh_session(cfg)
                 return self._run(cfg, using_default=True)
+        if cfg.cancellation_requested():
+            return RunResult(False, "执行已停止")
         return self._run(cfg, using_default=using_default)
 
     def _run(self, cfg: ExecutionConfig, using_default: bool) -> RunResult:
@@ -1049,6 +1058,8 @@ class CliAdapter:
                 pass
 
         stream_json = any("stream-json" in tok for tok in cmd)
+        if cfg.cancellation_requested():
+            return RunResult(False, "执行已停止")
         _emit_execution_start(raw_emit, command_preview, input_prompt)
         try:
             # start_new_session:CLI 可能派生孙进程并继承管道,结束时按
@@ -1060,6 +1071,10 @@ class CliAdapter:
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
             _track_process(cfg, proc, cmd)
+            if cfg.cancellation_requested():
+                _kill_process_group(proc)
+                _untrack_process(proc)
+                return RunResult(False, "执行已停止")
         except FileNotFoundError:
             return RunResult(False, f"命令不存在: {template[0]}(后端 {cfg.backend.id})")
         out_tail: deque = deque(maxlen=400)   # 原始输出尾部(诊断日志)

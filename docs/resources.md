@@ -51,12 +51,15 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 
 归档频道默认不进入 Agent 可见范围。人类打开归档频道时仍可查看历史；Agent 向归档频道发布新消息前，平台会重新激活该频道。项目内部的 `general` 频道是保留默认频道，其资源 URL 使用短 ID `general`。
 
+频道级停止操作会同时结束该频道中 `queued`、`running` 和 `waiting_user` 的聊天运行，释放待处理交互，并留下可见平台消息和审计记录。原生 Runtime 使用 interrupt 保留可复用会话，不支持 interrupt 的 Runtime 终止当前执行；已完成的文件写入不会回滚。
+
 主要 API：
 
 - `GET /api/chat/channels`
 - `POST /api/chat/channels`
 - `GET /api/chat/<channel-id>/messages`
 - `POST /api/chat/<channel-id>/messages`
+- `POST /api/chat/<channel-id>/stop`
 
 ### 结构化任务
 

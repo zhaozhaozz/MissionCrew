@@ -67,7 +67,7 @@ class RuntimeProvider(ABC):
 
     @abstractmethod
     def start(self, config: ExecutionConfig) -> RunResult:
-        """启动或复用会话，完成一轮执行并返回标准结果。"""
+        """启动或复用会话；拿到后端会话锁后须再次检查取消状态。"""
 
     @abstractmethod
     def stop(self, backend: Backend, session_key: str = "") -> int:

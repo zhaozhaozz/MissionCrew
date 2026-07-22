@@ -107,6 +107,34 @@ def test_manager_persists_runtime_usage_history(store, tmp_path):
     assert history[0]["duration_seconds"] >= 0
 
 
+def test_cancelled_runtime_usage_is_recorded_as_interrupted(store, tmp_path):
+    cancelled = False
+
+    class CancellingProvider(_RecordingProvider):
+        def start(self, config: ExecutionConfig) -> RunResult:
+            nonlocal cancelled
+            cancelled = True
+            return RunResult(False, "执行已停止")
+
+    manager = RuntimeManager()
+    manager.bind_usage_store(store)
+    manager.register("cancelling", CancellingProvider())
+    config = ExecutionConfig(
+        task_id="cancelled", stage_name="chat",
+        backend=Backend(id="cancelled-runtime", name="Runtime",
+                        adapter="cancelling"),
+        prompt="work", workdir=str(tmp_path),
+        cancelled=lambda: cancelled,
+    )
+
+    result = manager.start(config)
+
+    assert not result.success
+    history = store.list_runtime_usage()
+    assert history[0]["status"] == "interrupted"
+    assert history[0]["success"] is False
+
+
 def test_runtime_usage_reconciles_dead_owner_as_interrupted(store, monkeypatch):
     store.start_runtime_usage(
         backend_id="runtime", adapter="custom", mode="one_shot",

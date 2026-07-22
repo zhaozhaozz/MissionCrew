@@ -40,6 +40,8 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `detect_report()`、`detect_backends()`、`update()`、`refresh_installation()`：统一发现、注册、升级和版本探测。
 - `register(adapter, provider)`：为新 Runtime 或插件注册实现，不修改聊天、任务、API 或 CLI 调用链。
 
+`start()` 的 provider 若在内部用 session lock 串行化同一会话，必须在取得该锁后、启动新 turn 或子进程前调用 `ExecutionConfig.cancellation_requested()`。频道停止可能发生在调用进入 provider 之后、真正取得会话锁之前；只在 `RuntimeManager.start()` 入口检查会让排队轮次在当前 turn 被 interrupt 后继续启动。内置 Claude、Codex、ACP、打印模式和 Mock provider 都遵守这条契约。
+
 `ExecutionConfig.runtime_policy` 是后端无关的执行策略，包含 `readable_paths`、`writable_paths`、`skill_paths` 和 `RuntimePermissions`。权限目前统一表达为审批模式 `auto|prompt|deny`、文件系统模式 `read-only|workspace-write|full-access`、网络模式 `inherit|allow|deny`。Runtime manager 会生成 `MISSIONCREW_READABLE_DIRS`、`MISSIONCREW_WRITABLE_DIRS`、`MISSIONCREW_SKILL_DIRS`、`MISSIONCREW_RUNTIME_PERMISSIONS`，provider 再把可支持的策略翻译为命令参数或 ACP 权限响应。`allowed_dirs` 仅作为旧构造入口的兼容字段。
 
 项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。
@@ -63,7 +65,9 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 ### 逐 Runtime 会话复用矩阵
 
-聊天会话在一个上下文周期内以 `channel::role` 为键，但每个 Runtime 的原生接口不同。用户点击「清除上下文」后，平台先确认频道没有运行中的 Agent，再停止该频道各角色的持久实例、删除 `chat_sessions`，写入可见的 `context_boundary` 分隔消息，并把后续 key 切换为 `channel::role::context-<marker-id>`；因此固定 session id 或稳定目录型 CLI 也不会重新连接清除前的上下文。最近对话只选择分隔消息之后的记录，旧消息和完整历史文件仍保留供人类查看或 Agent 按需读取。下表中的“后续轮次”都只发送最新 MissionCrew 公共上下文和当前触发消息，不再重复回放最近对话；只有新建会话、原会话无法恢复或没有可靠原生接口时，才发送包含最近对话 JSON 的恢复输入。
+聊天会话在一个上下文周期内以 `channel::role` 为键，但每个 Runtime 的原生接口不同。聊天区的频道停止按钮会原子地把该频道全部 `queued`、`running` 和 `waiting_user` 运行改为 `stopped`，先取消待处理交互，再按能力调用原生 `interrupt`；没有 interrupt 能力的打印模式或 ACP Runtime 改用 `stop` 终止当前执行。原生 interrupt 不删除 `chat_sessions`，因此下一轮仍可复用原生 session/thread。运行线程在启动前、输出事件、失败发布、主控动作和最终回复边界都会检查终态，停止后的迟到结果不能重新打开运行或触发后续 Agent。已经落盘的部分修改保留，不做隐式回滚。
+
+用户点击「清除上下文」后，平台先确认频道没有运行中的 Agent，再停止该频道各角色的持久实例、删除 `chat_sessions`，写入可见的 `context_boundary` 分隔消息，并把后续 key 切换为 `channel::role::context-<marker-id>`；因此固定 session id 或稳定目录型 CLI 也不会重新连接清除前的上下文。最近对话只选择分隔消息之后的记录，旧消息和完整历史文件仍保留供人类查看或 Agent 按需读取。下表中的“后续轮次”都只发送最新 MissionCrew 公共上下文和当前触发消息，不再重复回放最近对话；只有新建会话、原会话无法恢复或没有可靠原生接口时，才发送包含最近对话 JSON 的恢复输入。
 
 | Runtime / adapter | 首轮如何创建 | 后续轮次如何复用 | 会话 ID 来源与进程生命周期 |
 |---|---|---|---|

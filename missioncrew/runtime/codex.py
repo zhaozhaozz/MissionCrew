@@ -180,6 +180,8 @@ class _CodexSession:
 
     def run(self, config: ExecutionConfig) -> RunResult:
         with self._run_lock:
+            if config.cancellation_requested():
+                return RunResult(False, "执行已停止")
             adapters._refresh_session(config)
             if self.thread_id and not config.session_id:
                 # 持久记录已被显式清理，不继续使用仅存在内存中的旧 thread。
@@ -203,6 +205,9 @@ class _CodexSession:
             try:
                 self._ensure_client(config)
                 assert self.client
+                if config.cancellation_requested():
+                    self.close()
+                    return RunResult(False, "执行已停止")
                 params = {
                     "threadId": self.thread_id,
                     "input": [{"type": "text", "text": prompt}],
@@ -217,6 +222,9 @@ class _CodexSession:
                 if config.effort:
                     params["effort"] = config.effort
                     params["summary"] = "detailed"
+                if config.cancellation_requested():
+                    self.close()
+                    return RunResult(False, "执行已停止")
                 response = self.client.request(
                     "turn/start", params, timeout=min(30, config.timeout))
                 response = response if isinstance(response, dict) else {}

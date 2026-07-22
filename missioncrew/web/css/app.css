@@ -246,6 +246,7 @@
   .rc-dot.live { color: var(--accent); animation: blink 1.2s infinite; }
   .rc-dot.done { color: var(--ok); }
   .rc-dot.failed { color: var(--bad); }
+  .rc-dot.stopped { color: var(--warn); }
   .rc-err { color: var(--bad); font-size: 12px; }
   .rc-events { max-height: 320px; overflow-y: auto; padding: 2px 12px 10px;
                border-top: 1px dashed var(--line); }
@@ -289,6 +290,7 @@
   .ri-status { color: var(--muted); }
   .ri-status.pending { color: var(--accent); }
   .ri-status.denied, .ri-status.timeout { color: var(--bad); }
+  .ri-status.stopped { color: var(--warn); }
   .ri-details { margin-top: 6px; color: var(--muted); }
   .ri-details summary { cursor: pointer; }
   .ri-details pre { max-height: 160px; overflow: auto; white-space: pre-wrap; }
@@ -309,6 +311,8 @@
               background: var(--card); }
   #chat-composer-head { margin-bottom: 8px; display: flex; align-items: flex-start;
                         justify-content: space-between; gap: 10px; }
+  .chat-composer-actions { display: flex; align-items: center; gap: 6px; flex: none; }
+  #stop-chat-btn[hidden] { display: none; }
   #role-bar { display: flex; flex-wrap: wrap; gap: 6px; }
   #role-bar button { display: inline-flex; align-items: center; gap: 6px; margin-right: 0;
                      background: var(--card-2); border: 1px solid var(--line); color: var(--text-2);

@@ -57,6 +57,7 @@ class _PendingInteraction:
     payload: dict
     ready: threading.Event = field(default_factory=threading.Event)
     response: Optional[dict] = None
+    stopped: bool = False
 
 # 提示词结构约定:人格(role_desc)是"选人用的专长画像",不是任务;
 # 任务只来自触发消息(由发起者——人类或调度角色——撰写的简报)
@@ -190,6 +191,10 @@ class ChatEngine:
         self._futures_lock = threading.Lock()
         self._history_lock = threading.Lock()
         self._chain_run_lock = threading.Lock()
+        # 频道停止与运行发布共用同一把锁：停止先赢时禁止迟到回复和后续调度，
+        # 回复先赢时停止操作会连同刚产生的后续运行一起捕获。
+        self._run_state_lock = threading.RLock()
+        self._stopping_channels: set[str] = set()
         self._interaction_lock = threading.Lock()
         self._interactions: dict[str, _PendingInteraction] = {}
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
@@ -285,14 +290,17 @@ class ChatEngine:
             if (orchestrator and author != orchestrator
                     and self.store.get_role(channel.project_id, orchestrator)):
                 mentions = [orchestrator]
-        msg_id = self.store.add_message(channel_id, author, author_type, content,
-                                        mentions, reply_to, root_id, depth,
-                                        runtime_id or "", model or "", effort or "",
-                                        mention_spans=legal_spans)
-        self._write_channel_history(channel)
-        root = root_id if root_id is not None else msg_id
-        for role_id in mentions:
-            self._trigger(channel, role_id, msg_id, root, depth)
+        with self._run_state_lock:
+            if channel_id in self._stopping_channels:
+                raise ValueError("频道正在停止 Agent，请等待停止完成后再发送消息")
+            msg_id = self.store.add_message(
+                channel_id, author, author_type, content, mentions, reply_to,
+                root_id, depth, runtime_id or "", model or "", effort or "",
+                mention_spans=legal_spans)
+            self._write_channel_history(channel)
+            root = root_id if root_id is not None else msg_id
+            for role_id in mentions:
+                self._trigger(channel, role_id, msg_id, root, depth)
         return msg_id
 
     def wait_idle(self) -> None:
@@ -312,7 +320,7 @@ class ChatEngine:
         if channel is None:
             raise ValueError(f"频道不存在: {channel_id}")
         if self.store.active_chat_runs(channel_id):
-            raise ValueError("频道仍有 Agent 正在运行，请等待本轮结束后再清除上下文")
+            raise ValueError("频道仍有 Agent 正在运行，请先停止或等待本轮结束后再清除上下文")
 
         stopped = self.stop_channel_sessions(channel_id)
         cleared_sessions = self.store.clear_chat_sessions(channel_id)
@@ -353,6 +361,95 @@ class ChatEngine:
         for (_backend_id, session_key), backend in targets.items():
             stopped += runtime_manager.stop(backend, session_key)
         return stopped
+
+    def stop_channel_agents(self, channel_id: str) -> dict:
+        """停止频道内全部活动 Agent，不清除可复用的原生会话。"""
+        channel = self.store.get_channel(channel_id)
+        if channel is None:
+            raise ValueError(f"频道不存在: {channel_id}")
+
+        with self._run_state_lock:
+            runs = self.store.stop_active_chat_runs(channel_id)
+            if not runs:
+                return {
+                    "ok": True, "stopped_runs": 0, "interrupted_runtimes": 0,
+                    "stopped_runtimes": 0, "runtime_errors": 0,
+                }
+            self._stopping_channels.add(channel_id)
+            run_ids = {run["id"] for run in runs}
+            for run in runs:
+                self.store.append_run_event(
+                    run["id"], "status", "用户已停止当前频道中的 Agent 运行")
+
+            # 等待权限或用户输入的回调必须先释放，否则 Runtime 的当前 turn
+            # 即使收到 interrupt，也可能继续阻塞在 MissionCrew 的交互桥上。
+            with self._interaction_lock:
+                for pending in self._interactions.values():
+                    if pending.run_id not in run_ids:
+                        continue
+                    pending.stopped = True
+                    pending.response = {
+                        "decision": "cancel", "answers": {},
+                        "reason": "用户已停止当前频道中的 Agent 运行",
+                    }
+                    pending.ready.set()
+
+            targets = {}
+            for run in runs:
+                backend = self.store.get_backend(run.get("backend_id") or "")
+                if backend is None:
+                    continue  # queued 或尚未完成后端选择的运行没有进程可停止
+                session_key = self._session_key(channel, run["role_id"])
+                targets[(backend.id, session_key)] = backend
+
+        # Runtime 原生 interrupt 可能等待协议确认，不能占着运行状态锁；否则
+        # 同一 Runtime 的交互回调无法观察到 stopped 并及时返回 cancel。
+        interrupted = stopped = runtime_errors = 0
+        try:
+            for (_backend_id, session_key), backend in targets.items():
+                try:
+                    if runtime_manager.capabilities(backend).interrupt:
+                        count = runtime_manager.interrupt(backend, session_key)
+                        interrupted += count
+                        if not count:
+                            # turn 尚未登记或刚结束时 interrupt 可能返回 0；关闭
+                            # 该实例可封住“检查取消状态后、启动 turn 前”的窄竞态。
+                            stopped += runtime_manager.stop(backend, session_key)
+                    else:
+                        stopped += runtime_manager.stop(backend, session_key)
+                except Exception as exc:
+                    runtime_errors += 1
+                    self.store.audit(
+                        "platform", "chat_stop_runtime_failed",
+                        detail=(f"channel={channel_id} backend={backend.id} "
+                                f"session={session_key} error={exc}"),
+                    )
+
+            with self._run_state_lock:
+                content = f"已停止当前频道中的 {len(runs)} 个 Agent 运行。"
+                if runtime_errors:
+                    content += f"其中 {runtime_errors} 个 Runtime 控制请求失败，请检查运行状态。"
+                marker_id = self.store.add_message(
+                    channel_id, "platform", "platform", content, [],
+                    kind="agent_stop",
+                )
+                self._write_channel_history(channel)
+        finally:
+            with self._run_state_lock:
+                self._stopping_channels.discard(channel_id)
+        self.store.audit(
+            "human", "chat_agents_stopped",
+            detail=(f"channel={channel_id} runs={len(runs)} "
+                    f"interrupted={interrupted} stopped={stopped} "
+                    f"errors={runtime_errors} marker={marker_id}"),
+        )
+        return {
+            "ok": True, "marker_id": marker_id,
+            "stopped_runs": len(runs),
+            "interrupted_runtimes": interrupted,
+            "stopped_runtimes": stopped,
+            "runtime_errors": runtime_errors,
+        }
 
     # ---- 内部:可信提及、触发与执行 ----
     def _parse_explicit_mentions(self, content: str, project_id: str,
@@ -438,6 +535,9 @@ class ChatEngine:
 
     def _execute(self, run_id: int, channel: Channel, role_id: str,
                  msg_id: int, root_id: int, depth: int) -> None:
+        with self._run_state_lock:
+            if not self.store.chat_run_is_active(run_id):
+                return
         try:
             self._execute_inner(run_id, channel, role_id, msg_id, root_id, depth)
         except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
@@ -446,11 +546,14 @@ class ChatEngine:
             if project:
                 error = normalize_document_resource_urls(
                     error, project.id, [library_for(project.id).root])
-            try:
-                self._post_failure(channel, role_id, msg_id, root_id, depth,
-                                   f"@{role_id} 执行出错: {error}")
-            finally:
-                self.store.update_chat_run(run_id, "failed", error=error)
+            with self._run_state_lock:
+                if not self.store.chat_run_is_active(run_id):
+                    return
+                try:
+                    self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                       f"@{role_id} 执行出错: {error}")
+                finally:
+                    self.store.update_chat_run(run_id, "failed", error=error)
 
     def _post_failure(self, channel: Channel, role_id: str, msg_id: int,
                       root_id: int, depth: int, content: str) -> None:
@@ -473,23 +576,30 @@ class ChatEngine:
                        msg_id: int, root_id: int, depth: int) -> None:
         role = self.store.get_role(channel.project_id or "", role_id)
         if role is None:
-            try:
-                self._post_failure(channel, role_id, msg_id, root_id, depth,
-                                   f"@{role_id} 执行失败: 角色不存在")
-            finally:
-                self.store.update_chat_run(run_id, "failed", error="角色不存在")
+            with self._run_state_lock:
+                if not self.store.chat_run_is_active(run_id):
+                    return
+                try:
+                    self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                       f"@{role_id} 执行失败: 角色不存在")
+                finally:
+                    self.store.update_chat_run(run_id, "failed", error="角色不存在")
             return
 
         backend, trace = self._pick_backend(channel, role)
         if backend is None:
-            try:
-                self._post_failure(channel, role_id, msg_id, root_id, depth,
-                                   f"@{role_id} 无可用后端: {trace}")
-            finally:
-                self.store.update_chat_run(run_id, "failed", error=trace)
+            with self._run_state_lock:
+                if not self.store.chat_run_is_active(run_id):
+                    return
+                try:
+                    self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                       f"@{role_id} 无可用后端: {trace}")
+                finally:
+                    self.store.update_chat_run(run_id, "failed", error=trace)
             return
 
-        self.store.update_chat_run(run_id, "running", backend_id=backend.id)
+        if not self.store.update_chat_run(run_id, "running", backend_id=backend.id):
+            return
         self.store.audit("platform", "chat_dispatch",
                          detail=f"channel={channel.id} role={role_id} "
                                 f"backend={backend.id} depth={depth} {trace}")
@@ -502,6 +612,8 @@ class ChatEngine:
         document_markers = [str(root) for root in document_roots if str(root)]
 
         def _emit(kind: str, text: str):
+            if not self.store.chat_run_is_active(run_id):
+                return None
             may_contain_document_path = (
                 ".missioncrew" in text
                 or any(marker in text for marker in document_markers))
@@ -517,7 +629,11 @@ class ChatEngine:
         cfg.interact = lambda kind, payload: self._request_runtime_interaction(
             run_id, backend.id, kind, payload,
             max(0.1, runtime_deadline - time.monotonic()))
+        cfg.cancelled = lambda: not self.store.chat_run_is_active(run_id)
         library.commit_changes("platform", "Capture external document changes before chat run")
+        with self._run_state_lock:
+            if not self.store.chat_run_is_active(run_id):
+                return
         result = runtime_manager.start(cfg)
         revision = library.commit_changes(
             f"role:{role.id}", f"Documents updated from channel {channel.name}")
@@ -540,72 +656,79 @@ class ChatEngine:
         if stored is not None and stored.quota is not None:
             stored.quota = max(0.0, stored.quota - backend.cost_per_run)
             self.store.put_backend(stored)
-        self.store.stats_record(backend.id, channel.project_id or "_chat", "chat",
-                                result.success)
+        if not cfg.cancellation_requested():
+            self.store.stats_record(
+                backend.id, channel.project_id or "_chat", "chat", result.success)
 
-        if not result.success:
-            public_summary = (normalize_document_resource_urls(
-                result.summary, project.id, document_roots)
-                if project else result.summary)
-            try:
-                self._post_failure(
-                    channel, role_id, msg_id, root_id, depth,
-                    f"@{role_id}(后端 {backend.id})执行失败: {public_summary}")
-            finally:
-                self.store.update_chat_run(
-                    run_id, "failed", backend_id=backend.id, error=public_summary)
-            return
+        # 从处理 Runtime 结果到发布消息/控制动作必须和频道停止原子互斥。
+        # 停止先发生则丢弃迟到结果；发布先发生则停止会捕获新调度的运行。
+        with self._run_state_lock:
+            if not self.store.chat_run_is_active(run_id):
+                return
+            if not result.success:
+                public_summary = (normalize_document_resource_urls(
+                    result.summary, project.id, document_roots)
+                    if project else result.summary)
+                try:
+                    self._post_failure(
+                        channel, role_id, msg_id, root_id, depth,
+                        f"@{role_id}(后端 {backend.id})执行失败: {public_summary}")
+                finally:
+                    self.store.update_chat_run(
+                        run_id, "failed", backend_id=backend.id, error=public_summary)
+                return
 
-        reply = (result.output or result.summary or "(无输出)").strip()
-        if task_sync_errors:
-            reply += ("\n\n(MissionCrew 任务文件同步失败："
-                      + "；".join(task_sync_errors) + ")")
-        if project and role.id == project.orchestrator_role_id:
-            reply = self._apply_orchestrator_actions(project, role.id, reply,
-                                                     root_id=root_id, depth=depth)
-        elif ACTION_RE.search(reply):
-            # 非主控回复中的控制动作:剥离并明示未执行,避免读者误以为已生效
-            reply = ACTION_RE.sub("", reply).strip()
-            reply += "\n\n(检测到平台控制动作,但只有项目主控可以执行,未生效)"
-        if project:
-            reply = normalize_document_resource_urls(
-                reply, project.id, document_roots)
-            self.store.rewrite_run_events(
-                run_id,
-                lambda content: normalize_document_resource_urls(
-                    content, project.id, document_roots),
-                {"text", "stdout", "stderr", "tool", "tool_result"},
-            )
-        # 运行中先实时展示模型输出；最终回复确定后，如果 text/stdout 与即将
-        # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
-        self.store.remove_duplicate_reply_output(run_id, reply)
-        # 主控回复中的 @ 才会分派；执行角色回复自动返回主控(深度 +1)。
-        self.post(channel.id, role_id, reply, author_type="agent",
-                  reply_to=msg_id, root_id=root_id, depth=depth + 1,
-                  runtime_id=backend.id, model=backend.model, effort=cfg.effort)
-        self.store.update_chat_run(run_id, "done", backend_id=backend.id)
+            reply = (result.output or result.summary or "(无输出)").strip()
+            if task_sync_errors:
+                reply += ("\n\n(MissionCrew 任务文件同步失败："
+                          + "；".join(task_sync_errors) + ")")
+            if project and role.id == project.orchestrator_role_id:
+                reply = self._apply_orchestrator_actions(
+                    project, role.id, reply, root_id=root_id, depth=depth)
+            elif ACTION_RE.search(reply):
+                # 非主控回复中的控制动作:剥离并明示未执行,避免读者误以为已生效
+                reply = ACTION_RE.sub("", reply).strip()
+                reply += "\n\n(检测到平台控制动作,但只有项目主控可以执行,未生效)"
+            if project:
+                reply = normalize_document_resource_urls(
+                    reply, project.id, document_roots)
+                self.store.rewrite_run_events(
+                    run_id,
+                    lambda content: normalize_document_resource_urls(
+                        content, project.id, document_roots),
+                    {"text", "stdout", "stderr", "tool", "tool_result"},
+                )
+            # 运行中先实时展示模型输出；最终回复确定后，如果 text/stdout 与即将
+            # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
+            self.store.remove_duplicate_reply_output(run_id, reply)
+            # 主控回复中的 @ 才会分派；执行角色回复自动返回主控(深度 +1)。
+            self.post(channel.id, role_id, reply, author_type="agent",
+                      reply_to=msg_id, root_id=root_id, depth=depth + 1,
+                      runtime_id=backend.id, model=backend.model, effort=cfg.effort)
+            self.store.update_chat_run(run_id, "done", backend_id=backend.id)
 
     def _request_runtime_interaction(self, run_id: int, backend_id: str,
                                      kind: str, payload: dict,
                                      timeout: float) -> dict:
         """持久化待处理请求，并阻塞原生协议回调直到用户回答。"""
-        if not self.store.wait_chat_run_for_interaction(run_id, backend_id):
-            return {
-                "decision": "cancel", "answers": {},
-                "reason": "运行已经结束",
+        with self._run_state_lock:
+            if not self.store.wait_chat_run_for_interaction(run_id, backend_id):
+                return {
+                    "decision": "cancel", "answers": {},
+                    "reason": "运行已经结束",
+                }
+            request_id = uuid.uuid4().hex
+            visible = {
+                **payload,
+                "request_id": request_id,
+                "status": "pending",
             }
-        request_id = uuid.uuid4().hex
-        visible = {
-            **payload,
-            "request_id": request_id,
-            "status": "pending",
-        }
-        event_id = self.store.append_interaction_event(run_id, kind, visible)
-        pending = _PendingInteraction(
-            run_id=run_id, backend_id=backend_id, kind=kind,
-            event_id=event_id, payload=visible)
-        with self._interaction_lock:
-            self._interactions[request_id] = pending
+            event_id = self.store.append_interaction_event(run_id, kind, visible)
+            pending = _PendingInteraction(
+                run_id=run_id, backend_id=backend_id, kind=kind,
+                event_id=event_id, payload=visible)
+            with self._interaction_lock:
+                self._interactions[request_id] = pending
         self.store.audit(
             "platform", "runtime_interaction_requested",
             detail=f"run={run_id} kind={kind} request={request_id}")
@@ -620,14 +743,16 @@ class ChatEngine:
         # 不把回答正文写回事件，避免 secret input 或凭据进入日志。
         resolved = {
             **visible,
-            "status": "resolved" if answered else "timeout",
+            "status": ("stopped" if pending.stopped else
+                       "resolved" if answered else "timeout"),
             "decision": response["decision"],
             "resolved_at": time.time(),
         }
         self.store.update_interaction_event(event_id, run_id, resolved)
         self.store.resume_chat_run_after_interaction(run_id, backend_id)
         self.store.audit(
-            "human" if answered else "platform", "runtime_interaction_resolved",
+            "platform" if pending.stopped or not answered else "human",
+            "runtime_interaction_resolved",
             detail=(f"run={run_id} kind={kind} request={request_id} "
                     f"decision={response['decision']}"))
         return response

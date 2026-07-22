@@ -54,7 +54,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if channel.is_general:
             raise HTTPException(409, "general 是项目默认频道，不能归档或删除")
         if store.active_chat_runs(channel_id):
-            raise HTTPException(409, "频道仍有 Agent 正在运行，请等待本轮结束")
+            raise HTTPException(409, "频道仍有 Agent 正在运行，请先停止或等待本轮结束")
         return channel
 
     @app.post("/api/chat/channels/{channel_id}/archive")
@@ -150,7 +150,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 mention_spans=[item.model_dump() for item in body.mentions],
             )
         except ValueError as e:
-            raise HTTPException(409 if "已归档" in str(e) else 400, str(e))
+            conflict = "已归档" in str(e) or "正在停止" in str(e)
+            raise HTTPException(409 if conflict else 400, str(e))
         channel = store.get_channel(channel_id)
         return {"id": msg_id,
                 "resource_url": channel_resource_url(channel.project_id, channel.id)}
@@ -163,6 +164,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             message = str(exc)
             raise HTTPException(
                 409 if "正在运行" in message else 404, message) from exc
+
+    @app.post("/api/chat/{channel_id}/stop")
+    def stop_channel_agents(channel_id: str):
+        try:
+            return chat.stop_channel_agents(channel_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
 
     @app.post("/api/chat/{channel_id}/page-context")
     def write_page_context(channel_id: str, body: PageContextInput):

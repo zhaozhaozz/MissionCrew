@@ -1,5 +1,8 @@
 """打印模式 Runtime 的原生会话参数翻译。"""
-from missioncrew.core.models import Backend, ExecutionConfig
+import threading
+import time
+
+from missioncrew.core.models import Backend, ExecutionConfig, RunResult
 from missioncrew.runtime import adapters
 
 
@@ -92,3 +95,42 @@ def test_resume_arguments_for_all_print_runtime_strategies(tmp_path):
     pi, structured = adapters._apply_cli_session_args(
         "pi", ["pi", "-p", "任务"], f"pi-dir:{pi_dir}", True)
     assert not structured and "--continue" in pi
+
+
+def test_serialized_runtime_rechecks_cancellation_after_session_lock(monkeypatch):
+    adapter = adapters.MockAdapter()
+    first = _cfg()
+    second = _cfg()
+    first.prompt = second.prompt = "# 聊天协作请求\nwork"
+    cancelled = threading.Event()
+    second.cancelled = cancelled.is_set
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def blocking_chat(config):
+        calls.append(config)
+        entered.set()
+        assert release.wait(5)
+        return RunResult(True, "done", output="done")
+
+    monkeypatch.setattr(adapter, "_chat", blocking_chat)
+    results = {}
+    first_worker = threading.Thread(
+        target=lambda: results.setdefault("first", adapter.run(first)))
+    second_worker = threading.Thread(
+        target=lambda: results.setdefault("second", adapter.run(second)))
+    first_worker.start()
+    assert entered.wait(5)
+    second_worker.start()
+    time.sleep(0.05)  # 第二轮已在等待同一 session lock
+    cancelled.set()
+    release.set()
+    first_worker.join(timeout=5)
+    second_worker.join(timeout=5)
+
+    assert not first_worker.is_alive() and not second_worker.is_alive()
+    assert results["first"].success
+    assert not results["second"].success
+    assert results["second"].summary == "执行已停止"
+    assert calls == [first]

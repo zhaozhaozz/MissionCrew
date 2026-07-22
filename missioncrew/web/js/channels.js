@@ -74,6 +74,7 @@ function renderChannelState() {
   input.setAttribute("aria-disabled", String(archived));
   document.querySelector("button.send").disabled = archived;
   document.getElementById("clear-context-btn").disabled = archived;
+  document.getElementById("stop-chat-btn").disabled = archived;
   document.querySelectorAll("#role-bar button").forEach(button => { button.disabled = archived; });
 }
 

@@ -292,6 +292,10 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert "RUN_INPUT_FOLD_AT" not in js
     assert "/clear-context" in js and 'm.kind === "context_boundary"' in js
     assert "清除上下文" in html
+    assert 'id="stop-chat-btn"' in html and "stopChannelAgents" in js
+    assert "/api/chat/${currentChan}/stop" in js
+    assert 'stopped: "已停止"' in js and ".rc-dot.stopped" in css
+    assert "updateChatRunControls(d.active_runs || [])" in js
     assert 'id="input" contenteditable="true"' in html and 'id="mention-picker"' in html
     assert "composerPayload" in js and "mention_spans" in js
     assert "mention legal-mention mention-compose" in js

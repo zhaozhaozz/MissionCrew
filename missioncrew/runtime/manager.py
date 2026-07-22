@@ -112,6 +112,8 @@ class RuntimeManager:
     def start(self, config: ExecutionConfig) -> RunResult:
         """按统一策略启动 Runtime；调用方不接触任何原始执行器。"""
         prepared = self._prepare(config)
+        if prepared.cancellation_requested():
+            return RunResult(False, "执行已停止")
         provider = self.provider_for(prepared.backend)
         execution = provider.execution_info(prepared)
         usage_store = self._usage_store
@@ -139,14 +141,17 @@ class RuntimeManager:
         except Exception as exc:
             if usage_id:
                 try:
-                    usage_store.finish_runtime_usage(usage_id, False, str(exc))
+                    usage_store.finish_runtime_usage(
+                        usage_id, False, str(exc),
+                        interrupted=prepared.cancellation_requested())
                 except Exception:
                     pass
             raise
         if usage_id:
             try:
                 usage_store.finish_runtime_usage(
-                    usage_id, result.success, result.summary)
+                    usage_id, result.success, result.summary,
+                    interrupted=prepared.cancellation_requested())
             except Exception:
                 pass
         return result

@@ -369,12 +369,14 @@ class Store:
         )
 
     def finish_runtime_usage(self, usage_id: int, success: bool,
-                             summary: str = "") -> None:
-        status = "succeeded" if success else "failed"
+                             summary: str = "", interrupted: bool = False) -> None:
+        status = "interrupted" if interrupted else (
+            "succeeded" if success else "failed")
         self._execute(
             "UPDATE runtime_usage SET status=?, success=?, summary=?, finished_at=? "
             "WHERE id=? AND status='running'",
-            (status, int(success), str(summary or "")[:1000], time.time(), usage_id),
+            (status, int(success and not interrupted),
+             str(summary or "")[:1000], time.time(), usage_id),
         )
 
     def reconcile_runtime_usage(self) -> int:
@@ -607,12 +609,17 @@ class Store:
         )
 
     def update_chat_run(self, run_id: int, status: str, backend_id: str = "",
-                        error: str = "") -> None:
-        finished = time.time() if status in ("done", "failed") else None
-        self._execute(
-            "UPDATE chat_runs SET status=?, backend_id=?, error=?, finished_at=? WHERE id=?",
-            (status, backend_id, error, finished, run_id),
-        )
+                        error: str = "") -> bool:
+        """更新未被用户停止的运行，避免迟到结果覆盖 ``stopped`` 终态。"""
+        finished = time.time() if status in ("done", "failed", "stopped") else None
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE chat_runs SET status=?, backend_id=?, error=?, finished_at=? "
+                "WHERE id=? AND status!='stopped'",
+                (status, backend_id, error, finished, run_id),
+            )
+            self._conn.commit()
+            return cursor.rowcount > 0
 
     def resume_chat_run_after_interaction(self, run_id: int,
                                           backend_id: str = "") -> None:
@@ -629,11 +636,38 @@ class Store:
         with self._lock:
             cursor = self._conn.execute(
                 "UPDATE chat_runs SET status='waiting_user', backend_id=? "
-                "WHERE id=? AND status NOT IN ('done','failed')",
+                "WHERE id=? AND status IN ('queued','running','waiting_user')",
                 (backend_id, run_id),
             )
             self._conn.commit()
             return cursor.rowcount > 0
+
+    def chat_run_is_active(self, run_id: int) -> bool:
+        rows = self._query(
+            "SELECT 1 FROM chat_runs WHERE id=? "
+            "AND status IN ('queued','running','waiting_user')",
+            (run_id,),
+        )
+        return bool(rows)
+
+    def stop_active_chat_runs(self, channel: str) -> list[dict]:
+        """原子地把频道内全部活动运行改为终态，并返回停止前的快照。"""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM chat_runs WHERE channel=? "
+                "AND status IN ('queued','running','waiting_user') ORDER BY id",
+                (channel,),
+            ).fetchall()
+            if not rows:
+                return []
+            now = time.time()
+            self._conn.execute(
+                "UPDATE chat_runs SET status='stopped', error='', finished_at=? "
+                "WHERE channel=? AND status IN ('queued','running','waiting_user')",
+                (now, channel),
+            )
+            self._conn.commit()
+            return [dict(row) for row in rows]
 
     def active_chat_runs(self, channel: str) -> list[dict]:
         return [dict(r) for r in self._query(
