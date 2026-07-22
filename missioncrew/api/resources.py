@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.recycle_bin import recycle_project_resource
 from ..core.models import ProjectResource
 from .context import ApiContext
 from .schemas import ResourceAdd
@@ -117,11 +118,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.delete("/api/projects/{project_id}/resources/{resource_id}")
     def delete_resource(project_id: str, resource_id: str):
         project = ctx.must_project(project_id)
-        before = len(project.repos)
-        project.repos = [r for r in project.repos if r.id != resource_id]
-        if len(project.repos) == before:
-            raise HTTPException(404, "资源不存在")
-        store.put_project(project)
-        store.audit("human", "resource_removed",
-                    detail=f"project={project_id} resource={resource_id}")
-        return {"ok": True}
+        try:
+            item = recycle_project_resource(
+                store, project, resource_id, actor="human")
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"ok": True, "recycle_item": item}

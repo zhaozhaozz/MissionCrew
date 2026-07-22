@@ -196,6 +196,23 @@ def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
     assert not skill_path.exists()
     assert not document_path.exists()
 
+    recycled = call("recycle.list", "list-recycle-bin", {})
+    by_type = {item["resource_type"]: item for item in recycled["items"]}
+    assert set(by_type) == {"document", "guideline", "skill"}
+    call("recycle.restore", "restore-guideline", {
+        "id": by_type["guideline"]["id"],
+    })
+    call("recycle.restore", "restore-document", {
+        "id": by_type["document"]["id"],
+    })
+    call("recycle.purge", "purge-skill", {
+        "id": by_type["skill"]["id"],
+    })
+    assert guideline_path.is_file()
+    assert document_path.is_file()
+    assert not skill_path.exists()
+    assert call("recycle.list", "list-recycle-bin-empty", {})["items"] == []
+
 
 def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seeded):
     chat = ChatEngine(seeded, max_workers=2)

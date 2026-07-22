@@ -7,6 +7,7 @@ import time
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import normalize_document_resource_urls
+from ..collab.recycle_bin import recycle_channel
 from ..collab.resource_urls import channel_resource_url
 from ..collab.workspace import write_page_context_snapshot
 from ..core.config import projects_dir
@@ -191,9 +192,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.delete("/api/chat/channels/{channel_id}")
     def delete_channel(channel_id: str):
-        mutable_channel(channel_id)
+        channel = mutable_channel(channel_id)
+        project = ctx.must_project(channel.project_id or "")
         stopped = chat.stop_channel_sessions(channel_id)
-        store.delete_channel(channel_id)
-        store.audit("human", "channel_deleted",
-                    detail=f"channel={channel_id} stopped_runtimes={stopped}")
-        return {"ok": True, "stopped_runtimes": stopped}
+        item = recycle_channel(store, project, channel, actor="human")
+        return {"ok": True, "stopped_runtimes": stopped,
+                "recycle_item": item}

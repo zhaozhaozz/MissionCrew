@@ -782,6 +782,22 @@
   .markdown-body .markdown-frontmatter-value { display: block; padding: 0; background: transparent;
                                                 white-space: pre-wrap; overflow-wrap: anywhere; }
 
+  /* ---- 项目统一回收站 ---- */
+  .recycle-bin-head { display: flex; align-items: flex-start; justify-content: space-between;
+                      gap: 18px; }
+  .recycle-bin-head h2 { margin-bottom: 5px; }
+  .recycle-bin-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+  .recycle-bin-actions select { min-width: 125px; }
+  .recycle-bin-content { padding-top: 12px; }
+  .recycle-bin-summary { margin-bottom: 10px; color: var(--muted); font-size: 12px; }
+  .recycle-resource-id { max-width: 420px; margin-top: 2px; overflow-wrap: anywhere; }
+  .recycle-row-actions { white-space: nowrap; text-align: right; }
+  .recycle-row-actions button + button { margin-left: 5px; }
+  @media (max-width: 820px) {
+    .recycle-bin-head { flex-direction: column; }
+    .recycle-bin-actions { width: 100%; }
+  }
+
   /* ---- 全局设置:运行时角色用量弹层 ---- */
   .runtime-role-usage { position: relative; display: inline-block; }
   .role-count-btn { min-width: 30px; padding: 1px 9px; border: 1px solid var(--line);

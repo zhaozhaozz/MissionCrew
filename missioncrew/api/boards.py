@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import library_for
+from ..collab.recycle_bin import recycle_dashboard
 from ..collab.resource_urls import dashboard_resource_url
 from ..core.models import BOARD_WIDGET_TYPES, Board, BoardWidget
 from .context import MENTION_ID_RE, ApiContext
@@ -138,6 +139,5 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         board = store.get_board(full_id)
         if board is None or board.project_id != project_id:
             raise HTTPException(404, "面板不存在")
-        store.delete_board(full_id)
-        store.audit(actor, "board_deleted", detail=f"project={project_id} board={full_id}")
-        return {"ok": True}
+        item = recycle_dashboard(store, project, full_id, actor=actor)
+        return {"ok": True, "recycle_item": item}

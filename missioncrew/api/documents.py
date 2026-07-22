@@ -11,6 +11,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, HTTPException, Request, Response
 
 from ..collab.documents import document_resource_url, library_for
+from ..collab.recycle_bin import recycle_document
 from .context import ApiContext
 from .schemas import DocumentCompare, DocumentRestore, DocumentWrite
 
@@ -203,15 +204,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.delete("/api/projects/{project_id}/documents/file/{file_path:path}")
     def delete_document(project_id: str, file_path: str, actor: str = "human"):
-        ctx.must_project(project_id)
+        project = ctx.must_project(project_id)
         try:
-            revision = library_for(project_id).delete(file_path, actor)
+            item = recycle_document(store, project, file_path, actor=actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc))
-        store.audit(actor, "document_deleted",
-                    detail=f"project={project_id} path={file_path} revision={revision}")
-        return {"ok": True,
+        return {"ok": True, "recycle_item": item,
                 "resource_url": document_resource_url(project_id, file_path),
-                "revision": revision}
+                "revision": item["revision"]}

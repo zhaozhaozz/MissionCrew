@@ -309,8 +309,9 @@ def _render_workspace_readme(workspace: AgentWorkspace, project_id: str,
         """## 修改 MissionCrew 资源
 
 当前聊天角色必须使用 Prompt 中的 MissionCrew Agent Tool 发布文档、创建或修改任务、
-发送消息、创建频道，以及保存或删除面板、文档、准则或 Skill。工具会在当前回合返回
-结构化错误并记录角色审计。`documents/` 和 `tasks/` 中的直接写入同步只用于旧会话兼容。
+发送消息、创建频道，以及保存或删除面板、文档、准则或 Skill。项目资源删除后进入统一
+回收站；主控可列出、恢复或永久删除回收项。工具会在当前回合返回结构化错误并记录角色
+审计。`documents/` 和 `tasks/` 中的直接写入同步只用于旧会话兼容。
 
 不要读取或打印 `.agent-tool-token`；使用 Agent Tool CLI，它会自行读取令牌文件。每次
 写调用都显式传入最新 Prompt 给出的 `run_id`。
@@ -346,8 +347,8 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 
 `.missioncrew` 下的目录是 Runtime 内部读写入口。向频道回复 MissionCrew 资源时，
 使用 `{missioncrew_project_url(project_id)}/<资源类型>/<稳定标识>`；频道、任务、面板、
-准则、Skill、文档的类型依次为 `channels`、`tasks`、`dashboards`、`guidelines`、
-`skills`、`documents`。
+准则、Skill、文档、回收站的类型依次为 `channels`、`tasks`、`dashboards`、
+`guidelines`、`skills`、`documents`、`recycle-bin`。
 
 向频道回复项目文档时，使用
 `{document_resource_url(project_id)}/<文档库相对路径>`，例如

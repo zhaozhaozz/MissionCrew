@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.recycle_bin import recycle_role
 from ..core.models import ROLE_ABILITIES, Role
 from ..runtime import runtime_manager
 from .context import MENTION_ID_RE, ApiContext
@@ -80,9 +81,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         project = ctx.must_project(project_id)
         if project.orchestrator_role_id == role_id:
             raise HTTPException(409, "不能删除项目主控角色；请先为项目选择其他主控")
-        store.delete_role(project_id, role_id)
-        store.audit("human", "role_deleted", detail=f"project={project_id} role={role_id}")
-        return {"ok": True}
+        role = store.get_role(project_id, role_id)
+        item = recycle_role(store, project, role, actor="human")
+        return {"ok": True, "recycle_item": item}
 
     @app.get("/api/role-templates")
     def role_templates():

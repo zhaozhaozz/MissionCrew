@@ -105,6 +105,7 @@
       </div>
     </div>
     <div id="side-bottom">
+      <div class="side-nav" id="nav-recycle-bin" onclick="switchTab('recycle-bin')">♲ 项目回收站</div>
       <div class="side-nav" id="nav-runtime-status" onclick="switchTab('runtime-status')">◉ 运行状态</div>
       <div class="side-nav" id="nav-settings" onclick="switchTab('settings')">⚙ 全局设置</div>
     </div>
@@ -179,6 +180,7 @@
         <a onclick="scrollToSec('sec-proj-chans')">频道</a>
         <a onclick="switchTab('guidelines')">准则文档 ↗</a>
         <a onclick="switchTab('skills')">Skills ↗</a>
+        <a onclick="switchTab('recycle-bin')">回收站 ↗</a>
       </div>
       <div class="section" id="sec-proj-info">
         <h2>项目信息 <span class="muted" id="proj-label"></span></h2>
@@ -237,6 +239,33 @@
         <input id="doc-upload-input" type="file" multiple hidden
           onchange="uploadDocuments(this)">
         <div class="doc-pane" id="doc-pane"></div>
+      </div>
+    </div>
+
+    <div id="recycle-bin-view" class="page">
+      <div class="section recycle-bin-head">
+        <div>
+          <h2>项目回收站 <span class="muted" id="recycle-bin-project"></span></h2>
+          <p class="muted">文档、准则、Skill、面板、频道、角色和项目资源共用此处。恢复时若原标识已被占用，平台会保留回收项并提示冲突。永久删除会移除回收副本；Git 历史、聊天记录和审计记录仍按各自保留策略存在。</p>
+        </div>
+        <div class="recycle-bin-actions">
+          <select id="recycle-bin-filter" onchange="renderRecycleBinTable()">
+            <option value="all">全部类型</option>
+            <option value="document">文档</option>
+            <option value="guideline">准则</option>
+            <option value="skill">Skill</option>
+            <option value="dashboard">面板</option>
+            <option value="channel">频道</option>
+            <option value="role">角色</option>
+            <option value="project_resource">项目资源</option>
+          </select>
+          <button class="ghost compact" onclick="renderRecycleBin(true)">刷新</button>
+          <button class="danger compact" id="empty-recycle-bin-btn" onclick="emptyRecycleBin()">清空回收站</button>
+        </div>
+      </div>
+      <div class="section recycle-bin-content">
+        <div class="recycle-bin-summary" id="recycle-bin-summary"></div>
+        <div class="runtime-table-wrap"><table class="mgr" id="recycle-bin-table"></table></div>
       </div>
     </div>
 
@@ -386,6 +415,7 @@
 <script src="/assets/js/settings-project.js"></script>
 <script src="/assets/js/project-configs.js"></script>
 <script src="/assets/js/documents.js"></script>
+<script src="/assets/js/recycle-bin.js"></script>
 <script src="/assets/js/roles.js"></script>
 <script src="/assets/js/channels.js"></script>
 <script src="/assets/js/settings-runtime.js"></script>

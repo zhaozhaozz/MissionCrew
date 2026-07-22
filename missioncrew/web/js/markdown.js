@@ -2,6 +2,7 @@
    所有文档型预览共用安全正文渲染和 YAML front matter 属性表。 */
 const MISSIONCREW_RESOURCE_TYPES = new Set([
   "documents", "channels", "tasks", "dashboards", "guidelines", "skills",
+  "recycle-bin",
 ]);
 
 function canonicalMissionCrewResourceType(type) {

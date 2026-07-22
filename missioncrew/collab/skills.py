@@ -9,7 +9,6 @@ import shutil
 import stat
 import tempfile
 import threading
-import time
 import zipfile
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
@@ -396,34 +395,6 @@ def save_project_skill_markdown(store: Store, project: Project, skill_id: str,
         return saved
 
 
-def _trash_directory(project_id: str, label: str) -> Path:
-    root = projects_dir() / project_id / ".skill-trash" / str(int(time.time() * 1000))
-    root.mkdir(parents=True, exist_ok=True)
-    target = root / label
-    suffix = 2
-    while target.exists():
-        target = root / f"{label}-{suffix}"
-        suffix += 1
-    return target
-
-
-def delete_project_skill(store: Store, project: Project, skill_id: str,
-                         *, actor: str) -> str:
-    with _project_lock(project.id):
-        root = project_skill_library_dir(project.id)
-        directory = root / skill_id
-        if not directory.is_dir() or directory.is_symlink():
-            raise FileNotFoundError("Skill 不存在")
-        archive = _trash_directory(project.id, skill_id)
-        directory.rename(archive)
-        project.skills = [skill for skill in project.skills if skill.id != skill_id]
-        store.put_project(project)
-        sync_project_skill_library(store, project, audit=False)
-        store.audit(actor, "skill_deleted",
-                    detail=f"project={project.id} skill={skill_id} archive={archive}")
-        return str(archive)
-
-
 def _discover_skill_directories(source: Path) -> tuple[list[tuple[str, Path]], list[str]]:
     found: list[tuple[str, Path]] = []
     issues: list[str] = []
@@ -500,9 +471,12 @@ def _install_discovered(store: Store, project: Project, source: Path,
             for skill_id, _ in found:
                 destination = root / skill_id
                 if destination.exists():
-                    archive = _trash_directory(project.id, skill_id)
-                    destination.rename(archive)
-                    archives.append(str(archive))
+                    # 延迟导入避免 recycle_bin 的恢复逻辑与本模块形成导入环。
+                    from .recycle_bin import archive_replaced_skill
+                    archived = archive_replaced_skill(
+                        project, skill_id, destination, actor=actor)
+                    shutil.rmtree(destination)
+                    archives.append(archived["id"])
                 (staging / skill_id).rename(destination)
 
         project, sync_issues = sync_project_skill_library(store, project, audit=False)

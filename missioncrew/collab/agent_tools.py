@@ -22,12 +22,16 @@ from typing import Callable, Optional
 
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
-from .guidelines import delete_guideline, save_guideline
+from .guidelines import save_guideline
+from .recycle_bin import (RecycleConflictError, list_recycle_items,
+                          purge_recycle_item, recycle_bin_url,
+                          recycle_dashboard, recycle_document,
+                          recycle_guideline, recycle_skill,
+                          restore_recycle_item)
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, skill_resource_url,
                             task_resource_url)
-from .skills import (delete_project_skill, save_project_skill,
-                     save_project_skill_markdown)
+from .skills import save_project_skill, save_project_skill_markdown
 from .workspace import chat_workspace_dir, write_task_files
 from ..core.models import (BOARD_WIDGET_TYPES, TIER_ORDER, Board, BoardWidget,
                            Channel, Project, ProjectSkill,
@@ -110,7 +114,7 @@ ACTION_DEFINITIONS = {
         },
     },
     "document.delete": {
-        "description": "删除项目版本化文档并保留 Git 历史",
+        "description": "把项目版本化文档移入统一回收站并保留 Git 历史",
         "orchestrator_only": True,
         "arguments": {"path": "文档库相对路径"},
     },
@@ -136,7 +140,7 @@ ACTION_DEFINITIONS = {
                       "description": "用途", "layout": "可选组件数组"},
     },
     "dashboard.delete": {
-        "description": "删除项目面板",
+        "description": "把项目面板移入统一回收站",
         "orchestrator_only": True,
         "arguments": {"id": "面板短 id"},
     },
@@ -147,7 +151,7 @@ ACTION_DEFINITIONS = {
                       "enabled": "是否启用", "original_name": "重命名前名称"},
     },
     "guideline.delete": {
-        "description": "删除准则 Markdown 并保留 Git 历史",
+        "description": "把准则 Markdown 移入统一回收站并保留 Git 历史",
         "orchestrator_only": True,
         "arguments": {"name": "准则 name"},
     },
@@ -158,9 +162,24 @@ ACTION_DEFINITIONS = {
                       "enabled": "是否启用"},
     },
     "skill.delete": {
-        "description": "删除 Skill 包并移入项目回收目录",
+        "description": "把完整 Skill 包移入统一回收站",
         "orchestrator_only": True,
         "arguments": {"id": "Skill id"},
+    },
+    "recycle.list": {
+        "description": "列出当前项目统一回收站",
+        "orchestrator_only": True,
+        "arguments": {},
+    },
+    "recycle.restore": {
+        "description": "从项目回收站恢复资源",
+        "orchestrator_only": True,
+        "arguments": {"id": "回收站条目 id"},
+    },
+    "recycle.purge": {
+        "description": "永久删除一个项目回收站条目",
+        "orchestrator_only": True,
+        "arguments": {"id": "回收站条目 id"},
     },
 }
 
@@ -189,6 +208,9 @@ ACTION_ARGUMENTS = {
         "id", "markdown", "enabled", "name", "description", "instructions",
     },
     "skill.delete": {"id"},
+    "recycle.list": set(),
+    "recycle.restore": {"id"},
+    "recycle.purge": {"id"},
 }
 
 
@@ -430,6 +452,9 @@ class AgentActionService:
             "guideline.delete": self._delete_guideline,
             "skill.save": self._save_skill,
             "skill.delete": self._delete_skill,
+            "recycle.list": self._list_recycle_bin,
+            "recycle.restore": self._restore_recycle_item,
+            "recycle.purge": self._purge_recycle_item,
         }
         return handlers[action](project, identity, arguments, context)
 
@@ -581,18 +606,15 @@ class AgentActionService:
         path = safe_relative_path(str(arguments.get("path", "")))
         actor = f"role:{identity.role_id}"
         try:
-            revision = library_for(project.id).delete(path, actor=actor)
+            item = recycle_document(self.store, project, path, actor=actor)
         except FileNotFoundError as exc:
             raise AgentToolError("not_found", str(exc), 404) from exc
-        self.store.audit(
-            actor, "document_deleted",
-            detail=f"project={project.id} path={path} revision={revision}",
-        )
         return {
-            "summary": f"已删除文档 {path}",
+            "summary": f"已将文档 {path} 移入项目回收站",
             "path": path,
             "deleted": True,
-            "revision": revision,
+            "revision": item["revision"],
+            "recycle_item": item,
             "resource_url": document_resource_url(project.id, path),
         }
 
@@ -706,11 +728,10 @@ class AgentActionService:
         board = self.store.get_board(board_id)
         if board is None or board.project_id != project.id:
             raise AgentToolError("not_found", "面板不存在", 404)
-        self.store.delete_board(board_id)
-        self.store.audit(
-            f"role:{identity.role_id}", "dashboard_deleted",
-            detail=f"project={project.id} board={board_id}")
-        return {"summary": f"已删除面板 {board.name}", "deleted": True}
+        item = recycle_dashboard(
+            self.store, project, board_id, actor=f"role:{identity.role_id}")
+        return {"summary": f"已将面板 {board.name} 移入项目回收站",
+                "deleted": True, "recycle_item": item}
 
     def _save_guideline(self, project: Project, identity: AgentIdentity,
                         arguments: dict, _context: AgentRunContext) -> dict:
@@ -738,14 +759,15 @@ class AgentActionService:
                           arguments: dict, _context: AgentRunContext) -> dict:
         name = self._control_id(arguments.get("name"))
         try:
-            revision = delete_guideline(
+            item = recycle_guideline(
                 self.store, project, name, actor=f"role:{identity.role_id}")
         except FileNotFoundError as exc:
             raise AgentToolError("not_found", str(exc), 404) from exc
         return {
-            "summary": f"已删除准则文档 {name}",
+            "summary": f"已将准则文档 {name} 移入项目回收站",
             "deleted": True,
-            "revision": revision,
+            "revision": item["revision"],
+            "recycle_item": item,
             "resource_url": guideline_resource_url(project.id, name),
         }
 
@@ -778,15 +800,58 @@ class AgentActionService:
                       arguments: dict, _context: AgentRunContext) -> dict:
         skill_id = self._control_id(arguments.get("id"))
         try:
-            delete_project_skill(
+            item = recycle_skill(
                 self.store, project, skill_id,
                 actor=f"role:{identity.role_id}")
         except FileNotFoundError as exc:
             raise AgentToolError("not_found", str(exc), 404) from exc
         return {
-            "summary": f"已删除 Skill {skill_id}",
+            "summary": f"已将 Skill {skill_id} 移入项目回收站",
             "deleted": True,
+            "recycle_item": item,
             "resource_url": skill_resource_url(project.id, skill_id),
+        }
+
+    def _list_recycle_bin(self, project: Project, _identity: AgentIdentity,
+                          _arguments: dict, _context: AgentRunContext) -> dict:
+        items = list_recycle_items(project.id)
+        return {
+            "summary": f"项目回收站共有 {len(items)} 项",
+            "items": items,
+            "resource_url": recycle_bin_url(project.id),
+        }
+
+    def _restore_recycle_item(self, project: Project, identity: AgentIdentity,
+                              arguments: dict,
+                              _context: AgentRunContext) -> dict:
+        item_id = str(arguments.get("id", "")).strip()
+        try:
+            item = restore_recycle_item(
+                self.store, project, item_id, actor=f"role:{identity.role_id}")
+        except RecycleConflictError as exc:
+            raise AgentToolError("already_exists", str(exc), 409) from exc
+        except FileNotFoundError as exc:
+            raise AgentToolError("not_found", str(exc), 404) from exc
+        return {
+            "summary": f"已从项目回收站恢复 {item['name']}",
+            "item": item,
+            "resource_url": item["restored_resource_url"],
+        }
+
+    def _purge_recycle_item(self, project: Project, identity: AgentIdentity,
+                            arguments: dict,
+                            _context: AgentRunContext) -> dict:
+        item_id = str(arguments.get("id", "")).strip()
+        try:
+            item = purge_recycle_item(
+                self.store, project, item_id, actor=f"role:{identity.role_id}")
+        except FileNotFoundError as exc:
+            raise AgentToolError("not_found", str(exc), 404) from exc
+        return {
+            "summary": f"已永久删除回收项 {item['name']}",
+            "purged": True,
+            "item": item,
+            "resource_url": recycle_bin_url(project.id),
         }
 
     @staticmethod

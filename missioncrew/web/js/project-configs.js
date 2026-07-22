@@ -585,7 +585,7 @@ async function saveGuideline() {
 }
 
 async function deleteGuideline(name) {
-  if (!await uiConfirm(`删除准则文档「${name}」？`)) return;
+  if (!await uiConfirm(`将准则文档「${name}」移入项目回收站？`)) return;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(name)}`);
   selectedGuidelineName = undefined;
   guidelineHistoryOpen = false;
@@ -593,7 +593,7 @@ async function deleteGuideline(name) {
   configEditorDirty.guidelines = false;
   await loadOverview();
   renderGuidelinesPage(true);
-  toast("准则文档已删除", "success");
+  toast("准则文档已移入回收站", "success");
 }
 
 async function toggleGuidelineHistory() {
@@ -998,7 +998,7 @@ async function saveSkill() {
 }
 
 async function deleteSkill(id) {
-  if (!await uiConfirm(`删除 Skill「${id}」？`)) return;
+  if (!await uiConfirm(`将 Skill「${id}」移入项目回收站？`)) return;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/skills/${encodeURIComponent(id)}`);
   selectedSkillId = undefined;
   skillOpenFile = null;
@@ -1007,7 +1007,7 @@ async function deleteSkill(id) {
   skillLibraryInfo = null;
   await loadSkillLibraryInfo();
   renderSkillsPage(true);
-  toast("Skill 已删除", "success");
+  toast("Skill 已移入回收站", "success");
 }
 
 async function finishSkillImport(result) {

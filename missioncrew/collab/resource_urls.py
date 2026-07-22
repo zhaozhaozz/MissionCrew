@@ -12,6 +12,7 @@ from urllib.parse import quote
 _PROJECT_ID_RE = re.compile(r"[\w-]+")
 RESOURCE_TYPES = frozenset({
     "documents", "channels", "tasks", "dashboards", "guidelines", "skills",
+    "recycle-bin",
 })
 
 

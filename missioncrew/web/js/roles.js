@@ -238,10 +238,10 @@ async function saveRole() {
 }
 
 async function deleteRole(id) {
-  if (!await uiConfirm(`删除项目「${currentProject}」的角色 @${id}?`)) return;
+  if (!await uiConfirm(`将项目「${currentProject}」的角色 @${id} 移入回收站？`)) return;
   await api("DELETE", `/api/roles/${id}?project_id=${encodeURIComponent(currentProject)}`);
   await loadOverview();
   fdlg.close();
   renderRoleTable(); renderSidebar();
-  toast("角色已删除", "success");
+  toast("角色已移入回收站", "success");
 }

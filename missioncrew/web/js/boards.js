@@ -251,11 +251,11 @@ async function saveCustomBoard() {
 
 async function deleteCustomBoard() {
   const board = projBoards().find(b => b.id === currentCustomBoard);
-  if (!board || !await uiConfirm(`删除面板「${board.name}」?`)) return;
+  if (!board || !await uiConfirm(`将面板「${board.name}」移入项目回收站？`)) return;
   const shortId = board.id.replace(`${currentProject}:`, "");
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/boards/${encodeURIComponent(shortId)}`);
   currentCustomBoard = null;
   customBoardEditing = false;
   await loadOverview(); renderCustomBoards();
-  toast("面板已删除", "success");
+  toast("面板已移入回收站", "success");
 }

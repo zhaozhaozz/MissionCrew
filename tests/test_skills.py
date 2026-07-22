@@ -107,7 +107,10 @@ def test_zip_import_detects_skill_packages_preserves_files_and_confirms_overwrit
         headers={"Content-Type": "application/zip"})
     assert overwritten.status_code == 200
     assert overwritten.json()["needs_confirmation"] is False
-    assert any((root.parent / ".skill-trash").rglob("release/SKILL.md"))
+    recycled = client.get("/api/projects/webshop/recycle-bin").json()["items"]
+    assert any(item["resource_type"] == "skill"
+               and item["resource_id"] == "release" for item in recycled)
+    assert not (root.parent / ".skill-trash").exists()
 
     unsafe = _zip({"../escape/SKILL.md": _skill_markdown("escape", "no")})
     rejected = client.post(url, content=unsafe, headers={"Content-Type": "application/zip"})

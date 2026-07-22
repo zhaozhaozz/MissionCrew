@@ -83,12 +83,12 @@ async function refreshResource(id) {
 }
 
 async function deleteResource(id) {
-  if (!await uiConfirm(`移除资源「${id}」?(只解除关联,不删除磁盘内容)`)) return;
+  if (!await uiConfirm(`将资源关联「${id}」移入项目回收站？不会删除磁盘内容。`)) return;
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/resources/${encodeURIComponent(id)}`);
   await loadOverview();
   renderResourceTable(); renderSidebar();
-  toast("资源已移除", "success");
+  toast("资源关联已移入回收站", "success");
 }
 
 async function saveProject() {

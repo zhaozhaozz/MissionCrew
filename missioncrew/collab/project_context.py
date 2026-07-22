@@ -184,6 +184,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
         f"- 准则：`{project_url}/guidelines/<name>`\n"
         f"- Skill：`{project_url}/skills/<id>`\n"
         f"- 文档：`{project_url}/documents/<文档库相对路径>`\n"
+        f"- 回收站：`{project_url}/recycle-bin`\n"
         "这些 URL 是 Web 标识，不是文件路径；不要把内部 `.missioncrew` 路径或 `file://` 链接发到聊天中。",
         ("# 项目兼容准则\n" + "\n\n".join(legacy_guidelines))
         if legacy_guidelines else "# 项目兼容准则\n（未配置）",

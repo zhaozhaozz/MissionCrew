@@ -33,6 +33,7 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 | Skill | `/resources/<project>/skills/<skill-id>` | 项目 Skill ID | Skill 的 `SKILL.md` 页面 |
 | Skill 内文件 | `/resources/<project>/skills/<skill-id>/<relative-path>` | Skill 目录内相对路径 | 文件树中的对应文件 |
 | 项目文档 | `/resources/<project>/documents/<relative-path>` | 文档库内相对路径 | 对应版本化文档页 |
+| 项目回收站 | `/resources/<project>/recycle-bin` | 项目 ID | 全部可恢复项目资源的统一列表 |
 
 例如：
 
@@ -41,6 +42,7 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 [端到端测试准则](/resources/science_agent/guidelines/web-e2e-testing)
 [任务看板](/resources/science_agent/dashboards/tasks)
 [架构讨论频道](/resources/science_agent/channels/architecture-doc)
+[项目回收站](/resources/science_agent/recycle-bin)
 ```
 
 ## 各类资源的存储与行为
@@ -142,6 +144,21 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 - `GET /api/projects/<project>/documents/history?path=<relative-path>`
 - `POST /api/projects/<project>/documents/compare`（比较同一纯文本文件的两个历史 revision）
 
+### 项目统一回收站
+
+文档、准则、完整 Skill 包、自定义面板、频道、非主控角色和项目资源引用删除后，都进入项目自己的统一回收站。物理条目保存在 `projects/<project>/recycle-bin/<item-id>/`，其中包含平台私有 manifest 和内容或数据库快照；这个内部目录不会加入 Runtime 的允许目录，也不会通过 API 暴露。旧版 `.skill-trash/` 中的完整 Skill 包会在服务启动时迁入统一回收站。
+
+回收站页面是项目级单页视图，可以按资源类型筛选。每项显示原名称、稳定标识、删除时间、操作者和大小。恢复会重建资源事实源，并同步 Project 索引及准则/Skill 实时视图；只有整条链完成才移除回收项。若原路径或 ID 已被新资源占用，恢复返回 `409`，现有资源和回收项都保持不变。永久删除单项和清空回收站不可撤销，Web 会先要求确认。
+
+回收站保存的是“恢复当前资源所需的副本”，不是所有历史的唯一事实源。永久删除回收项后，文档与准则的 Git 历史、频道消息和审计记录仍按各自保留策略存在。内置任务看板、项目本身、全局 Runtime、全局角色模板以及目前没有删除操作的结构化任务不进入项目回收站。
+
+主要 API：
+
+- `GET /api/projects/<project>/recycle-bin`
+- `POST /api/projects/<project>/recycle-bin/<item-id>/restore`
+- `DELETE /api/projects/<project>/recycle-bin/<item-id>`（永久删除单项）
+- `DELETE /api/projects/<project>/recycle-bin`（清空）
+
 ## Runtime 可见的文件资源
 
 每次聊天角色或结构化任务执行都会获得独立的 `MISSIONCREW_WORKSPACE`。典型结构如下：
@@ -196,7 +213,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 ### Agent 与主控动作
 
-项目公共上下文提供 `MISSIONCREW_PROJECT_URL`、六类资源格式以及当前准则和 Skill 的 Web URL。聊天角色通过带角色令牌的 Agent Tool API 显式创建频道、保存面板、准则、Skill、任务或文档以及发布消息；平台在同一回合返回结构化结果或错误，成功回执使用可点击 Markdown 链接。完整调用与权限契约见 [MissionCrew Agent Tool API](agent-tool-api.md)。
+项目公共上下文提供 `MISSIONCREW_PROJECT_URL`、项目内容与回收站资源格式，以及当前准则和 Skill 的 Web URL。聊天角色通过带角色令牌的 Agent Tool API 显式创建频道、保存或删除面板、准则、Skill、任务或文档、管理回收项以及发布消息；平台在同一回合返回结构化结果或错误，成功回执使用可点击 Markdown 链接。完整调用与权限契约见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
 Agent 最终回复应使用：
 
@@ -208,7 +225,7 @@ Agent 最终回复应使用：
 
 ### Web
 
-统一 Markdown 组件识别同源资源 URL，并交给应用路由处理。路由会恢复项目、资源类型和具体条目；文档与 Skill 内文件按路径逐段解码。用户在应用内切换频道、任务、面板、准则、Skill 或文档时，地址栏同步更新为规范资源 URL。
+统一 Markdown 组件识别同源资源 URL，并交给应用路由处理。路由会恢复项目、资源类型和具体条目；文档与 Skill 内文件按路径逐段解码。用户在应用内切换频道、任务、面板、准则、Skill、文档或回收站时，地址栏同步更新为规范资源 URL。
 
 服务端对资源地址返回单页应用入口，资源是否存在由前端结合总览/API 数据验证。资源已经删除或标识无效时，前端不会尝试读取同名本地路径，而是回到对应资源类型的有效页面或显示找不到资源。
 

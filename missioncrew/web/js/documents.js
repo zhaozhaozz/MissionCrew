@@ -473,7 +473,7 @@ async function saveDocument() {
 }
 
 async function deleteDocument() {
-  if (!docSelected || !await uiConfirm(`删除文档「${docSelected}」?历史版本仍可查阅。`)) return;
+  if (!docSelected || !await uiConfirm(`将文档「${docSelected}」移入项目回收站？`)) return;
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
   docSelected = null; docMode = "view";
@@ -482,7 +482,7 @@ async function deleteDocument() {
   configChatSelection = null;
   await renderDocuments();
   syncUrl();
-  toast("文档已删除", "success");
+  toast("文档已移入回收站", "success");
 }
 
 async function toggleDocHistory() {

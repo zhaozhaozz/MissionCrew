@@ -128,11 +128,11 @@ async function createChannel() {
 }
 
 async function deleteChannel(id) {
-  if (!id || !await uiConfirm(`删除频道 #${id}？频道入口和 Runtime 会话将被移除；消息记录仍保留用于审计。`, "删除频道")) return;
+  if (!id || !await uiConfirm(`将频道 #${id} 移入项目回收站？Runtime 会话将停止，消息记录仍保留用于审计。`, "回收频道")) return;
   await api("DELETE", `/api/chat/channels/${id}`);
   if (currentChan === id) currentChan = null;
   await loadOverview(); renderChanTable(); renderSidebar();
-  toast("频道已删除", "success");
+  toast("频道已移入回收站", "success");
 }
 
 async function archiveChannel(id) {

@@ -63,6 +63,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 | 准则 | `/resources/<project>/guidelines/<name>` |
 | Skill / Skill 内文件 | `/resources/<project>/skills/<skill-id>[/<relative-path>]` |
 | 项目文档 | `/resources/<project>/documents/<relative-path>` |
+| 项目回收站 | `/resources/<project>/recycle-bin` |
 
 `channel-id` 和 `board-id` 使用项目内短 ID，URL 不暴露数据库使用的 `<project>:<id>` 命名空间。`dashboards` 是面板的公开资源类型；Web 读取旧式 `boards`、`dashboard` 或 `panels` 地址时会规范化为它。真实目录只用于 Runtime 工具调用，不能用来替代这些 Web URL。
 
@@ -82,12 +83,14 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 | 资源 | 事实源 | Agent 入口 | 成功返回时的保证 |
 | --- | --- | --- | --- |
-| 文档 | 项目文档工作树 + 独立 Git 历史 | 工作树目录链接 | 发布、覆盖或删除已直接反映到所有工作区 |
+| 文档 | 项目文档工作树 + 独立 Git 历史 | 工作树目录链接 | 发布、覆盖或移入回收站已直接反映到所有工作区 |
 | 准则 | 准则工作树 + Git 历史 + Project 索引 | 项目级已启用准则实时视图 | 索引和原子镜像均已刷新；所有工作区读取同一版 |
 | Skill | 项目 Skill 包目录 + Project 索引 | 项目级已启用 Skill 实时视图 | 包内容和启用成员列表均已刷新 |
 | 任务 | SQLite 任务记录 | 每次装配生成的角色工作区 Markdown | 执行开始时从 Store 重建；工具修改会刷新调用角色的快照并以 `snapshot_updated_at` 防止旧写覆盖 |
 
 这里的“成功返回”指 Agent Tool 或 Web API 已完成整个同步链。若 Git、索引或实时视图任一步失败，调用会返回结构化错误而不是成功；准则视图使用同目录临时文件替换，读取者只会看到完整旧版或完整新版，不会读到半写入正文。已经发送给 Runtime 的 Prompt 不会在回合中被反向修改，但 Prompt 给出的文件路径会实时指向新版；下一轮装配会重新计算公共上下文版本并把新摘要发给复用 session。
+
+项目级删除统一写入 `projects/<project>/recycle-bin/`，但该内部目录不授权给 Runtime。Agent 使用 `recycle.list`、`recycle.restore` 和 `recycle.purge`，人类使用项目回收站页面；文档、准则、Skill、面板、频道、角色和项目资源共用同一列表。恢复只有在内容、项目索引和共享实时视图全部刷新后才返回成功；目标标识冲突时保留回收项，供用户改名、移除冲突或永久删除后再处理。
 
 ### `channel-history.json`
 

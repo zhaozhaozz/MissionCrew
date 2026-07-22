@@ -1,7 +1,7 @@
 /* ---- URL 路由:/<项目>/<视图>[/<频道>](History API,干净 URL),
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
 const TABS = ["chat", "board", "custom", "docs", "guidelines", "skills",
-              "proj", "runtime-status", "settings"];
+              "recycle-bin", "proj", "runtime-status", "settings"];
 let routeApplying = false;
 
 function emptyRoute(project = null, tab = "chat") {
@@ -31,6 +31,8 @@ function parsePath() {
     } else if (resource.type === "skills") {
       route.tab = "skills"; route.skill = id || null;
       route.skillFile = rest.join("/") || null;
+    } else if (resource.type === "recycle-bin") {
+      route.tab = "recycle-bin";
     }
     return route;
   }
@@ -66,6 +68,8 @@ function syncUrl(push = true) {
     path = missionCrewResourceUrl(currentProject, "skills",
       ...(selectedSkillId ? [selectedSkillId] : []),
       ...(selectedSkillId && skillOpenFile ? skillOpenFile.split("/") : []));
+  if (currentTab === "recycle-bin")
+    path = missionCrewResourceUrl(currentProject, "recycle-bin");
   if (location.pathname === path && !location.hash) return;
   if (push) history.pushState(null, "", path);      // 用户操作:产生历史记录
   else history.replaceState(null, "", path);        // 规范化:不产生历史记录
@@ -123,6 +127,7 @@ async function applyRoute() {
     else if (r.tab === "custom") renderCustomBoards(true);
     else if (r.tab === "guidelines") renderGuidelinesPage(true);
     else if (r.tab === "skills") renderSkillsPage(true);
+    else if (r.tab === "recycle-bin") renderRecycleBin(true);
 
     if (r.tab === "board" && r.task) {
       const task = projTasks().find(item => item.id === r.task);
@@ -162,6 +167,7 @@ function setProject(id, updateRoute = true) {
   skillOpenFile = null;
   skillLibraryInfo = null;
   skillFolderImportOpen = false;
+  recycleBinItems = [];
   configChatSelection = null;
   configEditorDirty.guidelines = false;
   configEditorDirty.skills = false;
@@ -175,6 +181,7 @@ function setProject(id, updateRoute = true) {
   renderSidebar(); renderBoard(); renderCustomBoards();
   if (currentTab === "proj") renderProjSettings();
   if (currentTab === "docs") renderDocuments();
+  else if (currentTab === "recycle-bin") renderRecycleBin(true);
   else loadDocFiles().then(changed => { if (changed) renderSidebar(); });
   renderProjectConfigPage(currentTab, true);
   const chans = projChannels();
@@ -192,6 +199,8 @@ function switchTab(tab) {
   document.getElementById("docs-view").style.display = tab === "docs" ? "block" : "none";
   document.getElementById("guidelines-view").style.display = tab === "guidelines" ? "block" : "none";
   document.getElementById("skills-view").style.display = tab === "skills" ? "block" : "none";
+  document.getElementById("recycle-bin-view").style.display =
+    tab === "recycle-bin" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
   document.getElementById("runtime-status-view").style.display =
     tab === "runtime-status" ? "block" : "none";
@@ -199,6 +208,8 @@ function switchTab(tab) {
   // 全局设置是独立导航项；项目设置是 ⚙；项目内容位于可折叠分区。
   // 任务看板是面板分区中的内置项，因此 board/custom 都激活面板标题。
   document.getElementById("nav-settings").classList.toggle("active", tab === "settings");
+  document.getElementById("nav-recycle-bin").classList.toggle(
+    "active", tab === "recycle-bin");
   document.getElementById("nav-runtime-status").classList.toggle(
     "active", tab === "runtime-status");
   document.getElementById("proj-cfg").classList.toggle("active", tab === "proj");
@@ -211,6 +222,7 @@ function switchTab(tab) {
   if (tab === "proj") renderProjSettings();
   if (tab === "custom") renderCustomBoards(true);
   if (tab === "docs") renderDocuments();
+  if (tab === "recycle-bin") renderRecycleBin();
   renderProjectConfigPage(tab);
   renderSidebar();
   if (tab === "settings") renderGlobalSettings();

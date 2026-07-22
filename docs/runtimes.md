@@ -44,7 +44,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 `ExecutionConfig.runtime_policy` 是后端无关的执行策略，包含 `readable_paths`、`writable_paths`、`skill_paths` 和 `RuntimePermissions`。权限目前统一表达为审批模式 `auto|prompt|deny`、文件系统模式 `read-only|workspace-write|full-access`、网络模式 `inherit|allow|deny`。Runtime manager 会生成 `MISSIONCREW_READABLE_DIRS`、`MISSIONCREW_WRITABLE_DIRS`、`MISSIONCREW_SKILL_DIRS`、`MISSIONCREW_RUNTIME_PERMISSIONS`，provider 再把可支持的策略翻译为命令参数或 ACP 权限响应。`allowed_dirs` 仅作为旧构造入口的兼容字段。
 
-项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。聊天角色对 MissionCrew 的写操作同样不进入原始执行器：统一注入 Agent Tool URL、角色令牌文件和当前 `run_id`，Claude、Codex、ACP 与打印模式都调用相同 HTTP/CLI 契约。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。具体动作、权限与错误结构见 [MissionCrew Agent Tool API](agent-tool-api.md)。
+项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。聊天角色对 MissionCrew 的写操作同样不进入原始执行器：统一注入 Agent Tool URL、角色令牌文件和当前 `run_id`，Claude、Codex、ACP 与打印模式都调用相同 HTTP/CLI 契约。删除动作进入项目统一回收站，主控通过 `recycle.list`、`recycle.restore` 和 `recycle.purge` 管理回收项，Runtime 不直接读写其内部存储。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。具体动作、权限与错误结构见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
 ## 实时运行状态
 

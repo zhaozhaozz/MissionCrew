@@ -5,14 +5,14 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from ..collab.guidelines import (delete_guideline as delete_guideline_document,
-                                 guideline_history, read_guideline_version,
+from ..collab.guidelines import (guideline_history, read_guideline_version,
                                  restore_guideline,
                                  save_guideline as save_guideline_document,
                                  sync_guideline_library)
+from ..collab.recycle_bin import recycle_guideline, recycle_skill
 from ..collab.resource_urls import guideline_resource_url, skill_resource_url
-from ..collab.skills import (delete_project_skill, import_skill_folder,
-                             import_skill_zip, project_skill_library_dir,
+from ..collab.skills import (import_skill_folder, import_skill_zip,
+                             project_skill_library_dir,
                              read_skill_file, save_project_skill,
                              save_project_skill_markdown, skill_library_info,
                              sync_project_skill_library)
@@ -101,13 +101,14 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         project = ctx.must_project(project_id)
         actor = ctx.validate_orchestrator_actor(project, actor_role_id)
         try:
-            revision = delete_guideline_document(
+            item = recycle_guideline(
                 store, project, guideline_name, actor=actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
-        return {"ok": True, "revision": revision}
+        return {"ok": True, "revision": item["revision"],
+                "recycle_item": item}
 
     @app.get("/api/projects/{project_id}/skills")
     def list_skills(project_id: str):
@@ -194,8 +195,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if not MENTION_ID_RE.fullmatch(skill_id):
             raise HTTPException(400, "Skill id 不合法")
         try:
-            archive = delete_project_skill(
-                store, project, skill_id, actor=actor)
+            item = recycle_skill(store, project, skill_id, actor=actor)
         except FileNotFoundError as exc:
             raise HTTPException(404, "Skill 不存在") from exc
-        return {"ok": True, "archive": archive}
+        return {"ok": True, "recycle_item": item}
