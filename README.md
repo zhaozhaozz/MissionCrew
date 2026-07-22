@@ -115,7 +115,7 @@ uv run mc role list -p default
 
 ## 项目工作空间
 
-目录层级、文件读写和同步边界见 [Agent harness 工作区与项目资料边界](docs/agent-harness-workspace.md)。源码仓的 `docs/` 与运行时 `.missioncrew/documents/` 是两个不同层级。
+项目内容统一使用 `/resources/<project>/<type>/<id-or-path>` 公开 URL；资源类型、API、Agent 路径和 Web 路由契约见 [MissionCrew 资源说明](docs/resources.md)。目录层级、文件读写和同步边界见 [Agent harness 工作区与项目资料边界](docs/agent-harness-workspace.md)。源码仓的 `docs/` 与运行时 `.missioncrew/documents/` 是两个不同层级。
 
 - **任务频道**:频道记录自己的用途/任务边界和主工作目录。人类可管理频道;主控 Runtime 也可通过受限的 `missioncrew-action` 创建频道，其他角色不能冒用此权限。无论频道绑定哪个主目录，项目资源列表中的全部现存本地目录都会作为额外可读写目录装配给 Runtime。
 - **统一 Agent harness 工作区**:每个聊天角色和结构化任务都会获得一个隔离的 `.missioncrew/`，绝对路径通过 `MISSIONCREW_WORKSPACE` 注入。它位于平台数据根而不是频道绑定的业务代码仓，因此 Agent 在其中创建的任务、文档、证据和诊断文件不会混入业务源码或业务提交。目录内的 `README.md` 说明读写约定，`project.md` 提供项目简介；业务代码仍在执行 `workdir` 或项目资源仓中修改。

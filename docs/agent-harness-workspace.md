@@ -51,7 +51,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ## 统一资源 URL
 
-频道、任务、面板、准则、Skill 和文档使用同一组项目级资源 URL。聊天 Markdown、平台动作回执和 API 的 `resource_url` 都使用这些地址；点击、刷新、复制以及浏览器前进/后退会恢复对应项目和条目。
+频道、任务、面板、准则、Skill 和文档使用同一组项目级资源 URL。聊天 Markdown、平台动作回执和 API 的 `resource_url` 都使用这些地址；点击、刷新、复制以及浏览器前进/后退会恢复对应项目和条目。完整的资源生命周期、API、Agent 与 Web 契约见 [MissionCrew 资源说明](resources.md)。
 
 | 资源 | URL |
 | --- | --- |
