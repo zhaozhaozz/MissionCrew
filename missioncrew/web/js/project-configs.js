@@ -176,15 +176,31 @@ function configPageSnapshot(context) {
   if (context.tab === "docs") {
     const documentPath = docMode === "new" ? valueOf("doc-new-path").trim() : docSelected;
     if (docPaneContentIdentity !== currentDocContentIdentity()) return null;
+    if (!documentPath) return null;
+    const documentMetadata = {
+      filename: documentPath.split("/").pop(),
+      document_path: documentPath,
+      resource_url: missionCrewDocumentUrl(currentProject, documentPath),
+      mode: docMode,
+      viewing_revision: docViewingRevision,
+    };
+    if (docPaneContentType === "binary") return {
+      pageKey: documentPath,
+      content: null,
+      metadata: {
+        ...documentMetadata,
+        text_snapshot_available: false,
+      },
+    };
     const editor = document.getElementById("doc-content");
     const content = editor ? editor.value : docPaneContent;
-    if (!documentPath || content === null) return null;
+    if (content === null) return null;
     return {
       pageKey: documentPath,
       content,
       metadata: {
-        document_path: documentPath, mode: docMode,
-        viewing_revision: docViewingRevision,
+        ...documentMetadata,
+        text_snapshot_available: true,
       },
     };
   }
@@ -193,7 +209,8 @@ function configPageSnapshot(context) {
 
 async function stageConfigPage(channel, context) {
   const snapshot = configPageSnapshot(context);
-  if (!snapshot) throw new Error("当前页面没有可提供给主控的文件内容");
+  if (!snapshot) throw new Error("当前页面还没有可提供给主控的文件信息");
+  if (snapshot.content === null) return snapshot.metadata;
   const stored = await api(
     "POST", `/api/chat/${encodeURIComponent(channel.id)}/page-context`, {
       page_kind: context.tab, page_key: snapshot.pageKey, content: snapshot.content,
@@ -327,6 +344,10 @@ function updateConfigChatContext() {
     selection.textContent = `已选择：${configChatSelection.field} 第 ${end} 行 · ${preview}`;
     selection.classList.add("has-selection");
     clear.style.display = "inline-block";
+  } else if (context.tab === "docs" && docPaneContentType === "binary" && docSelected) {
+    selection.textContent = `非文本文件；主控将收到文件名与文档路径：${docSelected}`;
+    selection.classList.remove("has-selection");
+    clear.style.display = "none";
   } else {
     selection.textContent = "未选择文本；主控仍会收到当前页面与当前对象。";
     selection.classList.remove("has-selection");
@@ -361,11 +382,14 @@ async function sendConfigChat() {
   try {
     const fileBackedPage = context.tab === "guidelines" || context.tab === "docs";
     const currentPage = fileBackedPage ? await stageConfigPage(channel, context) : null;
-    const selectionPayload = selection ? {
-      field: selection.field, line_start: selection.line_start,
-      line_end: selection.line_end, line_basis: selection.basis,
+    const effectiveSelection = currentPage?.text_snapshot_available === false
+      ? null : selection;
+    const selectionPayload = effectiveSelection ? {
+      field: effectiveSelection.field, line_start: effectiveSelection.line_start,
+      line_end: effectiveSelection.line_end, line_basis: effectiveSelection.basis,
       ...(fileBackedPage ? { read_from: "current_page.content_path" } : {
-        selected_text: selection.text, selected_text_truncated: selection.truncated,
+        selected_text: effectiveSelection.text,
+        selected_text_truncated: effectiveSelection.truncated,
       }),
     } : null;
     const payload = {
@@ -381,10 +405,15 @@ async function sendConfigChat() {
         `frontmatter 只使用 name、description。保存时把修改后的完整文件放入 ${context.action}.markdown，` +
         `并在修改现有文件时传 current_page.original_name；不要使用 id、title、summary。`
       : "";
-    const documentEditingTip = context.tab === "docs"
-      ? `当前文档正文没有内嵌在消息中；先读取 current_page.content_path。保存时把完整结果放入 ` +
-        `${context.action}.content，目标路径使用 current_page.document_path。`
-      : "";
+    const documentEditingTip = context.tab !== "docs" ? ""
+      : currentPage?.text_snapshot_available === false
+        ? `当前对象不是 UTF-8 纯文本，因此没有 current_page.content_path、selection 或行号。` +
+          `文件名、项目文档相对路径和 Web 地址分别在 current_page.filename、` +
+          `current_page.document_path、current_page.resource_url；需要读取或修改原文件时，` +
+          `以 MISSIONCREW_DOCUMENTS_DIR 为根解析 document_path，并使用适合该格式的工具。` +
+          `若通过 ${context.action} 覆盖二进制文件，使用 content_base64、原 document_path 和 overwrite=true。`
+        : `当前文档正文没有内嵌在消息中；先读取 current_page.content_path。保存时把完整结果放入 ` +
+          `${context.action}.content，目标路径使用 current_page.document_path。`;
     const skillEditingTip = context.tab === "skills"
       ? `当前编辑对象是一份完整 SKILL.md 文件。current_draft.markdown 包含 YAML frontmatter 和正文；` +
         `frontmatter 必须含 name、description，其他附加属性保持原样。保存时把修改后的完整文件放入 ` +
@@ -1044,7 +1073,7 @@ async function importSkillZip(input) {
     let result = await run(false);
     if (result?.needs_confirmation) {
       const confirmed = await uiConfirm(
-        `以下 Skill 已存在：${result.conflicts.join("、")}。覆盖时旧目录会移入回收目录，是否继续？`,
+        `以下 Skill 已存在：${result.conflicts.join("、")}。覆盖时旧目录会移入项目回收站，是否继续？`,
         "覆盖已有 Skill");
       if (confirmed) result = await run(true);
     }
@@ -1075,7 +1104,7 @@ async function importSkillFolder(overwrite) {
   });
   if (result.needs_confirmation) {
     const confirmed = await uiConfirm(
-      `以下 Skill 已存在：${result.conflicts.join("、")}。覆盖时旧目录会移入回收目录，是否继续？`,
+      `以下 Skill 已存在：${result.conflicts.join("、")}。覆盖时旧目录会移入项目回收站，是否继续？`,
       "覆盖已有 Skill");
     if (!confirmed) return;
     result = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills/import-folder`, {

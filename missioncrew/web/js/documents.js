@@ -33,6 +33,7 @@ let docPaneRenderToken = 0;
 let documentRefreshToken = 0;
 let docPaneContent = null;        // 当前阅读页正文，供配置对话写入工作区快照
 let docPaneContentIdentity = null;
+let docPaneContentType = null;    // text | binary；二进制页仍可向主控传递文件身份
 
 function resetDocumentVersionCompare() {
   docCompareRequestToken += 1;
@@ -328,6 +329,7 @@ async function renderDocPane(preserveScroll = false) {
   const selectedRevision = docViewingRevision;
   docPaneContent = null;
   docPaneContentIdentity = null;
+  docPaneContentType = null;
   const stillCurrent = () => renderToken === docPaneRenderToken
     && projectId === currentProject && selectedPath === docSelected
     && selectedMode === docMode && selectedRevision === docViewingRevision;
@@ -343,6 +345,7 @@ async function renderDocPane(preserveScroll = false) {
   if (docMode === "new") {
     docPaneContent = "";
     docPaneContentIdentity = currentDocContentIdentity();
+    docPaneContentType = "text";
     captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>新建文档</b>
@@ -377,6 +380,7 @@ async function renderDocPane(preserveScroll = false) {
     content = d.content;
     docPaneContent = content;
     docPaneContentIdentity = currentDocContentIdentity();
+    docPaneContentType = "text";
     captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">编辑中</span>
@@ -411,6 +415,9 @@ async function renderDocPane(preserveScroll = false) {
     : "";
   if (binary) {
     docHistoryCanCompare = false;
+    docPaneContentIdentity = currentDocContentIdentity();
+    docPaneContentType = "binary";
+    configChatSelection = null;
     captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
@@ -428,6 +435,7 @@ async function renderDocPane(preserveScroll = false) {
   docHistoryCanCompare = true;
   docPaneContent = d.content;
   docPaneContentIdentity = currentDocContentIdentity();
+  docPaneContentType = "text";
   const body = isMarkdownDoc(docSelected)
     ? `<article class="doc-body markdown-body">${markdownPreviewHtml(d.content)}</article>`
     : `<pre style="white-space:pre-wrap;font-size:12.5px">${esc(d.content)}</pre>`;

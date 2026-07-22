@@ -831,7 +831,13 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "frontmatter_contract" in js and "current_draft.markdown" in js
     assert "current_page.content_path" in js and 'read_from: "current_page.content_path"' in js
     assert "current_page.document_path" in js
+    assert "current_page.filename" in js and "current_page.resource_url" in js
+    assert "text_snapshot_available: false" in js
+    assert "snapshot.content === null" in js and "effectiveSelection" in js
+    assert "MISSIONCREW_DOCUMENTS_DIR" in js and "content_base64" in js
     assert "docPaneContent" in documents
+    assert 'docPaneContentType = "binary"' in documents
+    assert "configChatSelection = null" in documents
     assert "original_name: selectedGuidelineName" in js
     assert all(old not in js for old in ('id="gf-id"', 'id="gf-title"', 'id="gf-summary"'))
     assert "roleBindingPicker" not in js and "role_ids" not in js
@@ -863,6 +869,28 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert all(action in js for action in (
         "guideline.save", "skill.save", "document.publish"))
     assert "save_rule" not in js and "验证规则" not in html
+
+
+def test_binary_document_chat_context_keeps_file_identity_without_text_selection(seeded):
+    client = _client(seeded)
+    configs = client.get("/assets/js/project-configs.js").text
+    documents = client.get("/assets/js/documents.js").text
+
+    assert 'filename: documentPath.split("/").pop()' in configs
+    assert "document_path: documentPath" in configs
+    assert "resource_url: missionCrewDocumentUrl(currentProject, documentPath)" in configs
+    assert 'if (docPaneContentType === "binary")' in configs
+    assert "text_snapshot_available: false" in configs
+    assert "if (snapshot.content === null) return snapshot.metadata" in configs
+    assert "effectiveSelection = currentPage?.text_snapshot_available === false" in configs
+    assert "? null : selection" in configs
+    assert "没有 current_page.content_path、selection 或行号" in configs
+    assert "非文本文件；主控将收到文件名与文档路径" in configs
+    assert 'docPaneContentType = "binary"' in documents
+    binary_branch = documents.index("if (binary) {")
+    clear_selection = documents.index("configChatSelection = null", binary_branch)
+    finish_binary = documents.index("finish();", clear_selection)
+    assert binary_branch < clear_selection < finish_binary
 
 
 def test_guideline_and_document_chat_context_is_staged_as_a_file(seeded):
