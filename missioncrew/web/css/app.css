@@ -197,6 +197,9 @@
   .msg .body { background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-sm);
                border-radius: 4px 12px 12px 12px; padding: 9px 13px; white-space: pre-wrap;
                word-break: break-word; line-height: 1.65; }
+  /* Agent 回复已经解析为 Markdown 块；不能继续继承纯文本的 pre-wrap，
+     否则块标签之间的源码换行会和段落 margin 叠加成大段空白。 */
+  .msg .body.markdown-body { white-space: normal; }
   /* 人类消息靠右(头像在右、气泡右对齐收窄),Agent/系统靠左,类即时通讯布局 */
   .msg.human { flex-direction: row-reverse; margin-left: auto; }
   .msg.human .msg-main { display: flex; flex-direction: column; align-items: flex-end; }
@@ -219,7 +222,7 @@
                          cursor: pointer; }
   .mention.legal-mention { display: inline-block; padding: 0 5px; border: 1px solid currentColor;
                            border-radius: 999px; background: var(--accent-soft);
-                           font-weight: 650; line-height: 1.35; cursor: help; white-space: nowrap; }
+                           font-weight: 650; line-height: 1.35; cursor: default; white-space: nowrap; }
   .mention-compose { margin: 0 1px; user-select: all; }
   .date-sep { text-align: center; margin: 20px 0 16px; animation: fadeUp .18s ease; }
   .date-sep span { background: var(--bg-soft); color: var(--muted); font-size: 11.5px;

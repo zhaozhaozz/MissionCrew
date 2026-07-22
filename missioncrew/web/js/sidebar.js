@@ -388,7 +388,7 @@ function appendMessages(list) {
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${isAgent ? color : "var(--text)"}">${esc(name)}</span>
           ${isAgent ? `<span class="via">${esc(agentExecutionLabel(m))}</span>` : ""}<span class="time">${time}</span></div>
-        <div class="body${longReply ? " folded" : ""}">${fmtBody(m.content, isAgent, m.mention_spans)}</div>
+        <div class="body${isAgent ? " markdown-body" : ""}${longReply ? " folded" : ""}">${fmtBody(m.content, isAgent, m.mention_spans)}</div>
         ${longReply ? `<button type="button" class="message-fold-toggle" data-size="${m.content.length}"
           aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;
