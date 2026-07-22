@@ -275,6 +275,12 @@
   .re-log { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
             font-size: 12px; color: var(--muted); }
   .re-status { color: var(--muted); }
+  .re-backend-agent { color: var(--text-2); border-left: 2px solid var(--accent); }
+  .rba-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .rba-status { color: var(--accent); white-space: nowrap; }
+  .rba-status.completed { color: var(--good); }
+  .rba-status.failed, .rba-status.stopped { color: var(--bad); }
+  .rba-summary { margin-top: 6px; white-space: pre-wrap; }
   .re-plan { color: var(--text-2); border-left: 2px solid var(--accent); padding-left: 8px; }
   .re-file { color: var(--text-2); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
   .re-interaction { border: 1px solid var(--accent); border-radius: 8px;

@@ -692,7 +692,8 @@ class Store:
         if not text:
             return None
         # JSON 事件必须保持一行一个对象；相邻权限/用量事件不能字符串拼接。
-        if kind in {"permission_request", "user_input_request", "usage"}:
+        if kind in {"permission_request", "user_input_request", "usage",
+                    "backend_agent"}:
             return self._execute(
                 "INSERT INTO run_events(run_id, kind, content, created_at) "
                 "VALUES(?,?,?,?)", (run_id, kind, text, time.time()))

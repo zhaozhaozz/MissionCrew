@@ -89,6 +89,8 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 默认 Claude provider 启动官方 `claude`，同时使用 `--input-format stream-json`、`--output-format stream-json`、`--include-partial-messages` 和 `--permission-prompt-tool stdio`。stdin 在进程整个生命周期保持打开，每轮发送结构化 user message；stdout 的 system、assistant、user、stream event 和 result 被转换为状态、思考、工具、工具结果、文本与最终结果事件。
 
+Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json 的 `task_started`、`task_progress`、`task_updated` 与 `task_notification`，以 `task_type=local_agent|remote_agent` 和 `task_id` 跟踪同一轮里的后台 subagent；其中 `task_updated` 只更新任务记录，`task_notification` 才是父 Agent 可消费结果的终止边界。顶层 `result` 若仍有 Agent 运行，只作为阶段性结果写入过程流；MissionCrew 保持该 chat run、stdout reader、权限回调和 session 锁继续有效，直到后台 Agent 全部终止且 Claude 随后发出新的顶层 `result`，才发布最终频道回复。`Agent|Task` 工具返回的异步启动文本仅用于兼容缺少 `task_started` 的旧 CLI，不能作为主要完成判断。后台 Agent 的启动、进度、等待和完成状态作为结构化 `backend_agent` 事件显示在聊天运行卡中。
+
 `can_use_tool` control request 不由 Claude 终端自行决定，而是交给 MissionCrew。`AskUserQuestion`、`ask_user_question` 和 `request_user_input` 会生成聊天交互卡，用户回答后 provider 把 answers 写回原 control request，同一个 turn 继续执行。文件写入和联网工具会先经过统一策略硬检查，再进入 `auto|prompt|deny` 审批。非 `full-access` 模式同时通过临时 `--settings` 启用 Claude 的 OS 级 Bash sandbox，强制关闭 unsandboxed escape hatch；sandbox 不可用时执行失败，不降级成无隔离命令。执行超时或停止时通过 control request 发送 interrupt，必要时再清理进程组。
 
 ### Codex app-server

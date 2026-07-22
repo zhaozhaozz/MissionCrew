@@ -4,11 +4,17 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 
+_SEND_LOCK = threading.Lock()
+
+
 def send(payload: dict) -> None:
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    with _SEND_LOCK:
+        print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 def mark_launch(kind: str) -> None:
@@ -134,6 +140,31 @@ def claude_finish(session_id: str, number: int, answer: str) -> None:
           "total_cost_usd": 0, "duration_ms": 1, "duration_api_ms": 1})
 
 
+def claude_background_agent(session_id: str, task_id: str,
+                            tool_use_id: str, number: int) -> None:
+    time.sleep(0.05)
+    send({"type": "system", "subtype": "task_progress",
+          "task_id": task_id, "tool_use_id": tool_use_id,
+          "description": "Verify source references", "subagent_type": "general-purpose",
+          "usage": {"total_tokens": 12, "tool_uses": 2, "duration_ms": 50},
+          "last_tool_name": "Read", "summary": "Checking remaining references"})
+    send({"type": "system", "subtype": "task_updated", "task_id": task_id,
+          "patch": {"status": "completed", "end_time": 50}})
+    # task_updated 只是任务记录更新，不是父 Agent 已收到结果的完成边界。
+    # 在 notification 前插入 result，验证 provider 不会提前结束本轮。
+    claude_finish(session_id, number, "phase result after task update")
+    send({"type": "system", "subtype": "task_notification",
+          "task_id": task_id, "tool_use_id": tool_use_id,
+          "status": "completed", "output_file": "/fake/task-output",
+          "summary": "Source-reference verification completed",
+          "usage": {"total_tokens": 15, "tool_uses": 2, "duration_ms": 55}})
+    # 后台结果唤醒主 Agent 后仍可能继续申请工具权限；用于验证 MissionCrew
+    # 在首个 result 之后没有提前释放本轮权限租约。
+    send({"type": "control_request", "request_id": f"late-{number}",
+          "request": {"subtype": "can_use_tool", "tool_name": "Bash",
+                      "input": {"command": "echo final-check"}}})
+
+
 def run_claude() -> None:
     mark_launch("claude")
     args = sys.argv[1:]
@@ -192,6 +223,30 @@ def run_claude() -> None:
                                                          {"label": "A", "description": "first"},
                                                          {"label": "B", "description": "second"},
                                                      ]}]}}})
+            elif "BACKGROUND_AGENT" in prompt:
+                legacy_lifecycle = "BACKGROUND_AGENT_LEGACY" in prompt
+                tool_use_id = f"agent-tool-{turn_number}"
+                task_id = f"agent-task-{turn_number}"
+                send({"type": "assistant", "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": tool_use_id, "name": "Agent",
+                     "input": {"description": "Verify source references",
+                               "subagent_type": "general-purpose"}},
+                ]}})
+                if not legacy_lifecycle:
+                    send({"type": "system", "subtype": "task_started",
+                          "task_id": task_id, "tool_use_id": tool_use_id,
+                          "description": "Verify source references",
+                          "task_type": "local_agent"})
+                send({"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": tool_use_id,
+                     "content": "Async agent launched successfully."},
+                ]}})
+                pending = ("background_permission", turn_number)
+                claude_finish(session_id, turn_number, "phase result")
+                threading.Thread(
+                    target=claude_background_agent,
+                    args=(session_id, task_id, tool_use_id, turn_number),
+                    daemon=True).start()
             else:
                 claude_finish(session_id, turn_number,
                               f"claude answer {turn_number}")
@@ -199,8 +254,10 @@ def run_claude() -> None:
             kind, number = pending
             pending = None
             response = (message.get("response") or {}).get("response") or {}
-            claude_finish(session_id, number,
-                          f"{kind}:{json.dumps(response, sort_keys=True)}")
+            answer = ("claude final after background"
+                      if kind == "background_permission" else
+                      f"{kind}:{json.dumps(response, sort_keys=True)}")
+            claude_finish(session_id, number, answer)
         elif (message.get("type") == "control_request"
               and (message.get("request") or {}).get("subtype") == "interrupt"):
             send({"type": "control_response", "response": {

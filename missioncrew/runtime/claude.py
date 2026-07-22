@@ -151,6 +151,12 @@ class _ClaudeSession:
         self._output: list[str] = []
         self._saw_partial_text = False
         self._saw_partial_thinking = False
+        # Claude 的后台 Agent 会跨越一次或多次顶层 result。task lifecycle
+        # 消息是权威状态；tool id 只用于兼容尚未发送 task_started 的旧版本。
+        self._native_agents: dict[str, dict] = {}
+        self._pending_native_agents: set[str] = set()
+        self._agent_tool_calls: dict[str, dict] = {}
+        self._provisional_result_count = 0
         self._control_lock = threading.Lock()
         self._control_pending: dict[str, tuple[threading.Event, dict]] = {}
         self._stderr_tail: list[str] = []
@@ -263,6 +269,10 @@ class _ClaudeSession:
             self._output = []
             self._saw_partial_text = False
             self._saw_partial_thinking = False
+            self._native_agents = {}
+            self._pending_native_agents = set()
+            self._agent_tool_calls = {}
+            self._provisional_result_count = 0
             self._result_ready.clear()
             try:
                 self._ensure_process(config)
@@ -378,6 +388,69 @@ class _ClaudeSession:
     def _emit(self):
         return self._active_config.emit if self._active_config else None
 
+    def _emit_native_agent(self, status: str, meta: dict, **extra) -> None:
+        payload = {
+            "runtime": "claude",
+            "status": status,
+            "task_id": str(meta.get("task_id") or ""),
+            "tool_use_id": str(meta.get("tool_use_id") or ""),
+            "task_type": str(meta.get("task_type") or "local_agent"),
+            "agent_type": str(meta.get("agent_type") or ""),
+            "description": str(meta.get("description") or "Claude backend Agent"),
+            **extra,
+        }
+        emit_json(self._emit(), "backend_agent", payload)
+
+    def _register_native_agent(self, message: dict, *, inferred: bool = False) -> str:
+        task_id = str(message.get("task_id") or "")
+        tool_use_id = str(message.get("tool_use_id") or "")
+        key = task_id or (f"tool:{tool_use_id}" if tool_use_id else "")
+        if not key:
+            return ""
+        # task_started 可能晚于 Agent 工具的异步启动结果；用正式 task id
+        # 替换兼容 key，避免一个后台 Agent 被计数两次。
+        fallback = {}
+        if task_id and tool_use_id:
+            fallback_key = f"tool:{tool_use_id}"
+            self._pending_native_agents.discard(fallback_key)
+            fallback = self._native_agents.pop(fallback_key, {})
+        previous = self._native_agents.get(key, {}) or fallback
+        meta = {
+            **previous,
+            "task_id": task_id,
+            "tool_use_id": tool_use_id or previous.get("tool_use_id", ""),
+            "task_type": str(message.get("task_type") or
+                             previous.get("task_type") or "local_agent"),
+            "agent_type": str(message.get("subagent_type") or
+                              previous.get("agent_type") or ""),
+            "description": str(message.get("description") or
+                               previous.get("description") or
+                               "Claude backend Agent"),
+        }
+        self._native_agents[key] = meta
+        self._pending_native_agents.add(key)
+        if not previous:
+            self._emit_native_agent("running", meta, inferred=inferred)
+        return key
+
+    def _finish_native_agent(self, message: dict, status: str) -> None:
+        task_id = str(message.get("task_id") or "")
+        tool_use_id = str(message.get("tool_use_id") or "")
+        keys = [key for key in (task_id, f"tool:{tool_use_id}" if tool_use_id else "")
+                if key]
+        meta = next((self._native_agents.get(key) for key in keys
+                     if key in self._native_agents), None)
+        if not meta:
+            return
+        for key in keys:
+            self._pending_native_agents.discard(key)
+        self._emit_native_agent(
+            status, meta,
+            summary=str(message.get("summary") or ""),
+            error=str((message.get("patch") or {}).get("error") or ""),
+            usage=message.get("usage") or {},
+        )
+
     def _handle_message(self, message: dict) -> None:
         message_type = message.get("type")
         if message_type == "stream_event":
@@ -404,6 +477,16 @@ class _ClaudeSession:
                 elif block_type == "thinking" and not self._saw_partial_thinking:
                     safe_emit(self._emit(), "thinking", str(block.get("thinking") or ""))
                 elif block_type == "tool_use":
+                    tool_id = str(block.get("id") or "")
+                    if tool_id and str(block.get("name") or "") in ("Agent", "Task"):
+                        tool_input = block.get("input") or {}
+                        if not isinstance(tool_input, dict):
+                            tool_input = {}
+                        self._agent_tool_calls[tool_id] = {
+                            "description": str(tool_input.get("description") or
+                                               "Claude backend Agent"),
+                            "agent_type": str(tool_input.get("subagent_type") or ""),
+                        }
                     detail = json.dumps(block.get("input") or {}, ensure_ascii=False)
                     safe_emit(self._emit(), "tool",
                               f"{block.get('name', '?')} {detail[:800]}\n")
@@ -411,24 +494,86 @@ class _ClaudeSession:
         if message_type == "user":
             for block in (message.get("message") or {}).get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
+                    tool_use_id = str(block.get("tool_use_id") or "")
+                    summary = adapters._summarize_tool_result(block.get("content"))
+                    agent_call = self._agent_tool_calls.get(tool_use_id)
+                    known_task = any(
+                        meta.get("tool_use_id") == tool_use_id
+                        for meta in self._native_agents.values())
+                    if (agent_call and not known_task
+                            and "async agent launched" in summary.casefold()):
+                        self._register_native_agent({
+                            "tool_use_id": tool_use_id,
+                            "description": agent_call.get("description", ""),
+                            "subagent_type": agent_call.get("agent_type", ""),
+                            "task_type": "local_agent",
+                        }, inferred=True)
                     mark = "✗ " if block.get("is_error") else ""
                     safe_emit(self._emit(), "tool_result",
-                              mark + adapters._summarize_tool_result(
-                                  block.get("content")) + "\n")
+                              mark + summary + "\n")
             return
-        if message_type == "system" and message.get("subtype") == "init":
-            native_id = str(message.get("session_id") or "")
-            if native_id:
-                self.session_id = native_id
-                self._resume_attempt = ""
-                config = self._active_config
-                if config:
-                    adapters._save_session(config, native_id)
-            safe_emit(self._emit(), "status",
-                      f"Claude 会话已连接 session={native_id} model={message.get('model', '')}\n")
-            return
+        if message_type == "system":
+            subtype = str(message.get("subtype") or "")
+            if subtype == "init":
+                native_id = str(message.get("session_id") or "")
+                if native_id:
+                    self.session_id = native_id
+                    self._resume_attempt = ""
+                    config = self._active_config
+                    if config:
+                        adapters._save_session(config, native_id)
+                safe_emit(self._emit(), "status",
+                          f"Claude 会话已连接 session={native_id} model={message.get('model', '')}\n")
+                return
+            if subtype == "task_started":
+                task_type = str(message.get("task_type") or "")
+                if task_type.endswith("_agent"):
+                    self._register_native_agent(message)
+                return
+            if subtype == "task_progress":
+                task_id = str(message.get("task_id") or "")
+                key = task_id if task_id in self._native_agents else ""
+                if not key and message.get("subagent_type"):
+                    key = self._register_native_agent(message, inferred=True)
+                if key:
+                    meta = self._native_agents[key]
+                    self._emit_native_agent(
+                        "progress", meta,
+                        summary=str(message.get("summary") or ""),
+                        last_tool_name=str(message.get("last_tool_name") or ""),
+                        usage=message.get("usage") or {},
+                    )
+                return
+            if subtype == "task_updated":
+                patch = message.get("patch") or {}
+                status = str(patch.get("status") or "")
+                if status in ("completed", "failed", "killed"):
+                    # task_updated 描述 Task 记录的变化；真正可供父 Agent
+                    # 消费的完成边界是随后到达的 task_notification。在这里
+                    # 提前释放 pending 会让夹在两条消息间的 result 误结束本轮。
+                    task_id = str(message.get("task_id") or "")
+                    meta = self._native_agents.get(task_id)
+                    if meta:
+                        meta["updated_status"] = status
+                return
+            if subtype == "task_notification":
+                status = str(message.get("status") or "completed")
+                self._finish_native_agent(message, status)
+                return
         if message_type == "result":
             self._result = message
+            success = (not bool(message.get("is_error"))
+                       and str(message.get("subtype") or "success") == "success")
+            if success and self._pending_native_agents:
+                self._provisional_result_count += 1
+                emit_json(self._emit(), "backend_agent", {
+                    "runtime": "claude",
+                    "status": "waiting",
+                    "pending": len(self._pending_native_agents),
+                    "description": "Claude 主回合等待后台 Agent 汇总",
+                    "provisional_results": self._provisional_result_count,
+                })
+                return
             self._result_ready.set()
 
     def _permission_response(self, tool_name: str, tool_input: dict,

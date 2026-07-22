@@ -45,6 +45,11 @@ def test_run_event_coalescing(store):
     saved = store.run_events(9)
     assert len(saved) == 2
     assert "".join(e["content"] for e in saved) == long_input
+    # 后台 Agent 生命周期是逐条 JSON 事件，不能像普通文本流一样拼接。
+    store.append_run_event(12, "backend_agent", '{"status":"running"}')
+    store.append_run_event(12, "backend_agent", '{"status":"completed"}')
+    assert [e["content"] for e in store.run_events(12)] == [
+        '{"status":"running"}', '{"status":"completed"}']
 
 
 def test_duplicate_reply_output_is_removed_exactly(store):
@@ -279,6 +284,7 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert "effort=${message.effort" in js
     assert "MESSAGE_FOLD_AT" in js and "toggleMessageBody" in js
     assert "renderRunEvent" in js and "latestEventId" in js
+    assert "backend_agent" in js and "renderBackendAgent" in js
     assert 'body.querySelectorAll(".re-fold[open]")' in js
     assert (".re-fold { border:" in css
             and "padding: 0 8px 8px;\n             white-space: normal;" in css)
@@ -292,4 +298,5 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert 'isAgent ? " markdown-body"' in js
     assert ".msg .body.markdown-body { white-space: normal; }" in css
     assert ".mention.legal-mention" in css and "cursor: default" in css
+    assert ".re-backend-agent" in css and ".rba-status.completed" in css
     assert '<span class="via">agent</span>' not in js

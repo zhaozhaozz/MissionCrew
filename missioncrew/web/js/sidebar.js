@@ -418,6 +418,7 @@ const RUN_EVENT_META = {
   usage:       { label: "用量", cls: "re-status" },
   permission_request: { label: "权限", cls: "re-interaction" },
   user_input_request: { label: "提问", cls: "re-interaction" },
+  backend_agent: { label: "后端 Agent", cls: "re-backend-agent" },
   text:        { label: "输出", cls: "re-text" },
   stdout:      { label: "输出", cls: "re-tool" },
   // stderr 是多数 Agent CLI 的进度/日志通道(codex 连思考都走这里),
@@ -461,6 +462,18 @@ function interactionDetails(payload) {
   const raw = Object.keys(details).length ? JSON.stringify(details, null, 2) : "";
   return `<div class="ri-title">${esc(label)}</div>` +
     (raw ? `<details class="ri-details"><summary>查看请求详情</summary><pre>${esc(raw)}</pre></details>` : "");
+}
+
+function renderBackendAgent(payload) {
+  const status = payload.status || "running";
+  const statusLabel = { running: "运行中", waiting: "等待后台 Agent",
+    progress: "执行中", completed: "已完成", failed: "失败", stopped: "已停止" }[status] || status;
+  const description = payload.description || payload.agent_type || "Claude backend Agent";
+  const summary = payload.summary ? `<div class="rba-summary">${esc(payload.summary)}</div>` : "";
+  const details = [payload.agent_type, payload.last_tool_name ? `工具：${payload.last_tool_name}` : "",
+    payload.pending ? `剩余：${payload.pending}` : ""].filter(Boolean).join(" · ");
+  return `<div class="rba-head"><b>${esc(description)}</b><span class="rba-status ${esc(status)}">${esc(statusLabel)}</span></div>` +
+    (details ? `<div class="muted">${esc(details)}</div>` : "") + summary;
 }
 
 function renderPermissionRequest(run, event, payload) {
@@ -530,6 +543,14 @@ function renderRunEvent(run, event, openEventId) {
     if (payload) {
       content = esc(JSON.stringify(payload, null, 2));
       preview = "Token 用量";
+    }
+  } else if (event.kind === "backend_agent") {
+    const payload = parseStructuredRunEvent(event);
+    if (payload) {
+      const label = { running: "运行中", waiting: "等待汇总", progress: "执行中",
+        completed: "已完成", failed: "失败", stopped: "已停止" }[payload.status] || payload.status;
+      content = renderBackendAgent(payload);
+      preview = `${payload.description || payload.agent_type || "Claude backend Agent"} · ${label || ""}`;
     }
   }
   const open = String(event.id) === openEventId ? " open" : "";

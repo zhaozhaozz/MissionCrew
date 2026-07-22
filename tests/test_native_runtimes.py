@@ -194,6 +194,34 @@ def test_claude_session_approval_echoes_native_permission_suggestion(tmp_path):
         provider.shutdown()
 
 
+@pytest.mark.parametrize("prompt", ["BACKGROUND_AGENT", "BACKGROUND_AGENT_LEGACY"])
+def test_claude_waits_for_background_agent_and_keeps_turn_policy_alive(
+        tmp_path, prompt):
+    provider = ClaudeRuntimeProvider(_Fallback(), _fake_command("claude_code"))
+    events: list[tuple[str, str]] = []
+    try:
+        result = provider.start(_config(
+            tmp_path, "claude_code", prompt, {}, events,
+            interact=lambda *_: pytest.fail("auto 审批不应等待用户")))
+
+        assert result.success
+        assert result.output == "claude final after background"
+        lifecycle = [json.loads(text) for kind, text in events
+                     if kind == "backend_agent"]
+        statuses = [event["status"] for event in lifecycle]
+        assert statuses[0] == "running"
+        assert "waiting" in statuses and "progress" in statuses
+        assert "completed" in statuses
+        waiting = next(event for event in lifecycle if event["status"] == "waiting")
+        assert waiting["pending"] == 1
+        assert sum(event["status"] == "waiting" for event in lifecycle) == 2
+        assert any(kind == "permission_request"
+                   and json.loads(text)["status"] == "auto_approved"
+                   for kind, text in events)
+    finally:
+        provider.shutdown()
+
+
 def test_codex_resume_failure_is_explicit_and_does_not_start_new_thread(tmp_path):
     fallback = _Fallback()
     provider = CodexRuntimeProvider(fallback, _fake_command("codex"))
