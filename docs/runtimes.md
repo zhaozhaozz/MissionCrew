@@ -153,7 +153,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。每轮任务输入另给出最新 `run_id`；持久 Runtime 必须显式传这个值，不能使用进程启动时遗留的 `MISSIONCREW_AGENT_RUN_ID`。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
 
-最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和任务分别位于 `MISSIONCREW_WORKSPACE` 下，并提供 `MISSIONCREW_CHANNEL_HISTORY`、`MISSIONCREW_DOCUMENTS_DIR`、`MISSIONCREW_GUIDELINES_DIR`、`MISSIONCREW_SKILLS_DIR`、`MISSIONCREW_TASKS_DIR` 兼容入口。聊天角色新建或修改文档、任务时使用 `document.publish`、`task.create` 或 `task.update`；执行后扫描直接写入的文件仅作为迁移兼容。准则编辑器、后端模型和运行时文件统一使用 `name` / `description` YAML frontmatter，后端直接解析文件头，不从 `id` / `summary` 转换。
+最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和任务分别位于 `MISSIONCREW_WORKSPACE` 下，并提供 `MISSIONCREW_CHANNEL_HISTORY`、`MISSIONCREW_DOCUMENTS_DIR`、`MISSIONCREW_GUIDELINES_DIR`、`MISSIONCREW_SKILLS_DIR`、`MISSIONCREW_TASKS_DIR` 兼容入口。文档直接链接事实工作树，准则和 Skill 入口分别链接项目级共享实时视图；保存、启停或删除成功后，已有 workspace 无需重新装配就能读取最新内容和成员列表。聊天角色新建或修改文档、任务时使用 `document.publish`、`task.create` 或 `task.update`，主控删除文档、准则或 Skill 时使用对应的 `*.delete` 动作；执行后扫描直接写入的文件仅作为迁移兼容。准则编辑器、后端模型和运行时文件统一使用 `name` / `description` YAML frontmatter，后端直接解析文件头，不从 `id` / `summary` 转换。
 
 ### Mock(`MockAdapter`)
 

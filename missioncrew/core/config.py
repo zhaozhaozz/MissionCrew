@@ -11,6 +11,7 @@ MC_HOME 布局:
   projects/<id>/guideline-history.git  准则 Git 版本历史(与工作目录分离)
   projects/<id>/runtime-context/guidelines/*.md  Runtime 按需读取的准则全文
   projects/<id>/skills/<skill-id>/SKILL.md       项目完整 Skill 投放目录
+  projects/<id>/runtime-context/skills/<skill-id> 已启用 Skill 的共享链接视图
   secrets.yaml      受控资源的密钥(secret_ref -> value),不进入任何 Prompt
 """
 from __future__ import annotations

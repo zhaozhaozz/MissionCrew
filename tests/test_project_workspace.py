@@ -18,8 +18,10 @@ from missioncrew.collab.resource_urls import (channel_resource_url,
                                               skill_resource_url,
                                               task_resource_url)
 from missioncrew.collab.skills import (materialize_project_skills,
-                                       project_skill_library_dir)
+                                       project_skill_library_dir,
+                                       skill_context_dir)
 from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
+                                          migrate_resource_workspace_links,
                                           sync_task_files)
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend, Channel,
                                      ExecutionConfig, GuidelineDocument, ProjectResource,
@@ -220,8 +222,12 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     dev_guideline = guideline_dir / "dev-guide.md"
     tester_guideline = guideline_dir / "tester-guide.md"
     assert str(guideline_dir) in chat_cfg.prompt
+    assert guideline_dir.is_symlink()
+    assert guideline_dir.resolve() == guideline_context_dir(project)
     assert str(dev_guideline) in chat_cfg.prompt
     assert str(guideline_dir.parent) in chat_cfg.allowed_dirs
+    assert str(guideline_context_dir(project)) in chat_cfg.allowed_dirs
+    assert str(skill_context_dir(project)) in chat_cfg.allowed_dirs
     assert not (guideline_dir / "disabled-guide.md").exists()
     assert dev_guideline.read_text() == (
         "---\nname: dev-guide\ndescription: 开发代码或 API 时使用\n---\n\n"
@@ -247,6 +253,8 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert task_cfg.env["MISSIONCREW_GUIDELINES_DIR"] in task_cfg.prompt
     task_guideline_dir = Path(task_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
     assert task_guideline_dir != guideline_dir
+    assert task_guideline_dir.is_symlink()
+    assert task_guideline_dir.resolve() == guideline_dir.resolve()
     assert not (task_guideline_dir / "stale.md").exists()
 
     # description 不变但正文更新时，内容版本仍会改变公共上下文版本，已有 session
@@ -502,10 +510,14 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
 
     shared = [str(repo_a.resolve()), str(repo_b.resolve()), str(library.root.resolve())]
     skill_root = str(project_skill_library_dir("webshop").resolve())
+    guideline_view = str(guideline_context_dir(project))
+    skill_view = str(skill_context_dir(project))
     chat_workspace = str(Path(chat_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
     task_workspace = str(Path(task_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
-    assert task_cfg.allowed_dirs == [*shared, task_workspace, skill_root]
-    assert chat_cfg.allowed_dirs == [*shared, chat_workspace, skill_root]
+    assert task_cfg.allowed_dirs == [
+        *shared, task_workspace, guideline_view, skill_view, skill_root]
+    assert chat_cfg.allowed_dirs == [
+        *shared, chat_workspace, guideline_view, skill_view, skill_root]
     assert all(path in chat_cfg.prompt and path in task_cfg.prompt for path in shared)
     assert chat_workspace in chat_cfg.prompt and task_workspace in task_cfg.prompt
 
@@ -1004,6 +1016,10 @@ def test_legacy_runtime_files_migrate_under_harness_directories(seeded):
     agent_harness.mkdir(parents=True)
     (agent_harness / "docs").symlink_to(library_for("webshop").root,
                                          target_is_directory=True)
+    (agent_harness / "guidelines").mkdir()
+    (agent_harness / "guidelines" / "stale.md").write_text("stale")
+    (agent_harness / "skills").mkdir()
+    (agent_harness / "skills" / "stale").mkdir()
 
     assert migrate_legacy_workspace_layout() == 5
     assert not (home / "channel-history").exists()
@@ -1024,6 +1040,16 @@ def test_legacy_runtime_files_migrate_under_harness_directories(seeded):
     assert (agent_harness / "documents").resolve() \
         == library_for("webshop").root.resolve()
     assert migrate_legacy_workspace_layout() == 0
+    assert migrate_resource_workspace_links(seeded) == 2
+    assert (agent_harness / "guidelines").is_symlink()
+    assert (agent_harness / "guidelines").resolve() \
+        == guideline_context_dir(seeded.get_project("webshop"))
+    assert not (agent_harness / "guidelines" / "stale.md").exists()
+    assert (agent_harness / "skills").is_symlink()
+    assert (agent_harness / "skills").resolve() \
+        == skill_context_dir(seeded.get_project("webshop"))
+    assert not (agent_harness / "skills" / "stale").exists()
+    assert migrate_resource_workspace_links(seeded) == 0
 
 
 def test_binary_document_read_returns_415(seeded):

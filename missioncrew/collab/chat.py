@@ -147,6 +147,8 @@ ORCHESTRATOR_TEMPLATE = """\
 - 验证、审查、安全和审批等项目要求也统一写入准则 Markdown，由 Agent 根据任务
   判断是否适用；平台不再维护或机械执行独立的验证规则。`document.publish` 写入项目
   版本化文档库并立即生成 Git 版本，覆盖已有路径时必须显式传 `overwrite: true`。
+  删除文档、准则或 Skill 时分别使用 `document.delete`、`guideline.delete`、`skill.delete`；
+  删除仅限主控，文档和准则仍保留版本历史，Skill 会移入项目回收目录。
 - 配置页面协作消息会明确给出当前页面、当前条目、未保存草稿，以及用户选中的
   字段、行号和原文。只提问或讨论时直接回答，不要改配置；明确要求创建或修改时，
   必须使用对应的 `guideline.save` / `skill.save` / `document.publish` 动作实际落库。

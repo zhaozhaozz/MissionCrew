@@ -22,11 +22,12 @@ from typing import Callable, Optional
 
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
-from .guidelines import save_guideline
+from .guidelines import delete_guideline, save_guideline
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, skill_resource_url,
                             task_resource_url)
-from .skills import save_project_skill, save_project_skill_markdown
+from .skills import (delete_project_skill, save_project_skill,
+                     save_project_skill_markdown)
 from .workspace import chat_workspace_dir, write_task_files
 from ..core.models import (BOARD_WIDGET_TYPES, TIER_ORDER, Board, BoardWidget,
                            Channel, Project, ProjectSkill,
@@ -108,6 +109,11 @@ ACTION_DEFINITIONS = {
             "message": "可选版本说明",
         },
     },
+    "document.delete": {
+        "description": "删除项目版本化文档并保留 Git 历史",
+        "orchestrator_only": True,
+        "arguments": {"path": "文档库相对路径"},
+    },
     "message.publish": {
         "description": "向本项目频道发布消息，并用 mentions 显式调度角色",
         "orchestrator_only": True,
@@ -140,11 +146,21 @@ ACTION_DEFINITIONS = {
         "arguments": {"markdown": "含 name/description frontmatter 的全文",
                       "enabled": "是否启用", "original_name": "重命名前名称"},
     },
+    "guideline.delete": {
+        "description": "删除准则 Markdown 并保留 Git 历史",
+        "orchestrator_only": True,
+        "arguments": {"name": "准则 name"},
+    },
     "skill.save": {
         "description": "保存完整 Skill Markdown",
         "orchestrator_only": True,
         "arguments": {"id": "Skill id", "markdown": "完整 SKILL.md",
                       "enabled": "是否启用"},
+    },
+    "skill.delete": {
+        "description": "删除 Skill 包并移入项目回收目录",
+        "orchestrator_only": True,
+        "arguments": {"id": "Skill id"},
     },
 }
 
@@ -160,6 +176,7 @@ ACTION_ARGUMENTS = {
     "document.publish": {
         "path", "content", "content_base64", "overwrite", "message",
     },
+    "document.delete": {"path"},
     "message.publish": {
         "channel", "content", "mentions", "_legacy_explicit_mentions",
     },
@@ -167,9 +184,11 @@ ACTION_ARGUMENTS = {
     "dashboard.save": {"id", "name", "description", "layout", "mode"},
     "dashboard.delete": {"id"},
     "guideline.save": {"markdown", "enabled", "original_name"},
+    "guideline.delete": {"name"},
     "skill.save": {
         "id", "markdown", "enabled", "name", "description", "instructions",
     },
+    "skill.delete": {"id"},
 }
 
 
@@ -402,12 +421,15 @@ class AgentActionService:
             "task.create": self._create_task,
             "task.update": self._update_task,
             "document.publish": self._publish_document,
+            "document.delete": self._delete_document,
             "message.publish": self._publish_message,
             "channel.create": self._create_channel,
             "dashboard.save": self._save_dashboard,
             "dashboard.delete": self._delete_dashboard,
             "guideline.save": self._save_guideline,
+            "guideline.delete": self._delete_guideline,
             "skill.save": self._save_skill,
+            "skill.delete": self._delete_skill,
         }
         return handlers[action](project, identity, arguments, context)
 
@@ -554,6 +576,26 @@ class AgentActionService:
             "resource_url": url,
         }
 
+    def _delete_document(self, project: Project, identity: AgentIdentity,
+                         arguments: dict, _context: AgentRunContext) -> dict:
+        path = safe_relative_path(str(arguments.get("path", "")))
+        actor = f"role:{identity.role_id}"
+        try:
+            revision = library_for(project.id).delete(path, actor=actor)
+        except FileNotFoundError as exc:
+            raise AgentToolError("not_found", str(exc), 404) from exc
+        self.store.audit(
+            actor, "document_deleted",
+            detail=f"project={project.id} path={path} revision={revision}",
+        )
+        return {
+            "summary": f"已删除文档 {path}",
+            "path": path,
+            "deleted": True,
+            "revision": revision,
+            "resource_url": document_resource_url(project.id, path),
+        }
+
     def _publish_message(self, project: Project, identity: AgentIdentity,
                          arguments: dict, context: AgentRunContext) -> dict:
         raw_channel = str(arguments.get("channel", "")).strip()
@@ -692,6 +734,21 @@ class AgentActionService:
             "revision": revision,
         }
 
+    def _delete_guideline(self, project: Project, identity: AgentIdentity,
+                          arguments: dict, _context: AgentRunContext) -> dict:
+        name = self._control_id(arguments.get("name"))
+        try:
+            revision = delete_guideline(
+                self.store, project, name, actor=f"role:{identity.role_id}")
+        except FileNotFoundError as exc:
+            raise AgentToolError("not_found", str(exc), 404) from exc
+        return {
+            "summary": f"已删除准则文档 {name}",
+            "deleted": True,
+            "revision": revision,
+            "resource_url": guideline_resource_url(project.id, name),
+        }
+
     def _save_skill(self, project: Project, identity: AgentIdentity,
                     arguments: dict, _context: AgentRunContext) -> dict:
         raw_id = self._control_id(arguments.get("id"))
@@ -715,6 +772,21 @@ class AgentActionService:
         return {
             "summary": f"已保存 Skill [{saved.name or raw_id}]({url})",
             "skill": saved.__dict__, "resource_url": url,
+        }
+
+    def _delete_skill(self, project: Project, identity: AgentIdentity,
+                      arguments: dict, _context: AgentRunContext) -> dict:
+        skill_id = self._control_id(arguments.get("id"))
+        try:
+            delete_project_skill(
+                self.store, project, skill_id,
+                actor=f"role:{identity.role_id}")
+        except FileNotFoundError as exc:
+            raise AgentToolError("not_found", str(exc), 404) from exc
+        return {
+            "summary": f"已删除 Skill {skill_id}",
+            "deleted": True,
+            "resource_url": skill_resource_url(project.id, skill_id),
         }
 
     @staticmethod

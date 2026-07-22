@@ -26,8 +26,8 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 ├── project.md
 ├── documents/              # 项目版本化文档库入口
 ├── tasks/                  # 项目任务的 Markdown 视图
-├── guidelines/             # 已启用准则的 Markdown 快照
-├── skills/                 # 已启用 Skill，每项含 SKILL.md
+├── guidelines/             # 已启用准则的项目级共享实时视图
+├── skills/                 # 已启用 Skill 的项目级共享实时视图
 ├── channel-history.json    # 仅聊天工作区；按角色隔离
 ├── .agent-tool-token       # 仅聊天工作区；0600 角色令牌
 ├── evidence/               # 仅结构化任务；阶段证据及 manifest
@@ -38,7 +38,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ### `documents/`
 
-`documents/` 是指向项目文档工作树的符号链接。Agent 可以读取 Markdown 或其他项目资料；聊天角色发布或替换文件时应使用 `document.publish` Agent Tool 动作，以便在当前回合得到路径、覆盖、大小和权限错误，并产生带角色身份的审计。执行结束后扫描直接编辑内容只作为旧会话兼容。结构化任务仍按自己的工作区协议写入。该文档库的 Git 历史不属于业务代码仓。人类从 Web 文档页上传的文本或二进制文件也进入同一工作树和版本历史，不会复制到业务源码目录。
+`documents/` 是指向项目文档工作树的符号链接。Agent 可以读取 Markdown 或其他项目资料；聊天角色发布或替换文件时应使用 `document.publish` Agent Tool 动作，以便在当前回合得到路径、覆盖、大小和权限错误，并产生带角色身份的审计。主控可用 `document.delete` 删除文件，删除本身也会形成 Git 版本。执行结束后扫描直接编辑内容只作为旧会话兼容。结构化任务仍按自己的工作区协议写入。该文档库的 Git 历史不属于业务代码仓。人类从 Web 文档页上传的文本或二进制文件也进入同一工作树和版本历史，不会复制到业务源码目录。
 
 准则和 Skill 中需要引用项目文档时，使用普通 Markdown 链接。Agent 根据任务按需读取链接目标，不需要平台维护额外的引用清单。
 
@@ -74,9 +74,20 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ### `guidelines/` 与 `skills/`
 
-`guidelines/` 保存已启用准则的完整 Markdown 快照，frontmatter 使用 `name` 和 `description`。其源文件与项目文档一样，由普通工作树和独立 bare Git 历史管理；恢复历史也会写入新版本。公共上下文只提供准则摘要、内容版本和文件路径，Agent 先根据 `description` 判断相关性，需要时再读取全文。
+`guidelines/` 指向项目级共享实时视图，保存所有已启用准则的完整 Markdown，frontmatter 使用 `name` 和 `description`。准则源文件由普通工作树和独立 bare Git 历史管理；保存、恢复、启停或删除时，平台先更新事实源和项目索引，再以原子文件替换刷新实时视图，最后才返回成功。所有频道、角色和结构化任务工作区都链接到同一视图，所以同一 Agent 回合在 `guideline.save` 返回后重新读取即可得到新版，不需要等待下一次装配；删除或停用也会立即从视图消失。服务启动时会把历史工作区中的准则副本迁移成共享链接。公共上下文只提供准则摘要、内容版本和文件路径，Agent 先根据 `description` 判断相关性，需要时再读取全文。
 
-`skills/<id>/` 链接到项目的完整 Skill 目录，除 `SKILL.md` 外还可包含 `scripts/`、`references/`、`assets/` 等相对文件。准则和 Skill 不绑定角色或 Runtime，由 Agent 结合当前任务判断是否适用。Skill 目录中任意文件或项目设置变化后，平台在下一次装配时刷新内容版本和持久公共上下文；复用中的 Runtime 会话会收到新版本上下文替换旧版本。导入和直接投放规则见 [项目 Skill 完整目录](skills.md)。
+`skills/` 同样指向项目级共享实时视图，其中每个已启用 Skill 都链接到项目的完整 Skill 目录，除 `SKILL.md` 外还可包含 `scripts/`、`references/`、`assets/` 等相对文件。`skill.save`、`skill.delete`、Web 编辑和扫描完成前都会刷新共享视图，因此动作成功返回后，新建、启停、内容更新和删除都已对所有既有工作区可见。准则和 Skill 不绑定角色或 Runtime，由 Agent 结合当前任务判断是否适用。直接复制到项目 Skill 投放目录的新包会在下一次扫描或执行装配时进入项目索引。导入和直接投放规则见 [项目 Skill 完整目录](skills.md)。
+
+## 一致性边界
+
+| 资源 | 事实源 | Agent 入口 | 成功返回时的保证 |
+| --- | --- | --- | --- |
+| 文档 | 项目文档工作树 + 独立 Git 历史 | 工作树目录链接 | 发布、覆盖或删除已直接反映到所有工作区 |
+| 准则 | 准则工作树 + Git 历史 + Project 索引 | 项目级已启用准则实时视图 | 索引和原子镜像均已刷新；所有工作区读取同一版 |
+| Skill | 项目 Skill 包目录 + Project 索引 | 项目级已启用 Skill 实时视图 | 包内容和启用成员列表均已刷新 |
+| 任务 | SQLite 任务记录 | 每次装配生成的角色工作区 Markdown | 执行开始时从 Store 重建；工具修改会刷新调用角色的快照并以 `snapshot_updated_at` 防止旧写覆盖 |
+
+这里的“成功返回”指 Agent Tool 或 Web API 已完成整个同步链。若 Git、索引或实时视图任一步失败，调用会返回结构化错误而不是成功；准则视图使用同目录临时文件替换，读取者只会看到完整旧版或完整新版，不会读到半写入正文。已经发送给 Runtime 的 Prompt 不会在回合中被反向修改，但 Prompt 给出的文件路径会实时指向新版；下一轮装配会重新计算公共上下文版本并把新摘要发给复用 session。
 
 ### `channel-history.json`
 

@@ -117,7 +117,7 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
 
 def test_orchestrator_guideline_tool_records_role_version(seeded):
     chat = ChatEngine(seeded)
-    _config, run_id, token = _run_config(seeded, chat, "lead")
+    config, run_id, token = _run_config(seeded, chat, "lead")
     client = TestClient(create_app())
 
     response = client.post("/api/agent/v1/actions", headers={
@@ -140,6 +140,61 @@ def test_orchestrator_guideline_tool_records_role_version(seeded):
         "task-validation.md", limit=1)
     assert history[0]["revision"] == revision
     assert history[0]["actor"] == "role:lead"
+    guideline_dir = Path(config.env["MISSIONCREW_GUIDELINES_DIR"])
+    assert guideline_dir.is_symlink()
+    assert (guideline_dir / "task-validation.md").read_text(encoding="utf-8") \
+        .endswith("\n# 新版本\n")
+
+
+def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
+    chat = ChatEngine(seeded)
+    config, run_id, token = _run_config(seeded, chat, "lead")
+    client = TestClient(create_app())
+    headers = {"Authorization": f"Bearer {token}"}
+
+    def call(action: str, request_id: str, arguments: dict):
+        response = client.post("/api/agent/v1/actions", headers=headers, json={
+            "action": action, "run_id": run_id, "request_id": request_id,
+            "arguments": arguments,
+        })
+        assert response.status_code == 200, response.text
+        return response.json()["result"]
+
+    guidelines = Path(config.env["MISSIONCREW_GUIDELINES_DIR"])
+    skills = Path(config.env["MISSIONCREW_SKILLS_DIR"])
+    documents = Path(config.env["MISSIONCREW_DOCUMENTS_DIR"])
+    guideline_path = guidelines / "tool-managed.md"
+    skill_path = skills / "tool-managed" / "SKILL.md"
+    document_path = documents / "tool-managed" / "note.md"
+
+    call("guideline.save", "save-guideline", {
+        "markdown": "---\nname: tool-managed\ndescription: 工具一致性测试\n---\n\n正文\n",
+        "enabled": True,
+    })
+    call("skill.save", "save-skill", {
+        "id": "tool-managed",
+        "markdown": "---\nname: tool-managed\ndescription: 工具一致性测试\n---\n\n说明\n",
+        "enabled": True,
+    })
+    call("document.publish", "save-document", {
+        "path": "tool-managed/note.md", "content": "正文\n",
+    })
+    assert guideline_path.is_file() and "正文" in guideline_path.read_text()
+    assert skill_path.is_file() and "说明" in skill_path.read_text()
+    assert document_path.read_text() == "正文\n"
+
+    guideline_result = call(
+        "guideline.delete", "delete-guideline", {"name": "tool-managed"})
+    skill_result = call("skill.delete", "delete-skill", {"id": "tool-managed"})
+    document_result = call(
+        "document.delete", "delete-document", {"path": "tool-managed/note.md"})
+    assert guideline_result["deleted"] is skill_result["deleted"] is True
+    assert document_result["deleted"] is True
+    assert len(guideline_result["revision"]) == 40
+    assert len(document_result["revision"]) == 40
+    assert not guideline_path.exists()
+    assert not skill_path.exists()
+    assert not document_path.exists()
 
 
 def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seeded):

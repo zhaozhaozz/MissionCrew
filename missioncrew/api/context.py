@@ -13,7 +13,8 @@ from ..collab.chat import ChatEngine
 from ..collab.guidelines import sync_all_guideline_libraries
 from ..collab.skills import (sync_all_project_skill_libraries,
                              sync_project_skill_library)
-from ..collab.workspace import migrate_legacy_workspace_layout
+from ..collab.workspace import (migrate_legacy_workspace_layout,
+                                migrate_resource_workspace_links)
 from ..core import seed as seed_mod
 from ..core.config import db_path
 from ..core.models import Project
@@ -49,6 +50,11 @@ class ApiContext:
             store.audit("platform", "agent_workspace_layout_migrated",
                         detail=f"paths={migrated_paths}")
         sync_all_project_skill_libraries(store)
+        resource_links = migrate_resource_workspace_links(store)
+        if resource_links:
+            store.audit(
+                "platform", "resource_workspace_links_migrated",
+                detail=f"paths={resource_links}")
         ctx = cls(store=store, engine=Engine(store), chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends
         return ctx

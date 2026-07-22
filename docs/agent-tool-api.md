@@ -60,12 +60,14 @@ Runtime
 | --- | --- | --- |
 | `task.create` / `task.update` | 允许 | 允许 |
 | `document.publish` | 允许 | 允许 |
+| `document.delete` | 禁止 | 允许 |
 | `message.publish` | 禁止 | 允许 |
 | `channel.create` | 禁止 | 允许 |
 | `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
-| `guideline.save` / `skill.save` | 禁止 | 允许 |
+| `guideline.save` / `guideline.delete` | 禁止 | 允许 |
+| `skill.save` / `skill.delete` | 禁止 | 允许 |
 
-`guideline.save` 与 Web 准则编辑器共用 Git 版本库。每次 Markdown 内容变更都返回 `revision`，记录为当前角色的操作；重命名会继续原文件的历史链。
+`guideline.save` 与 Web 准则编辑器共用 Git 版本库。每次 Markdown 内容变更都返回 `revision`，记录为当前角色的操作；重命名会继续原文件的历史链。删除属于主控权限：文档和准则删除会形成新 Git 提交，历史不会被抹除；Skill 包删除会移入项目回收目录。工具响应不会暴露回收目录的本地路径。
 
 `message.publish` 的 `mentions` 是独立的角色 ID 数组。只有数组中的合法角色会被调度；正文里出现的 `@reviewer` 等文本只是普通内容。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。
 
@@ -87,6 +89,7 @@ Runtime
 ```
 
 - 文档必须且只能提供 UTF-8 `content` 或 `content_base64`；单文件上限 50 MB。默认不覆盖已有文件，显式传 `overwrite: true` 才能覆盖并形成新版本。
+- `document.delete`、`guideline.delete` 和 `skill.delete` 都要求项目主控身份。目标不存在时返回 `not_found`，不会把删除不存在的资源误报为成功。
 - `task.update` 必须带读取任务时得到的 `snapshot_updated_at`。任务已经被其他执行更新时返回 `version_conflict`，防止旧快照覆盖新状态。
 - 频道、面板、准则和 Skill 的 ID、项目归属、工作目录和 Markdown 属性都在统一动作实现中校验。
 - 成功结果包含规范 `/resources/...` URL；Agent 应把该 URL 放入频道回复，不应发布 `.missioncrew` 的真实路径。

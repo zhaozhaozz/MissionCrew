@@ -52,6 +52,44 @@ def project_skill_library_dir(project_id: str) -> Path:
     return root
 
 
+def skill_context_dir(project: Project) -> Path:
+    """返回 Runtime 只暴露已启用 Skill 的共享目录视图。"""
+    return (projects_dir() / project.id / "runtime-context" / "skills").resolve()
+
+
+def _remove_context_entry(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def write_skill_context(project: Project) -> Path:
+    """刷新项目级 Skill 视图；所有 Agent workspace 共享这个入口。"""
+    root = project_skill_library_dir(project.id)
+    directory = skill_context_dir(project)
+    directory.mkdir(parents=True, exist_ok=True)
+    with _project_lock(project.id):
+        expected = {
+            skill.id for skill in project.skills
+            if (skill.enabled and _ID_RE.fullmatch(skill.id)
+                and (root / skill.id).is_dir()
+                and not (root / skill.id).is_symlink())
+        }
+        for stale in directory.iterdir():
+            if stale.name not in expected:
+                _remove_context_entry(stale)
+        for skill_id in sorted(expected):
+            target = root / skill_id
+            link = directory / skill_id
+            if link.is_symlink() and link.resolve() == target.resolve():
+                continue
+            if link.exists() or link.is_symlink():
+                _remove_context_entry(link)
+            link.symlink_to(target.resolve(), target_is_directory=True)
+    return directory
+
+
 def _initialization_marker(project_id: str) -> Path:
     return projects_dir() / project_id / ".skills-initialized"
 
@@ -266,6 +304,7 @@ def sync_project_skill_library(store: Store, project: Project,
                     detail=(f"project={project.id} added={sorted(new_ids - old_ids)} "
                             f"removed={sorted(old_ids - new_ids)}"),
                 )
+        write_skill_context(project)
         return project, issues
 
 
@@ -327,6 +366,7 @@ def save_project_skill(store: Store, project: Project, skill: ProjectSkill,
         saved = next(item for item in project.skills if item.id == skill.id)
         saved.enabled = skill.enabled
         store.put_project(project)
+        write_skill_context(project)
         store.audit(actor, "skill_saved", detail=f"project={project.id} skill={skill.id}")
         return saved
 
@@ -351,6 +391,7 @@ def save_project_skill_markdown(store: Store, project: Project, skill_id: str,
         saved = next(item for item in project.skills if item.id == skill_id)
         saved.enabled = enabled
         store.put_project(project)
+        write_skill_context(project)
         store.audit(actor, "skill_saved", detail=f"project={project.id} skill={skill_id}")
         return saved
 

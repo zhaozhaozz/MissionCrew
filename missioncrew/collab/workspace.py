@@ -18,11 +18,13 @@ from typing import TYPE_CHECKING
 
 import yaml
 
-from ..core.config import mc_home
+from ..core.config import mc_home, workspaces_dir
 from ..core.models import Project, Task, TIER_ORDER, new_id
 from .documents import document_resource_url
+from .project_context import guideline_context_dir, write_guideline_context
 from .resource_urls import missioncrew_project_url
-from .skills import project_skill_library_dir, sync_project_skill_library
+from .skills import (skill_context_dir, sync_project_skill_library,
+                     write_skill_context)
 
 if TYPE_CHECKING:
     from .documents import DocumentLibrary
@@ -237,12 +239,52 @@ def _remove_managed_workspace_entry(path: Path) -> None:
         shutil.rmtree(path)
 
 
-def _link_managed_skill(link: Path, target: Path) -> None:
+def _link_managed_directory(link: Path, target: Path) -> bool:
+    """把平台拥有的 workspace 目录收敛为共享实时视图入口。"""
+    target.mkdir(parents=True, exist_ok=True)
     if link.is_symlink() and link.resolve() == target.resolve():
-        return
+        return False
     if link.exists() or link.is_symlink():
         _remove_managed_workspace_entry(link)
+    link.parent.mkdir(parents=True, exist_ok=True)
     link.symlink_to(target.resolve(), target_is_directory=True)
+    return True
+
+
+def _project_workspace_roots(store: Store, project_id: str) -> list[Path]:
+    """列出已经存在的聊天与结构化任务 harness，不提前创建未使用工作区。"""
+    roots: set[Path] = set()
+    channel_root = (mc_home() / "agent-workspaces" / _safe_segment(project_id)
+                    / "channels")
+    if channel_root.is_dir():
+        for root in channel_root.glob("*/*/.missioncrew"):
+            if root.is_dir():
+                roots.add(root.resolve())
+    for task in store.list_tasks():
+        if task.project_id != project_id:
+            continue
+        root = task_workspace_dir(workspaces_dir() / task.id)
+        if root.is_dir():
+            roots.add(root.resolve())
+    return sorted(roots, key=str)
+
+
+def migrate_resource_workspace_links(store: Store) -> int:
+    """把历史准则与 Skill 目录替换为项目级实时视图。"""
+    changed = 0
+    for project in store.list_projects():
+        write_guideline_context(project)
+        write_skill_context(project)
+        for root in _project_workspace_roots(store, project.id):
+            targets = {
+                "guidelines": guideline_context_dir(project),
+                "skills": skill_context_dir(project),
+            }
+            for name, target in targets.items():
+                entry = root / name
+                if entry.exists() or entry.is_symlink():
+                    changed += int(_link_managed_directory(entry, target))
+    return changed
 
 
 def _render_project_file(project: Project) -> str:
@@ -267,8 +309,8 @@ def _render_workspace_readme(workspace: AgentWorkspace, project_id: str,
         """## 修改 MissionCrew 资源
 
 当前聊天角色必须使用 Prompt 中的 MissionCrew Agent Tool 发布文档、创建或修改任务、
-发送消息以及变更频道、面板、准则或 Skill。工具会在当前回合返回结构化错误并记录角色
-审计。`documents/` 和 `tasks/` 中的直接写入同步只用于旧会话兼容。
+发送消息、创建频道，以及保存或删除面板、文档、准则或 Skill。工具会在当前回合返回
+结构化错误并记录角色审计。`documents/` 和 `tasks/` 中的直接写入同步只用于旧会话兼容。
 
 不要读取或打印 `.agent-tool-token`；使用 Agent Tool CLI，它会自行读取令牌文件。每次
 写调用都显式传入最新 Prompt 给出的 `run_id`。
@@ -295,8 +337,8 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 
 - `documents/`：项目版本化文档库的读取入口；协作草稿、报告和普通聊天产生的验证记录也归入该文档库。
 - `tasks/`：只存放项目任务的 Markdown 视图，不是草稿、报告或证据目录。状态、阶段和审批由平台管理。
-- `guidelines/`：项目准则 Markdown 快照；根据 description 判断是否需要读取。
-- `skills/`：已启用项目 Skill 的完整目录；先读 SKILL.md，再按需使用同目录 scripts/、references/、assets/ 等文件。
+- `guidelines/`：已启用项目准则的共享实时视图；根据 description 判断是否需要读取。
+- `skills/`：已启用项目 Skill 的共享实时视图；先读 SKILL.md，再按需使用同目录 scripts/、references/、assets/ 等文件。
 - `project.md`：项目简介与资源索引。
 {history}
 {mutation}
@@ -512,29 +554,13 @@ def prepare_agent_workspace(store: Store, project: Project,
             else:
                 temporary_docs.rename(workspace.documents)
         _link_directory(workspace.documents, library.root)
-        workspace.guidelines.mkdir(parents=True, exist_ok=True)
-        enabled_guidelines = {guideline.name: guideline for guideline in project.guidelines
-                              if guideline.enabled}
-        for guideline in enabled_guidelines.values():
-            _atomic_write_text(workspace.guidelines / f"{guideline.name}.md",
-                               guideline.render_markdown())
-        for stale in workspace.guidelines.glob("*.md"):
-            if stale.stem not in enabled_guidelines:
-                stale.unlink()
+        write_guideline_context(project)
+        _link_managed_directory(
+            workspace.guidelines, guideline_context_dir(project))
         (root / "guidelines.json").unlink(missing_ok=True)
 
-        workspace.skills.mkdir(parents=True, exist_ok=True)
-        skill_library = project_skill_library_dir(project.id)
-        enabled_skills = {skill.id: skill for skill in project.skills if skill.enabled}
-        expected_names = {_safe_segment(skill_id) for skill_id in enabled_skills}
-        for stale in workspace.skills.iterdir():
-            if stale.name not in expected_names:
-                _remove_managed_workspace_entry(stale)
-        for skill_id in enabled_skills:
-            _link_managed_skill(
-                workspace.skills / _safe_segment(skill_id),
-                skill_library / skill_id,
-            )
+        write_skill_context(project)
+        _link_managed_directory(workspace.skills, skill_context_dir(project))
 
         write_task_files(store, project.id, workspace.tasks)
         _atomic_write_text(root / "project.md", _render_project_file(project))

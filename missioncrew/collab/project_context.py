@@ -10,7 +10,8 @@ import threading
 from .documents import DocumentLibrary, document_resource_url
 from .resource_urls import (guideline_resource_url, missioncrew_project_url,
                             skill_resource_url)
-from .skills import project_skill_library_dir, skill_directory_version
+from .skills import (project_skill_library_dir, skill_context_dir,
+                     skill_directory_version, write_skill_context)
 from ..core.config import projects_dir
 from ..core.models import GuidelineDocument, Project, ProjectSkill
 
@@ -88,8 +89,12 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary,
     found = []
     seen = set()
     write_guideline_context(project)
-    context_dirs = ([str(workspace_dir)] if workspace_dir is not None
-                    else [str(guideline_context_dir(project))])
+    write_skill_context(project)
+    context_dirs = ([str(workspace_dir), str(guideline_context_dir(project)),
+                     str(skill_context_dir(project))]
+                    if workspace_dir is not None
+                    else [str(guideline_context_dir(project)),
+                          str(skill_context_dir(project))])
     context_dirs.append(str(project_skill_library_dir(project.id)))
     for raw in [*project.repo_paths(), str(library.root), *context_dirs]:
         path = Path(raw).expanduser()
