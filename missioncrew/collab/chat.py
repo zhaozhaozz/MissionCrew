@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import sys
 import threading
 import time
 import uuid
@@ -25,20 +26,19 @@ from typing import Optional
 
 from ..runtime import runtime_manager
 from ..core.config import mc_home
+from .agent_tools import (AgentActionService, AgentToolError,
+                          default_agent_tool_url)
 from .documents import (document_resource_url, library_for,
-                        normalize_document_resource_urls, safe_relative_path)
+                        normalize_document_resource_urls)
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, missioncrew_project_url,
                             skill_resource_url)
 from .workspace import (chat_workspace_dir, platform_history_dir,
                         prepare_agent_workspace, sync_task_files,
                         write_task_files)
-from ..core.models import (BOARD_WIDGET_TYPES, DEFAULT_MAX_CHAIN_RUNS, Board,
-                           BoardWidget, Channel, ExecutionConfig,
-                           GuidelineDocument, ProjectSkill, Role, RuntimePolicy)
-from .project_context import (project_allowed_dirs, render_project_context,
-                              write_guideline_context)
-from .skills import save_project_skill, save_project_skill_markdown
+from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, Channel, ExecutionConfig,
+                           Role, RuntimePolicy)
+from .project_context import project_allowed_dirs, render_project_context
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -46,7 +46,6 @@ EXPLICIT_MENTION_RE = re.compile(r"@\[([\w-]+)\]")
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
 CHAT_TIMEOUT = 900     # 单次聊天执行超时(秒)
 ACTION_RE = re.compile(r"<missioncrew-action>(.*?)</missioncrew-action>", re.S)
-CONTROL_ID_RE = re.compile(r"[\w-]+")
 
 @dataclass
 class _PendingInteraction:
@@ -72,6 +71,7 @@ CHAT_COMMON_BODY = """\
 当前频道:#{channel_name}
 频道用途/讨论边界:{channel_purpose}
 {project_section}
+{tool_section}
 {orchestrator_section}\
 工作目录就是当前目录,直接在其中读写文件、运行命令完成工作。
 
@@ -101,6 +101,9 @@ DURABLE_CONTEXT_TEMPLATE = """\
 """
 
 TURN_PROMPT = """\
+# MissionCrew Tool 本轮上下文
+{tool_context}
+
 # 触发消息(JSON,你的任务简报由发起者撰写)
 {trigger}
 """
@@ -114,21 +117,13 @@ RECOVERY_PROMPT = """\
 
 ORCHESTRATOR_TEMPLATE = """\
 # 项目主控权限
-你是本项目唯一主控，负责理解项目目标、拆解工作并调度其他角色。可在回复中加入
-一个或多个控制动作（动作会被平台执行并从公开回复中移除，执行结果附在回复末尾）：
-<missioncrew-action>{{"action":"create_channel","id":"channel-id","name":"名称","purpose":"任务边界","workdir":"可选，项目代码仓路径"}}</missioncrew-action>
-<missioncrew-action>{{"action":"post_message","channel":"channel-id","content":"@[角色] 开工简报；正文里的普通 @角色 仅作引用"}}</missioncrew-action>
-<missioncrew-action>{{"action":"create_board","id":"board-id","name":"需求管理","description":"用途","layout":[]}}</missioncrew-action>
-<missioncrew-action>{{"action":"update_board","id":"board-id","name":"新名称"}}</missioncrew-action>
-<missioncrew-action>{{"action":"delete_board","id":"board-id"}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_guideline","markdown":"---\\nname: dev-spec\\ndescription: 涉及代码实现、API 或数据库变更时使用\\n---\\n\\n# 开发规范\\n\\nMarkdown 正文，可用 [部署说明](runbooks/deploy.md) 链接项目文档","enabled":true}}</missioncrew-action>
-<missioncrew-action>{{"action":"save_skill","id":"local-ci","markdown":"---\\nname: 本地 CI\\ndescription: 用途\\n---\\n\\n完整执行说明，可用 [本地 CI](runbooks/local-ci.md) 链接项目文档","enabled":true}}</missioncrew-action>
-<missioncrew-action>{{"action":"write_document","path":"specs/design.md","content":"Markdown 正文","message":"新增设计文档"}}</missioncrew-action>
+你是本项目唯一主控，负责理解项目目标、拆解工作并调度其他角色。所有 MissionCrew
+写操作必须使用上方显式 Agent Tool；不要在最终回复中生成 missioncrew-action 文本块。
 要点：
-- create_channel 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
+- `channel.create` 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
   不填时若项目只配了一个代码仓则自动使用它。新频道创建后是空的，
-  用 post_message 把任务简报发进去，并用 @[角色] 显式选择执行者开工。
-- update_board 不携带 layout 字段时保留现有布局；携带则全量替换。
+  用 `message.publish` 把任务简报发进去，并通过 `mentions` 数组显式选择执行者开工。
+- `dashboard.save` 不携带 layout 字段时保留现有布局；携带则全量替换。
   layout 每项含 id、type、title、x、y、width、height、content。
   type 是通用展示原语（领域含义来自数据，不是类型）：
     markdown（content.markdown）、table（columns+rows）、card（metrics 数值卡）、
@@ -141,20 +136,20 @@ ORCHESTRATOR_TEMPLATE = """\
     {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
-- save_guideline 接收完整 markdown，文件必须以只含 name、description 的 YAML
+- `guideline.save` 接收完整 markdown，文件必须以只含 name、description 的 YAML
   frontmatter 开头；后端直接读取这两个属性，不使用 id/title/summary，也不做字段转换。
-  修改并重命名现有准则时传 original_name。save_skill 按 id 新建或覆盖，markdown 是
+  修改并重命名现有准则时传 original_name。`skill.save` 按 id 新建或覆盖，markdown 是
   完整 SKILL.md 原文：frontmatter 至少含 name、description，附加属性原样保留。
   不要建立文件、Runtime 或角色绑定列表；需要关联项目文档时，在正文中写标准相对
   Markdown 链接。description 应简洁说明适用场景；所有执行者只会收到已启用准则的
   description，并在相关时从对应准则 Markdown 文件读取完整正文。
   Skill 仍结合当前任务自行判断是否适用、是否需要读取链接文件。
 - 验证、审查、安全和审批等项目要求也统一写入准则 Markdown，由 Agent 根据任务
-  判断是否适用；平台不再维护或机械执行独立的验证规则。write_document 写入项目
-  版本化文档库并立即生成 Git 版本。
+  判断是否适用；平台不再维护或机械执行独立的验证规则。`document.publish` 写入项目
+  版本化文档库并立即生成 Git 版本，覆盖已有路径时必须显式传 `overwrite: true`。
 - 配置页面协作消息会明确给出当前页面、当前条目、未保存草稿，以及用户选中的
   字段、行号和原文。只提问或讨论时直接回答，不要改配置；明确要求创建或修改时，
-  必须使用对应的 save_guideline / save_skill / write_document 动作实际落库。
+  必须使用对应的 `guideline.save` / `skill.save` / `document.publish` 动作实际落库。
 - 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
   最合适的角色，用 @[角色ID] 明确调度并写清任务简报。只有这种方括号语法
@@ -197,6 +192,7 @@ class ChatEngine:
         self._stopping_channels: set[str] = set()
         self._interaction_lock = threading.Lock()
         self._interactions: dict[str, _PendingInteraction] = {}
+        self.agent_tools = AgentActionService(store, self.post)
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
@@ -604,7 +600,7 @@ class ChatEngine:
                          detail=f"channel={channel.id} role={role_id} "
                                 f"backend={backend.id} depth={depth} {trace}")
 
-        cfg = self._assemble(channel, role, backend, msg_id)
+        cfg = self._assemble(channel, role, backend, msg_id, run_id=run_id)
         project = self.store.get_project(channel.project_id or "")
         library = library_for(channel.project_id or "")
         document_roots = [
@@ -778,12 +774,14 @@ class ChatEngine:
         combo = f"{b.id}+{model}" + (f"+effort={role.effort}" if role.effort else "")
         return b, f"角色固定组合 {combo}"
 
-    def _assemble(self, channel: Channel, role: Role, backend, msg_id: int) -> ExecutionConfig:
+    def _assemble(self, channel: Channel, role: Role, backend, msg_id: int,
+                  run_id: int = 0) -> ExecutionConfig:
         workdir = Path(channel.workdir) if channel.workdir \
             else mc_home() / "channels" / channel.id
         workdir.mkdir(parents=True, exist_ok=True)
 
         project_section = ""
+        tool_section = ""
         orchestrator_section = ""
         project = None
         workspace = None
@@ -806,6 +804,32 @@ class ChatEngine:
                 env["MISSIONCREW_GUIDELINES_DIR"] = str(workspace.guidelines)
                 env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
+                token_file, _token_id = self.agent_tools.ensure_token_file(
+                    project, channel, role.id, workspace.root)
+                tool_url = default_agent_tool_url()
+                env["MISSIONCREW_AGENT_TOOL_URL"] = tool_url
+                env["MISSIONCREW_AGENT_TOKEN_FILE"] = str(token_file)
+                env["MISSIONCREW_AGENT_RUN_ID"] = str(run_id) if run_id else ""
+                env["MISSIONCREW_AGENT_TOOL_PYTHON"] = sys.executable
+                allowed_actions = self.agent_tools.allowed_actions(project, role.id)
+                tool_section = (
+                    "# MissionCrew Agent Tool\n"
+                    "MissionCrew 平台写操作必须显式调用此工具；命令返回 JSON，失败时退出码非零，"
+                    "请读取 error.code/error.message 并在当前回合修正后重试。不要通过最终回复中的"
+                    "特殊文本块请求平台操作，也不要直接写 documents/tasks 来绕过接口。\n"
+                    f"Python：`{sys.executable}`\n"
+                    f"API：`{tool_url}`\n"
+                    f"Token 文件：`{token_file}`（不要读取、打印或发送其内容）\n"
+                    "查看能力：`\"$MISSIONCREW_AGENT_TOOL_PYTHON\" -m "
+                    "missioncrew.agent_tool actions`\n"
+                    "调用格式：`\"$MISSIONCREW_AGENT_TOOL_PYTHON\" -m "
+                    "missioncrew.agent_tool call <action> --run-id <本轮 run_id> "
+                    "--arguments '<JSON 对象>'`\n"
+                    "发布文件：`\"$MISSIONCREW_AGENT_TOOL_PYTHON\" -m "
+                    "missioncrew.agent_tool publish-file --run-id <本轮 run_id> "
+                    "--source <本地文件> --path <文档库相对路径>`\n"
+                    "可用动作：" + ", ".join(allowed_actions)
+                )
                 allowed_dirs = project_allowed_dirs(project, library, workspace.root)
                 if role.id == project.orchestrator_role_id:
                     orchestrator_section = self._orchestrator_section(project)
@@ -867,6 +891,7 @@ class ChatEngine:
             channel_name=channel.name or channel.id,
             channel_purpose=channel.purpose or "(未说明)",
             project_section=project_section,
+            tool_section=tool_section,
             orchestrator_section=orchestrator_section,
             channel_history_path=channel_history_path,
             collaboration_section=collaboration_section,
@@ -874,7 +899,12 @@ class ChatEngine:
         context_version = hashlib.sha256(common_body.encode("utf-8")).hexdigest()[:16]
         common_prompt = DURABLE_CONTEXT_TEMPLATE.format(
             context_version=context_version, common_body=common_body)
+        tool_context = (
+            f"本轮 run_id：`{run_id}`。所有写调用必须显式传 `--run-id {run_id}`；"
+            "不要依赖持久 Runtime 进程继承的旧环境变量。"
+            if run_id else "本次仅装配上下文，未分配可执行的 run_id。")
         turn_prompt = TURN_PROMPT.format(
+            tool_context=tool_context,
             trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2))
         recovery_prompt = RECOVERY_PROMPT.format(
             history=json.dumps(history_records, ensure_ascii=False, indent=2),
@@ -1154,199 +1184,18 @@ class ChatEngine:
 
     def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
                                     root_id: int, depth: int) -> str:
-        """执行主控回复中的受限平台动作；其他角色的相同文本只会作为普通回复。"""
-        project_id = project.id
+        """兼容旧文本块；所有动作都转调统一 Agent Tool registry。"""
         reports = []
         for match in ACTION_RE.finditer(reply):
             try:
                 action = json.loads(match.group(1))
-                kind = action.get("action")
-                if kind == "post_message":
-                    reports.append(self._action_post_message(
-                        project_id, role_id, action, root_id, depth))
-                    continue
-                if kind in ("save_guideline", "save_skill", "write_document"):
-                    reports.append(self._apply_project_config_action(
-                        project, role_id, action))
-                    continue
-                if kind not in ("create_channel", "create_board",
-                                "update_board", "delete_board"):
-                    raise ValueError(f"不支持的动作: {kind}")
-                raw_id = str(action.get("id", "")).strip()
-                if not CONTROL_ID_RE.fullmatch(raw_id):
-                    raise ValueError("id 只能包含字母、数字、下划线、连字符")
-                item_id = f"{project_id}:{raw_id}"
-                if kind == "create_channel":
-                    if self.store.get_channel(item_id):
-                        raise ValueError("频道已存在")
-                    workdir = self._resolve_channel_workdir(
-                        project, str(action.get("workdir", "")).strip())
-                    channel = Channel(
-                        id=item_id, name=str(action.get("name") or raw_id),
-                        project_id=project_id, purpose=str(action.get("purpose", "")),
-                        workdir=workdir, created_by_role_id=role_id,
-                    )
-                    self.store.put_channel(channel)
-                    where = f"(工作目录 {workdir})" if workdir else ""
-                    reports.append(
-                        f"已创建频道 [#{channel.name}]"
-                        f"({channel_resource_url(project_id, channel.id)}){where}")
-                    self.store.audit(role_id, "channel_created",
-                                     detail=f"project={project_id} channel={item_id}")
-                elif kind in ("create_board", "update_board"):
-                    board = self.store.get_board(item_id)
-                    if kind == "create_board" and board:
-                        raise ValueError("面板已存在")
-                    if kind == "update_board" and (not board or board.project_id != project_id):
-                        raise ValueError("面板不存在")
-                    board = board or Board(id=item_id, project_id=project_id,
-                                           created_by_role_id=role_id)
-                    if "layout" in action:   # 不携带 layout 时保留现有布局
-                        board.layout = self._validate_board_layout(action["layout"])
-                    board.name = str(action.get("name", board.name or raw_id))
-                    board.description = str(action.get("description", board.description))
-                    self.store.put_board(board)
-                    reports.append(
-                        f"已{'创建' if kind == 'create_board' else '更新'}面板 "
-                        f"[{board.name}]({dashboard_resource_url(project_id, board.id)})")
-                    self.store.audit(role_id, kind,
-                                     detail=f"project={project_id} board={item_id}")
-                elif kind == "delete_board":
-                    board = self.store.get_board(item_id)
-                    if not board or board.project_id != project_id:
-                        raise ValueError("面板不存在")
-                    self.store.delete_board(item_id)
-                    reports.append(f"已删除面板 {board.name}")
-                    self.store.audit(role_id, "board_deleted",
-                                     detail=f"project={project_id} board={item_id}")
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                result = self.agent_tools.execute_legacy(
+                    project, role_id, action, root_id, depth)
+                reports.append(str(result["summary"]))
+            except (AgentToolError, TypeError, ValueError,
+                    json.JSONDecodeError) as exc:
                 reports.append(f"控制动作未执行：{exc}")
         cleaned = ACTION_RE.sub("", reply).strip()
         if reports:
             cleaned = "\n\n".join(x for x in (cleaned, "平台操作：" + "；".join(reports)) if x)
         return cleaned or "(主控动作已处理)"
-
-    def _apply_project_config_action(self, project, role_id: str,
-                                     action: dict) -> str:
-        """校验并执行主控生成的项目配置；所有写入都限定在当前项目。"""
-        kind = action.get("action")
-        if kind == "write_document":
-            path = safe_relative_path(str(action.get("path", "")))
-            content = action.get("content", "")
-            if not isinstance(content, str):
-                raise ValueError("document content 必须是字符串")
-            revision = library_for(project.id).write(
-                path, content, actor=f"role:{role_id}",
-                message=str(action.get("message") or f"Generate {path}"),
-            )
-            self.store.audit(role_id, "document_saved",
-                             detail=f"project={project.id} path={path} revision={revision}")
-            return (f"已保存文档 [{path}]"
-                    f"({document_resource_url(project.id, path)})")
-
-        enabled = action.get("enabled", True)
-        if not isinstance(enabled, bool):
-            raise ValueError("enabled 必须是布尔值")
-
-        if kind == "save_guideline":
-            markdown = action.get("markdown", "")
-            if not isinstance(markdown, str):
-                raise ValueError("save_guideline.markdown 必须是字符串")
-            guideline = GuidelineDocument.from_markdown(markdown, enabled)
-            if not CONTROL_ID_RE.fullmatch(guideline.name):
-                raise ValueError("准则 name 只能包含字母、数字、下划线、连字符")
-            original_name = str(action.get("original_name", "")).strip()
-            if original_name and not CONTROL_ID_RE.fullmatch(original_name):
-                raise ValueError("original_name 只能包含字母、数字、下划线、连字符")
-            replaced_names = {guideline.name, original_name} - {""}
-            project.guidelines = [
-                g for g in project.guidelines if g.name not in replaced_names]
-            project.guidelines.append(guideline)
-            self.store.put_project(project)
-            write_guideline_context(project)
-            self.store.audit(role_id, "guideline_saved",
-                             detail=f"project={project.id} guideline={guideline.name}")
-            return (f"已保存准则文档 [{guideline.name}]"
-                    f"({guideline_resource_url(project.id, guideline.name)})")
-
-        raw_id = str(action.get("id", "")).strip()
-        if not CONTROL_ID_RE.fullmatch(raw_id):
-            raise ValueError("id 只能包含字母、数字、下划线、连字符")
-        markdown = action.get("markdown")
-        if markdown is not None:
-            if not isinstance(markdown, str):
-                raise ValueError("save_skill.markdown 必须是字符串")
-            saved = save_project_skill_markdown(
-                self.store, project, raw_id, markdown, enabled=enabled, actor=role_id)
-            return (f"已保存 Skill [{saved.name or raw_id}]"
-                    f"({skill_resource_url(project.id, saved.id)})")
-        skill = ProjectSkill(
-            id=raw_id, name=str(action.get("name", "")),
-            description=str(action.get("description", "")),
-            instructions=str(action.get("instructions", "")),
-            enabled=enabled,
-        )
-        saved = save_project_skill(self.store, project, skill, actor=role_id)
-        return (f"已保存 Skill [{saved.name or raw_id}]"
-                f"({skill_resource_url(project.id, saved.id)})")
-
-    def _action_post_message(self, project_id: str, role_id: str, action: dict,
-                             root_id: int, depth: int) -> str:
-        """主控向本项目任意频道发消息(调度闭环):@[角色] 显式触发级联,
-        共享同一条协作链的执行次数预算,防止跨频道绕开防爆炸限制。"""
-        raw = str(action.get("channel", "")).strip()
-        content = str(action.get("content", "")).strip()
-        if not raw or not content:
-            raise ValueError("post_message 需要 channel 和 content")
-        cid = raw if raw.startswith(f"{project_id}:") else f"{project_id}:{raw}"
-        channel = self.store.get_channel(cid) or self.store.get_channel(raw)
-        if channel is None or channel.project_id != project_id:
-            raise ValueError(f"频道不存在或不属于本项目: {raw}")
-        content = normalize_document_resource_urls(
-            content, project_id, [library_for(project_id).root])
-        self.post(channel.id, role_id, content, author_type="agent",
-                  root_id=root_id, depth=depth + 1)
-        self.store.audit(role_id, "orchestrator_post",
-                         detail=f"project={project_id} channel={channel.id}")
-        return (f"已在 [#{channel.name}]"
-                f"({channel_resource_url(project_id, channel.id)}) 发布消息")
-
-    @staticmethod
-    def _resolve_channel_workdir(project, requested: str) -> Optional[str]:
-        """频道工作目录只能落在项目代码仓内;未指定且仅一个仓时默认使用它。"""
-        repos = [str(Path(r).expanduser()) for r in project.repo_paths()]
-        if not requested:
-            if len(repos) == 1 and Path(repos[0]).is_dir():
-                return repos[0]
-            return None
-        target = Path(requested).expanduser()
-        if not target.is_dir():
-            raise ValueError(f"workdir 不存在: {requested}")
-        resolved = target.resolve()
-        for repo in repos:
-            try:
-                resolved.relative_to(Path(repo).resolve())
-                return str(target)
-            except ValueError:
-                continue
-        raise ValueError("workdir 必须是项目代码仓路径或其子目录")
-
-    @staticmethod
-    def _validate_board_layout(raw_layout) -> list[BoardWidget]:
-        if not isinstance(raw_layout, list):
-            raise ValueError("面板 layout 必须是列表")
-        widgets = []
-        seen = set()
-        for raw in raw_layout:
-            widget = BoardWidget(**raw)
-            if not CONTROL_ID_RE.fullmatch(widget.id) or widget.id in seen:
-                raise ValueError("组件 id 必须合法且不能重复")
-            if (widget.x < 0 or widget.y < 0 or not 1 <= widget.width <= 12
-                    or not 1 <= widget.height <= 100):
-                raise ValueError("组件位置必须非负，宽度为 1..12，高度为 1..100")
-            if widget.type not in BOARD_WIDGET_TYPES:
-                raise ValueError(f"未知组件类型 {widget.type},"
-                                 f"可用: {', '.join(sorted(BOARD_WIDGET_TYPES))}")
-            seen.add(widget.id)
-            widgets.append(widget)
-        return widgets

@@ -12,6 +12,7 @@ dependencies = [
 
 [project.scripts]
 mc = "missioncrew.cli:app"
+missioncrew-tool = "missioncrew.agent_tool:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -84,6 +84,20 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   workdir TEXT NOT NULL, runtime_session_id TEXT DEFAULT '',
   context_version TEXT DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_tokens (
+  token_hash TEXT PRIMARY KEY,
+  token_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  channel TEXT NOT NULL,
+  role_id TEXT NOT NULL,
+  scopes TEXT NOT NULL DEFAULT '[]',
+  created_at REAL NOT NULL,
+  expires_at REAL NOT NULL,
+  last_used_at REAL,
+  revoked_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_agent_tokens_identity
+  ON agent_tokens(project_id, channel, role_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
@@ -253,12 +267,14 @@ class Store:
             "DELETE FROM chat_sessions WHERE role_id=? AND channel IN ("
             "SELECT id FROM channels WHERE json_extract(data, '$.project_id')=?"
             ")", (id, project_id))
+        self.revoke_agent_tokens(project_id=project_id, role_id=id)
         self._delete("roles", f"{project_id}:{id}")
     def delete_backend(self, id: str) -> None:
         self._execute("DELETE FROM chat_sessions WHERE backend_id=?", (id,))
         self._delete("backends", id)
     def delete_channel(self, id: str) -> None:
         self._execute("DELETE FROM chat_sessions WHERE channel=?", (id,))
+        self.revoke_agent_tokens(channel=id)
         self._delete("channels", id)
 
     def delete_project(self, id: str) -> None:
@@ -458,6 +474,54 @@ class Store:
             rows = self._query("SELECT * FROM audit ORDER BY id DESC LIMIT ?", (limit,))
         return [dict(r) for r in rows]
 
+    # ---- Agent Tool 身份令牌 ----
+    def put_agent_token(self, *, token_hash: str, token_id: str,
+                        project_id: str, channel: str, role_id: str,
+                        scopes: list[str], expires_at: float) -> None:
+        self._execute(
+            "INSERT INTO agent_tokens(token_hash,token_id,project_id,channel,role_id,"
+            "scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
+            (token_hash, token_id, project_id, channel, role_id,
+             json.dumps(scopes, ensure_ascii=False), time.time(), expires_at),
+        )
+
+    def get_agent_token(self, token_hash: str) -> Optional[dict]:
+        rows = self._query(
+            "SELECT * FROM agent_tokens WHERE token_hash=?", (token_hash,))
+        if not rows:
+            return None
+        item = dict(rows[0])
+        try:
+            item["scopes"] = json.loads(item.get("scopes") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            item["scopes"] = []
+        return item
+
+    def touch_agent_token(self, token_hash: str) -> None:
+        self._execute(
+            "UPDATE agent_tokens SET last_used_at=? WHERE token_hash=?",
+            (time.time(), token_hash),
+        )
+
+    def revoke_agent_tokens(self, *, project_id: str = "", channel: str = "",
+                            role_id: str = "") -> int:
+        clauses = ["revoked_at IS NULL"]
+        params: list[object] = []
+        for column, value in (("project_id", project_id), ("channel", channel),
+                              ("role_id", role_id)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        if len(clauses) == 1:
+            return 0
+        with self._lock:
+            cursor = self._conn.execute(
+                f"UPDATE agent_tokens SET revoked_at=? WHERE {' AND '.join(clauses)}",
+                (time.time(), *params),
+            )
+            self._conn.commit()
+            return cursor.rowcount
+
     # ---- 成功率统计(路由器的"成功概率"依据) ----
     def stats_record(self, backend_id: str, project_id: str, task_type: str, success: bool) -> None:
         col = "success" if success else "failure"
@@ -649,6 +713,10 @@ class Store:
             (run_id,),
         )
         return bool(rows)
+
+    def get_chat_run(self, run_id: int) -> Optional[dict]:
+        rows = self._query("SELECT * FROM chat_runs WHERE id=?", (run_id,))
+        return dict(rows[0]) if rows else None
 
     def stop_active_chat_runs(self, channel: str) -> list[dict]:
         """原子地把频道内全部活动运行改为终态，并返回停止前的快照。"""

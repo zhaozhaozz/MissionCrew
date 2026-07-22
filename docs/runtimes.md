@@ -44,7 +44,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 `ExecutionConfig.runtime_policy` 是后端无关的执行策略，包含 `readable_paths`、`writable_paths`、`skill_paths` 和 `RuntimePermissions`。权限目前统一表达为审批模式 `auto|prompt|deny`、文件系统模式 `read-only|workspace-write|full-access`、网络模式 `inherit|allow|deny`。Runtime manager 会生成 `MISSIONCREW_READABLE_DIRS`、`MISSIONCREW_WRITABLE_DIRS`、`MISSIONCREW_SKILL_DIRS`、`MISSIONCREW_RUNTIME_PERMISSIONS`，provider 再把可支持的策略翻译为命令参数或 ACP 权限响应。`allowed_dirs` 仅作为旧构造入口的兼容字段。
 
-项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。
+项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。聊天角色对 MissionCrew 的写操作同样不进入原始执行器：统一注入 Agent Tool URL、角色令牌文件和当前 `run_id`，Claude、Codex、ACP 与打印模式都调用相同 HTTP/CLI 契约。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。具体动作、权限与错误结构见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
 ## 实时运行状态
 
@@ -147,9 +147,13 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 聊天场景中，同一“频道 × 角色”的 ACP serve 进程和 `sessionId` 会在 MissionCrew 服务进程内长驻复用；空闲 30 分钟后回收。MissionCrew 重启或进程退出后，平台读取 SQLite 中的会话 id，并且仅当 `initialize.agentCapabilities.loadSession=true` 时调用 `session/load`。Runtime 不支持或无法恢复时，平台明确降级为 `session/new`，并把格式化最近对话随新会话首轮输入补回。
 
-### 公共上下文与压缩
+### Agent Tool、公共上下文与压缩
 
-聊天 Prompt 分为两部分：MissionCrew 公共上下文（harness 简介、角色、项目准则 description 与 Skills、独立 `.missioncrew` 工作区、目录权限和协作规则）和本轮任务输入。公共上下文明确 MissionCrew 是 Agent harness 而不是业务代码仓，并说明 harness 文件不会进入业务源码。公共区块带内容哈希版本及压缩提示，每轮都重新注入，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；准则正文虽然不直接进入 Prompt，但其内容版本会参与公共上下文哈希，因此已有会话下一轮仍会收到更新标记和完整新上下文。后收到的版本整体替换旧版本。最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和任务分别位于 `MISSIONCREW_WORKSPACE` 下，并提供 `MISSIONCREW_CHANNEL_HISTORY`、`MISSIONCREW_DOCUMENTS_DIR`、`MISSIONCREW_GUIDELINES_DIR`、`MISSIONCREW_SKILLS_DIR`、`MISSIONCREW_TASKS_DIR` 兼容入口。Agent 可直接创建/编辑文档和任务；平台在执行后版本化文档并校验同步任务 Markdown。准则编辑器、后端模型和运行时文件统一使用 `name` / `description` YAML frontmatter，后端直接解析文件头，不从 `id` / `summary` 转换。
+聊天 Prompt 分为两部分：MissionCrew 公共上下文（harness 简介、角色、项目准则 description 与 Skills、独立 `.missioncrew` 工作区、目录权限、Agent Tool 和协作规则）和本轮任务输入。公共上下文明确 MissionCrew 是 Agent harness 而不是业务代码仓，并说明 harness 文件不会进入业务源码。公共区块带内容哈希版本及压缩提示，每轮都重新注入，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；准则正文虽然不直接进入 Prompt，但其内容版本会参与公共上下文哈希，因此已有会话下一轮仍会收到更新标记和完整新上下文。后收到的版本整体替换旧版本。
+
+Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。每轮任务输入另给出最新 `run_id`；持久 Runtime 必须显式传这个值，不能使用进程启动时遗留的 `MISSIONCREW_AGENT_RUN_ID`。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
+
+最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和任务分别位于 `MISSIONCREW_WORKSPACE` 下，并提供 `MISSIONCREW_CHANNEL_HISTORY`、`MISSIONCREW_DOCUMENTS_DIR`、`MISSIONCREW_GUIDELINES_DIR`、`MISSIONCREW_SKILLS_DIR`、`MISSIONCREW_TASKS_DIR` 兼容入口。聊天角色新建或修改文档、任务时使用 `document.publish`、`task.create` 或 `task.update`；执行后扫描直接写入的文件仅作为迁移兼容。准则编辑器、后端模型和运行时文件统一使用 `name` / `description` YAML frontmatter，后端直接解析文件头，不从 `id` / `summary` 转换。
 
 ### Mock(`MockAdapter`)
 
@@ -198,7 +202,7 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 执行环境
 
-每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`documents/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`，任务执行另有 `evidence/`。`MISSIONCREW_DOCUMENTS_DIR` 是 Runtime 内部读写入口，`MISSIONCREW_PROJECT_URL` 是频道、任务、面板、准则、Skill 和文档的统一 `/resources/<project>` Web 前缀，`MISSIONCREW_DOCUMENTS_URL` 是其文档便捷入口；Agent 不应向频道发布前者的真实路径。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树、完整项目 Skill 根及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。`MISSIONCREW_SKILLS_DIR` 指向 harness 中仅含已启用 Skill 的目录视图，每个条目保留完整包结构。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。文档入口可直接读写，执行前后平台做 Git 快照；任务 Markdown 可创建/编辑，执行后按可编辑字段同步，状态、阶段和审批仍由平台控制。聊天执行超时 900 秒。
+每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`documents/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`、角色令牌文件和 Agent Tool 环境，任务执行另有 `evidence/`。`MISSIONCREW_DOCUMENTS_DIR` 是 Runtime 内部读取入口，`MISSIONCREW_PROJECT_URL` 是频道、任务、面板、准则、Skill 和文档的统一 `/resources/<project>` Web 前缀，`MISSIONCREW_DOCUMENTS_URL` 是其文档便捷入口；Agent 不应向频道发布前者的真实路径。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树、完整项目 Skill 根及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。`MISSIONCREW_SKILLS_DIR` 指向 harness 中仅含已启用 Skill 的目录视图，每个条目保留完整包结构。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。聊天角色通过 Agent Tool 发布文档和修改任务，以获得即时错误与角色审计；直接文件同步是兼容机制。结构化任务仍按工作区和证据协议运行。聊天执行超时 900 秒。
 
 完整的目录职责、历史隔离、证据和内部数据边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
 

@@ -3,7 +3,7 @@
 MissionCrew 资源分为两个互相关联但用途不同的层级：
 
 1. **公开资源 URL** 用于聊天 Markdown、Web 导航和 API 返回值，格式为 `/resources/<project>/<resource-type>/<id-or-path>`。
-2. **Agent harness 文件入口** 位于 Runtime 获得的 `.missioncrew/` 工作区中，用于 Agent 实际读取或修改文档、任务、准则和 Skill。
+2. **Agent harness 文件入口** 位于 Runtime 获得的 `.missioncrew/` 工作区中，用于 Agent 读取文档、任务、准则和 Skill；聊天角色通过 Agent Tool 显式修改平台资源。
 
 公开 URL 不是文件路径，也不会授予 Runtime 新的文件权限；harness 中的真实路径则只用于工具访问，不应发布到聊天消息中。
 
@@ -123,7 +123,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 ### 项目文档
 
-文档的事实源是项目文档工作树，独立 bare Git 仓库保存版本历史。Agent 通过 `.missioncrew/documents/` 直接创建和编辑文档；平台在聊天或结构化任务执行后记录版本。人类也可以在 Web 文档页一次选择多个文件上传：未选中文档时保存到文档库根目录，选中文档时保存到该文档所在目录；同名文件必须确认后才能覆盖，且每个文件分别形成版本。单文件上限为 50 MB。
+文档的事实源是项目文档工作树，独立 bare Git 仓库保存版本历史。聊天角色通过 `document.publish` Agent Tool 动作发布文件；直接编辑后的执行结束快照只作为旧会话兼容。结构化任务仍按任务工作区协议写入。人类也可以在 Web 文档页一次选择多个文件上传：未选中文档时保存到文档库根目录，选中文档时保存到该文档所在目录；同名文件必须确认后才能覆盖，且每个文件分别形成版本。单文件上限为 50 MB。
 
 文本文件上传后可以继续在线编辑和预览。二进制或非 UTF-8 文件按原始字节保存，不会被文本转换；文档页提供当前版本和历史版本下载。
 
@@ -151,6 +151,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 ├── guidelines/
 ├── skills/
 ├── channel-history.json
+├── .agent-tool-token
 ├── evidence/
 └── runtime/
 ```
@@ -160,11 +161,14 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 | `MISSIONCREW_PROJECT_URL` | 当前项目公开资源 URL 前缀 `/resources/<project>` |
 | `MISSIONCREW_DOCUMENTS_URL` | 当前项目文档 URL 前缀 |
 | `MISSIONCREW_WORKSPACE` | 当前角色或任务的 harness 根目录 |
-| `MISSIONCREW_DOCUMENTS_DIR` | 可读写的项目文档入口 |
-| `MISSIONCREW_TASKS_DIR` | 可创建和编辑的任务 Markdown 目录 |
+| `MISSIONCREW_DOCUMENTS_DIR` | 项目文档读取入口；聊天写入使用 Agent Tool |
+| `MISSIONCREW_TASKS_DIR` | 项目任务 Markdown 快照；聊天写入使用 Agent Tool |
 | `MISSIONCREW_GUIDELINES_DIR` | 已启用准则的 Markdown 目录 |
 | `MISSIONCREW_SKILLS_DIR` | 已启用 Skill 的完整目录视图 |
 | `MISSIONCREW_CHANNEL_HISTORY` | 当前角色可见的频道历史 JSON；仅聊天执行 |
+| `MISSIONCREW_AGENT_TOOL_URL` | 聊天角色调用统一平台动作的 API 根地址 |
+| `MISSIONCREW_AGENT_TOKEN_FILE` | 当前频道和角色的 Agent Tool 令牌文件 |
+| `MISSIONCREW_AGENT_RUN_ID` | 进程启动时的回合 ID；实际调用以最新 Prompt 为准 |
 
 完整目录权限、同步和隔离边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
 
@@ -188,7 +192,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 ### Agent 与主控动作
 
-项目公共上下文提供 `MISSIONCREW_PROJECT_URL`、六类资源格式以及当前准则和 Skill 的 Web URL。主控创建频道、创建或更新面板、保存准则、保存 Skill、写入文档、向频道发消息后，平台操作回执使用可点击 Markdown 链接。
+项目公共上下文提供 `MISSIONCREW_PROJECT_URL`、六类资源格式以及当前准则和 Skill 的 Web URL。聊天角色通过带角色令牌的 Agent Tool API 显式创建频道、保存面板、准则、Skill、任务或文档以及发布消息；平台在同一回合返回结构化结果或错误，成功回执使用可点击 Markdown 链接。完整调用与权限契约见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
 Agent 最终回复应使用：
 

@@ -48,6 +48,14 @@ class RuntimeInteractionInput(BaseModel):
     reason: str = ""
 
 
+class AgentToolCallInput(BaseModel):
+    action: str = Field(min_length=1, max_length=100, pattern=r"^[\w.-]+$")
+    arguments: dict = Field(default_factory=dict)
+    run_id: int = Field(gt=0)
+    request_id: Optional[str] = Field(
+        None, min_length=1, max_length=100, pattern=r"^[\w-]+$")
+
+
 class ChannelCreate(BaseModel):
     id: str
     name: str = ""

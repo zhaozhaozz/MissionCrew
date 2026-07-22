@@ -1,0 +1,131 @@
+# MissionCrew Agent Tool API
+
+MissionCrew 把聊天角色对平台状态的修改收敛到一个 Runtime 无关的工具边界。Agent 不再通过最终回复中的特殊文本块请求平台猜测并执行动作，而是在执行回合内调用 HTTP API 或随服务安装的 CLI，立即获得成功结果或结构化错误，并可以根据错误继续处理。
+
+这套边界适用于所有聊天 Runtime。Claude、Codex、ACP 和打印模式 CLI 都通过同一组环境变量、角色令牌和动作契约调用 MissionCrew，Runtime provider 不需要导入 Store、FastAPI 或各资源的内部实现。
+
+## 调用链
+
+```text
+Runtime
+  └─ missioncrew-tool / python -m missioncrew.agent_tool
+       └─ Authorization: Bearer <channel×role token>
+            └─ POST /api/agent/v1/actions
+                 └─ 身份、scope、run_id、参数与资源边界校验
+                      └─ 统一动作注册表
+                           ├─ 平台状态或文档版本写入
+                           ├─ 资源 URL 结果
+                           └─ 不含正文和令牌的审计记录
+```
+
+聊天上下文会注入：
+
+| 环境变量 | 含义 |
+| --- | --- |
+| `MISSIONCREW_AGENT_TOOL_URL` | 当前服务的 Agent Tool API 根地址，默认是 `http://127.0.0.1:8321/api/agent/v1` |
+| `MISSIONCREW_AGENT_TOKEN_FILE` | 当前频道和角色的令牌文件；CLI 自行读取，Agent 不应打印或发布内容 |
+| `MISSIONCREW_AGENT_RUN_ID` | 启动进程时的回合 ID，仅作 CLI 默认值；持久会话必须使用最新 Prompt 中的 `run_id` |
+| `MISSIONCREW_AGENT_TOOL_PYTHON` | 可以导入当前 MissionCrew 包的 Python 解释器 |
+
+先查看当前角色获准执行的动作：
+
+```bash
+"$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool actions
+```
+
+再显式传入当前 Prompt 给出的 `run_id`：
+
+```bash
+"$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool call task.create \
+  --run-id 42 \
+  --arguments '{"title":"补齐接口测试","task_type":"chore","labels":["api"]}'
+
+"$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool publish-file \
+  --run-id 42 \
+  --source reports/result.md \
+  --path reports/result.md
+```
+
+安装项目后也可以使用等价的 `missioncrew-tool` 命令。CLI 在成功时退出码为 0；API 错误、连接错误或客户端参数错误时退出码非零，并把 JSON 原样打印到 stdout，便于 Runtime 在同一回合读取、修正和重试。
+
+## 身份、权限与生命周期
+
+令牌按 `project × channel × role` 分配，而不是按 Runtime 分配，所以角色更换 Claude、Codex 或 ACP 后仍遵循同一权限。明文只写入该角色隔离工作区的 `.agent-tool-token`，文件权限为 `0600`；SQLite 只保存 SHA-256 哈希、随机 `token_id`、作用域、签发时间、过期时间和最后使用时间。
+
+令牌默认有效七天，在距离过期不足一天时自动轮换。角色删除、频道删除、权限作用域变化或主控角色变化后，旧令牌会被撤销或在下一轮装配时轮换。每次调用还必须携带活动的 `run_id`；服务端确认该回合属于令牌中的频道和角色，并且状态仍是 `queued`、`running` 或 `waiting_user`。因此仅获得旧令牌不足以在已结束回合中继续写入。
+
+当前权限策略如下：
+
+| 动作 | 普通角色 | 项目主控 |
+| --- | --- | --- |
+| `task.create` / `task.update` | 允许 | 允许 |
+| `document.publish` | 允许 | 允许 |
+| `message.publish` | 禁止 | 允许 |
+| `channel.create` | 禁止 | 允许 |
+| `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
+| `guideline.save` / `skill.save` | 禁止 | 允许 |
+
+`message.publish` 的 `mentions` 是独立的角色 ID 数组。只有数组中的合法角色会被调度；正文里出现的 `@reviewer` 等文本只是普通内容。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。
+
+## 动作和并发规则
+
+`GET /api/agent/v1/actions` 返回令牌身份与动作说明。`POST /api/agent/v1/actions` 请求格式为：
+
+```json
+{
+  "action": "document.publish",
+  "run_id": 42,
+  "request_id": "publish-report-1",
+  "arguments": {
+    "path": "reports/result.md",
+    "content": "# Result\n",
+    "overwrite": false
+  }
+}
+```
+
+- 文档必须且只能提供 UTF-8 `content` 或 `content_base64`；单文件上限 50 MB。默认不覆盖已有文件，显式传 `overwrite: true` 才能覆盖并形成新版本。
+- `task.update` 必须带读取任务时得到的 `snapshot_updated_at`。任务已经被其他执行更新时返回 `version_conflict`，防止旧快照覆盖新状态。
+- 频道、面板、准则和 Skill 的 ID、项目归属、工作目录和 Markdown 属性都在统一动作实现中校验。
+- 成功结果包含规范 `/resources/...` URL；Agent 应把该 URL 放入频道回复，不应发布 `.missioncrew` 的真实路径。
+
+成功响应：
+
+```json
+{
+  "ok": true,
+  "request_id": "publish-report-1",
+  "action": "document.publish",
+  "result": {
+    "resource_url": "/resources/demo/documents/reports/result.md"
+  }
+}
+```
+
+失败响应始终包含机器可判断的 `code`、给 Runtime 阅读的 `message` 和是否适合重试的 `retryable`：
+
+```json
+{
+  "ok": false,
+  "request_id": "publish-report-1",
+  "error": {
+    "code": "already_exists",
+    "message": "文档已存在: reports/result.md",
+    "retryable": false
+  }
+}
+```
+
+常见错误包括 `missing_token`、`invalid_token`、`expired_token`、`run_mismatch`、`run_inactive`、`permission_denied`、`invalid_request`、`invalid_arguments`、`already_exists`、`version_conflict` 和 `internal_error`。
+
+## 审计与安全边界
+
+每次动作调用都会写入 `agent_tool_called` 审计项，记录项目、频道、角色、`token_id`、`run_id`、`request_id`、动作、结果状态和错误码。审计详情不保存 Bearer token、消息正文、文档正文或完整参数；资源自己的创建、修改和发布仍写各自的领域审计项。
+
+角色令牌提供的是 MissionCrew 应用层身份、最小权限和追溯边界，不是针对恶意本地进程的操作系统沙箱。当前服务的普通 Web API 没有公网身份验证，YOLO Runtime 也可能拥有主机网络和文件权限；因此服务仍应只运行在可信网络，并通过 Runtime 文件系统/网络策略、主机防火墙或反向代理限制不可信执行。不能把 Bearer scope 描述成对同一主机上任意进程都不可绕过的强隔离。
+
+## 兼容迁移
+
+历史 `missioncrew-action` 文本块仍可读取，避免旧的持久 Runtime 会话或历史测试立即失效；解析后只转发到同一个动作注册表，不再拥有独立写入逻辑。新上下文不会要求 Runtime 生成该格式，旧入口也无法像工具调用一样把错误返回给同一 Agent 回合，因此只作为迁移兼容，不应新增依赖。
+
+聊天角色直接编辑 `.missioncrew/documents/` 或 `.missioncrew/tasks/` 的执行后同步同样属于兼容路径。新实现应调用 `document.publish`、`task.create` 或 `task.update`，才能获得即时校验结果、角色权限和逐次审计。结构化任务阶段仍按自身的证据与工作区协议运行，不使用聊天角色令牌。

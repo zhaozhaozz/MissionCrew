@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional
@@ -125,6 +126,9 @@ def serve(host: str = DEFAULT_SERVE_HOST, port: int = DEFAULT_SERVE_PORT):
     """启动 Web 服务(REST API + 看板)。"""
     import uvicorn
     from .api import create_app
+    # Runtime 总是经本机回环访问 Agent Tool API；监听地址可继续面向所有网卡。
+    os.environ["MISSIONCREW_AGENT_TOOL_URL"] = (
+        f"http://127.0.0.1:{port}/api/agent/v1")
     typer.echo(f"MissionCrew 看板: http://{host}:{port}")
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 

@@ -8,9 +8,9 @@ let skillLibraryInfo = null;
 let skillFolderImportOpen = false;
 const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "docs"]);
 const CONFIG_CHAT_TARGETS = {
-  guidelines: { label: "准则文档", action: "save_guideline" },
-  skills: { label: "Skill", action: "save_skill" },
-  docs: { label: "版本化文档", action: "write_document" },
+  guidelines: { label: "准则文档", action: "guideline.save" },
+  skills: { label: "Skill", action: "skill.save" },
+  docs: { label: "版本化文档", action: "document.publish" },
 };
 const CONFIG_FIELD_LABELS = {
   "gf-content": "准则 Markdown 文件",

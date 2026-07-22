@@ -1,0 +1,234 @@
+"""Agent Tool API：显式调用、身份作用域、错误回传与兼容入口。"""
+from __future__ import annotations
+
+import base64
+import json
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from missioncrew import agent_tool
+from missioncrew.api import create_app
+from missioncrew.collab.chat import ChatEngine
+from missioncrew.collab.documents import library_for
+from missioncrew.core.models import Channel
+
+
+def _run_config(store, chat: ChatEngine, role_id: str):
+    channel = store.get_channel("general")
+    root_id = store.add_message(
+        channel.id, "human", "human", f"@{role_id} 执行", [role_id])
+    run_id = store.add_chat_run(channel.id, role_id, root_id, root_id, 0)
+    store.update_chat_run(run_id, "running", backend_id="std-1")
+    config = chat._assemble(
+        channel, store.get_role("webshop", role_id), store.get_backend("std-1"),
+        root_id, run_id=run_id,
+    )
+    token_file = Path(config.env["MISSIONCREW_AGENT_TOKEN_FILE"])
+    return config, run_id, token_file.read_text(encoding="utf-8").strip()
+
+
+def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
+    chat = ChatEngine(seeded)
+    lead, lead_run, lead_token = _run_config(seeded, chat, "lead")
+    dev, dev_run, dev_token = _run_config(seeded, chat, "dev")
+    _lead_again, _lead_run_again, reused_lead_token = _run_config(
+        seeded, chat, "lead")
+
+    assert lead_run != dev_run and lead_token != dev_token
+    assert reused_lead_token == lead_token
+    assert "# MissionCrew Agent Tool" in lead.common_prompt
+    assert "message.publish" in lead.common_prompt
+    assert "document.publish" in dev.common_prompt
+    assert "message.publish" not in dev.common_prompt
+    assert "missioncrew-action>" not in lead.common_prompt
+    assert f"--run-id {lead_run}" in lead.turn_prompt
+    assert lead_token not in lead.prompt and dev_token not in dev.prompt
+    assert Path(lead.env["MISSIONCREW_AGENT_TOKEN_FILE"]).stat().st_mode & 0o777 == 0o600
+
+    stored = seeded._query(
+        "SELECT token_hash, token_id, project_id, channel, role_id FROM agent_tokens")
+    assert len(stored) == 2
+    assert all(row["token_hash"] not in {lead_token, dev_token} for row in stored)
+
+
+def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded):
+    chat = ChatEngine(seeded)
+    _dev_config, dev_run, dev_token = _run_config(seeded, chat, "dev")
+    client = TestClient(create_app())
+    headers = {"Authorization": f"Bearer {dev_token}"}
+
+    capabilities = client.get("/api/agent/v1/actions", headers=headers)
+    assert capabilities.status_code == 200
+    assert set(capabilities.json()["result"]["actions"]) == {
+        "document.publish", "task.create", "task.update"}
+
+    published = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "document.publish",
+        "run_id": dev_run,
+        "request_id": "publish-1",
+        "arguments": {
+            "path": "reports/tool-result.bin",
+            "content_base64": base64.b64encode(b"tool-result\x00").decode("ascii"),
+        },
+    })
+    assert published.status_code == 200 and published.json()["ok"] is True
+    assert library_for("webshop").read_bytes("reports/tool-result.bin") == b"tool-result\x00"
+    assert published.json()["result"]["resource_url"] == \
+        "/resources/webshop/documents/reports/tool-result.bin"
+
+    conflict = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "document.publish", "run_id": dev_run,
+        "request_id": "publish-2",
+        "arguments": {"path": "reports/tool-result.bin", "content": "again"},
+    })
+    assert conflict.status_code == 409
+    assert conflict.json()["error"] == {
+        "code": "already_exists",
+        "message": "文档已存在: reports/tool-result.bin",
+        "retryable": False,
+    }
+
+    forbidden = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "message.publish", "run_id": dev_run,
+        "request_id": "message-1",
+        "arguments": {"channel": "general", "content": "越权消息", "mentions": []},
+    })
+    assert forbidden.status_code == 403
+    assert forbidden.json()["error"]["code"] == "permission_denied"
+
+    unauthenticated = client.get("/api/agent/v1/actions")
+    assert unauthenticated.status_code == 401
+    assert unauthenticated.json()["error"]["code"] == "missing_token"
+    audits = [row for row in seeded.list_audit(limit=50)
+              if row["action"] == "agent_tool_called"]
+    assert any("request=publish-1" in row["detail"] and "status=success" in row["detail"]
+               for row in audits)
+    assert any("request=publish-2" in row["detail"] and "code=already_exists" in row["detail"]
+               for row in audits)
+    assert any("request=message-1" in row["detail"] and "status=failed" in row["detail"]
+               for row in audits)
+
+    seeded.delete_role("webshop", "dev")
+    revoked = client.get("/api/agent/v1/actions", headers=headers)
+    assert revoked.status_code == 401
+    assert revoked.json()["error"]["code"] == "invalid_token"
+
+
+def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seeded):
+    chat = ChatEngine(seeded, max_workers=2)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(token)
+
+    result = chat.agent_tools.execute(
+        identity, "message.publish", {
+            "channel": "general",
+            "content": "请执行明确分配的工作；正文里的 @reviewer 只是普通引用。",
+            "mentions": ["dev"],
+        }, run_id, "dispatch-1")
+    chat.wait_idle()
+
+    message = seeded.get_message(result["message_id"])
+    assert message["content"].startswith("@dev\n\n请执行明确分配的工作")
+    assert json.loads(message["mentions"]) == ["dev"]
+    assert json.loads(message["mention_spans"]) == [
+        {"role_id": "dev", "start": 0, "end": len("@dev")},
+    ]
+    assert message["root_id"] == seeded.get_chat_run(run_id)["root_id"]
+    roles = [row["role_id"] for row in seeded._query(
+        "SELECT role_id FROM chat_runs WHERE root_id=? ORDER BY id",
+        (message["root_id"],))]
+    assert "dev" in roles and "reviewer" not in roles
+
+
+def test_agent_tool_task_update_uses_optimistic_version_and_run_scope(seeded):
+    chat = ChatEngine(seeded)
+    _config, run_id, token = _run_config(seeded, chat, "dev")
+    client = TestClient(create_app())
+    headers = {"Authorization": f"Bearer {token}"}
+
+    created = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "task.create", "run_id": run_id, "request_id": "task-create",
+        "arguments": {
+            "title": "补齐接口测试", "description": "验证角色工具调用",
+            "task_type": "chore", "labels": ["agent-tool"], "risk": "low",
+        },
+    })
+    assert created.status_code == 200
+    task = created.json()["result"]["task"]
+
+    updated = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "task.update", "run_id": run_id, "request_id": "task-update",
+        "arguments": {
+            "id": task["id"], "snapshot_updated_at": task["updated_at"],
+            "title": "补齐接口与权限测试",
+        },
+    })
+    assert updated.status_code == 200
+    assert updated.json()["result"]["task"]["title"] == "补齐接口与权限测试"
+    task_file = Path(_config.env["MISSIONCREW_TASKS_DIR"]) / f"{task['id']}.md"
+    assert "title: 补齐接口与权限测试" in task_file.read_text(encoding="utf-8")
+
+    stale = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "task.update", "run_id": run_id, "request_id": "task-stale",
+        "arguments": {
+            "id": task["id"], "snapshot_updated_at": task["updated_at"],
+            "title": "覆盖新版本",
+        },
+    })
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "version_conflict"
+
+    other_channel = Channel(
+        id="webshop:other", name="其他", project_id="webshop")
+    seeded.put_channel(other_channel)
+    other_root = seeded.add_message(
+        other_channel.id, "human", "human", "@dev 检查", ["dev"])
+    other_run = seeded.add_chat_run(
+        other_channel.id, "dev", other_root, other_root, 0)
+    seeded.update_chat_run(other_run, "running", backend_id="std-1")
+    mismatch = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "task.create", "run_id": other_run, "request_id": "wrong-run",
+        "arguments": {"title": "不应创建"},
+    })
+    assert mismatch.status_code == 403
+    assert mismatch.json()["error"]["code"] == "run_mismatch"
+
+    malformed = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "task.create", "run_id": 0, "arguments": {},
+    })
+    assert malformed.status_code == 422
+    assert malformed.json()["error"]["code"] == "invalid_request"
+
+    typo = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "task.create", "run_id": run_id, "request_id": "task-typo",
+        "arguments": {"title": "不应静默忽略", "lables": ["typo"]},
+    })
+    assert typo.status_code == 400
+    assert typo.json()["error"]["code"] == "invalid_arguments"
+    assert "lables" in typo.json()["error"]["message"]
+
+
+def test_agent_tool_cli_encodes_file_and_preserves_structured_error(
+        tmp_path, monkeypatch, capsys):
+    source = tmp_path / "evidence.bin"
+    source.write_bytes(b"evidence\x00")
+    captured = {}
+
+    def fake_request(method, payload=None):
+        captured.update(method=method, payload=payload)
+        return 409, {"ok": False, "error": {
+            "code": "already_exists", "message": "目标已存在", "retryable": False}}
+
+    monkeypatch.setattr(agent_tool, "_request_json", fake_request)
+    exit_code = agent_tool.main([
+        "publish-file", "--run-id", "7", "--source", str(source),
+        "--path", "reports/evidence.bin",
+    ])
+    output = json.loads(capsys.readouterr().out)
+    assert exit_code == 1 and output["error"]["code"] == "already_exists"
+    assert captured["method"] == "POST"
+    assert captured["payload"]["action"] == "document.publish"
+    assert captured["payload"]["run_id"] == 7
+    encoded = captured["payload"]["arguments"]["content_base64"]
+    assert base64.b64decode(encoded) == b"evidence\x00"

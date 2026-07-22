@@ -1,5 +1,5 @@
 /* ---------------- 自定义面板 ----------------
-   面板由主控 Agent 创建与维护:人类提需求 -> 主控通过控制动作落地。
+   面板由主控 Agent 创建与维护:人类提需求 -> 主控通过 Agent Tool 落地。
    卡片是通用展示原语(markdown/table/card/chart/list/log/code),
    content.source 可绑定平台实时数据源;"手动编辑"仅作应急入口。 */
 let currentCustomBoard = null;
@@ -29,7 +29,7 @@ async function requestBoard() {
   const board = projBoards().find(b => b.id === currentCustomBoard);
   const context = board ? `当前正在查看面板「${board.name}」(id: ${board.id.split(":").pop()})。` : "";
   const content = `@${p.orchestrator_role_id} 自定义面板需求:${text}\n` +
-    `${context}请用控制动作(create_board/update_board)完成,面板 id 用英文短横线命名。`;
+    `${context}请用 MissionCrew Agent Tool 的 dashboard.save 完成,面板 id 用英文短横线命名。`;
   box.value = "";
   try {
     await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`,

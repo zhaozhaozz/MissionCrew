@@ -600,7 +600,8 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
     assert "## 现有频道" in cfg.prompt and "general" in cfg.prompt
     assert "active-topic" in cfg.prompt and "archived-topic" not in cfg.prompt
     assert "## 现有面板" in cfg.prompt and "quality" in cfg.prompt
-    assert "协作链预算" in cfg.prompt and "post_message" in cfg.prompt
+    assert "协作链预算" in cfg.prompt and "message.publish" in cfg.prompt
+    assert "missioncrew-action>" not in cfg.prompt
     assert "@[角色ID]" in cfg.prompt and "普通 @角色ID 只是正文引用" in cfg.prompt
 
 
@@ -634,7 +635,7 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     assert "已保存准则文档" in reply
     assert "[api-style](/resources/webshop/guidelines/api-style)" in reply
     assert "[本地 CI](/resources/webshop/skills/local-ci)" in reply
-    assert ("已保存文档 [specs/generated.md]"
+    assert ("已发布文档 [specs/generated.md]"
             "(/resources/webshop/documents/specs/generated.md)") in reply
 
     # 旧 save_rule 动作已被移除；其他配置仍执行各自的字段校验。
@@ -656,7 +657,7 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
         seeded.get_backend("std-1"), msg,
     ).prompt
     assert all(action in prompt for action in (
-        "save_guideline", "save_skill", "write_document"))
+        "guideline.save", "skill.save", "document.publish"))
     assert "save_rule" not in prompt and "只提问或讨论时直接回答" in prompt
     assert "api-style:修改 API 时使用" in prompt
     assert "local-ci(本地 CI)" in prompt
@@ -755,7 +756,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "miniMarkdown(" not in js and "miniMarkdown(" not in documents
     assert "miniMarkdown(" not in boards
     assert all(action in js for action in (
-        "save_guideline", "save_skill", "write_document"))
+        "guideline.save", "skill.save", "document.publish"))
     assert "save_rule" not in js and "验证规则" not in html
 
 

@@ -16,7 +16,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 1. `workdir` 是实际工作目录。频道绑定代码仓时，它通常就是代码仓，业务源码和交付物应在这里修改。
 2. `MISSIONCREW_WORKSPACE` 指向平台数据根中的独立 `.missioncrew/`。这里保存 MissionCrew 提供的项目资料、任务视图、历史和运行记录，不会进入业务源码或业务 Git 提交。
 
-聊天工作区按 `project × channel × role` 隔离并复用；结构化任务拥有自己的任务工作区。不同角色不会共享同一个 `channel-history.json`，但 `.missioncrew/documents/` 链接到同一项目文档库，所以项目文档对获准执行的角色共享。
+聊天工作区按 `project × channel × role` 隔离并复用；结构化任务拥有自己的任务工作区。不同角色不会共享同一个 `channel-history.json` 或 Agent Tool 令牌，但 `.missioncrew/documents/` 链接到同一项目文档库，所以项目文档对获准执行的角色共享。
 
 典型目录如下：
 
@@ -29,6 +29,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 ├── guidelines/             # 已启用准则的 Markdown 快照
 ├── skills/                 # 已启用 Skill，每项含 SKILL.md
 ├── channel-history.json    # 仅聊天工作区；按角色隔离
+├── .agent-tool-token       # 仅聊天工作区；0600 角色令牌
 ├── evidence/               # 仅结构化任务；阶段证据及 manifest
 └── runtime/                # Runtime 最近输出等诊断文件
 ```
@@ -37,7 +38,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ### `documents/`
 
-`documents/` 是指向项目文档工作树的符号链接。Agent 可以直接创建、读取和编辑 Markdown 或其他项目资料；聊天或任务执行前后，平台检查变化并记录到该文档库自己的 Git 历史。该历史不属于业务代码仓。人类从 Web 文档页上传的文本或二进制文件也进入同一工作树和版本历史，不会复制到业务源码目录。
+`documents/` 是指向项目文档工作树的符号链接。Agent 可以读取 Markdown 或其他项目资料；聊天角色发布或替换文件时应使用 `document.publish` Agent Tool 动作，以便在当前回合得到路径、覆盖、大小和权限错误，并产生带角色身份的审计。执行结束后扫描直接编辑内容只作为旧会话兼容。结构化任务仍按自己的工作区协议写入。该文档库的 Git 历史不属于业务代码仓。人类从 Web 文档页上传的文本或二进制文件也进入同一工作树和版本历史，不会复制到业务源码目录。
 
 准则和 Skill 中需要引用项目文档时，使用普通 Markdown 链接。Agent 根据任务按需读取链接目标，不需要平台维护额外的引用清单。
 
@@ -67,7 +68,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ### `tasks/`
 
-`tasks/` 只存放项目任务记录，不是协作草稿、报告或证据目录。任务从第一行开始使用 YAML frontmatter；Agent 可以新建任务，也可以编辑既有任务的标题、描述、类型、标签、风险、密级和成本上限。执行结束后，平台校验并同步这些可编辑字段。没有声明 frontmatter 的普通 Markdown 不参与任务同步，也不会创建任务；此类内容应写入 `documents/` 下合适的草稿或报告目录。
+`tasks/` 只存放项目任务记录，不是协作草稿、报告或证据目录。聊天角色新建任务使用 `task.create`，修改任务使用带 `snapshot_updated_at` 的 `task.update`；工具会立即报告版本冲突。带 YAML frontmatter 的文件同步保留给历史聊天会话和结构化任务工作区。没有声明 frontmatter 的普通 Markdown 不参与任务同步，也不会创建任务；此类内容应通过 `document.publish` 放到文档库下合适的草稿或报告目录。
 
 `status`、当前阶段、阶段结果和审批是平台控制字段，不能通过修改 Markdown 绕过。编辑既有任务时还应保留 `id` 和 `snapshot_updated_at`，平台用时间戳避免旧快照覆盖较新的任务状态。
 
@@ -114,8 +115,12 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 | `MISSIONCREW_TASKS_DIR` | 项目任务 Markdown 目录 |
 | `MISSIONCREW_CHANNEL_HISTORY` | 当前角色可见的频道历史文件；仅聊天执行 |
 | `MISSIONCREW_ALLOWED_DIRS` | 本次明确授权的项目资源和 harness 目录列表 |
+| `MISSIONCREW_AGENT_TOOL_URL` | 统一 Agent Tool API 根地址；仅聊天执行 |
+| `MISSIONCREW_AGENT_TOKEN_FILE` | 当前频道和角色的 Bearer token 文件；仅聊天执行 |
+| `MISSIONCREW_AGENT_RUN_ID` | 进程启动时的回合 ID；持久会话应使用最新 Prompt 中显式给出的值 |
+| `MISSIONCREW_AGENT_TOOL_PYTHON` | 可执行 Agent Tool CLI 模块的 Python 解释器 |
 
-Runtime 的实际 `PWD` 仍是 `workdir`。支持原生多目录授权的适配器会把允许目录转换为相应命令行参数；其他 Runtime 也能从环境变量和提示上下文获知这些路径。
+Runtime 的实际 `PWD` 仍是 `workdir`。支持原生多目录授权的适配器会把允许目录转换为相应命令行参数；其他 Runtime 也能从环境变量和提示上下文获知这些路径。Agent Tool 的身份、scope、动作和错误契约见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
 ## 平台内部数据边界
 
