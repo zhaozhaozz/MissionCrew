@@ -485,6 +485,8 @@
                   transition: all .15s; box-shadow: var(--shadow-sm); }
   button.action:hover { background: var(--accent-strong); }
   button.action:active { transform: scale(.98); }
+  button.action:disabled { opacity: .5; cursor: default; transform: none; }
+  button.action.compact { flex: none; padding: 4px 10px; font-size: 12px; }
   button.ghost { background: transparent; color: var(--text-2); border: 1px solid var(--line);
                  border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 13px;
                  transition: all .15s; }
@@ -714,6 +716,37 @@
                           font: 13px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
   .doc-pane .doc-editor:focus { outline: none; border-color: var(--accent);
                                 box-shadow: 0 0 0 3px var(--accent-soft); }
+  .doc-history-panel { margin: 0 0 14px; border: 1px solid var(--line);
+                       border-radius: 9px; background: var(--bg-soft); overflow: hidden; }
+  .doc-history-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+                      padding: 8px 10px; border-bottom: 1px solid var(--line); }
+  .doc-history-head h3 { margin: 0; color: var(--text); }
+  .doc-history-table-wrap { max-height: 230px; overflow: auto; }
+  .doc-history-table-wrap table { min-width: 760px; margin: 0; }
+  .doc-history-table-wrap th, .doc-history-table-wrap td {
+    padding: 6px 8px; font-size: 11.5px; white-space: nowrap;
+  }
+  .doc-history-table-wrap td:nth-child(5) { max-width: 320px; overflow: hidden;
+                                             text-overflow: ellipsis; }
+  .doc-history-table-wrap tr.selected td { background: var(--accent-soft); }
+  .doc-compare-choice { min-width: 58px; }
+  .doc-compare-choice input { vertical-align: middle; }
+  .doc-compare-slot { display: inline-grid; place-items: center; width: 19px; height: 19px;
+                      margin-left: 4px; border-radius: 50%; color: #fff;
+                      background: var(--accent); font-size: 10px; font-weight: 700; }
+  .doc-compare-panel { margin: 0 0 14px; border: 1px solid var(--line);
+                       border-radius: 9px; background: var(--card); overflow: hidden; }
+  .doc-compare-head { display: flex; align-items: center; flex-wrap: wrap; gap: 7px;
+                      padding: 8px 10px; border-bottom: 1px solid var(--line);
+                      font-size: 12px; }
+  .doc-version-diff { max-height: 420px; margin: 0; padding: 8px 0; overflow: auto;
+                      background: var(--bg); font: 12px/1.55 ui-monospace,
+                      SFMono-Regular, Menlo, monospace; }
+  .doc-version-diff span { display: block; min-height: 1.55em; padding: 0 12px;
+                           white-space: pre; }
+  .doc-version-diff .meta { color: var(--accent); background: var(--accent-soft); }
+  .doc-version-diff .added { color: var(--ok); background: var(--ok-soft); }
+  .doc-version-diff .removed { color: var(--bad); background: var(--bad-soft); }
 
   /* 安全 Markdown 阅读样式，供准则预览和版本化文档共用。 */
   .markdown-body { color: var(--text-2); font-size: 14px; line-height: 1.72;

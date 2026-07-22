@@ -1,7 +1,9 @@
 """版本化文档库端点:文件树、历史、读写与版本恢复。"""
 from __future__ import annotations
 
+import difflib
 import mimetypes
+import unicodedata
 from pathlib import PurePosixPath
 from typing import Optional
 from urllib.parse import quote
@@ -10,10 +12,23 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 from ..collab.documents import document_resource_url, library_for
 from .context import ApiContext
-from .schemas import DocumentRestore, DocumentWrite
+from .schemas import DocumentCompare, DocumentRestore, DocumentWrite
 
 
 MAX_DOCUMENT_UPLOAD_BYTES = 50 * 1024 * 1024
+
+
+class _NonTextDocumentError(Exception):
+    pass
+
+
+def _decode_pure_text(content: bytes) -> str:
+    """严格识别可比较文本，拒绝非 UTF-8 和二进制控制字符。"""
+    text = content.decode("utf-8")
+    if any(unicodedata.category(char) == "Cc" and char not in "\t\n\r"
+           for char in text):
+        raise _NonTextDocumentError
+    return text
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -37,6 +52,52 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             return library_for(project_id).history(path, limit)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+
+    @app.post("/api/projects/{project_id}/documents/compare")
+    def compare_document_versions(project_id: str, body: DocumentCompare):
+        """比较同一纯文本文件的两个历史版本，返回 unified diff。"""
+        ctx.must_project(project_id)
+        library = library_for(project_id)
+        try:
+            before = _decode_pure_text(
+                library.read_history_bytes(body.path, body.from_revision))
+            after = _decode_pure_text(
+                library.read_history_bytes(body.path, body.to_revision))
+        except (UnicodeDecodeError, _NonTextDocumentError) as exc:
+            raise HTTPException(415, "二进制或非 UTF-8 文件不能比较版本") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        lines = list(difflib.unified_diff(
+            before.splitlines(), after.splitlines(),
+            fromfile=f"{body.path}@{body.from_revision[:10]}",
+            tofile=f"{body.path}@{body.to_revision[:10]}",
+            lineterm="",
+        ))
+        identical = before == after
+        if not identical and not lines:
+            # splitlines() 会忽略文件末换行和 CRLF/LF 差异，但这些仍是文本变更。
+            lines = [
+                f"--- {body.path}@{body.from_revision[:10]}",
+                f"+++ {body.path}@{body.to_revision[:10]}",
+                "@@ line endings @@",
+                "-A 版本的换行编码或文件末换行状态",
+                "+B 版本的换行编码或文件末换行状态",
+            ]
+        additions = sum(line.startswith("+") and not line.startswith("+++")
+                        for line in lines)
+        deletions = sum(line.startswith("-") and not line.startswith("---")
+                        for line in lines)
+        return {
+            "path": body.path,
+            "from_revision": body.from_revision,
+            "to_revision": body.to_revision,
+            "additions": additions,
+            "deletions": deletions,
+            "identical": identical,
+            "diff": "\n".join(lines),
+        }
 
     @app.post("/api/projects/{project_id}/documents/upload")
     async def upload_document(project_id: str, request: Request, path: str,

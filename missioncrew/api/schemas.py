@@ -152,6 +152,14 @@ class DocumentRestore(BaseModel):
     actor: str = "human"
 
 
+class DocumentCompare(BaseModel):
+    path: str
+    from_revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+    to_revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+
+
 class BoardInput(BaseModel):
     id: str
     name: str = ""

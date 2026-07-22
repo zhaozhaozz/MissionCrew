@@ -140,6 +140,7 @@ function openDocFromSidebar(path) {
   docMode = "view";
   docViewingRevision = null;
   docHistoryOpen = false;
+  resetDocumentVersionCompare();
   if (currentTab === "docs") { renderDocPane(); renderSidebar(); syncUrl(); }
   else switchTab("docs");
 }

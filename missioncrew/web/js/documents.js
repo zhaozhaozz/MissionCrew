@@ -22,12 +22,24 @@ let docSelected = null;           // 当前选中文件路径
 let docMode = "view";             // view | edit | new
 let docViewingRevision = null;    // 查看历史版本时的 revision
 let docHistoryOpen = false;
+let docHistoryRows = [];
+let docHistoryCanCompare = true;
+let docCompareRevisions = [];     // 按用户选择顺序表示 A → B
+let docCompareResult = null;
+let docCompareRequestToken = 0;
 const docCollapsed = new Set();   // 收起的目录前缀
 let docPaneRenderSignature = null;
 let docPaneRenderToken = 0;
 let documentRefreshToken = 0;
 let docPaneContent = null;        // 当前阅读页正文，供配置对话写入工作区快照
 let docPaneContentIdentity = null;
+
+function resetDocumentVersionCompare() {
+  docCompareRequestToken += 1;
+  docHistoryRows = [];
+  docCompareRevisions = [];
+  docCompareResult = null;
+}
 
 function currentDocContentIdentity() {
   return JSON.stringify(docMode === "new"
@@ -87,6 +99,7 @@ async function revealMissionCrewDocument(path) {
   docMode = "view";
   docViewingRevision = null;
   docHistoryOpen = false;
+  resetDocumentVersionCompare();
   configChatSelection = null;
   if (currentTab === "docs") {
     renderSidebar();
@@ -162,6 +175,7 @@ function selectDocument(path) {
   docSelected = path; docMode = "view";
   configChatSelection = null;
   docViewingRevision = null; docHistoryOpen = false;
+  resetDocumentVersionCompare();
   renderSidebar(); renderDocPane(); syncUrl();
 }
 
@@ -245,6 +259,7 @@ async function uploadDocuments(input) {
       docMode = "view";
       docViewingRevision = null;
       docHistoryOpen = false;
+      resetDocumentVersionCompare();
       renderSidebar();
       await renderDocPane();
       syncUrl();
@@ -267,6 +282,7 @@ function newDocument() {
   docSelected = null; docMode = "new";
   configChatSelection = null;
   docViewingRevision = null; docHistoryOpen = false;
+  resetDocumentVersionCompare();
   renderSidebar();
   renderDocPane();
   syncUrl();
@@ -394,6 +410,7 @@ async function renderDocPane(preserveScroll = false) {
         <button class="ghost" onclick="docViewingRevision=null;renderDocPane()">返回最新</button></div>`
     : "";
   if (binary) {
+    docHistoryCanCompare = false;
     captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
@@ -401,13 +418,14 @@ async function renderDocPane(preserveScroll = false) {
         <button class="action" onclick="downloadDocument()">下载</button>
         <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
         <button class="danger" onclick="deleteDocument()">删除</button></div>
-      ${revBanner}<div class="empty">该文件不是 UTF-8 文本，不能在线编辑；可以下载原文件。</div>
-      <div id="doc-history"></div>`;
+      <div id="doc-history"></div><div id="doc-compare"></div>
+      ${revBanner}<div class="empty">该文件不是 UTF-8 纯文本，不能在线编辑或比较版本；可以下载原文件。</div>`;
     finish();
     if (docHistoryOpen) await showDocumentHistory(renderToken);
     if (!stillCurrent()) return;
     return;
   }
+  docHistoryCanCompare = true;
   docPaneContent = d.content;
   docPaneContentIdentity = currentDocContentIdentity();
   const body = isMarkdownDoc(docSelected)
@@ -420,7 +438,8 @@ async function renderDocPane(preserveScroll = false) {
       <button class="action" onclick="docMode='edit';renderDocPane()">编辑</button>
       <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
       <button class="danger" onclick="deleteDocument()">删除</button></div>
-    ${revBanner}${body}<div id="doc-history"></div>`;
+    <div id="doc-history"></div><div id="doc-compare"></div>
+    ${revBanner}${body}`;
   finish();
   if (docHistoryOpen) await showDocumentHistory(renderToken);
   if (!stillCurrent()) return;
@@ -446,6 +465,8 @@ async function saveDocument() {
     message: `Update ${path} from project document editor`,
   });
   docMode = "view";
+  docHistoryOpen = false;
+  resetDocumentVersionCompare();
   await renderDocuments();
   syncUrl();
   toast("文档已保存为新版本", "success");
@@ -456,6 +477,8 @@ async function deleteDocument() {
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
   docSelected = null; docMode = "view";
+  docViewingRevision = null; docHistoryOpen = false;
+  resetDocumentVersionCompare();
   configChatSelection = null;
   await renderDocuments();
   syncUrl();
@@ -474,12 +497,109 @@ async function showDocumentHistory(renderToken = docPaneRenderToken) {
   if (renderToken !== docPaneRenderToken) return;
   const el = document.getElementById("doc-history");
   if (!el) return;
-  el.innerHTML = `<h3>版本历史</h3><table>
-    <tr><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>` +
-    rows.map(v => `<tr><td>${esc(v.revision.slice(0, 10))}</td><td>${new Date(v.created_at * 1000).toLocaleString()}</td>
-      <td>${esc(v.actor)}</td><td>${esc(v.message)}</td><td>
-      <button class="ghost" data-rev="${esc(v.revision)}" onclick="docViewingRevision=this.dataset.rev;docHistoryOpen=true;renderDocPane()">查看</button>
-      <button class="ghost" data-rev="${esc(v.revision)}" onclick="restoreDocumentVersion(this.dataset.rev)">恢复此版本</button></td></tr>`).join("") + `</table>`;
+  docHistoryRows = rows;
+  renderDocumentHistoryTable();
+}
+
+function renderDocumentHistoryTable() {
+  const el = document.getElementById("doc-history");
+  if (!el || !docHistoryOpen) return;
+  if (!docHistoryRows.length) {
+    el.innerHTML = `<section class="doc-history-panel"><div class="empty">暂无版本历史。</div></section>`;
+    return;
+  }
+  const full = docCompareRevisions.length >= 2;
+  const compareHint = docHistoryCanCompare
+    ? `选择两个纯文本版本（按 A → B 比较）`
+    : `二进制或非 UTF-8 文件不支持版本比较`;
+  el.innerHTML = `<section class="doc-history-panel">
+    <div class="doc-history-head"><h3>版本历史</h3><span class="muted">${compareHint}</span>
+      <span class="guideline-toolbar-spacer"></span>
+      <button class="action compact" type="button" onclick="compareDocumentVersions()"
+        ${docHistoryCanCompare && docCompareRevisions.length === 2 ? "" : "disabled"}>
+        比较已选版本 (${docCompareRevisions.length}/2)</button></div>
+    <div class="doc-history-table-wrap"><table>
+      <tr><th>比较</th><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>` +
+    docHistoryRows.map((version, index) => {
+      const slot = docCompareRevisions.indexOf(version.revision);
+      const checked = slot >= 0;
+      const disabled = !docHistoryCanCompare || (full && !checked);
+      return `<tr class="${docViewingRevision === version.revision ? "selected" : ""}">
+        <td class="doc-compare-choice"><input type="checkbox" data-rev="${esc(version.revision)}"
+          aria-label="选择版本 ${esc(version.revision.slice(0, 10))} 进行比较"
+          onchange="toggleDocumentCompareRevision(this.dataset.rev)"
+          ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
+          ${checked ? `<span class="doc-compare-slot">${slot === 0 ? "A" : "B"}</span>` : ""}</td>
+        <td><code>${esc(version.revision.slice(0, 10))}</code>
+          ${index === 0 ? `<span class="pill st-done">最新</span>` : ""}</td>
+        <td>${new Date(version.created_at * 1000).toLocaleString()}</td>
+        <td>${esc(version.actor)}</td><td>${esc(version.message)}</td><td>
+          <button class="ghost compact" data-rev="${esc(version.revision)}"
+            onclick="docViewingRevision=this.dataset.rev;docHistoryOpen=true;renderDocPane()">查看</button>
+          <button class="ghost compact" data-rev="${esc(version.revision)}"
+            onclick="restoreDocumentVersion(this.dataset.rev)">恢复</button></td></tr>`;
+    }).join("") + `</table></div></section>`;
+  renderDocumentComparison();
+}
+
+function toggleDocumentCompareRevision(revision) {
+  const index = docCompareRevisions.indexOf(revision);
+  if (index >= 0) docCompareRevisions.splice(index, 1);
+  else if (docCompareRevisions.length < 2) docCompareRevisions.push(revision);
+  docCompareResult = null;
+  renderDocumentHistoryTable();
+}
+
+async function compareDocumentVersions() {
+  if (!docSelected || !docHistoryCanCompare || docCompareRevisions.length !== 2) return;
+  const token = ++docCompareRequestToken;
+  const projectId = currentProject;
+  const documentPath = docSelected;
+  const revisions = [...docCompareRevisions];
+  const comparePane = document.getElementById("doc-compare");
+  if (comparePane) comparePane.innerHTML = `<div class="muted">正在比较版本…</div>`;
+  let result = null;
+  try {
+    result = await api(
+      "POST", `/api/projects/${encodeURIComponent(projectId)}/documents/compare`, {
+        path: documentPath,
+        from_revision: revisions[0],
+        to_revision: revisions[1],
+      });
+  } catch (_) { /* api() 已显示具体错误 */ }
+  if (token !== docCompareRequestToken || projectId !== currentProject
+      || documentPath !== docSelected
+      || revisions.some((revision, index) => revision !== docCompareRevisions[index])) return;
+  docCompareResult = result;
+  renderDocumentComparison();
+}
+
+function renderDocumentComparison() {
+  const el = document.getElementById("doc-compare");
+  if (!el) return;
+  if (!docCompareResult) { el.innerHTML = ""; return; }
+  const result = docCompareResult;
+  const heading = `<div class="doc-compare-head"><strong>版本比较</strong>
+    <code>A ${esc(result.from_revision.slice(0, 10))}</code><span>→</span>
+    <code>B ${esc(result.to_revision.slice(0, 10))}</code>
+    <span class="st-done">+${result.additions}</span>
+    <span class="st-failed">−${result.deletions}</span>
+    <span class="guideline-toolbar-spacer"></span>
+    <button class="ghost compact" type="button" onclick="docCompareResult=null;renderDocumentComparison()">关闭比较</button></div>`;
+  if (result.identical) {
+    el.innerHTML = `<section class="doc-compare-panel">${heading}
+      <div class="empty">两个版本的文本内容完全相同。</div></section>`;
+    return;
+  }
+  const lines = result.diff.split("\n").map(line => {
+    let kind = "context";
+    if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) kind = "meta";
+    else if (line.startsWith("+")) kind = "added";
+    else if (line.startsWith("-")) kind = "removed";
+    return `<span class="${kind}">${esc(line) || "&#8203;"}</span>`;
+  }).join("");
+  el.innerHTML = `<section class="doc-compare-panel">${heading}
+    <pre class="doc-version-diff">${lines}</pre></section>`;
 }
 
 async function restoreDocumentVersion(revision) {
@@ -488,5 +608,6 @@ async function restoreDocumentVersion(revision) {
                       { path: docSelected, revision });
   toast(`已恢复,新版本 ${r.revision.slice(0, 10)}`, "success");
   docViewingRevision = null;
+  resetDocumentVersionCompare();
   await renderDocuments();
 }

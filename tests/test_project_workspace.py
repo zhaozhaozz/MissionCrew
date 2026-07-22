@@ -123,6 +123,34 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
         "/api/projects/webshop/documents/history?path=specs%2Fcheckout.md"
     ).json()
     assert [row["actor"] for row in history[:2]] == ["bob", "alice"]
+    compared = client.post("/api/projects/webshop/documents/compare", json={
+        "path": "specs/checkout.md",
+        "from_revision": history[1]["revision"],
+        "to_revision": history[0]["revision"],
+    })
+    assert compared.status_code == 200
+    comparison = compared.json()
+    assert comparison["additions"] == comparison["deletions"] == 1
+    assert comparison["identical"] is False
+    assert "-# Checkout v1" in comparison["diff"]
+    assert "+# Checkout v2" in comparison["diff"]
+    identical = client.post("/api/projects/webshop/documents/compare", json={
+        "path": "specs/checkout.md",
+        "from_revision": history[0]["revision"],
+        "to_revision": history[0]["revision"],
+    })
+    assert identical.status_code == 200
+    assert identical.json()["identical"] is True
+    newline_only = client.put(url, json={"content": "# Checkout v2", "actor": "carol"})
+    newline_comparison = client.post(
+        "/api/projects/webshop/documents/compare", json={
+            "path": "specs/checkout.md",
+            "from_revision": history[0]["revision"],
+            "to_revision": newline_only.json()["revision"],
+        })
+    assert newline_comparison.status_code == 200
+    assert newline_comparison.json()["identical"] is False
+    assert "line endings" in newline_comparison.json()["diff"]
     old = client.get(url + f"?revision={history[1]['revision']}").json()
     assert old["content"] == "# Checkout v1\n"
     assert old["resource_url"] == \
@@ -767,9 +795,14 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "beginDocumentUpload" in documents and "uploadDocuments" in documents
     assert "/documents/upload?" in documents and 'overwrite: String(' in documents
     assert "downloadDocument" in documents and "/documents/download/" in documents
-    assert "该文件不是 UTF-8 文本" in documents
+    assert "不能在线编辑或比较版本" in documents
     assert "documentSidebarHtml" in documents
     assert "版本历史" in documents
+    assert "compareDocumentVersions" in documents
+    assert "/documents/compare" in documents
+    assert "比较已选版本" in documents and "最新" in documents
+    assert documents.index('<div id="doc-history"></div><div id="doc-compare"></div>') \
+        < documents.index('${revBanner}${body}')
     assert "documentSidebarHtml()" in router
     assert "sendConfigChat" in js and "pollConfigChat" in js
     assert "currentConfigDraft" in js and "configPageSnapshot" in js
@@ -1000,6 +1033,16 @@ def test_binary_document_read_returns_415(seeded):
     library.commit_changes("human", "add binary")
     r = client.get("/api/projects/webshop/documents/file/image.bin")
     assert r.status_code == 415
+
+    first = library.write_bytes(
+        "control.bin", b"\x00first", actor="alice", overwrite=True)
+    second = library.write_bytes(
+        "control.bin", b"\x00second", actor="bob", overwrite=True)
+    compared = client.post("/api/projects/webshop/documents/compare", json={
+        "path": "control.bin", "from_revision": first, "to_revision": second,
+    })
+    assert compared.status_code == 415
+    assert compared.json()["detail"] == "二进制或非 UTF-8 文件不能比较版本"
 
 
 def test_document_upload_preserves_bytes_versions_and_conflict_safety(seeded):

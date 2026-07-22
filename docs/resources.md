@@ -128,7 +128,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 文档的事实源是项目文档工作树，独立 bare Git 仓库保存版本历史。聊天角色通过 `document.publish` Agent Tool 动作发布文件；直接编辑后的执行结束快照只作为旧会话兼容。结构化任务仍按任务工作区协议写入。人类也可以在 Web 文档页一次选择多个文件上传：未选中文档时保存到文档库根目录，选中文档时保存到该文档所在目录；同名文件必须确认后才能覆盖，且每个文件分别形成版本。单文件上限为 50 MB。
 
-文本文件上传后可以继续在线编辑和预览。二进制或非 UTF-8 文件按原始字节保存，不会被文本转换；文档页提供当前版本和历史版本下载。
+文本文件上传后可以继续在线编辑和预览。版本历史表位于当前文档内容之前，首行明确标记最新版本；用户可按 A → B 的顺序选择任意两个纯文本版本查看 unified diff。二进制、非 UTF-8 或包含二进制控制字符的文件按原始字节保存，不会被文本转换，也不允许版本比较；文档页仍提供当前版本和历史版本下载。
 
 文档 URL 使用文档库内相对路径。平台发布 Agent 回复前会把已知的文档库真实路径转换成资源 URL，前端也兼容历史消息中保存的 MissionCrew 文档路径。普通业务源码绝对路径不会被自动转换成资源链接。
 
@@ -140,6 +140,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 - `GET /api/projects/<project>/documents/file/<relative-path>`
 - `PUT /api/projects/<project>/documents/file/<relative-path>`
 - `GET /api/projects/<project>/documents/history?path=<relative-path>`
+- `POST /api/projects/<project>/documents/compare`（比较同一纯文本文件的两个历史 revision）
 
 ## Runtime 可见的文件资源
 

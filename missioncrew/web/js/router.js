@@ -99,6 +99,7 @@ async function applyRoute() {
       docMode = "view";
       docViewingRevision = null;
       docHistoryOpen = false;
+      resetDocumentVersionCompare();
     }
     if (r.tab === "custom") {
       const board = projBoards().find(item =>
@@ -168,6 +169,7 @@ function setProject(id, updateRoute = true) {
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   docFiles = []; docFilesMeta = []; docSelected = null;
   docMode = "view"; docViewingRevision = null; docHistoryOpen = false;
+  resetDocumentVersionCompare();
   docCollapsed.clear();
   closeTaskDialog(false);
   renderSidebar(); renderBoard(); renderCustomBoards();
