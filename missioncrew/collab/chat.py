@@ -44,7 +44,6 @@ from ..core.store import Store
 MENTION_RE = re.compile(r"@([\w-]+)")
 EXPLICIT_MENTION_RE = re.compile(r"@\[([\w-]+)\]")
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
-CHAT_TIMEOUT = 900     # 单次聊天执行超时(秒)
 ACTION_RE = re.compile(r"<missioncrew-action>(.*?)</missioncrew-action>", re.S)
 
 @dataclass
@@ -624,10 +623,8 @@ class ChatEngine:
 
         # 运行过程(思考/工具/输出)实时落库,前端在聊天流中内联展示
         cfg.emit = _emit
-        runtime_deadline = time.monotonic() + cfg.timeout
         cfg.interact = lambda kind, payload: self._request_runtime_interaction(
-            run_id, backend.id, kind, payload,
-            max(0.1, runtime_deadline - time.monotonic()))
+            run_id, backend.id, kind, payload, cfg.timeout)
         cfg.cancelled = lambda: not self.store.chat_run_is_active(run_id)
         library.commit_changes("platform", "Capture external document changes before chat run")
         with self._run_state_lock:
@@ -708,7 +705,7 @@ class ChatEngine:
 
     def _request_runtime_interaction(self, run_id: int, backend_id: str,
                                      kind: str, payload: dict,
-                                     timeout: float) -> dict:
+                                     timeout: Optional[float]) -> dict:
         """持久化待处理请求，并阻塞原生协议回调直到用户回答。"""
         with self._run_state_lock:
             if not self.store.wait_chat_run_for_interaction(run_id, backend_id):
@@ -971,7 +968,7 @@ class ChatEngine:
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,
             prompt=prompt, workdir=str(workdir), project_id=channel.project_id or "",
             role_id=role.id, runtime_policy=runtime_policy,
-            env=env, timeout=CHAT_TIMEOUT,
+            env=env,
             effort=role.effort,
             session_key=session_key, session_id=session_id,
             common_prompt=common_prompt, turn_prompt=turn_prompt,

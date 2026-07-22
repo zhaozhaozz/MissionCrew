@@ -110,6 +110,21 @@ def test_native_provider_reuses_process_and_session(
     ("claude_code", ClaudeRuntimeProvider),
     ("codex", CodexRuntimeProvider),
 ])
+def test_native_execution_accepts_no_deadline(tmp_path, adapter, provider_cls):
+    provider = provider_cls(_Fallback(), _fake_command(adapter))
+    config = _config(tmp_path, adapter, "NO DEADLINE", {}, [])
+    config.timeout = None
+    try:
+        result = provider.start(config)
+        assert result.success
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("adapter,provider_cls", [
+    ("claude_code", ClaudeRuntimeProvider),
+    ("codex", CodexRuntimeProvider),
+])
 def test_native_provider_restarts_changed_process_and_resumes_session(
         tmp_path, adapter, provider_cls):
     provider = provider_cls(_Fallback(), _fake_command(adapter))

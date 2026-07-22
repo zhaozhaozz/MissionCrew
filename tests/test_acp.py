@@ -37,6 +37,19 @@ def test_acp_set_model_flows_through(tmp_path):
     assert "模型=k2" in result.output
 
 
+def test_acp_execution_has_no_default_deadline(tmp_path):
+    backend = Backend(id="grok", name="g", adapter="grok_build",
+                      command=[sys.executable, FAKE, "slow"])
+    config = ExecutionConfig(
+        task_id="chat", stage_name="chat", backend=backend,
+        prompt="keep working", workdir=str(tmp_path))
+
+    result = adapters.get_adapter("grok_build").run(config)
+
+    assert config.timeout is None
+    assert result.success and "ACP 收到任务" in result.output
+
+
 def test_acp_process_start_failure_is_reported(tmp_path):
     backend = Backend(id="trae", name="t", adapter="trae",
                       command=["/nonexistent/acp-tool"])

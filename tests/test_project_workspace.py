@@ -514,6 +514,7 @@ def test_all_project_directories_are_assembled_for_chat_and_tasks(seeded, tmp_pa
     skill_view = str(skill_context_dir(project))
     chat_workspace = str(Path(chat_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
     task_workspace = str(Path(task_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
+    assert chat_cfg.timeout is None and task_cfg.timeout is None
     assert task_cfg.allowed_dirs == [
         *shared, task_workspace, guideline_view, skill_view, skill_root]
     assert chat_cfg.allowed_dirs == [

@@ -158,6 +158,18 @@ def test_cli_adapter_streams_plain_lines(tmp_path):
     assert ("stderr", "警告:示例 stderr\n") in events
 
 
+def test_plain_cli_execution_accepts_no_deadline(tmp_path):
+    events, emit = _collect()
+    backend = Backend(id="p", name="p", adapter="pi",
+                      command=[sys.executable, FAKE_STREAM, "plain"])
+    config = _cfg(tmp_path, backend, emit)
+    config.timeout = None
+
+    result = adapters.CliAdapter("pi").run(config)
+
+    assert result.success and "最终回复" in result.output
+
+
 def test_cli_adapter_survives_raising_emit(tmp_path):
     """emit 落库失败只丢事件:读线程不能死,否则管道写满整次执行假死。"""
     def bad_emit(kind, text):

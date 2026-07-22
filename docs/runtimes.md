@@ -95,7 +95,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json 的 `task_started`、`task_progress`、`task_updated` 与 `task_notification`，以 `task_type=local_agent|remote_agent` 和 `task_id` 跟踪同一轮里的后台 subagent；其中 `task_updated` 只更新任务记录，`task_notification` 才是父 Agent 可消费结果的终止边界。顶层 `result` 若仍有 Agent 运行，只作为阶段性结果写入过程流；MissionCrew 保持该 chat run、stdout reader、权限回调和 session 锁继续有效，直到后台 Agent 全部终止且 Claude 随后发出新的顶层 `result`，才发布最终频道回复。`Agent|Task` 工具返回的异步启动文本仅用于兼容缺少 `task_started` 的旧 CLI，不能作为主要完成判断。后台 Agent 的启动、进度、等待和完成状态作为结构化 `backend_agent` 事件显示在聊天运行卡中。
 
-`can_use_tool` control request 不由 Claude 终端自行决定，而是交给 MissionCrew。`AskUserQuestion`、`ask_user_question` 和 `request_user_input` 会生成聊天交互卡，用户回答后 provider 把 answers 写回原 control request，同一个 turn 继续执行。文件写入和联网工具会先经过统一策略硬检查，再进入 `auto|prompt|deny` 审批。非 `full-access` 模式同时通过临时 `--settings` 启用 Claude 的 OS 级 Bash sandbox，强制关闭 unsandboxed escape hatch；sandbox 不可用时执行失败，不降级成无隔离命令。执行超时或停止时通过 control request 发送 interrupt，必要时再清理进程组。
+`can_use_tool` control request 不由 Claude 终端自行决定，而是交给 MissionCrew。`AskUserQuestion`、`ask_user_question` 和 `request_user_input` 会生成聊天交互卡，用户回答后 provider 把 answers 写回原 control request，同一个 turn 继续执行。文件写入和联网工具会先经过统一策略硬检查，再进入 `auto|prompt|deny` 审批。非 `full-access` 模式同时通过临时 `--settings` 启用 Claude 的 OS 级 Bash sandbox，强制关闭 unsandboxed escape hatch；sandbox 不可用时执行失败，不降级成无隔离命令。用户停止执行时通过 control request 发送 interrupt，必要时再清理进程组。
 
 ### Codex app-server
 
@@ -202,7 +202,7 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 执行环境
 
-每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`documents/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`、角色令牌文件和 Agent Tool 环境，任务执行另有 `evidence/`。`MISSIONCREW_DOCUMENTS_DIR` 是 Runtime 内部读取入口，`MISSIONCREW_PROJECT_URL` 是频道、任务、面板、准则、Skill 和文档的统一 `/resources/<project>` Web 前缀，`MISSIONCREW_DOCUMENTS_URL` 是其文档便捷入口；Agent 不应向频道发布前者的真实路径。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树、完整项目 Skill 根及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。`MISSIONCREW_SKILLS_DIR` 指向 harness 中仅含已启用 Skill 的目录视图，每个条目保留完整包结构。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。聊天角色通过 Agent Tool 发布文档和修改任务，以获得即时错误与角色审计；直接文件同步是兼容机制。结构化任务仍按工作区和证据协议运行。聊天执行超时 900 秒。
+每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`documents/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`、角色令牌文件和 Agent Tool 环境，任务执行另有 `evidence/`。`MISSIONCREW_DOCUMENTS_DIR` 是 Runtime 内部读取入口，`MISSIONCREW_PROJECT_URL` 是频道、任务、面板、准则、Skill 和文档的统一 `/resources/<project>` Web 前缀，`MISSIONCREW_DOCUMENTS_URL` 是其文档便捷入口；Agent 不应向频道发布前者的真实路径。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树、完整项目 Skill 根及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。`MISSIONCREW_SKILLS_DIR` 指向 harness 中仅含已启用 Skill 的目录视图，每个条目保留完整包结构。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。聊天角色通过 Agent Tool 发布文档和修改任务，以获得即时错误与角色审计；直接文件同步是兼容机制。结构化任务仍按工作区和证据协议运行。聊天与结构化任务的 Agent 执行均不设置时间上限，直到 Runtime 返回完成、失败，或用户主动停止；模型发现、版本检查、升级和协议握手等控制面操作仍保留独立超时，避免 HTTP 请求永久占用服务线程。
 
 完整的目录职责、历史隔离、证据和内部数据边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
 

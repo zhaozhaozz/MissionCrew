@@ -684,7 +684,9 @@ class ExecutionConfig:
     allowed_dirs: list[str] = field(default_factory=list)
     runtime_policy: RuntimePolicy = field(default_factory=RuntimePolicy)
     env: dict = field(default_factory=dict)
-    timeout: int = 3600
+    # Agent 执行默认没有时间上限；由完成信号或用户主动停止结束。
+    # Optional 值保留给测试和显式调用方设置局部截止时间。
+    timeout: Optional[float] = None
     effort: str = ""      # 推理力度(聊天执行由角色填入;任务阶段暂不使用)
     routing_trace: list[str] = field(default_factory=list)
     # 聊天 Runtime 会话按 channel×role 复用。common_prompt 每轮重注入，确保

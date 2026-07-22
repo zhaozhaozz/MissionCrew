@@ -226,7 +226,9 @@ class _CodexSession:
                     self.close()
                     return RunResult(False, "执行已停止")
                 response = self.client.request(
-                    "turn/start", params, timeout=min(30, config.timeout))
+                    "turn/start", params,
+                    timeout=(min(30, config.timeout)
+                             if config.timeout is not None else 30))
                 response = response if isinstance(response, dict) else {}
                 self._active_turn_id = str((response.get("turn") or {}).get("id") or
                                            self._active_turn_id)

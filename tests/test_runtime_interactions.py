@@ -28,7 +28,7 @@ def test_pending_runtime_question_is_resolved_without_persisting_answer(store):
                     "id": "secret", "header": "Token", "question": "Enter token",
                     "isSecret": True,
                 }],
-            }, 5))
+            }, None))
 
     worker = threading.Thread(target=ask)
     worker.start()
@@ -84,7 +84,7 @@ def test_channel_stop_cancels_pending_interaction_without_reopening_run(
 
     worker = threading.Thread(target=lambda: result.update(
         chat._request_runtime_interaction(
-            run_id, "std-1", "permission_request", {"tool": "Bash"}, 5)))
+            run_id, "std-1", "permission_request", {"tool": "Bash"}, None)))
     worker.start()
     for _ in range(50):
         if any(event["kind"] == "permission_request"

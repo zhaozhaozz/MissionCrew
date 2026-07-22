@@ -29,7 +29,8 @@ class AcpError(Exception):
 
 
 class _AcpClient:
-    def __init__(self, cmd: list[str], cwd: str, env: dict, timeout: int,
+    def __init__(self, cmd: list[str], cwd: str, env: dict,
+                 timeout: Optional[float],
                  emit: Optional[Callable[[str, str], None]] = None):
         env = {**env, "PWD": cwd}
         self.command = list(cmd)
@@ -40,7 +41,7 @@ class _AcpClient:
             stderr=subprocess.PIPE, cwd=cwd, env=env,
             encoding="utf-8", errors="replace", bufsize=1,
         )
-        self.deadline = time.time() + timeout
+        self.deadline = time.time() + timeout if timeout is not None else None
         self.chunks: list[str] = []          # agent_message_chunk 文本
         self._raw_emit = emit or (lambda kind, text: None)
         try:
@@ -62,10 +63,10 @@ class _AcpClient:
         threading.Thread(target=self._read_loop, daemon=True).start()
         threading.Thread(target=self._stderr_loop, daemon=True).start()
 
-    def begin_turn(self, timeout: int,
+    def begin_turn(self, timeout: Optional[float],
                    emit: Optional[Callable[[str, str], None]]) -> None:
         """为长驻客户端开启新一轮，重置超时、输出和事件接收器。"""
-        self.deadline = time.time() + timeout
+        self.deadline = time.time() + timeout if timeout is not None else None
         self.chunks = []
         self._raw_emit = emit or (lambda kind, text: None)
 
@@ -151,8 +152,9 @@ class _AcpClient:
         except (OSError, ValueError) as exc:
             self._pending.pop(rid, None)
             raise AcpError(f"{method} 写入失败: {exc}") from exc
-        remaining = self.deadline - time.time()
-        if remaining <= 0:
+        remaining = (self.deadline - time.time()
+                     if self.deadline is not None else None)
+        if remaining is not None and remaining <= 0:
             self._pending.pop(rid, None)
             raise AcpError(f"{method} 超时")
         try:
@@ -393,7 +395,7 @@ def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
 
 
 def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
-                  model: str, timeout: int, runtime_id: str,
+                  model: str, timeout: Optional[float], runtime_id: str,
                   emit: Optional[Callable[[str, str], None]],
                   task_id: str = "", stage_name: str = "",
                   project_id: str = "", role_id: str = "") -> tuple[bool, str]:
@@ -417,7 +419,7 @@ def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
 
 
 def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
-               model: str = "", timeout: int = 900,
+               model: str = "", timeout: Optional[float] = None,
                emit: Optional[Callable[[str, str], None]] = None,
                session_key: str = "", session_id: str = "",
                recovery_prompt: str = "",
