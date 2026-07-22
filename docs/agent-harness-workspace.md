@@ -74,7 +74,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ### `guidelines/` 与 `skills/`
 
-`guidelines/` 保存已启用准则的完整 Markdown，frontmatter 使用 `name` 和 `description`。公共上下文只提供准则摘要、内容版本和文件路径，Agent 先根据 `description` 判断相关性，需要时再读取全文。
+`guidelines/` 保存已启用准则的完整 Markdown 快照，frontmatter 使用 `name` 和 `description`。其源文件与项目文档一样，由普通工作树和独立 bare Git 历史管理；恢复历史也会写入新版本。公共上下文只提供准则摘要、内容版本和文件路径，Agent 先根据 `description` 判断相关性，需要时再读取全文。
 
 `skills/<id>/` 链接到项目的完整 Skill 目录，除 `SKILL.md` 外还可包含 `scripts/`、`references/`、`assets/` 等相对文件。准则和 Skill 不绑定角色或 Runtime，由 Agent 结合当前任务判断是否适用。Skill 目录中任意文件或项目设置变化后，平台在下一次装配时刷新内容版本和持久公共上下文；复用中的 Runtime 会话会收到新版本上下文替换旧版本。导入和直接投放规则见 [项目 Skill 完整目录](skills.md)。
 

@@ -5,16 +5,21 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from ..collab.project_context import write_guideline_context
+from ..collab.guidelines import (delete_guideline as delete_guideline_document,
+                                 guideline_history, read_guideline_version,
+                                 restore_guideline,
+                                 save_guideline as save_guideline_document,
+                                 sync_guideline_library)
 from ..collab.resource_urls import guideline_resource_url, skill_resource_url
 from ..collab.skills import (delete_project_skill, import_skill_folder,
                              import_skill_zip, project_skill_library_dir,
                              read_skill_file, save_project_skill,
                              save_project_skill_markdown, skill_library_info,
                              sync_project_skill_library)
-from ..core.models import GuidelineDocument, ProjectSkill
+from ..core.models import ProjectSkill
 from .context import MENTION_ID_RE, ApiContext
-from .schemas import GuidelineInput, SkillFolderImport, SkillInput
+from .schemas import (GuidelineInput, GuidelineRestore, SkillFolderImport,
+                      SkillInput)
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -22,47 +27,87 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/projects/{project_id}/guidelines")
     def list_guidelines(project_id: str):
+        project = ctx.must_project(project_id)
+        sync_guideline_library(store, project)
         return [{**g.to_dict(),
                  "resource_url": guideline_resource_url(project_id, g.name)}
-                for g in ctx.must_project(project_id).guidelines]
+                for g in project.guidelines]
 
     @app.post("/api/projects/{project_id}/guidelines")
     def save_guideline(project_id: str, body: GuidelineInput):
         project = ctx.must_project(project_id)
         actor = ctx.validate_orchestrator_actor(project, body.actor_role_id)
         try:
-            guideline = GuidelineDocument.from_markdown(body.markdown, body.enabled)
+            guideline, revision = save_guideline_document(
+                store, project, body.markdown, enabled=body.enabled, actor=actor,
+                original_name=(body.original_name or "").strip())
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        if not MENTION_ID_RE.fullmatch(guideline.name):
-            raise HTTPException(400, "准则 name 只能包含字母、数字、下划线、连字符")
-        original_name = (body.original_name or "").strip()
-        if original_name and not MENTION_ID_RE.fullmatch(original_name):
-            raise HTTPException(400, "原准则 name 无效")
-        replaced_names = {guideline.name, original_name} - {""}
-        project.guidelines = [g for g in project.guidelines if g.name not in replaced_names]
-        project.guidelines.append(guideline)
-        store.put_project(project)
-        write_guideline_context(project)
-        store.audit(actor, "guideline_saved",
-                    detail=f"project={project_id} guideline={guideline.name}")
         return {**guideline.to_dict(),
-                "resource_url": guideline_resource_url(project_id, guideline.name)}
+                "resource_url": guideline_resource_url(project_id, guideline.name),
+                "revision": revision}
+
+    @app.get("/api/projects/{project_id}/guidelines/{guideline_name}/history")
+    def list_guideline_history(project_id: str, guideline_name: str,
+                               limit: int = 100):
+        project = ctx.must_project(project_id)
+        try:
+            return guideline_history(store, project, guideline_name, limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/guidelines/{guideline_name}/history/{revision}")
+    def get_guideline_history_version(project_id: str, guideline_name: str,
+                                      revision: str):
+        project = ctx.must_project(project_id)
+        try:
+            return read_guideline_version(
+                store, project, guideline_name, revision)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/guidelines/{guideline_name}/restore")
+    def restore_guideline_version(project_id: str, guideline_name: str,
+                                  body: GuidelineRestore):
+        project = ctx.must_project(project_id)
+        actor = ctx.validate_orchestrator_actor(project, body.actor_role_id)
+        try:
+            guideline, restored = restore_guideline(
+                store, project, guideline_name, body.revision, actor=actor)
+        except FileExistsError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        store.audit(
+            actor, "guideline_restored",
+            detail=(f"project={project_id} guideline={guideline.name} "
+                    f"from={body.revision[:10]} revision={restored[:10]}"),
+        )
+        return {**guideline.to_dict(),
+                "resource_url": guideline_resource_url(project_id, guideline.name),
+                "revision": restored}
 
     @app.delete("/api/projects/{project_id}/guidelines/{guideline_name}")
     def delete_guideline(project_id: str, guideline_name: str,
                          actor_role_id: Optional[str] = None):
         project = ctx.must_project(project_id)
         actor = ctx.validate_orchestrator_actor(project, actor_role_id)
-        before = len(project.guidelines)
-        project.guidelines = [g for g in project.guidelines if g.name != guideline_name]
-        if len(project.guidelines) == before:
-            raise HTTPException(404, "准则不存在")
-        store.put_project(project)
-        write_guideline_context(project)
-        store.audit(actor, "guideline_deleted",
-                    detail=f"project={project_id} guideline={guideline_name}")
-        return {"ok": True}
+        try:
+            revision = delete_guideline_document(
+                store, project, guideline_name, actor=actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {"ok": True, "revision": revision}
 
     @app.get("/api/projects/{project_id}/skills")
     def list_skills(project_id: str):

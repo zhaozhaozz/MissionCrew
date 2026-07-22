@@ -154,6 +154,8 @@ function setProject(id, updateRoute = true) {
   currentCustomBoard = null; customBoardEditing = false;
   selectedGuidelineName = undefined;
   guidelineMarkdownMode = "preview";
+  guidelineHistoryOpen = false;
+  guidelineViewingVersion = null;
   selectedSkillId = undefined;
   skillMarkdownMode = "preview";
   skillOpenFile = null;

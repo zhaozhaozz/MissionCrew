@@ -65,6 +65,8 @@ Runtime
 | `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
 | `guideline.save` / `skill.save` | 禁止 | 允许 |
 
+`guideline.save` 与 Web 准则编辑器共用 Git 版本库。每次 Markdown 内容变更都返回 `revision`，记录为当前角色的操作；重命名会继续原文件的历史链。
+
 `message.publish` 的 `mentions` 是独立的角色 ID 数组。只有数组中的合法角色会被调度；正文里出现的 `@reviewer` 等文本只是普通内容。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。
 
 ## 动作和并发规则

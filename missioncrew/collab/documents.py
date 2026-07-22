@@ -1,4 +1,4 @@
-"""项目文档库：普通目录作为工作树，独立 Git 仓库保存完整版本历史。"""
+"""项目版本文件库：普通目录作为工作树，独立 Git 仓库保存历史。"""
 from __future__ import annotations
 
 import os
@@ -83,19 +83,21 @@ def normalize_document_resource_urls(text: str, project_id: str,
     return task_root.sub(resource_root, normalized)
 
 
-class DocumentLibrary:
-    """一个项目的版本化文档库。
+class VersionedFileLibrary:
+    """普通文件工作树 + 独立 bare Git 的共享版本存储。
 
     `root` 不包含 `.git`，因此交给任意 Runtime 时就是普通目录；Git 元数据
-    保存在同级 `document-history.git`，Runtime 无法误改历史。
+    保存在同级独立目录，Runtime 无法误改历史。
     """
 
-    def __init__(self, project_id: str):
+    def __init__(self, project_id: str, directory_name: str,
+                 history_name: str, label: str):
         if not _PROJECT_ID_RE.fullmatch(project_id):
             raise ValueError("项目 id 只能包含字母、数字、下划线、连字符")
         project_root = projects_dir() / project_id
-        self.root = project_root / "documents"
-        self.repo = project_root / "document-history.git"
+        self.root = project_root / directory_name
+        self.repo = project_root / history_name
+        self.label = label
         self._lock = _project_lock(project_id)
         with self._lock:
             self.root.mkdir(parents=True, exist_ok=True)
@@ -105,7 +107,8 @@ class DocumentLibrary:
                     ["git", "init", "--bare", "--quiet", str(self.repo)],
                     check=True, capture_output=True, text=True,
                 )
-                self.commit_changes("platform", "Initialize project document library", allow_empty=True)
+                self.commit_changes(
+                    "platform", f"Initialize project {label} library", allow_empty=True)
 
     def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
         cmd = ["git", f"--git-dir={self.repo}", f"--work-tree={self.root}", *args]
@@ -143,10 +146,10 @@ class DocumentLibrary:
                 raise ValueError("版本号不合法")
             proc = self._git("show", f"{revision}:{rel}", check=False)
             if proc.returncode:
-                raise FileNotFoundError(f"版本 {revision} 中不存在文档 {rel}")
+                raise FileNotFoundError(f"版本 {revision} 中不存在{self.label} {rel}")
             return proc.stdout
         if not path.is_file() or path.is_symlink():
-            raise FileNotFoundError(f"文档不存在: {rel}")
+            raise FileNotFoundError(f"{self.label}不存在: {rel}")
         return path.read_text(encoding="utf-8")
 
     def read_bytes(self, relative: str, revision: str | None = None) -> bytes:
@@ -162,10 +165,11 @@ class DocumentLibrary:
                     check=False, capture_output=True,
                 )
                 if proc.returncode:
-                    raise FileNotFoundError(f"版本 {revision} 中不存在文档 {rel}")
+                    raise FileNotFoundError(
+                        f"版本 {revision} 中不存在{self.label} {rel}")
                 return proc.stdout
             if not path.is_file() or path.is_symlink():
-                raise FileNotFoundError(f"文档不存在: {rel}")
+                raise FileNotFoundError(f"{self.label}不存在: {rel}")
             return path.read_bytes()
 
     def write(self, relative: str, content: str, actor: str = "human",
@@ -182,9 +186,9 @@ class DocumentLibrary:
         with self._lock:
             rel, path = self._path(relative)
             if path.exists() and not path.is_file():
-                raise ValueError(f"文档路径不是普通文件: {rel}")
+                raise ValueError(f"{self.label}路径不是普通文件: {rel}")
             if path.is_file() and not overwrite:
-                raise FileExistsError(f"文档已存在: {rel}")
+                raise FileExistsError(f"{self.label}已存在: {rel}")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
             return self.commit_changes(actor, message or f"Upload {rel}")
@@ -193,14 +197,28 @@ class DocumentLibrary:
         with self._lock:
             rel, path = self._path(relative)
             if not path.is_file() or path.is_symlink():
-                raise FileNotFoundError(f"文档不存在: {rel}")
+                raise FileNotFoundError(f"{self.label}不存在: {rel}")
             path.unlink()
             return self.commit_changes(actor, f"Delete {rel}")
+
+    def rename(self, source: str, target: str, actor: str = "human") -> str:
+        """以独立 commit 重命名文件，让 ``git log --follow`` 稳定追踪旧路径。"""
+        with self._lock:
+            source_rel, source_path = self._path(source)
+            target_rel, target_path = self._path(target)
+            if not source_path.is_file() or source_path.is_symlink():
+                raise FileNotFoundError(f"{self.label}不存在: {source_rel}")
+            if target_path.exists():
+                raise FileExistsError(f"{self.label}已存在: {target_rel}")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            source_path.rename(target_path)
+            return self.commit_changes(
+                actor, f"Rename {source_rel} to {target_rel}")
 
     def restore(self, relative: str, revision: str, actor: str = "human") -> str:
         """把某文件恢复到历史版本(作为新版本写入,历史保持完整可追溯)。"""
         with self._lock:
-            content = self.read_bytes(relative, revision)  # 兼容文本和二进制
+            content = self.read_history_bytes(relative, revision)  # 兼容文本和二进制
             rel, path = self._path(relative)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(content)
@@ -213,7 +231,7 @@ class DocumentLibrary:
             if not allow_empty and self._git("diff", "--cached", "--quiet", check=False).returncode == 0:
                 return ""
             clean_actor = " ".join(actor.split())[:80] or "platform"
-            clean_message = " ".join(message.split())[:200] or "Update project documents"
+            clean_message = " ".join(message.split())[:200] or f"Update project {self.label}"
             env = {
                 **os.environ,
                 "GIT_AUTHOR_NAME": clean_actor,
@@ -231,11 +249,34 @@ class DocumentLibrary:
                 "--format=%H%x1f%at%x1f%an%x1f%s"]
         if relative:
             rel, _ = self._path(relative)
-            args.extend(["--follow", "--", rel])
+            # 记录每个 commit 当时的真实文件名，重命名后的历史版本仍可读取。
+            args = ["-c", "core.quotepath=false", "log", "--follow",
+                    f"--max-count={max(1, min(limit, 500))}",
+                    "--format=%x1e%H%x1f%at%x1f%an%x1f%s", "--name-only", "--", rel]
         proc = self._git(*args, check=False)
         if proc.returncode:
             return []
         result = []
+        if relative:
+            for record in proc.stdout.split("\x1e"):
+                lines = [line for line in record.splitlines() if line.strip()]
+                if not lines:
+                    continue
+                parts = lines[0].split("\x1f", 3)
+                if len(parts) != 4:
+                    continue
+                revision_path = next(
+                    (path for path in reversed(lines[1:])
+                     if self._git("cat-file", "-e", f"{parts[0]}:{path}",
+                                  check=False).returncode == 0),
+                    rel,
+                )
+                result.append({
+                    "revision": parts[0], "created_at": float(parts[1]),
+                    "actor": parts[2], "message": parts[3],
+                    "path": revision_path,
+                })
+            return result
         for line in proc.stdout.splitlines():
             parts = line.split("\x1f", 3)
             if len(parts) == 4:
@@ -245,13 +286,40 @@ class DocumentLibrary:
                 })
         return result
 
+    def read_history_bytes(self, relative: str, revision: str) -> bytes:
+        """按历史记录里的当时路径读取版本，兼容文件重命名。"""
+        if not _REVISION_RE.fullmatch(revision):
+            raise ValueError("版本号不合法")
+        row = next((item for item in self.history(relative, 500)
+                    if item["revision"] == revision), None)
+        if row is None:
+            raise FileNotFoundError(f"{self.label}版本不存在: {revision}")
+        return self.read_bytes(row.get("path") or relative, revision)
+
+    def read_history(self, relative: str, revision: str) -> str:
+        return self.read_history_bytes(relative, revision).decode("utf-8")
+
+
+class DocumentLibrary(VersionedFileLibrary):
+    def __init__(self, project_id: str):
+        super().__init__(project_id, "documents", "document-history.git", "文档")
+
+
+class GuidelineLibrary(VersionedFileLibrary):
+    def __init__(self, project_id: str):
+        super().__init__(project_id, "guidelines", "guideline-history.git", "准则")
+
 
 def library_for(project_id: str) -> DocumentLibrary:
     return DocumentLibrary(project_id)
 
 
+def guideline_library_for(project_id: str) -> GuidelineLibrary:
+    return GuidelineLibrary(project_id)
+
+
 def archive_library(project_id: str) -> str:
-    """删除项目时把文档及其历史移出活动目录，避免重建同名项目读到旧资料。"""
+    """删除项目时归档文档、准则及历史，避免重建同名项目读到旧资料。"""
     if not _PROJECT_ID_RE.fullmatch(project_id):
         raise ValueError("项目 id 只能包含字母、数字、下划线、连字符")
     with _project_lock(project_id):

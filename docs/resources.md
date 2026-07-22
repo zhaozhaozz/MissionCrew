@@ -89,7 +89,7 @@ Agent harness 同时提供 `.missioncrew/tasks/` Markdown 视图。Agent 可以�
 
 ### 准则
 
-准则的事实源是项目配置中的完整 Markdown。文件头只使用与后端一致的 `name` 和 `description`：
+准则与项目文档使用同一套版本文件库：`projects/<project>/guidelines/` 是普通 Markdown 工作树，同级 `guideline-history.git` bare Git 仓库保存完整历史。Markdown 工作树是内容事实源；项目配置中的准则数据是为兼容现有项目模型和快速组装而保留的索引缓存，启动和读取时会从 Markdown 重新解析刷新；启用状态不属于 Markdown 内容版本。文件头只使用与后端一致的 `name` 和 `description`：
 
 ```markdown
 ---
@@ -100,12 +100,15 @@ description: 修改业务代码或接口后进行独立审查
 # 代码审查准则
 ```
 
-已启用准则会物化到 Agent harness 的 `.missioncrew/guidelines/<name>.md`。公共上下文只提供 `description`、内容版本、内部按需读取路径和 Web URL；Agent 判断相关时再读取全文。准则 URL 使用 `name`，不使用文件系统绝对路径。
+修改和重命名都会生成 Git 版本；恢复旧版本会再写入一个新版本，不改写旧历史。已启用准则会物化到 Agent harness 的 `.missioncrew/guidelines/<name>.md`。公共上下文只提供 `description`、内容版本、内部按需读取路径和 Web URL；Agent 判断相关时再读取全文。准则 URL 使用 `name`，不使用文件系统绝对路径。
 
 主要 API：
 
 - `GET /api/projects/<project>/guidelines`
 - `POST /api/projects/<project>/guidelines`
+- `GET /api/projects/<project>/guidelines/<name>/history`
+- `GET /api/projects/<project>/guidelines/<name>/history/<revision>`
+- `POST /api/projects/<project>/guidelines/<name>/restore`
 - `DELETE /api/projects/<project>/guidelines/<name>`
 
 ### Skill

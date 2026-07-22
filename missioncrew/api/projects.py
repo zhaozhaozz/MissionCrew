@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import archive_library, library_for
+from ..collab.guidelines import replace_guideline_library
 from ..collab.project_context import write_guideline_context
 from ..collab.skills import materialize_project_skills, sync_project_skill_library
 from ..core import seed as seed_mod
@@ -60,6 +61,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         for skill in project.skills:
             if not MENTION_ID_RE.fullmatch(skill.id):
                 raise HTTPException(400, f"Skill id 不合法: {skill.id}")
+        if body.guidelines is not None:
+            replace_guideline_library(project, actor="human")
         store.put_project(project)
         write_guideline_context(project)
         materialize_project_skills(project, overwrite=body.skills is not None)

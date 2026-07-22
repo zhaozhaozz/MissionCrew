@@ -7,6 +7,8 @@ MC_HOME 布局:
                     聊天角色隔离的 Agent harness 工作区
   projects/<id>/documents              项目文档库普通目录
   projects/<id>/document-history.git   文档库 Git 版本历史(与工作目录分离)
+  projects/<id>/guidelines             项目准则 Markdown 普通目录
+  projects/<id>/guideline-history.git  准则 Git 版本历史(与工作目录分离)
   projects/<id>/runtime-context/guidelines/*.md  Runtime 按需读取的准则全文
   projects/<id>/skills/<skill-id>/SKILL.md       项目完整 Skill 投放目录
   secrets.yaml      受控资源的密钥(secret_ref -> value),不进入任何 Prompt

@@ -22,14 +22,14 @@ from typing import Callable, Optional
 
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
-from .project_context import write_guideline_context
+from .guidelines import save_guideline
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, skill_resource_url,
                             task_resource_url)
 from .skills import save_project_skill, save_project_skill_markdown
 from .workspace import chat_workspace_dir, write_task_files
 from ..core.models import (BOARD_WIDGET_TYPES, TIER_ORDER, Board, BoardWidget,
-                           Channel, GuidelineDocument, Project, ProjectSkill,
+                           Channel, Project, ProjectSkill,
                            Task, new_id)
 from ..core.store import Store
 
@@ -678,25 +678,18 @@ class AgentActionService:
         markdown = arguments.get("markdown", "")
         if not isinstance(markdown, str):
             raise AgentToolError("invalid_arguments", "markdown 必须是字符串")
-        guideline = GuidelineDocument.from_markdown(markdown, enabled)
-        if not CONTROL_ID_RE.fullmatch(guideline.name):
-            raise AgentToolError(
-                "invalid_arguments", "准则 name 只能包含字母、数字、下划线、连字符")
         original_name = str(arguments.get("original_name", "")).strip()
-        if original_name and not CONTROL_ID_RE.fullmatch(original_name):
-            raise AgentToolError("invalid_arguments", "original_name 不合法")
-        replaced = {guideline.name, original_name} - {""}
-        project.guidelines = [item for item in project.guidelines if item.name not in replaced]
-        project.guidelines.append(guideline)
-        self.store.put_project(project)
-        write_guideline_context(project)
-        self.store.audit(
-            f"role:{identity.role_id}", "guideline_saved",
-            detail=f"project={project.id} guideline={guideline.name}")
+        try:
+            guideline, revision = save_guideline(
+                self.store, project, markdown, enabled=enabled,
+                actor=f"role:{identity.role_id}", original_name=original_name)
+        except FileExistsError as exc:
+            raise AgentToolError("already_exists", str(exc), 409) from exc
         url = guideline_resource_url(project.id, guideline.name)
         return {
             "summary": f"已保存准则文档 [{guideline.name}]({url})",
             "guideline": guideline.to_dict(), "resource_url": url,
+            "revision": revision,
         }
 
     def _save_skill(self, project: Project, identity: AgentIdentity,

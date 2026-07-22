@@ -10,6 +10,7 @@ from typing import Optional
 from fastapi import HTTPException
 
 from ..collab.chat import ChatEngine
+from ..collab.guidelines import sync_all_guideline_libraries
 from ..collab.skills import (sync_all_project_skill_libraries,
                              sync_project_skill_library)
 from ..collab.workspace import migrate_legacy_workspace_layout
@@ -42,6 +43,7 @@ class ApiContext:
         seed_mod.ensure_role_bindings(store)
         seed_mod.ensure_role_templates(store)
         seed_mod.migrate_project_fields(store)
+        sync_all_guideline_libraries(store)
         migrated_paths = migrate_legacy_workspace_layout()
         if migrated_paths:
             store.audit("platform", "agent_workspace_layout_migrated",

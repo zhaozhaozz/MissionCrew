@@ -379,6 +379,62 @@ def test_guideline_and_skill_management_have_no_binding_fields(seeded):
     assert migrated_header.render_markdown().count("---") == 2
 
 
+def test_guideline_git_history_follows_rename_and_restore(seeded):
+    from missioncrew.collab.documents import guideline_library_for
+
+    client = _client(seeded)
+    base_url = "/api/projects/webshop/guidelines/task-validation"
+    initial_history = client.get(base_url + "/history")
+    assert initial_history.status_code == 200
+    initial = initial_history.json()[0]
+    assert initial["actor"] == "platform"
+    assert initial["path"] == "task-validation.md"
+
+    updated = client.post("/api/projects/webshop/guidelines", json={
+        "original_name": "task-validation",
+        "markdown": "---\nname: task-validation\n"
+                    "description: 新验证说明\n---\n\n# 第二版\n",
+        "actor_role_id": "lead",
+    })
+    assert updated.status_code == 200
+    assert len(updated.json()["revision"]) == 40
+
+    renamed = client.post("/api/projects/webshop/guidelines", json={
+        "original_name": "task-validation",
+        "markdown": "---\nname: delivery-validation\n"
+                    "description: 交付验证\n---\n\n# 第三版\n",
+        "actor_role_id": "lead",
+    })
+    assert renamed.status_code == 200
+    history_url = "/api/projects/webshop/guidelines/delivery-validation/history"
+    history = client.get(history_url).json()
+    assert history[0]["revision"] == renamed.json()["revision"]
+    assert any(row["path"] == "task-validation.md" for row in history)
+
+    old = client.get(history_url + f"/{initial['revision']}")
+    assert old.status_code == 200
+    assert old.json()["name"] == "task-validation"
+    assert "# 任务验证指导" in old.json()["markdown"]
+
+    restored = client.post(
+        "/api/projects/webshop/guidelines/delivery-validation/restore",
+        json={"revision": initial["revision"], "actor_role_id": "lead"})
+    assert restored.status_code == 200
+    assert restored.json()["name"] == "task-validation"
+    assert restored.json()["revision"] != initial["revision"]
+    current = next(item for item in seeded.get_project("webshop").guidelines
+                   if item.name == "task-validation")
+    assert "# 任务验证指导" in current.content
+    library = guideline_library_for("webshop")
+    assert library.read("task-validation.md") == current.render_markdown()
+    assert library.repo.name == "guideline-history.git"
+    assert not seeded._query(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='guideline_versions'")
+
+    current_history_url = "/api/projects/webshop/guidelines/task-validation/history"
+    assert client.get(current_history_url + "/deadbeef00").status_code == 404
+
+
 def test_sandboxed_cli_commands_allow_the_document_library():
     docs = "/mc/projects/demo/documents"
     codex = adapters.render_command(
@@ -722,6 +778,10 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "CONFIG_CHAT_HEIGHT_KEY" in js and "CONFIG_CHAT_COLLAPSED_KEY" in js
     assert "guideline-markdown-preview markdown-body" in js
     assert "setGuidelineMarkdownMode" in js
+    assert "toggleGuidelineHistory" in js and "showGuidelineHistory" in js
+    assert "viewGuidelineVersion" in js and "restoreGuidelineVersion" in js
+    assert "/guidelines/${encodeURIComponent(guidelineName)}/history" in js
+    assert "恢复此版本" in js and "恢复会写入一个新版本" in js
     assert 'GUIDELINE_MARKDOWN_PLACEHOLDER = "---\\nname: \\ndescription: \\n---' in js
     assert "frontmatter_contract" in js and "current_draft.markdown" in js
     assert "current_page.content_path" in js and 'read_from: "current_page.content_path"' in js

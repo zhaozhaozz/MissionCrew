@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from missioncrew import agent_tool
 from missioncrew.api import create_app
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.collab.documents import library_for
+from missioncrew.collab.documents import guideline_library_for, library_for
 from missioncrew.core.models import Channel
 
 
@@ -113,6 +113,33 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     revoked = client.get("/api/agent/v1/actions", headers=headers)
     assert revoked.status_code == 401
     assert revoked.json()["error"]["code"] == "invalid_token"
+
+
+def test_orchestrator_guideline_tool_records_role_version(seeded):
+    chat = ChatEngine(seeded)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    client = TestClient(create_app())
+
+    response = client.post("/api/agent/v1/actions", headers={
+        "Authorization": f"Bearer {token}",
+    }, json={
+        "action": "guideline.save", "run_id": run_id,
+        "request_id": "guideline-save-1",
+        "arguments": {
+            "original_name": "task-validation",
+            "markdown": "---\nname: task-validation\n"
+                        "description: Agent Tool 版本验证\n---\n\n# 新版本\n",
+            "enabled": True,
+        },
+    })
+
+    assert response.status_code == 200
+    revision = response.json()["result"]["revision"]
+    assert len(revision) == 40
+    history = guideline_library_for("webshop").history(
+        "task-validation.md", limit=1)
+    assert history[0]["revision"] == revision
+    assert history[0]["actor"] == "role:lead"
 
 
 def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seeded):

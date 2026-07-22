@@ -98,6 +98,12 @@ class GuidelineInput(BaseModel):
     actor_role_id: Optional[str] = None
 
 
+class GuidelineRestore(BaseModel):
+    revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+    actor_role_id: Optional[str] = None
+
+
 class SkillInput(BaseModel):
     id: str
     name: str = ""
