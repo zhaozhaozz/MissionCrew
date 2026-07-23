@@ -28,7 +28,7 @@ async function renderProjSettings() {
     <label>项目主控角色（唯一；其固定 Runtime / 模型负责项目与其他角色调度）</label>
     <select id="pf-orchestrator">${orchestratorOptions}</select>
     <label>单条协作链最大 Agent 执行次数（仅作失控兜底，不限制调度层级）</label>
-    <input type="number" id="pf-max-chain-runs" min="1" step="1" value="${esc(project.max_chain_runs || 20)}">
+    <input type="number" id="pf-max-chain-runs" min="1" step="1" value="${esc(project.max_chain_runs || 100)}">
     <label>项目章程（目标、范围、业务边界；完整规范请在“准则文档”全页管理）</label>
     <textarea id="pf-charter" rows="4">${esc(project.charter)}</textarea>
     <div class="form-actions">

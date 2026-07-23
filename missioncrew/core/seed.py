@@ -5,10 +5,12 @@ adapter 改为 claude_code / codex 并配置模型。
 """
 from __future__ import annotations
 
-from .models import (TIER_ORDER, Backend, Channel, GuidelineDocument, Project,
-                     ProjectSkill, Resource, Role, _RETIRED_ABILITY_TEXT,
-                     preference_segments)
+from .models import (DEFAULT_MAX_CHAIN_RUNS, TIER_ORDER, Backend, Channel,
+                     GuidelineDocument, Project, ProjectSkill, Resource, Role,
+                     _RETIRED_ABILITY_TEXT, preference_segments)
 from .store import Store
+
+_LEGACY_DEFAULT_MAX_CHAIN_RUNS = 20
 
 DEMO_BACKENDS = [
     Backend(id="eco-1", name="经济型执行者", adapter="mock", model="mini",
@@ -233,10 +235,10 @@ def ensure_role_bindings(store: Store) -> int:
 
 
 def migrate_project_fields(store: Store) -> int:
-    """一次性字段迁移:开发准则并入准则文档;旧版字符串 repos 归一化为资源。
+    """迁移项目字段、旧默认协作预算和字符串资源。
 
-    幂等:dev_guidelines 迁移后清空;repos 经 Project.__post_init__ 归一化,
-    重写一遍即落库为结构化条目。
+    幂等:dev_guidelines 迁移后清空;旧默认预算 20 升为当前默认值;
+    repos 经 Project.__post_init__ 归一化,重写一遍即落库为结构化条目。
     """
     migrated = 0
     for role in store.list_role_templates():
@@ -244,7 +246,7 @@ def migrate_project_fields(store: Store) -> int:
     for role in store.list_roles():
         store.put_role(role)   # 旧 traits 标签经 from_dict 迁移为 preference,重写落库
     for project in store.list_projects():
-        changed = False
+        changes = []
         if project.dev_guidelines.strip():
             guideline_name = "dev-guidelines"
             if not any(g.name == guideline_name for g in project.guidelines):
@@ -254,10 +256,17 @@ def migrate_project_fields(store: Store) -> int:
                     description="项目开发中的架构、代码与变更约束。",
                     content=project.dev_guidelines))
             project.dev_guidelines = ""
-            changed = True
+            changes.append("dev_guidelines->guideline")
+        if (project.max_chain_runs == _LEGACY_DEFAULT_MAX_CHAIN_RUNS
+                and DEFAULT_MAX_CHAIN_RUNS != _LEGACY_DEFAULT_MAX_CHAIN_RUNS):
+            project.max_chain_runs = DEFAULT_MAX_CHAIN_RUNS
+            changes.append(
+                f"max_chain_runs:{_LEGACY_DEFAULT_MAX_CHAIN_RUNS}"
+                f"->{DEFAULT_MAX_CHAIN_RUNS}")
+        if changes:
             migrated += 1
         store.put_project(project)   # 顺带把旧字符串 repos 写成结构化资源
-        if changed:
+        if changes:
             store.audit("platform", "project_migrated",
-                        detail=f"project={project.id} dev_guidelines->guideline")
+                        detail=f"project={project.id} {' '.join(changes)}")
     return migrated

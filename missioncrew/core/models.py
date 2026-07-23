@@ -16,7 +16,7 @@ import yaml as _yaml
 
 # 成本档位从低到高,路由优先低档,失败后逐级升级
 TIER_ORDER = ["economy", "standard", "expert"]
-DEFAULT_MAX_CHAIN_RUNS = 20
+DEFAULT_MAX_CHAIN_RUNS = 100
 TASK_STATUSES = ("open", "in_progress", "blocked", "done")
 
 # 能力约定(自由字符串,以下为内置约定):

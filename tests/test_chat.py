@@ -331,9 +331,9 @@ def test_chain_run_budget(chat, seeded):
     assert seeded.count_chain_runs(root) == project.max_chain_runs
 
 
-def test_default_chain_run_budget_is_twenty(seeded):
-    assert seeded.get_project("webshop").max_chain_runs == DEFAULT_MAX_CHAIN_RUNS == 20
-    assert Project.from_dict({"id": "legacy", "name": "旧项目"}).max_chain_runs == 20
+def test_default_chain_run_budget_is_one_hundred(seeded):
+    assert seeded.get_project("webshop").max_chain_runs == DEFAULT_MAX_CHAIN_RUNS == 100
+    assert Project.from_dict({"id": "legacy", "name": "旧项目"}).max_chain_runs == 100
 
 
 def test_parallel_dispatch_cannot_exceed_chain_run_budget(chat, seeded):

@@ -37,7 +37,7 @@ def test_project_has_one_configurable_orchestrator_and_protects_it(seeded):
     project = next(p for p in client.get("/api/overview").json()["projects"]
                    if p["id"] == "webshop")
     assert project["orchestrator_role_id"] == "lead"
-    assert project["max_chain_runs"] == DEFAULT_MAX_CHAIN_RUNS == 20
+    assert project["max_chain_runs"] == DEFAULT_MAX_CHAIN_RUNS == 100
 
     project.update({"orchestrator_role_id": "expert", "max_chain_runs": 1000})
     response = client.post("/api/projects", json=project)
@@ -1345,6 +1345,24 @@ def test_dev_guidelines_migrated_into_guideline_doc(seeded):
     assert "旧开发准则内容" in doc.content
     assert doc.description == "项目开发中的架构、代码与变更约束。"
     assert seed_mod.migrate_project_fields(seeded) == 0   # 幂等
+
+
+def test_legacy_default_chain_budget_migrates_to_one_hundred(seeded):
+    from missioncrew.core import seed as seed_mod
+
+    project = seeded.get_project("webshop")
+    project.dev_guidelines = ""
+    project.max_chain_runs = 20
+    seeded.put_project(project)
+
+    assert seed_mod.migrate_project_fields(seeded) == 1
+    assert seeded.get_project("webshop").max_chain_runs == 100
+    assert seed_mod.migrate_project_fields(seeded) == 0
+    project = seeded.get_project("webshop")
+    project.max_chain_runs = 50
+    seeded.put_project(project)
+    assert seed_mod.migrate_project_fields(seeded) == 0
+    assert seeded.get_project("webshop").max_chain_runs == 50
 
 
 def test_fs_dirs_endpoint(seeded, tmp_path):

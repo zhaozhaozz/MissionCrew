@@ -12,8 +12,8 @@ repos:
 orchestrator_role_id: lead
 
 # 单条人类消息引发的整条协作链最多执行多少次 Agent。只限制总次数，
-# 不限制主控的调度层级；默认值为 20。
-max_chain_runs: 20
+# 不限制主控的调度层级；默认值为 100。
+max_chain_runs: 100
 
 # 项目准则:目标、范围、业务边界、关键概念
 charter: |
