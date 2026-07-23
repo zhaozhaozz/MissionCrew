@@ -430,9 +430,14 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
     router = client.get("/assets/js/router.js").text
     js = client.get("/assets/js/runtime-status.js").text
     assert 'id="nav-runtime-status"' in html
+    assert 'id="runtime-running-count"' in html
     assert 'id="runtime-status-view"' in html
     assert '"runtime-status"' in router
     assert "/api/runtime/status" in js
+    assert "refreshRuntimeIndicators" in js
+    assert '["starting", "running"].includes(instance.state)' in js
+    assert "function pollRuntimeStatus() {\n  renderRuntimeStatus();" in js
+    assert 'data-runtime-role="${esc(r.id)}"' in router
     assert "Claude stream-json" in js and "Codex app-server" in js
     assert "ACP stdio" in js and "命令行执行" in js
     usage_id = seeded.start_runtime_usage(
@@ -452,7 +457,7 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
     assert "/api/runtime/history?limit=100" in js
     assert "使用历史" in html and "已中断" in js
     assert "backend.projects" in js and "instance.project_id" in js
-    assert "setInterval(pollRuntimeStatus, 1000)" in client.get(
+    assert "setInterval(pollRuntimeStatus, 10000)" in client.get(
         "/assets/js/main.js").text
 
 

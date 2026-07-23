@@ -48,7 +48,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 ## 实时运行状态
 
-系统左侧的「运行状态」是全局页面，每秒轮询 `GET /api/runtime/status`。页面不读取各后端内部结构，而是由 `RuntimeManager.status()` 聚合每个 `RuntimeProvider.instances()` 返回的统一 `RuntimeInstance` 快照，因此新增 provider 只需实现实例枚举，不需要修改页面分支。
+系统每 10 秒轮询一次 `GET /api/runtime/status`，并缓存同一份全局状态。左下角「运行状态」显示正在执行的实例数；聊天输入区上方的角色按钮按 `project_id + role_id` 标记对应角色是否正在运行；进入全局运行状态页或点击“立即刷新”时会额外即时请求。页面不读取各后端内部结构，而是由 `RuntimeManager.status()` 聚合每个 `RuntimeProvider.instances()` 返回的统一 `RuntimeInstance` 快照，因此新增 provider 只需实现实例枚举，不需要修改页面分支。
 
 快照区分两种生命周期：
 
@@ -153,7 +153,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。每轮任务输入另给出最新 `run_id`；持久 Runtime 必须显式传这个值，不能使用进程启动时遗留的 `MISSIONCREW_AGENT_RUN_ID`。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
 
-最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和 Task 分别位于 `MISSIONCREW_WORKSPACE` 下，并提供对应环境变量。聊天角色新建、修改或删除文档、Task 时使用 `document.publish`、`task.create`、`task.update`、`task.brief` 或 `task.delete`；执行后扫描直接写入的文件仅作为迁移兼容。
+最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和 Task 分别位于 `MISSIONCREW_WORKSPACE` 下，并提供对应环境变量。聊天角色新建、修改或删除文档、Task 时使用 `document.publish`、`task.create`、`task.update`、`task.brief` 或 `task.delete`；文档执行后扫描只作为迁移兼容，Task 快照不会反向同步。
 
 ### Mock(`MockAdapter`)
 

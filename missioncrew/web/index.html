@@ -106,7 +106,9 @@
     </div>
     <div id="side-bottom">
       <div class="side-nav" id="nav-recycle-bin" onclick="switchTab('recycle-bin')">♲ 项目回收站</div>
-      <div class="side-nav" id="nav-runtime-status" onclick="switchTab('runtime-status')">◉ 运行状态</div>
+      <div class="side-nav" id="nav-runtime-status" onclick="switchTab('runtime-status')">
+        ◉ 运行状态<span class="runtime-running-count" id="runtime-running-count" hidden></span>
+      </div>
       <div class="side-nav" id="nav-settings" onclick="switchTab('settings')">⚙ 全局设置</div>
     </div>
   </aside>
@@ -273,7 +275,7 @@
     <div id="runtime-status-view" class="page">
       <div class="section runtime-status-head">
         <div>
-          <h2>Runtime 运行状态 <span class="runtime-live-label"><i></i>实时</span></h2>
+          <h2>Runtime 运行状态 <span class="runtime-live-label"><i></i>10 秒刷新</span></h2>
           <p class="muted">系统全局视图，不受当前项目影响。统一显示原生持久会话、ACP stdio 实例和一次性命令执行。</p>
         </div>
         <div class="runtime-status-actions">

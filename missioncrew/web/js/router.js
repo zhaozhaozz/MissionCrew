@@ -350,7 +350,10 @@ function renderSidebar() {
   document.getElementById("role-bar").innerHTML = projRoles().map(r =>
     `<button data-role-id="${esc(r.id)}" onclick="insertMention(this.dataset.roleId)"
        title="选择后会创建可触发执行的提及。${esc(r.description || "")}">
-       <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}</button>`).join("");
+       <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}
+       <span class="role-running-marker" data-runtime-project="${esc(currentProject || "")}"
+         data-runtime-role="${esc(r.id)}" hidden><i></i>运行中</span></button>`).join("");
+  refreshRuntimeIndicators();
   renderChannelState();
   restoreScrollPositions(scrollState);
 }

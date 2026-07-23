@@ -1,6 +1,7 @@
 /* ---- 系统全局 Runtime 实时状态 ---- */
 let runtimeStatusLoading = false;
 let runtimeHistoryLoadedAt = 0;
+let runtimeStatusSnapshot = null;
 
 const RUNTIME_STATE_LABELS = {
   running: "执行中", starting: "启动中", idle: "空闲驻留",
@@ -42,6 +43,26 @@ function runtimeSessionCell(instance) {
     ? `<div title="${esc(instance.native_session_id)}"><span class="muted">native</span> ` +
       `<code>${esc(instance.native_session_id)}</code></div>` : "";
   return key + native || `<span class="muted">—</span>`;
+}
+
+function refreshRuntimeIndicators(data = runtimeStatusSnapshot) {
+  if (!data) return;
+  runtimeStatusSnapshot = data;
+  const activeRoles = new Set((data.instances || [])
+    .filter(instance => ["starting", "running"].includes(instance.state)
+      && instance.project_id && instance.role_id)
+    .map(instance => `${instance.project_id}\u0000${instance.role_id}`));
+  document.querySelectorAll(".role-running-marker").forEach(marker => {
+    marker.hidden = !activeRoles.has(
+      `${marker.dataset.runtimeProject}\u0000${marker.dataset.runtimeRole}`);
+  });
+  const count = Number(data.summary?.running || 0);
+  const badge = document.getElementById("runtime-running-count");
+  if (badge) {
+    badge.textContent = String(count);
+    badge.hidden = count === 0;
+    badge.title = `${count} 个运行中的实例`;
+  }
 }
 
 function renderRuntimeStatusPayload(data) {
@@ -131,14 +152,17 @@ async function renderRuntimeHistory(force = false) {
 }
 
 async function renderRuntimeStatus(force = false) {
-  if (currentTab !== "runtime-status" && !force) return;
   if (runtimeStatusLoading) return;
   runtimeStatusLoading = true;
   try {
     const response = await fetch("/api/runtime/status", { cache: "no-store" });
     if (!response.ok) return;
-    renderRuntimeStatusPayload(await response.json());
-    await renderRuntimeHistory(force);
+    const data = await response.json();
+    refreshRuntimeIndicators(data);
+    if (currentTab === "runtime-status" || force) {
+      renderRuntimeStatusPayload(data);
+      await renderRuntimeHistory(force);
+    }
   } catch (_) {
     const updated = document.getElementById("runtime-status-updated");
     if (updated) updated.textContent = "服务暂时不可用，等待重试…";
@@ -148,5 +172,5 @@ async function renderRuntimeStatus(force = false) {
 }
 
 function pollRuntimeStatus() {
-  if (currentTab === "runtime-status") renderRuntimeStatus();
+  renderRuntimeStatus();
 }
