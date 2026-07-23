@@ -163,6 +163,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
     allowed_dirs = project_allowed_dirs(project, library, workspace_dir)
     project_url = missioncrew_project_url(project.id)
     dirs_section = "\n".join(f"- {path}" for path in allowed_dirs) or "（无本地目录）"
+    temp_dir = workspace_dir / "temp" if workspace_dir is not None else None
     return "\n\n".join([
         "# MissionCrew 简介\n"
         "MissionCrew 是本地多 Agent harness，负责装配角色、Runtime/模型、项目上下文、"
@@ -203,12 +204,23 @@ def render_project_context(project: Project, library: DocumentLibrary,
         "不得输出内部读写目录、`.missioncrew` 真实路径或 `file://` 链接。",
         (f"# 项目任务文件\n目录：{tasks_dir}\n"
          "该目录只存放项目 Task 快照，不是草稿或报告目录。可读取全部 Task Markdown；"
-         "创建、编辑和追加状态简报优先使用 Agent Tool。Task 包含标题、简介、正文、状态、"
-         "标签和 Channel 绑定；每个 Task 至少绑定一个可用 Channel。文件同步只兼容旧会话，"
-         "格式见工作区 README.md。frontmatter 中的 status_briefs 是平台生成的只读历史。")
+         "快照对当前执行只读，创建、编辑、追加状态简报或删除 Task 必须显式调用 Agent Tool，"
+         "不要直接创建、修改或删除 `tasks/*.md`。Task 包含标题、简介、正文、状态、"
+         "标签和 Channel 绑定；每个 Task 至少绑定一个可用 Channel。回合结束只刷新快照，"
+         "不会把文件修改同步回 Task。frontmatter 中的 status_briefs 是平台生成的只读历史。")
         if tasks_dir is not None else "# 项目任务文件\n（本次执行未物化）",
         "# 本次可读写目录\n以下项目资源和 MissionCrew workspace 已显式授权，可直接读写：\n"
         + dirs_section,
+        "# 文件系统边界\n"
+        "只能读写上面列出的目录及其子目录。不要探测或访问授权范围之外的路径，"
+        "包括 `/tmp`、`/var/tmp`、其他项目目录、用户主目录中的未授权文件和未作为项目资源"
+        "显式列出的 MissionCrew 源码目录；命令中的重定向、管道、后台日志和工具自动生成文件"
+        "也必须遵守。"
+        "若现有命令使用了外部路径，执行前先改写到授权目录，不要先尝试再等待权限批准。\n"
+        + (f"临时文件优先放在当前业务仓已有的任务目录（如项目约定的 `.tmp/`、`.e2e/`）；"
+           f"没有项目约定时使用 `{temp_dir}`，并在任务完成后清理。"
+           if temp_dir is not None else
+           "临时文件必须放在当前工作目录内符合项目约定的位置，并在任务完成后清理。"),
         ("# 项目 Skills\n"
          + (f"文件目录：{skills_dir}\n\n" if skills_dir is not None else "")
          + "\n".join(skill_summaries)

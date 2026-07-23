@@ -202,7 +202,7 @@ effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 
 
 ## 执行环境
 
-每次执行的进程环境中，工作目录仍是 Channel workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`。`MISSIONCREW_WORKSPACE` 指向平台数据根内当前 channel×role 的 harness，集中放置项目资料、Task 快照、角色隔离历史、令牌和 Runtime 诊断。Agent 通过 Agent Tool 发布文档、编辑 Task 和追加状态简报；直接文件同步仅用于兼容。Channel 中的 Agent 执行不设置时间上限，直到 Runtime 返回、失败或用户主动停止。
+每次执行的进程环境中，工作目录仍是 Channel workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`。`MISSIONCREW_WORKSPACE` 指向平台数据根内当前 channel×role 的 harness，集中放置项目资料、Task 快照、角色隔离历史、令牌和 Runtime 诊断。Agent 通过 Agent Tool 发布文档、编辑 Task 和追加状态简报；Task 快照只读，不参与执行后反向同步。Runtime 只能访问 Prompt 明确列出的目录，不应使用 `/tmp`、`/var/tmp` 或其他未授权路径；临时文件使用业务仓约定目录或 `$MISSIONCREW_WORKSPACE/temp`。Channel 中的 Agent 执行不设置时间上限，直到 Runtime 返回、失败或用户主动停止。
 
 完整的目录职责、历史隔离和内部数据边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
 

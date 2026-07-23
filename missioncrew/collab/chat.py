@@ -34,8 +34,7 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, missioncrew_project_url,
                             skill_resource_url)
 from .workspace import (chat_workspace_dir, platform_history_dir,
-                        prepare_agent_workspace, sync_task_files,
-                        write_task_files)
+                        prepare_agent_workspace, write_task_files)
 from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, Channel, ExecutionConfig,
                            Role, RuntimePolicy)
 from .project_context import project_allowed_dirs, render_project_context
@@ -637,15 +636,8 @@ class ChatEngine:
             self.store.audit(f"role:{role.id}", "documents_committed",
                              detail=f"project={channel.project_id} revision={revision[:10]}")
         tasks_dir = cfg.env.get("MISSIONCREW_TASKS_DIR")
-        task_sync_errors = (sync_task_files(
-            self.store, channel.project_id or "", Path(tasks_dir), f"role:{role.id}")
-            if tasks_dir else [])
         if tasks_dir:
             write_task_files(self.store, channel.project_id or "", Path(tasks_dir))
-        if task_sync_errors:
-            self.store.audit(
-                f"role:{role.id}", "task_workspace_sync_failed",
-                detail="; ".join(task_sync_errors))
 
         # 配额扣减在工具级记账:重取注册表记录,避免模型副本覆盖工具条目
         stored = self.store.get_backend(backend.id)
@@ -671,9 +663,6 @@ class ChatEngine:
                 return
 
             reply = (result.output or result.summary or "(无输出)").strip()
-            if task_sync_errors:
-                reply += ("\n\n(MissionCrew 任务文件同步失败："
-                          + "；".join(task_sync_errors) + ")")
             if project and role.id == project.orchestrator_role_id:
                 reply = self._apply_orchestrator_actions(
                     project, role.id, reply, root_id=root_id, depth=depth)

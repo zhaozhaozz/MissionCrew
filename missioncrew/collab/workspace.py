@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..core.config import mc_home, workspaces_dir
-from ..core.models import Project, TASK_STATUSES, Task
+from ..core.models import Project, Task
 from .documents import document_resource_url
 from .project_context import guideline_context_dir, write_guideline_context
 from .resource_urls import missioncrew_project_url
@@ -338,6 +338,13 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 - `project.md`：项目简介与资源索引。
 {history}
 {mutation}
+## 文件系统边界
+
+只能读写 Prompt 中“本次可读写目录”列出的路径及其子目录。禁止访问 `/tmp`、
+`/var/tmp`、其他项目目录和未授权的用户文件；Shell 重定向、后台日志和工具自动生成
+文件同样受此限制。临时文件优先放在业务仓已有的任务目录；没有项目约定时使用
+`{workspace.root / "temp"}`，任务结束后清理。不要先尝试外部路径再等待权限批准。
+
 ## 对外引用
 
 `.missioncrew` 下的目录是 Runtime 内部读写入口。向频道回复 MissionCrew 资源时，
@@ -350,31 +357,11 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 `[设计说明]({document_resource_url(project_id)}/specs/design.md)`。不要在回复中输出
 本工作区绝对路径、`.missioncrew` 真实路径或 `file://` 链接。
 
-## 新建任务格式
+## Task 修改
 
-在 `tasks/` 新建任意 `.md` 文件，省略 `id` 和所有系统字段：
-
-```markdown
----
-title: 任务标题
-summary: 一句话简介
-status: open
-labels: []
-channel_ids:
-  - {project_id}:general
----
-
-任务正文与验收要求。
-```
-
-`status` 可选 `open`、`in_progress`、`blocked`、`done`；`channel_ids` 至少绑定
-一个当前项目的可用 Channel。编辑既有任务时保留 `id` 和
-`snapshot_updated_at`。新增状态简报使用 `task.brief` Agent Tool；文件中的
-`status_briefs` 是平台生成的只读历史。项目主控删除任务时使用 `task.delete`，
-不要直接删除快照文件；Task 与简报会进入项目回收站。
-
-不要把业务源码或业务仓交付物写进 `.missioncrew`。正式项目文档和协作草稿写入
-`documents/`；`tasks/` 只写上述带 YAML frontmatter 的 Task 记录。
+`tasks/` 中的 Markdown 全部是平台生成的只读快照。创建、更新、追加简报或删除 Task
+必须显式调用 Prompt 提供的 Agent Tool；回合结束时平台只刷新快照，不会把文件修改
+同步回 Task。正式项目文档和协作草稿应通过 `document.publish` 写入 `documents/`。
 """
 
 
@@ -411,8 +398,8 @@ def write_task_files(store: Store, project_id: str, directory: Path) -> None:
         task.id: task for task in store.list_tasks()
         if task.project_id == project_id
     }
-    # 仅清理平台生成且事实源已不存在的快照。没有系统字段的新建草稿保留给
-    # sync_task_files 摄入，格式错误的文件也不会被静默删除。
+    # 只清理事实源中已不存在的平台快照。未识别文件不会反向同步成 Task，
+    # 也不会在刷新时静默删除，避免升级后破坏旧工作区遗留内容。
     for path in directory.glob("*.md"):
         try:
             parsed = _parse_task_file(path)
@@ -439,15 +426,11 @@ def write_task_files(store: Store, project_id: str, directory: Path) -> None:
 
 def _parse_task_file(path: Path) -> tuple[dict, str] | None:
     text = path.read_text(encoding="utf-8")
-    # ``tasks/`` may contain an old collaboration artifact from before the
-    # directory contract was explicit. Only a leading YAML delimiter declares
-    # a Markdown file as a task candidate; malformed declared candidates still
-    # fail loudly below instead of silently disappearing from synchronization.
     if not text.startswith(("---\n", "---\r\n")):
         return None
     match = _FRONTMATTER_RE.match(text)
     if not match:
-        raise ValueError("任务 YAML frontmatter 缺少结束分隔符 ---")
+        raise ValueError("Task YAML frontmatter 缺少结束分隔符 ---")
     try:
         attributes = yaml.safe_load(match.group("header")) or {}
     except yaml.YAMLError as exc:
@@ -460,87 +443,6 @@ def _parse_task_file(path: Path) -> tuple[dict, str] | None:
     elif body.startswith("\n"):
         body = body[1:]
     return attributes, body.rstrip()
-
-
-def _editable_task_values(attributes: dict, body: str) -> dict:
-    title = attributes.get("title", "")
-    summary = attributes.get("summary", "")
-    status = attributes.get("status", "open")
-    labels = attributes.get("labels", [])
-    channel_ids = attributes.get("channel_ids", [])
-    if not isinstance(title, str) or not title.strip():
-        raise ValueError("title 必须是非空字符串")
-    if not isinstance(summary, str):
-        raise ValueError("summary 必须是字符串")
-    if status not in TASK_STATUSES:
-        raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
-    if not isinstance(labels, list) or not all(isinstance(item, str) for item in labels):
-        raise ValueError("labels 必须是字符串数组")
-    if not isinstance(channel_ids, list) or not all(
-            isinstance(item, str) for item in channel_ids):
-        raise ValueError("channel_ids 必须是字符串数组")
-    return {
-        "title": title.strip(), "summary": summary, "body": body,
-        "status": status, "labels": labels, "channel_ids": channel_ids,
-    }
-
-
-def sync_task_files(store: Store, project_id: str, directory: Path,
-                    actor: str) -> list[str]:
-    """摄入 Agent 对任务 Markdown 的创建/编辑，返回未能同步的错误。"""
-    from .tasks import create_task, update_task
-
-    if not directory.is_dir():
-        return []
-    errors: list[str] = []
-    for path in sorted(directory.glob("*.md")):
-        try:
-            parsed = _parse_task_file(path)
-            if parsed is None:
-                continue
-            attributes, body = parsed
-            values = _editable_task_values(attributes, body)
-            raw_id = attributes.get("id")
-            if raw_id is not None and not isinstance(raw_id, str):
-                raise ValueError("id 必须是字符串或留空")
-            task_id = (raw_id or "").strip()
-            existing = store.get_task(task_id) if task_id else None
-            if task_id and existing is None:
-                raise ValueError("未知任务 id；新建任务时请省略 id")
-            if existing is not None:
-                if existing.project_id != project_id:
-                    raise ValueError("任务不属于当前项目")
-                snapshot = attributes.get("snapshot_updated_at")
-                if not isinstance(snapshot, (int, float)) or isinstance(snapshot, bool):
-                    raise ValueError("既有任务缺少有效 snapshot_updated_at")
-                if abs(float(snapshot) - existing.updated_at) > 1e-6:
-                    raise ValueError("任务已被其他执行更新，请重新读取后再修改")
-                changed = any(getattr(existing, key) != value
-                              for key, value in values.items())
-                if not changed:
-                    continue
-                update_task(
-                    store, existing, snapshot_updated_at=snapshot,
-                    changes=values, actor=actor,
-                )
-                store.audit(actor, "task_workspace_updated", existing.id,
-                            f"path={path.name}")
-                _atomic_write_text(
-                    path, _render_task(existing, store.list_task_briefs(existing.id)))
-                continue
-
-            task = create_task(
-                store, project_id, **values, actor=actor,
-            )
-            store.audit(actor, "task_workspace_created", task.id,
-                        f"source={path.name}")
-            target = _task_path(directory, task.id)
-            _atomic_write_text(target, _render_task(task, []))
-            if path != target:
-                path.unlink()
-        except (OSError, UnicodeError, ValueError) as exc:
-            errors.append(f"{path.name}: {exc}")
-    return errors
 
 
 def prepare_agent_workspace(store: Store, project: Project,

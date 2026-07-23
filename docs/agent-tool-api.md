@@ -139,4 +139,4 @@ Runtime
 
 历史 `missioncrew-action` 文本块仍可读取，避免旧的持久 Runtime 会话或历史测试立即失效；解析后只转发到同一个动作注册表，不再拥有独立写入逻辑。新上下文不会要求 Runtime 生成该格式，旧入口也无法像工具调用一样把错误返回给同一 Agent 回合，因此只作为迁移兼容，不应新增依赖。
 
-聊天角色直接编辑 `.missioncrew/documents/` 或 `.missioncrew/tasks/` 的执行后同步同样属于兼容路径。新实现应调用 `document.publish`、`task.create`、`task.update`、`task.brief` 或 `task.delete`，才能获得即时校验结果、角色权限和逐次审计。Task 处理统一进入 Channel 协作，不存在独立的任务阶段 Runtime。
+聊天角色直接编辑 `.missioncrew/documents/` 的执行后同步仍属于兼容路径；新实现应调用 `document.publish`。`.missioncrew/tasks/` 只是只读快照，Task 只有在 Agent 显式调用 `task.create`、`task.update`、`task.brief` 或 `task.delete` 时才会改变。Task 处理统一进入 Channel 协作，不存在独立的任务阶段 Runtime。

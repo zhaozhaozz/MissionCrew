@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from missioncrew.runtime import adapters
+from missioncrew.runtime import adapters, runtime_manager
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import (document_resource_url, library_for,
                                           normalize_document_resource_urls)
@@ -21,10 +21,10 @@ from missioncrew.collab.skills import (materialize_project_skills,
                                        skill_context_dir)
 from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
                                           migrate_resource_workspace_links,
-                                          sync_task_files, write_task_files)
+                                          write_task_files)
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend, Channel,
-                                     ExecutionConfig, GuidelineDocument, ProjectResource,
-                                     ProjectSkill)
+                                     ExecutionConfig, GuidelineDocument,
+                                     ProjectResource, ProjectSkill, RunResult)
 from missioncrew.api import create_app
 
 
@@ -971,7 +971,12 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert "不会进入业务源码或业务代码提交" in cfg.prompt
     assert "协作草稿、报告和普通聊天产生的验证记录写入 `documents/`" in cfg.prompt
     assert "Task 包含标题、简介、正文、状态" in cfg.prompt
+    assert "快照对当前执行只读" in cfg.prompt
+    assert "包括 `/tmp`、`/var/tmp`" in cfg.prompt
+    assert str(workspace / "temp") in cfg.prompt
     assert "MissionCrew 是一个本地 Agent harness" in (
+        workspace / "README.md").read_text(encoding="utf-8")
+    assert "Shell 重定向、后台日志和工具自动生成" in (
         workspace / "README.md").read_text(encoding="utf-8")
     assert (workspace / "project.md").is_file()
     assert (workspace / "tasks").is_dir()
@@ -1154,61 +1159,50 @@ def test_agent_document_writes_are_audited(seeded):
     assert audits and audits[0]["actor"] == "role:dev"
 
 
-def test_agents_can_create_and_edit_tasks_through_harness_workspace(seeded):
-    """任务 Markdown 不是只读副本：聊天执行后会创建/更新数据库任务。"""
+def test_task_workspace_direct_edits_are_discarded_after_chat_run(
+        seeded, monkeypatch):
+    """Task 快照只读；只有显式 Agent Tool 调用可以修改事实源。"""
     from missioncrew.collab.tasks import create_task
 
+    task = create_task(
+        seeded, "webshop", title="原任务", body="原描述",
+        channel_ids=["general"])
+    edited_paths = []
+
+    def _start(config):
+        if config.role_id == "dev":
+            tasks_dir = Path(config.env["MISSIONCREW_TASKS_DIR"])
+            task_file = tasks_dir / f"{task.id}.md"
+            task_file.write_text(
+                task_file.read_text(encoding="utf-8").replace(
+                    "title: 原任务", "title: 未授权修改", 1),
+                encoding="utf-8",
+            )
+            (tasks_dir / "new-task.md").write_text(
+                "---\ntitle: 未授权新建\n---\n", encoding="utf-8")
+            edited_paths.append((task_file, tasks_dir / "new-task.md"))
+        return RunResult(True, "ok", output="已完成检查。")
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
     chat = ChatEngine(seeded)
-    chat.post("general", "human", "@[dev] [写任务] 新增后续工作")
+    chat.post("general", "human", "@[dev] 检查任务。")
     chat.wait_idle()
-    created = next(task for task in seeded.list_tasks()
-                   if task.title == "Agent 创建的任务")
-    assert created.project_id == "webshop"
-    assert created.summary == "通过 MissionCrew workspace 创建"
-    assert created.labels == ["workspace"] and created.channel_ids == ["general"]
-    assert any(row["action"] == "task_workspace_created"
-               and row["task_id"] == created.id
-               for row in seeded.list_audit(limit=50))
-
-    existing = create_task(
-        seeded, "webshop", title="原任务", body="原描述", channel_ids=["general"])
-    message = seeded.add_message("general", "human", "human", "@dev 编辑任务", ["dev"])
-    cfg = chat._assemble(
-        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
-        seeded.get_backend("std-1"), message)
-    tasks_dir = Path(cfg.env["MISSIONCREW_TASKS_DIR"])
-    task_file = tasks_dir / f"{existing.id}.md"
-    markdown = task_file.read_text(encoding="utf-8")
-    markdown = markdown.replace("title: 原任务", "title: 更新后的任务", 1)
-    markdown = markdown.replace("\n原描述\n", "\n更新后的描述\n", 1)
-    task_file.write_text(markdown, encoding="utf-8")
-    assert sync_task_files(seeded, "webshop", tasks_dir, "role:dev") == []
-    updated = seeded.get_task(existing.id)
-    assert updated.title == "更新后的任务"
-    assert updated.body == "更新后的描述"
+    assert edited_paths
+    task_file, untracked_file = edited_paths[0]
+    assert seeded.get_task(task.id).title == "原任务"
+    assert "title: 原任务" in task_file.read_text(encoding="utf-8")
+    assert untracked_file.exists()
+    assert not any(
+        item.title == "未授权新建" for item in seeded.list_tasks()
+    )
+    assert all(
+        "任务文件同步失败" not in row["content"]
+        for row in seeded.list_messages("general")
+    )
 
 
-def test_task_sync_ignores_plain_markdown_but_rejects_broken_frontmatter(seeded,
-                                                                         tmp_path):
-    """普通协作稿不是任务；显式声明但损坏的任务候选仍应给出错误。"""
-    tasks_dir = tmp_path / "tasks"
-    tasks_dir.mkdir()
-    plain = tasks_dir / "review-report.md"
-    plain.write_text("# 审阅报告\n\n这不是任务。\n", encoding="utf-8")
-
-    assert sync_task_files(seeded, "webshop", tasks_dir, "role:dev") == []
-    assert plain.is_file()
-    assert not any(task.title == "审阅报告" for task in seeded.list_tasks())
-
-    broken = tasks_dir / "broken-task.md"
-    broken.write_text("---\ntitle: 未闭合的任务\n", encoding="utf-8")
-    assert sync_task_files(seeded, "webshop", tasks_dir, "role:dev") == [
-        "broken-task.md: 任务 YAML frontmatter 缺少结束分隔符 ---"
-    ]
-
-
-def test_task_snapshot_refresh_prunes_deleted_task_but_keeps_drafts(seeded,
-                                                                    tmp_path):
+def test_task_snapshot_refresh_prunes_deleted_task_but_keeps_untracked_files(
+        seeded, tmp_path):
     from missioncrew.collab.tasks import create_task
 
     tasks_dir = tmp_path / "tasks"
@@ -1216,15 +1210,15 @@ def test_task_snapshot_refresh_prunes_deleted_task_but_keeps_drafts(seeded,
         seeded, "webshop", title="待删除快照", channel_ids=["general"])
     write_task_files(seeded, "webshop", tasks_dir)
     snapshot = tasks_dir / f"{task.id}.md"
-    draft = tasks_dir / "draft.md"
-    draft.write_text("---\ntitle: 草稿\nchannel_ids: [general]\n---\n", encoding="utf-8")
+    untracked = tasks_dir / "untracked.md"
+    untracked.write_text("# 不是平台 Task\n", encoding="utf-8")
     assert snapshot.is_file()
 
     seeded.delete_task(task.id)
     write_task_files(seeded, "webshop", tasks_dir)
 
     assert not snapshot.exists()
-    assert draft.is_file()
+    assert untracked.exists()
 
 
 # ---- 面板卡片:通用展示原语 + 平台数据源(AgentDesk 式) ----

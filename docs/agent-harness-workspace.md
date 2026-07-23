@@ -18,6 +18,16 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 聊天工作区按 `project × channel × role` 隔离并复用。不同角色不会共享同一个 `channel-history.json` 或 Agent Tool 令牌，但 `.missioncrew/documents/` 链接到同一项目文档库，所以项目文档对获准执行的角色共享。
 
+## 文件系统边界
+
+Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其子目录。`/tmp`、
+`/var/tmp`、其他项目目录、未授权的用户文件和 MissionCrew 源码目录都不在默认授权
+范围内；Shell 重定向、管道、后台日志和工具自动生成文件同样必须遵守这个边界。
+
+命令原本使用外部临时路径时，应在执行前改写到业务仓已有的任务目录（例如项目约定的
+`.tmp/`、`.e2e/`）；没有项目约定时使用 `$MISSIONCREW_WORKSPACE/temp`，并在任务
+结束后清理。不要先访问外部路径再等待权限批准。
+
 典型目录如下：
 
 ```text
@@ -68,9 +78,9 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ### `tasks/`
 
-`tasks/` 只存放项目 Task 快照，不是协作草稿或报告目录。Task 包含 `title`、`summary`、正文、`status`、`labels` 和 `channel_ids`。聊天角色新建 Task 使用 `task.create`，修改 Task 使用带 `snapshot_updated_at` 的 `task.update`；工具会立即报告版本冲突。追加状态简报使用 `task.brief`；项目主控删除 Task 使用 `task.delete`，Task 与简报会进入项目回收站。快照 frontmatter 中的 `status_briefs` 是只读历史。带 YAML frontmatter 的文件同步只保留给历史聊天会话。没有声明 frontmatter 的普通 Markdown 不参与 Task 同步；此类内容应通过 `document.publish` 放到文档库下合适的草稿或报告目录。
+`tasks/` 只存放平台生成的项目 Task 快照，不是协作草稿或报告目录。快照只读；Agent 创建、编辑、追加简报或删除 Task 时必须显式调用 Agent Tool，回合结束不会把文件修改同步回 Task。Task 包含 `title`、`summary`、正文、`status`、`labels` 和 `channel_ids`。聊天角色新建 Task 使用 `task.create`，修改 Task 使用带 `snapshot_updated_at` 的 `task.update`；工具会立即报告版本冲突。追加状态简报使用 `task.brief`；项目主控删除 Task 使用 `task.delete`，Task 与简报会进入项目回收站。快照 frontmatter 中的 `status_briefs` 是只读历史。协作草稿和报告应通过 `document.publish` 放到文档库下合适的目录。
 
-人类和 Agent 都可以更新 `open`、`in_progress`、`blocked`、`done` 状态。编辑既有 Task 时应保留 `id` 和 `snapshot_updated_at`，平台用时间戳避免旧快照覆盖较新的内容。每个 Task 至少绑定一个可用 Channel；“处理 Task”就是在这些 Channel 中向项目主控发送消息。
+人类和 Agent 都可以更新 `open`、`in_progress`、`blocked`、`done` 状态。Agent Tool 使用 `snapshot_updated_at` 避免旧版本覆盖较新的内容。每个 Task 至少绑定一个可用 Channel；“处理 Task”就是在这些 Channel 中向项目主控发送消息。
 
 ### `guidelines/` 与 `skills/`
 

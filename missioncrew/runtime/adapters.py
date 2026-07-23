@@ -651,20 +651,6 @@ class MockAdapter:
         if docs_dir and "[写文档]" in trigger:
             Path(docs_dir, "mock-note.md").write_text(f"由 @{me} 在执行中写入。\n")
             reply += "\n已写入文档库 mock-note.md。"
-        tasks_dir = cfg.env.get("MISSIONCREW_TASKS_DIR")
-        if tasks_dir and "[写任务]" in trigger:
-            Path(tasks_dir, "new-task.md").write_text(
-                "---\n"
-                "title: Agent 创建的任务\n"
-                "summary: 通过 MissionCrew workspace 创建\n"
-                "status: open\n"
-                "labels:\n  - workspace\n"
-                "channel_ids: []\n"
-                "---\n\n"
-                "补充任务正文。\n",
-                encoding="utf-8",
-            )
-            reply += "\n已在 MissionCrew workspace 创建任务。"
         emit("text", reply)
         if cfg.session_key:
             _save_session(cfg, session_id)
