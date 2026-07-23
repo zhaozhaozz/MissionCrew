@@ -370,7 +370,8 @@ channel_ids:
 `status` 可选 `open`、`in_progress`、`blocked`、`done`；`channel_ids` 至少绑定
 一个当前项目的可用 Channel。编辑既有任务时保留 `id` 和
 `snapshot_updated_at`。新增状态简报使用 `task.brief` Agent Tool；文件中的
-`status_briefs` 是平台生成的只读历史。
+`status_briefs` 是平台生成的只读历史。项目主控删除任务时使用 `task.delete`，
+不要直接删除快照文件；Task 与简报会进入项目回收站。
 
 不要把业务源码或业务仓交付物写进 `.missioncrew`。正式项目文档和协作草稿写入
 `documents/`；`tasks/` 只写上述带 YAML frontmatter 的 Task 记录。
@@ -406,12 +407,34 @@ def _task_path(directory: Path, task_id: str) -> Path:
 def write_task_files(store: Store, project_id: str, directory: Path) -> None:
     """把数据库任务原子写为当前执行者自己的 Markdown 快照。"""
     directory.mkdir(parents=True, exist_ok=True)
-    for task in store.list_tasks():
-        if task.project_id == project_id:
-            _atomic_write_text(
-                _task_path(directory, task.id),
-                _render_task(task, store.list_task_briefs(task.id)),
-            )
+    tasks = {
+        task.id: task for task in store.list_tasks()
+        if task.project_id == project_id
+    }
+    # 仅清理平台生成且事实源已不存在的快照。没有系统字段的新建草稿保留给
+    # sync_task_files 摄入，格式错误的文件也不会被静默删除。
+    for path in directory.glob("*.md"):
+        try:
+            parsed = _parse_task_file(path)
+            if parsed is None:
+                continue
+            attributes, _body = parsed
+        except (OSError, UnicodeError, ValueError):
+            continue
+        task_id = attributes.get("id")
+        generated = (
+            isinstance(task_id, str)
+            and "snapshot_updated_at" in attributes
+            and "status_briefs" in attributes
+            and path == _task_path(directory, task_id)
+        )
+        if generated and task_id not in tasks:
+            path.unlink(missing_ok=True)
+    for task in tasks.values():
+        _atomic_write_text(
+            _task_path(directory, task.id),
+            _render_task(task, store.list_task_briefs(task.id)),
+        )
 
 
 def _parse_task_file(path: Path) -> tuple[dict, str] | None:

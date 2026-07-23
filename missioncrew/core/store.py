@@ -342,8 +342,30 @@ class Store:
         return sorted(ts, key=lambda t: t.created_at, reverse=True)
 
     def delete_task(self, id: str) -> None:
-        self._execute("DELETE FROM task_briefs WHERE task_id=?", (id,))
-        self._delete("tasks", id)
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM task_briefs WHERE task_id=?", (id,))
+            self._conn.execute("DELETE FROM tasks WHERE id=?", (id,))
+
+    def restore_task(self, task: Task, briefs: list[dict]) -> None:
+        """原子恢复 Task 与状态简报；简报保留原作者、状态、正文和时间。"""
+        with self._lock, self._conn:
+            self._conn.execute(
+                "INSERT INTO tasks(id,data) VALUES(?,?)",
+                (task.id, json.dumps(task.to_dict(), ensure_ascii=False)),
+            )
+            for brief in reversed(briefs):
+                self._conn.execute(
+                    "INSERT INTO task_briefs"
+                    "(task_id,author,author_type,status,content,created_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (
+                        task.id, str(brief.get("author", "")),
+                        str(brief.get("author_type", "")),
+                        str(brief.get("status", "")),
+                        str(brief.get("content", "")),
+                        float(brief.get("created_at", time.time())),
+                    ),
+                )
 
     def add_task_brief(self, task_id: str, author: str, author_type: str,
                        content: str, status: str = "") -> dict:
@@ -359,11 +381,18 @@ class Store:
             "content": content, "created_at": created_at,
         }
 
-    def list_task_briefs(self, task_id: str, limit: int = 200) -> list[dict]:
-        rows = self._query(
-            "SELECT * FROM task_briefs WHERE task_id=? ORDER BY id DESC LIMIT ?",
-            (task_id, max(1, min(int(limit), 1000))),
-        )
+    def list_task_briefs(self, task_id: str,
+                         limit: Optional[int] = 200) -> list[dict]:
+        if limit is None:
+            rows = self._query(
+                "SELECT * FROM task_briefs WHERE task_id=? ORDER BY id DESC",
+                (task_id,),
+            )
+        else:
+            rows = self._query(
+                "SELECT * FROM task_briefs WHERE task_id=? ORDER BY id DESC LIMIT ?",
+                (task_id, max(1, min(int(limit), 1000))),
+            )
         return [dict(row) for row in rows]
 
     # ---- 系统全局 Runtime 使用历史 ----

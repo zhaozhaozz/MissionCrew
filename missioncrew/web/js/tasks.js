@@ -82,6 +82,7 @@ async function openTask(id, updateRoute = true) {
   const actions = [
     `<button class="ghost" onclick="openTaskEditor('${task.id}')">编辑</button>`,
     `<button class="ghost" onclick="openTaskBriefForm('${task.id}')">添加简报</button>`,
+    `<button class="danger" onclick="deleteTask('${task.id}')">删除</button>`,
   ];
   if (task.status !== "done")
     actions.push(`<button class="action" onclick="processTask('${task.id}')">交给 Lead 处理</button>`);
@@ -211,4 +212,15 @@ async function processTask(id) {
   await loadOverview();
   await openTask(id, false);
   toast("Task 已发送给绑定 Channel 的 Lead", "success");
+}
+
+async function deleteTask(id) {
+  const task = currentTaskDetail?.task;
+  if (!task || task.id !== id || !await uiConfirm(
+    `将 Task「${task.title}」及其状态简报移入项目回收站？`,
+    "删除 Task")) return;
+  await api("DELETE", `/api/tasks/${encodeURIComponent(id)}`);
+  closeTaskDialog();
+  await loadOverview();
+  toast("Task 已移入项目回收站", "success");
 }

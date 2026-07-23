@@ -59,6 +59,7 @@ Runtime
 | 动作 | 普通角色 | 项目主控 |
 | --- | --- | --- |
 | `task.create` / `task.update` / `task.brief` | 允许 | 允许 |
+| `task.delete` | 禁止 | 允许 |
 | `document.publish` | 允许 | 允许 |
 | `document.delete` | 禁止 | 允许 |
 | `message.publish` | 禁止 | 允许 |
@@ -90,11 +91,12 @@ Runtime
 ```
 
 - 文档必须且只能提供 UTF-8 `content` 或 `content_base64`；单文件上限 50 MB。默认不覆盖已有文件，显式传 `overwrite: true` 才能覆盖并形成新版本。
-- `document.delete`、`dashboard.delete`、`guideline.delete` 和 `skill.delete` 都要求项目主控身份。目标不存在时返回 `not_found`，不会把删除不存在的资源误报为成功；成功结果包含 `recycle_item`。
+- `task.delete`、`document.delete`、`dashboard.delete`、`guideline.delete` 和 `skill.delete` 都要求项目主控身份。目标不存在时返回 `task_not_found` 或 `not_found`，不会把删除不存在的资源误报为成功；成功结果包含 `recycle_item`。
 - `recycle.list` 返回当前项目全部类型的回收项；`recycle.restore` 和 `recycle.purge` 使用回收项 `id`，均要求项目主控身份。
 - `task.update` 必须带读取任务时得到的 `snapshot_updated_at`。任务已经被其他执行更新时返回 `version_conflict`，防止旧快照覆盖新状态。
 - `task.create` 和 `task.update` 使用 `title`、`summary`、`body`、`status`、`labels`、`channel_ids`；每个 Task 至少绑定一个当前项目的可用 Channel。
 - `task.brief` 追加状态简报，可用 `status` 同时更新 `open`、`in_progress`、`blocked`、`done` 状态。简报是追加记录，不覆盖正文。
+- `task.delete` 把 Task 正文和全部状态简报一起移入项目回收站；恢复后保留原 Task id、字段、简报作者、内容和时间。
 - 频道、面板、准则和 Skill 的 ID、项目归属、工作目录和 Markdown 属性都在统一动作实现中校验。
 - 成功结果包含规范 `/resources/...` URL；Agent 应把该 URL 放入频道回复，不应发布 `.missioncrew` 的真实路径。
 
@@ -137,4 +139,4 @@ Runtime
 
 历史 `missioncrew-action` 文本块仍可读取，避免旧的持久 Runtime 会话或历史测试立即失效；解析后只转发到同一个动作注册表，不再拥有独立写入逻辑。新上下文不会要求 Runtime 生成该格式，旧入口也无法像工具调用一样把错误返回给同一 Agent 回合，因此只作为迁移兼容，不应新增依赖。
 
-聊天角色直接编辑 `.missioncrew/documents/` 或 `.missioncrew/tasks/` 的执行后同步同样属于兼容路径。新实现应调用 `document.publish`、`task.create`、`task.update` 或 `task.brief`，才能获得即时校验结果、角色权限和逐次审计。Task 处理统一进入 Channel 协作，不存在独立的任务阶段 Runtime。
+聊天角色直接编辑 `.missioncrew/documents/` 或 `.missioncrew/tasks/` 的执行后同步同样属于兼容路径。新实现应调用 `document.publish`、`task.create`、`task.update`、`task.brief` 或 `task.delete`，才能获得即时校验结果、角色权限和逐次审计。Task 处理统一进入 Channel 协作，不存在独立的任务阶段 Runtime。

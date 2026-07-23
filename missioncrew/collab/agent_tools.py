@@ -26,7 +26,7 @@ from .guidelines import save_guideline
 from .recycle_bin import (RecycleConflictError, list_recycle_items,
                           purge_recycle_item, recycle_bin_url,
                           recycle_dashboard, recycle_document,
-                          recycle_guideline, recycle_skill,
+                          recycle_guideline, recycle_skill, recycle_task,
                           restore_recycle_item)
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, skill_resource_url,
@@ -108,6 +108,11 @@ ACTION_DEFINITIONS = {
             "id": "任务 id", "content": "状态简报正文",
             "status": "可选 open/in_progress/blocked/done",
         },
+    },
+    "task.delete": {
+        "description": "把 Task 及其状态简报移入项目回收站",
+        "orchestrator_only": True,
+        "arguments": {"id": "任务 id"},
     },
     "document.publish": {
         "description": "把文本或二进制文件发布到项目版本化文档库",
@@ -198,6 +203,7 @@ ACTION_ARGUMENTS = {
         "labels", "channel_ids",
     },
     "task.brief": {"id", "content", "status"},
+    "task.delete": {"id"},
     "document.publish": {
         "path", "content", "content_base64", "overwrite", "message",
     },
@@ -449,6 +455,7 @@ class AgentActionService:
             "task.create": self._create_task,
             "task.update": self._update_task,
             "task.brief": self._add_task_brief,
+            "task.delete": self._delete_task,
             "document.publish": self._publish_document,
             "document.delete": self._delete_document,
             "message.publish": self._publish_message,
@@ -535,6 +542,22 @@ class AgentActionService:
         return {
             "summary": f"已为任务 [{task.title}]({url}) 追加状态简报",
             "task": task.to_dict(), "brief": brief, "resource_url": url,
+        }
+
+    def _delete_task(self, project: Project, identity: AgentIdentity,
+                     arguments: dict, _context: AgentRunContext) -> dict:
+        task_id = str(arguments.get("id", "")).strip()
+        task = self.store.get_task(task_id)
+        if task is None or task.project_id != project.id:
+            raise AgentToolError("task_not_found", f"任务不存在: {task_id}", 404)
+        item = recycle_task(
+            self.store, project, task, actor=f"role:{identity.role_id}")
+        self._refresh_task_snapshot(project.id, identity)
+        return {
+            "summary": f"已将任务 {task.title} 移入项目回收站",
+            "deleted": True,
+            "recycle_item": item,
+            "resource_url": recycle_bin_url(project.id),
         }
 
     def _refresh_task_snapshot(self, project_id: str,
@@ -821,6 +844,8 @@ class AgentActionService:
             raise AgentToolError("already_exists", str(exc), 409) from exc
         except FileNotFoundError as exc:
             raise AgentToolError("not_found", str(exc), 404) from exc
+        if item["resource_type"] == "task":
+            self._refresh_task_snapshot(project.id, identity)
         return {
             "summary": f"已从项目回收站恢复 {item['name']}",
             "item": item,

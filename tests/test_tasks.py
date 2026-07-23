@@ -99,6 +99,42 @@ def test_task_edit_empty_channel_list_falls_back_to_general(seeded):
     assert updated.channel_ids == ["general"]
 
 
+def test_task_delete_moves_task_and_briefs_to_recycle_bin_and_restores(seeded):
+    with TestClient(create_app()) as client:
+        created = client.post("/api/tasks", json={
+            "project_id": "webshop",
+            "title": "清理旧结算任务",
+            "summary": "验证可恢复删除",
+            "body": "保留正文与状态简报。",
+            "labels": ["cleanup"],
+            "channel_ids": ["general"],
+        }).json()
+        brief = client.post(f"/api/tasks/{created['id']}/briefs", json={
+            "status": "in_progress",
+            "content": "已确认删除范围。",
+        }).json()["brief"]
+
+        deleted = client.delete(f"/api/tasks/{created['id']}")
+        assert deleted.status_code == 200, deleted.text
+        item = deleted.json()["recycle_item"]
+        assert deleted.json()["deleted"] is True
+        assert item["resource_type"] == "task"
+        assert item["resource_id"] == created["id"]
+        assert client.get(f"/api/tasks/{created['id']}").status_code == 404
+        assert seeded.list_task_briefs(created["id"]) == []
+
+        restored = client.post(
+            f"/api/projects/webshop/recycle-bin/{item['id']}/restore")
+        assert restored.status_code == 200, restored.text
+        detail = client.get(f"/api/tasks/{created['id']}").json()
+        assert detail["task"]["title"] == created["title"]
+        assert detail["task"]["body"] == "保留正文与状态简报。"
+        assert detail["briefs"][0]["content"] == brief["content"]
+        assert detail["briefs"][0]["created_at"] == brief["created_at"]
+        assert client.get(
+            "/api/projects/webshop/recycle-bin").json()["items"] == []
+
+
 def test_legacy_staged_task_is_migrated_to_issue(store):
     store.put_channel(Channel(id="demo:general", name="General", project_id="demo"))
     legacy = {

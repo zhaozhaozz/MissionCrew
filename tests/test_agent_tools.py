@@ -166,6 +166,7 @@ def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
     guideline_path = guidelines / "tool-managed.md"
     skill_path = skills / "tool-managed" / "SKILL.md"
     document_path = documents / "tool-managed" / "note.md"
+    tasks = Path(config.env["MISSIONCREW_TASKS_DIR"])
 
     call("guideline.save", "save-guideline", {
         "markdown": "---\nname: tool-managed\ndescription: 工具一致性测试\n---\n\n正文\n",
@@ -179,37 +180,50 @@ def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
     call("document.publish", "save-document", {
         "path": "tool-managed/note.md", "content": "正文\n",
     })
+    task = call("task.create", "save-task", {
+        "title": "工具管理任务",
+        "body": "删除后应可恢复。",
+        "channel_ids": ["general"],
+    })["task"]
+    task_path = tasks / f"{task['id']}.md"
     assert guideline_path.is_file() and "正文" in guideline_path.read_text()
     assert skill_path.is_file() and "说明" in skill_path.read_text()
     assert document_path.read_text() == "正文\n"
+    assert task_path.is_file()
 
     guideline_result = call(
         "guideline.delete", "delete-guideline", {"name": "tool-managed"})
     skill_result = call("skill.delete", "delete-skill", {"id": "tool-managed"})
     document_result = call(
         "document.delete", "delete-document", {"path": "tool-managed/note.md"})
+    task_result = call("task.delete", "delete-task", {"id": task["id"]})
     assert guideline_result["deleted"] is skill_result["deleted"] is True
-    assert document_result["deleted"] is True
+    assert document_result["deleted"] is task_result["deleted"] is True
     assert len(guideline_result["revision"]) == 40
     assert len(document_result["revision"]) == 40
     assert not guideline_path.exists()
     assert not skill_path.exists()
     assert not document_path.exists()
+    assert not task_path.exists()
 
     recycled = call("recycle.list", "list-recycle-bin", {})
     by_type = {item["resource_type"]: item for item in recycled["items"]}
-    assert set(by_type) == {"document", "guideline", "skill"}
+    assert set(by_type) == {"document", "guideline", "skill", "task"}
     call("recycle.restore", "restore-guideline", {
         "id": by_type["guideline"]["id"],
     })
     call("recycle.restore", "restore-document", {
         "id": by_type["document"]["id"],
     })
+    call("recycle.restore", "restore-task", {
+        "id": by_type["task"]["id"],
+    })
     call("recycle.purge", "purge-skill", {
         "id": by_type["skill"]["id"],
     })
     assert guideline_path.is_file()
     assert document_path.is_file()
+    assert task_path.is_file()
     assert not skill_path.exists()
     assert call("recycle.list", "list-recycle-bin-empty", {})["items"] == []
 

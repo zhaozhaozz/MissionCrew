@@ -13,6 +13,7 @@ import yaml
 from .runtime import runtime_manager
 from .core import seed as seed_mod
 from .collab.chat import ChatEngine
+from .collab.recycle_bin import recycle_task
 from .collab.tasks import add_task_brief, create_task, dispatch_task
 from .core.config import db_path, mc_home
 from .collab.documents import library_for
@@ -368,6 +369,25 @@ def task_brief(task_id: str, content: str = typer.Option(..., "-m", "--message")
         raise typer.BadParameter("任务不存在")
     add_task_brief(store, task, content=content, status=status)
     typer.echo("状态简报已追加")
+
+
+@task_app.command("delete")
+def task_delete(
+        task_id: str,
+        yes: bool = typer.Option(False, "-y", "--yes", help="跳过删除确认")):
+    """把 Task 及其状态简报移入项目回收站。"""
+    store = _store()
+    task = store.get_task(task_id)
+    if task is None:
+        raise typer.BadParameter("任务不存在")
+    project = store.get_project(task.project_id)
+    if project is None:
+        raise typer.BadParameter("项目不存在")
+    if not yes and not typer.confirm(f"将 Task「{task.title}」移入项目回收站？"):
+        typer.echo("已取消")
+        return
+    item = recycle_task(store, project, task, actor="human")
+    typer.echo(f"Task 已移入回收站: {item['id']}")
 
 
 @task_app.command("list")

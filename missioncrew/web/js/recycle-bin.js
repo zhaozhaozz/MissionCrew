@@ -6,6 +6,7 @@ const RECYCLE_TYPE_LABELS = Object.freeze({
   guideline: "准则",
   skill: "Skill",
   dashboard: "面板",
+  task: "Task",
   channel: "频道",
   role: "角色",
   project_resource: "项目资源",

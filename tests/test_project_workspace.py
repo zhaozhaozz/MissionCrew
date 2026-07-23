@@ -21,7 +21,7 @@ from missioncrew.collab.skills import (materialize_project_skills,
                                        skill_context_dir)
 from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
                                           migrate_resource_workspace_links,
-                                          sync_task_files)
+                                          sync_task_files, write_task_files)
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend, Channel,
                                      ExecutionConfig, GuidelineDocument, ProjectResource,
                                      ProjectSkill)
@@ -1205,6 +1205,26 @@ def test_task_sync_ignores_plain_markdown_but_rejects_broken_frontmatter(seeded,
     assert sync_task_files(seeded, "webshop", tasks_dir, "role:dev") == [
         "broken-task.md: 任务 YAML frontmatter 缺少结束分隔符 ---"
     ]
+
+
+def test_task_snapshot_refresh_prunes_deleted_task_but_keeps_drafts(seeded,
+                                                                    tmp_path):
+    from missioncrew.collab.tasks import create_task
+
+    tasks_dir = tmp_path / "tasks"
+    task = create_task(
+        seeded, "webshop", title="待删除快照", channel_ids=["general"])
+    write_task_files(seeded, "webshop", tasks_dir)
+    snapshot = tasks_dir / f"{task.id}.md"
+    draft = tasks_dir / "draft.md"
+    draft.write_text("---\ntitle: 草稿\nchannel_ids: [general]\n---\n", encoding="utf-8")
+    assert snapshot.is_file()
+
+    seeded.delete_task(task.id)
+    write_task_files(seeded, "webshop", tasks_dir)
+
+    assert not snapshot.exists()
+    assert draft.is_file()
 
 
 # ---- 面板卡片:通用展示原语 + 平台数据源(AgentDesk 式) ----

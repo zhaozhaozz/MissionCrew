@@ -13,21 +13,21 @@ from pathlib import Path
 from typing import Callable
 
 from ..core.config import projects_dir
-from ..core.models import Board, Channel, Project, ProjectResource, Role
+from ..core.models import Board, Channel, Project, ProjectResource, Role, Task
 from ..core.store import Store
 from .documents import (document_resource_url, guideline_library_for,
                         library_for, safe_relative_path)
 from .guidelines import delete_guideline, save_guideline
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, missioncrew_resource_url,
-                            skill_resource_url)
+                            skill_resource_url, task_resource_url)
 from .skills import (project_skill_library_dir, sync_project_skill_library,
                      write_skill_context)
 
 
 RESOURCE_TYPES = frozenset({
     "document", "guideline", "skill", "dashboard", "channel", "role",
-    "project_resource",
+    "project_resource", "task",
 })
 _PROJECT_ID_RE = re.compile(r"[\w-]+")
 _ITEM_ID_RE = re.compile(r"rb_[0-9]{13}_[0-9a-f]{12}")
@@ -339,6 +339,27 @@ def recycle_dashboard(store: Store, project: Project, board_id: str,
     return _public_item(manifest)
 
 
+def recycle_task(store: Store, project: Project, task: Task, *, actor: str) -> dict:
+    """把 Task 与追加式状态简报作为一个可恢复快照移入回收站。"""
+    if task.project_id != project.id:
+        raise ValueError("任务不属于当前项目")
+    snapshot = {
+        "task": task.to_dict(),
+        "briefs": store.list_task_briefs(task.id, limit=None),
+    }
+    manifest = _archive_snapshot(
+        project.id, "task", task.id, task.title or task.id, actor, snapshot)
+    try:
+        store.delete_task(task.id)
+    except Exception:
+        _discard(project.id, manifest["id"])
+        raise
+    store.audit(
+        actor, "task_recycled", task.id,
+        f"project={project.id} task={task.id} item={manifest['id']}")
+    return _public_item(manifest)
+
+
 def recycle_channel(store: Store, project: Project, channel: Channel,
                     *, actor: str) -> dict:
     if channel.project_id != project.id:
@@ -454,6 +475,18 @@ def _restore_snapshot(store: Store, project: Project, manifest: dict) -> str:
             raise RecycleConflictError(f"面板已存在: {board.id}")
         store.put_board(board)
         return dashboard_resource_url(project.id, board.id)
+    if resource_type == "task":
+        task_data = snapshot.get("task")
+        briefs = snapshot.get("briefs", [])
+        if not isinstance(task_data, dict) or not isinstance(briefs, list):
+            raise ValueError("回收站中的 Task 快照不合法")
+        task = Task.from_dict(task_data)
+        if task.project_id != project.id:
+            raise ValueError("回收站中的 Task 不属于当前项目")
+        if store.get_task(task.id):
+            raise RecycleConflictError(f"Task 已存在: {task.id}")
+        store.restore_task(task, briefs)
+        return task_resource_url(project.id, task.id)
     if resource_type == "channel":
         channel = Channel.from_dict(snapshot)
         if store.get_channel(channel.id):

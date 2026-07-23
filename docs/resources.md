@@ -67,13 +67,14 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 
 Task 是类似 Issue 的协作入口，事实源是平台数据库。它包含标题、简介、正文、状态、标签、一个或多个 Channel 绑定，以及多条追加式状态简报。Task URL 打开内置任务看板并展开详情。
 
-Agent harness 同时提供 `.missioncrew/tasks/` Markdown 快照。Agent 使用 `task.create`、`task.update` 和 `task.brief` 修改事实源；人类使用同一组 Web/API 字段。处理 Task 时，平台不启动独立执行引擎，而是在每个绑定 Channel 中向项目主控发送普通消息，由既有 Channel 协作流程接管。
+Agent harness 同时提供 `.missioncrew/tasks/` Markdown 快照。Agent 使用 `task.create`、`task.update` 和 `task.brief` 修改事实源，项目主控使用 `task.delete` 删除；人类使用同一组 Web/API 字段。删除时 Task 与状态简报一起进入项目回收站，恢复后仍使用原 Task id。处理 Task 时，平台不启动独立执行引擎，而是在每个绑定 Channel 中向项目主控发送普通消息，由既有 Channel 协作流程接管。
 
 主要 API：
 
 - `POST /api/tasks`
 - `GET /api/tasks/<task-id>`
 - `PATCH /api/tasks/<task-id>`
+- `DELETE /api/tasks/<task-id>`（移入项目回收站）
 - `POST /api/tasks/<task-id>/briefs`
 - `POST /api/tasks/<task-id>/process`
 
@@ -147,11 +148,11 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 ### 项目统一回收站
 
-文档、准则、完整 Skill 包、自定义面板、频道、非主控角色和项目资源引用删除后，都进入项目自己的统一回收站。物理条目保存在 `projects/<project>/recycle-bin/<item-id>/`，其中包含平台私有 manifest 和内容或数据库快照；这个内部目录不会加入 Runtime 的允许目录，也不会通过 API 暴露。旧版 `.skill-trash/` 中的完整 Skill 包会在服务启动时迁入统一回收站。
+文档、准则、完整 Skill 包、自定义面板、Task、频道、非主控角色和项目资源引用删除后，都进入项目自己的统一回收站。物理条目保存在 `projects/<project>/recycle-bin/<item-id>/`，其中包含平台私有 manifest 和内容或数据库快照；这个内部目录不会加入 Runtime 的允许目录，也不会通过 API 暴露。旧版 `.skill-trash/` 中的完整 Skill 包会在服务启动时迁入统一回收站。
 
 回收站页面是项目级单页视图，可以按资源类型筛选。每项显示原名称、稳定标识、删除时间、操作者和大小。恢复会重建资源事实源，并同步 Project 索引及准则/Skill 实时视图；只有整条链完成才移除回收项。若原路径或 ID 已被新资源占用，恢复返回 `409`，现有资源和回收项都保持不变。永久删除单项和清空回收站不可撤销，Web 会先要求确认。
 
-回收站保存的是“恢复当前资源所需的副本”，不是所有历史的唯一事实源。永久删除回收项后，文档与准则的 Git 历史、频道消息和审计记录仍按各自保留策略存在。内置 Task 看板、项目本身、全局 Runtime、全局角色模板以及目前没有删除操作的 Task 不进入项目回收站。
+回收站保存的是“恢复当前资源所需的副本”，不是所有历史的唯一事实源。永久删除回收项后，文档与准则的 Git 历史、频道消息和审计记录仍按各自保留策略存在。内置 Task 看板、项目本身、全局 Runtime 和全局角色模板不进入项目回收站。
 
 主要 API：
 

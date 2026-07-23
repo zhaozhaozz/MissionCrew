@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.recycle_bin import recycle_task
 from ..collab.resource_urls import channel_resource_url, task_resource_url
 from ..collab.tasks import (TaskDispatchError, add_task_brief, create_task,
                             dispatch_task, update_task)
@@ -66,6 +67,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             status = 409 if "重新读取" in str(exc) else 400
             raise HTTPException(status, str(exc)) from exc
         return _task_data(store, task)
+
+    @app.delete("/api/tasks/{task_id}")
+    def delete(task_id: str):
+        task = store.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
+        project = ctx.must_project(task.project_id)
+        item = recycle_task(store, project, task, actor="human")
+        return {"deleted": True, "recycle_item": item}
 
     @app.post("/api/tasks/{task_id}/briefs")
     def add_brief(task_id: str, body: TaskBriefInput):
