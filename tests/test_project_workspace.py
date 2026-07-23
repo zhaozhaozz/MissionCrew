@@ -741,6 +741,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     documents = client.get("/assets/js/documents.js").text
     boards = client.get("/assets/js/boards.js").text
     markdown = client.get("/assets/js/markdown.js").text
+    viewer = client.get("/assets/js/viewer.js").text
     main = client.get("/assets/js/main.js").text
 
     for view in ("guidelines-view", "skills-view", "docs-view"):
@@ -769,7 +770,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "config-generator" not in html
     assert "project-configs.js" in html
     assert "markdown.js" in html
-    assert html.index("/assets/js/markdown.js") < html.index("/assets/js/project-configs.js")
+    assert html.index("/assets/js/markdown.js") < html.index("/assets/js/viewer.js") \
+        < html.index("/assets/js/project-configs.js")
     assert '"guidelines", "skills"' in router and '"rules"' not in router
     assert "projPanels()" in router and "builtin-badge" in router
     assert 'tab === "board" || tab === "custom"' in router
@@ -779,8 +781,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert 'id="doc-upload-input"' in html and "type=\"file\" multiple" in html
     assert "beginDocumentUpload" in documents and "uploadDocuments" in documents
     assert "/documents/upload?" in documents and 'overwrite: String(' in documents
-    assert "downloadDocument" in documents and "/documents/download/" in documents
-    assert "不能在线编辑或比较版本" in documents
+    assert "documentDownloadUrl" in documents and "/documents/download/" in documents
+    assert "不能在线编辑或比较版本" in viewer
     assert "documentSidebarHtml" in documents
     assert "const docExpanded = new Set()" in documents
     assert "const closed = !docExpanded.has(key)" in documents
@@ -791,24 +793,26 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "expandDocAncestors(docSelected)" in documents
     assert 'localStorage.getItem("mc.sideCollapsed") || "[]"' in router
     assert 'localStorage.setItem("mc.sideCollapsed"' in router
-    assert "版本历史" in documents
-    assert "compareDocumentVersions" in documents
-    assert "/documents/compare" in documents
-    assert "比较已选版本" in documents and "最新" in documents
-    assert documents.index('<div id="doc-history"></div><div id="doc-compare"></div>') \
-        < documents.index('${revBanner}${body}')
+    # 文档库与准则共用的统一查看器：历史、对比、行内/左右 diff、行号、图片
+    assert "createTextViewer" in viewer and "docViewer" in documents
+    assert "版本历史" in viewer and "比较已选版本" in viewer and "最新" in viewer
+    assert "/documents/compare" in documents and "/compare" in js
+    assert "viewerInlineDiffHtml" in viewer and "viewerSplitDiffHtml" in viewer
+    assert "compare-style" in viewer and "doc-diff-split" in viewer
+    assert "lineNumberedTextHtml" in viewer and "doc-image" in viewer
+    assert "viewer-dirty-badge" in viewer and "confirmDiscard" in viewer
     assert "documentSidebarHtml()" in router
     assert "sendConfigChat" in js and "pollConfigChat" in js
     assert "currentConfigDraft" in js and "configPageSnapshot" in js
     assert "stageConfigPage" in js and "captureConfigChatSelection" in js
     assert "startConfigChatResize" in js and "toggleConfigChatCollapsed" in js
     assert "CONFIG_CHAT_HEIGHT_KEY" in js and "CONFIG_CHAT_COLLAPSED_KEY" in js
-    assert "guideline-markdown-preview markdown-body" in js
-    assert "setGuidelineMarkdownMode" in js
-    assert "toggleGuidelineHistory" in js and "showGuidelineHistory" in js
-    assert "viewGuidelineVersion" in js and "restoreGuidelineVersion" in js
-    assert "/guidelines/${encodeURIComponent(guidelineName)}/history" in js
-    assert "恢复此版本" in js and "恢复会写入一个新版本" in js
+    assert "guideline-markdown-preview" in js
+    assert "createTextViewer" in js and "guidelineViewer" in js
+    assert "guidelineViewer.confirmDiscard" in js
+    assert "/history" in js and "恢复会写入一个新版本" in js
+    assert "恢复此版本" in viewer
+    assert "viewer-edit-preview" in viewer
     assert 'GUIDELINE_MARKDOWN_PLACEHOLDER = "---\\nname: \\ndescription: \\n---' in js
     assert "frontmatter_contract" in js and "current_draft.markdown" in js
     assert "current_page.content_path" in js and 'read_from: "current_page.content_path"' in js
@@ -841,9 +845,9 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert all(markup in markdown for markup in (
         "markdownInline", "<blockquote>", "<pre><code", "markdown-table-wrap"))
     assert "markdownPreviewHtml(markdown)" in js
-    assert "markdownPreviewHtml(d.content)" in documents
+    assert "markdownPreviewHtml(" in viewer
     assert "markdownPreviewHtml(c.markdown || c.text" in boards
-    assert js.count("markdownPreviewHtml(") >= 3
+    assert js.count("markdownPreviewHtml(") >= 2
     assert "markdownContentWithoutFrontmatter" not in js
     assert "skillMarkdownPreviewHtml" not in js
     assert "miniMarkdown(" not in js and "miniMarkdown(" not in documents
@@ -869,10 +873,9 @@ def test_binary_document_chat_context_keeps_file_identity_without_text_selection
     assert "没有 current_page.content_path、selection 或行号" in configs
     assert "非文本文件；主控将收到文件名与文档路径" in configs
     assert 'docPaneContentType = "binary"' in documents
-    binary_branch = documents.index("if (binary) {")
+    binary_branch = documents.index('docPaneContentType = "binary"')
     clear_selection = documents.index("configChatSelection = null", binary_branch)
-    finish_binary = documents.index("finish();", clear_selection)
-    assert binary_branch < clear_selection < finish_binary
+    assert binary_branch < clear_selection
 
 
 def test_guideline_and_document_chat_context_is_staged_as_a_file(seeded):
@@ -928,8 +931,10 @@ def test_background_refresh_preserves_scrollable_view_state(seeded):
 
     assert "renderDocuments(true)" in router
     assert "signature !== docPaneRenderSignature" in documents
-    assert 'captureScrollPositions(["#doc-pane"])' in documents
-    assert "renderToken !== docPaneRenderToken" in documents
+    viewer = client.get("/assets/js/viewer.js").text
+    assert 'scrollSelectors: () => ["#doc-pane"]' in documents
+    assert "captureScrollPositions(config.scrollSelectors())" in viewer
+    assert "token !== V.renderToken" in viewer
 
     assert "signature === customBoardRenderSignature" in boards
     assert "boardHasLiveWidgets(board)" in boards

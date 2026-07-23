@@ -135,12 +135,11 @@ function openPanelFromSidebar(kind, id) {
   openBoardFromSidebar(id);
 }
 
-function openDocFromSidebar(path) {
+async function openDocFromSidebar(path) {
+  if (currentTab === "docs" && path !== docSelected && !await confirmDocDiscard()) return;
   docSelected = path;
   docMode = "view";
-  docViewingRevision = null;
-  docHistoryOpen = false;
-  resetDocumentVersionCompare();
+  docViewer.activate();
   if (currentTab === "docs") { renderDocPane(); renderSidebar(); syncUrl(); }
   else switchTab("docs");
 }

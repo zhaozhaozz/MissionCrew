@@ -1,10 +1,6 @@
 /* ---- 项目准则 / Skills 全页管理与底部主控对话 ---- */
 let selectedGuidelineName;
 let selectedSkillId;
-let guidelineMarkdownMode = "preview";
-let guidelineHistoryOpen = false;
-let guidelineViewingVersion = null;
-let guidelineHistoryLoadToken = 0;
 const GUIDELINE_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
 const configEditorDirty = { guidelines: false, skills: false };
 let skillLibraryInfo = null;
@@ -102,8 +98,8 @@ function configChatContext() {
   if (currentTab === "guidelines") {
     const guideline = project.guidelines?.find(value => value.name === selectedGuidelineName);
     const draftName = guidelineFrontmatterValue(valueOf("gf-content"), "name");
-    item = guideline ? `${guideline.name}（Markdown 文件${guidelineViewingVersion
-      ? `，历史版本 ${guidelineViewingVersion.revision.slice(0, 10)}` : ""}）`
+    item = guideline ? `${guideline.name}（Markdown 文件${guidelineViewer.viewingRevision
+      ? `，历史版本 ${guidelineViewer.viewingRevision.slice(0, 10)}` : ""}）`
                      : `新建准则（${draftName || "name 未填写"}，未保存）`;
     itemKey = guideline?.name || "new";
   } else if (currentTab === "skills") {
@@ -159,17 +155,19 @@ function clippedConfigText(value, limit = 30000) {
 
 function configPageSnapshot(context) {
   if (context.tab === "guidelines") {
+    const guideline = projObj()?.guidelines
+      ?.find(value => value.name === selectedGuidelineName);
     const pageKey = selectedGuidelineName
       || guidelineFrontmatterValue(valueOf("gf-content"), "name") || "new-guideline.md";
     return {
       pageKey: pageKey.endsWith(".md") ? pageKey : `${pageKey}.md`,
-      content: valueOf("gf-content"),
+      content: guidelineViewer.currentText() ?? "",
       metadata: {
         original_name: selectedGuidelineName,
-        enabled: guidelineViewingVersion?.enabled
-          ?? document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
-        unsaved_changes: configEditorDirty.guidelines,
-        viewing_revision: guidelineViewingVersion?.revision || null,
+        enabled: document.getElementById("gf-enabled")?.classList.contains("on")
+          ?? guideline?.enabled ?? true,
+        unsaved_changes: guidelineViewer.hasUnsaved(),
+        viewing_revision: guidelineViewer.viewingRevision,
       },
     };
   }
@@ -181,8 +179,8 @@ function configPageSnapshot(context) {
       filename: documentPath.split("/").pop(),
       document_path: documentPath,
       resource_url: missionCrewDocumentUrl(currentProject, documentPath),
-      mode: docMode,
-      viewing_revision: docViewingRevision,
+      mode: docMode === "new" ? "new" : docViewer.mode,
+      viewing_revision: docViewer.viewingRevision,
     };
     if (docPaneContentType === "binary") return {
       pageKey: documentPath,
@@ -267,7 +265,7 @@ function captureConfigChatSelection() {
   const range = browserSelection.getRangeAt(0);
   const node = range.commonAncestorContainer.nodeType === Node.TEXT_NODE
     ? range.commonAncestorContainer.parentElement : range.commonAncestorContainer;
-  const source = node?.closest?.(".doc-body, .doc-pane > pre, .guideline-markdown-preview, .skill-markdown-preview");
+  const source = node?.closest?.(".doc-body, .text-lines, .viewer-edit-preview, .guideline-markdown-preview, .skill-markdown-preview");
   if (!source) return;
   if (browserSelection.isCollapsed) { clearConfigChatSelection(); return; }
   const prefix = document.createRange();
@@ -278,8 +276,8 @@ function captureConfigChatSelection() {
   const last = first + selected.split("\n").length - 1;
   setConfigChatSelection({
     context_key: context.key,
-    field: source.classList.contains("guideline-markdown-preview") ? "准则阅读视图"
-      : source.classList.contains("skill-markdown-preview") ? "SKILL.md 阅读视图"
+    field: source.classList.contains("skill-markdown-preview") ? "SKILL.md 阅读视图"
+      : source.closest("#guidelines-view") ? "准则阅读视图"
       : "文档阅读视图",
     line_start: first,
     line_end: last, basis: "rendered", ...clippedConfigText(selected, 12000),
@@ -490,12 +488,94 @@ document.getElementById("config-chat-input").addEventListener("keydown", event =
 window.addEventListener("resize", applyConfigChatLayout);
 applyConfigChatLayout();
 
-/* ---- 准则文档 ---- */
+/* ---- 准则文档：与版本化文档库共用 viewer.js 统一组件 ---- */
 let guidelineEditorSignature = null;
 
 function guidelineEditorStateSignature(guideline) {
   return JSON.stringify([currentProject, selectedGuidelineName, guideline || null]);
 }
+
+function selectedGuideline() {
+  return (projObj()?.guidelines || []).find(item => item.name === selectedGuidelineName);
+}
+
+const guidelineViewer = createTextViewer({
+  containerId: "guideline-editor",
+  textareaId: "gf-content",
+  editorClass: "guideline-markdown-editor",
+  previewClass: "guideline-markdown-preview",
+  surfaceClass: "guideline-markdown-surface",
+  identity: () => JSON.stringify(
+    [currentProject, selectedGuidelineName, guidelineViewer.viewingRevision]),
+  title: () => selectedGuidelineName || "新建准则",
+  metaLine: () => "",
+  editKind: () => "markdown",
+  hasHistory: () => Boolean(selectedGuidelineName),
+  loadView: async revision => {
+    if (revision) {
+      const version = await api("GET",
+        `/api/projects/${encodeURIComponent(currentProject)}/guidelines/` +
+        `${encodeURIComponent(selectedGuidelineName)}/history/${encodeURIComponent(revision)}`);
+      return { kind: "markdown", content: version.markdown };
+    }
+    return { kind: "markdown",
+             content: selectedGuideline()?.markdown || GUIDELINE_MARKDOWN_PLACEHOLDER };
+  },
+  loadEdit: () => selectedGuideline()?.markdown || GUIDELINE_MARKDOWN_PLACEHOLDER,
+  save: async content => {
+    const saved = await api("POST",
+      `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
+        original_name: selectedGuidelineName,
+        markdown: content,
+        enabled: document.getElementById("gf-enabled")?.classList.contains("on") ?? true,
+      });
+    selectedGuidelineName = saved.name;
+    configEditorDirty.guidelines = false;
+    await loadOverview();
+    syncUrl();
+    toast("准则文档已保存", "success");
+  },
+  listHistory: () => api("GET",
+    `/api/projects/${encodeURIComponent(currentProject)}/guidelines/` +
+    `${encodeURIComponent(selectedGuidelineName)}/history`),
+  compare: (from, to) => api("POST",
+    `/api/projects/${encodeURIComponent(currentProject)}/guidelines/` +
+    `${encodeURIComponent(selectedGuidelineName)}/compare`,
+    { from_revision: from, to_revision: to }),
+  restore: async revision => {
+    if (!await uiConfirm(
+      `把准则恢复到版本 ${revision.slice(0, 10)}？恢复会写入一个新版本，后续历史仍保留。`))
+      throw new Error("cancelled");
+    const restored = await api("POST",
+      `/api/projects/${encodeURIComponent(currentProject)}/guidelines/` +
+      `${encodeURIComponent(selectedGuidelineName)}/restore`, { revision });
+    selectedGuidelineName = restored.name;
+    configEditorDirty.guidelines = false;
+    await loadOverview();
+    syncUrl();
+    toast(`准则已恢复，新版本 ${restored.revision.slice(0, 10)}`, "success");
+  },
+  extrasHtml: mode => {
+    const guideline = selectedGuideline();
+    const deleteButton = guideline
+      ? `<button class="danger" type="button" data-name="${esc(guideline.name)}"
+          onclick="deleteGuideline(this.dataset.name)">删除</button>` : "";
+    if (mode === "edit") {
+      return `<label class="guideline-enabled"><span>启用</span>
+          <span class="switch ${guideline?.enabled === false ? "" : "on"}" id="gf-enabled"
+            role="switch" tabindex="0"
+            onclick="this.classList.toggle('on');guidelineViewer.markDirty()"></span></label>
+        ${deleteButton}`;
+    }
+    return deleteButton;
+  },
+  scrollSelectors: () => ["#guidelines-view", "#gf-content", ".viewer-edit-preview"],
+  onChange: () => updateConfigChatContext(),
+  onDirty: () => {
+    configEditorDirty.guidelines = true;
+    updateConfigChatContext();
+  },
+});
 
 function renderGuidelinesPage(force = false) {
   const guidelines = projObj()?.guidelines || [];
@@ -505,200 +585,34 @@ function renderGuidelinesPage(force = false) {
     selectedGuidelineName = guidelines[0]?.name ?? null;
   const guideline = guidelines.find(item => item.name === selectedGuidelineName);
   const signature = guidelineEditorStateSignature(guideline);
-  if (force || (!configEditorDirty.guidelines && signature !== guidelineEditorSignature))
-    renderGuidelineEditor(guideline, signature);
+  const changed = signature !== guidelineEditorSignature;
+  guidelineEditorSignature = signature;
+  // 有未保存修改时保留编辑现场，不被后台刷新覆盖
+  if ((force || changed) && !guidelineViewer.hasUnsaved())
+    void guidelineViewer.render();
   updateConfigChatContext();
 }
 
-function renderGuidelineEditor(guideline = undefined, signature = undefined) {
-  if (guideline === undefined)
-    guideline = (projObj()?.guidelines || []).find(item => item.name === selectedGuidelineName);
-  if (guidelineViewingVersion?.sourceName !== selectedGuidelineName)
-    guidelineViewingVersion = null;
-  if (!guideline) guidelineMarkdownMode = "edit";
-  if (guidelineViewingVersion) guidelineMarkdownMode = "preview";
-  const historical = guidelineViewingVersion;
-  const markdown = historical?.markdown || guideline?.markdown || GUIDELINE_MARKDOWN_PLACEHOLDER;
-  const root = document.getElementById("guideline-editor");
-  const itemKey = `${currentProject}:${selectedGuidelineName ?? "new"}:${historical?.revision || "latest"}`;
-  const scrollState = root.dataset.itemKey === itemKey
-    ? captureScrollPositions(["#guidelines-view", "#gf-content", "#guideline-markdown-preview"])
-    : [];
-  root.innerHTML = `
-    <div class="guideline-toolbar">
-      <div class="guideline-current-name"><span>名称</span>
-        <code>${esc(historical?.name || guideline?.name || "在 frontmatter 中填写")}</code></div>
-      ${historical ? `<span class="guideline-history-badge">历史版本
-        <code>${esc(historical.revision.slice(0, 10))}</code></span>` : `
-      <label class="guideline-enabled"><span>启用</span>
-        <span class="switch ${guideline?.enabled === false ? "" : "on"}" id="gf-enabled"
-          role="switch" tabindex="0" onclick="this.classList.toggle('on');markConfigDirty('guidelines')"></span></label>`}
-      <span class="guideline-toolbar-spacer"></span>
-      ${guideline ? `<button class="ghost compact" type="button" onclick="toggleGuidelineHistory()">
-        ${guidelineHistoryOpen ? "收起历史" : "版本历史"}</button>` : ""}
-      ${historical ? `
-        <button class="action" type="button" data-revision="${esc(historical.revision)}"
-          onclick="restoreGuidelineVersion(this.dataset.revision)">恢复此版本</button>
-        <button class="ghost compact" type="button" onclick="closeGuidelineVersion()">返回最新</button>` : `
-      <div class="guideline-view-toggle" aria-label="Markdown 显示方式">
-        <button class="ghost compact" id="guideline-edit-button" type="button"
-          onclick="setGuidelineMarkdownMode('edit')">编辑</button>
-        <button class="ghost compact" id="guideline-preview-button" type="button"
-          onclick="setGuidelineMarkdownMode('preview')">预览</button>
-      </div>
-      <button class="action" type="button" onclick="saveGuideline()">保存</button>
-      ${guideline ? `<button class="danger" type="button" data-name="${esc(guideline.name)}"
-        onclick="deleteGuideline(this.dataset.name)">删除</button>` : ""}`}
-    </div>
-    <div id="guideline-history" class="guideline-history ${guidelineHistoryOpen ? "" : "hidden"}"></div>
-    <div class="guideline-markdown-surface">
-      <textarea id="gf-content" class="guideline-markdown-editor" aria-label="完整准则 Markdown 文件"
-        spellcheck="false" oninput="markConfigDirty('guidelines');updateGuidelineMarkdownPreview()">${esc(markdown)}</textarea>
-      <article class="guideline-markdown-preview markdown-body" id="guideline-markdown-preview"></article>
-    </div>`;
-  root.dataset.itemKey = itemKey;
-  guidelineEditorSignature = signature ?? guidelineEditorStateSignature(guideline);
-  updateGuidelineMarkdownPreview();
-  setGuidelineMarkdownMode(guidelineMarkdownMode);
-  restoreScrollPositions(scrollState);
-  if (guideline && guidelineHistoryOpen) void showGuidelineHistory();
-}
-
-function updateGuidelineMarkdownPreview() {
-  const preview = document.getElementById("guideline-markdown-preview");
-  if (!preview) return;
-  const markdown = valueOf("gf-content");
-  preview.innerHTML = markdown.trim() ? markdownPreviewHtml(markdown)
-    : `<div class="empty">正文为空。切换到“编辑”输入 Markdown。</div>`;
-}
-
-function setGuidelineMarkdownMode(mode) {
-  guidelineMarkdownMode = guidelineViewingVersion ? "preview"
-    : (mode === "edit" ? "edit" : "preview");
-  const editor = document.getElementById("gf-content");
-  const preview = document.getElementById("guideline-markdown-preview");
-  if (!editor || !preview) return;
-  const editing = guidelineMarkdownMode === "edit";
-  editor.hidden = !editing;
-  preview.hidden = editing;
-  document.getElementById("guideline-edit-button")?.classList.toggle("active", editing);
-  document.getElementById("guideline-preview-button")?.classList.toggle("active", !editing);
-  if (!editing) updateGuidelineMarkdownPreview();
-}
-
-function editGuideline(name) {
+async function editGuideline(name) {
+  if (!await guidelineViewer.confirmDiscard()) return;
   selectedGuidelineName = name;
-  guidelineMarkdownMode = name ? "preview" : "edit";
-  guidelineHistoryOpen = false;
-  guidelineViewingVersion = null;
+  guidelineViewer.activate();
+  if (!name) guidelineViewer.mode = "edit";   // 新建准则直接进入编辑模式
   configChatSelection = null;
   configEditorDirty.guidelines = false;
   if (currentTab !== "guidelines") switchTab("guidelines");
   else { renderGuidelinesPage(true); syncUrl(); }
 }
 
-async function saveGuideline() {
-  const saved = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
-    original_name: selectedGuidelineName,
-    markdown: document.getElementById("gf-content").value,
-    enabled: document.getElementById("gf-enabled").classList.contains("on"),
-  });
-  selectedGuidelineName = saved.name;
-  guidelineMarkdownMode = "preview";
-  guidelineHistoryOpen = false;
-  guidelineViewingVersion = null;
-  configEditorDirty.guidelines = false;
-  await loadOverview();
-  renderGuidelinesPage(true);
-  toast("准则文档已保存", "success");
-}
-
 async function deleteGuideline(name) {
   if (!await uiConfirm(`将准则文档「${name}」移入项目回收站？`)) return;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(name)}`);
   selectedGuidelineName = undefined;
-  guidelineHistoryOpen = false;
-  guidelineViewingVersion = null;
+  guidelineViewer.activate();
   configEditorDirty.guidelines = false;
   await loadOverview();
   renderGuidelinesPage(true);
   toast("准则文档已移入回收站", "success");
-}
-
-async function toggleGuidelineHistory() {
-  if (!selectedGuidelineName) return;
-  guidelineHistoryOpen = !guidelineHistoryOpen;
-  renderGuidelinesPage(true);
-}
-
-async function showGuidelineHistory() {
-  if (!selectedGuidelineName || !guidelineHistoryOpen) return;
-  const token = ++guidelineHistoryLoadToken;
-  const projectId = currentProject;
-  const guidelineName = selectedGuidelineName;
-  const element = document.getElementById("guideline-history");
-  if (!element) return;
-  element.innerHTML = `<div class="muted">正在读取版本历史…</div>`;
-  const rows = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/guidelines/${encodeURIComponent(guidelineName)}/history`);
-  if (token !== guidelineHistoryLoadToken || projectId !== currentProject
-      || guidelineName !== selectedGuidelineName || !guidelineHistoryOpen) return;
-  const target = document.getElementById("guideline-history");
-  if (!target) return;
-  target.innerHTML = rows.length ? `<table>
-    <tr><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>` +
-    rows.map(version => `<tr class="${guidelineViewingVersion?.revision === version.revision ? "selected" : ""}">
-      <td><code>${esc(version.revision.slice(0, 10))}</code></td>
-      <td>${new Date(version.created_at * 1000).toLocaleString()}</td>
-      <td>${esc(version.actor)}</td><td>${esc(version.message)}</td><td>
-        <button class="ghost compact" data-revision="${esc(version.revision)}"
-          onclick="viewGuidelineVersion(this.dataset.revision)">查看</button>
-        <button class="ghost compact" data-revision="${esc(version.revision)}"
-          data-name="${esc((version.path || "").replace(/\.md$/, ""))}"
-          onclick="restoreGuidelineVersion(this.dataset.revision,this.dataset.name)">恢复</button>
-      </td></tr>`).join("") + `</table>`
-    : `<div class="empty">暂无版本历史。</div>`;
-}
-
-async function viewGuidelineVersion(revision) {
-  if (!selectedGuidelineName) return;
-  if (configEditorDirty.guidelines
-      && !await uiConfirm("查看历史版本会放弃当前未保存修改，是否继续？")) return;
-  const sourceName = selectedGuidelineName;
-  const version = await api("GET",
-    `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(sourceName)}/history/${encodeURIComponent(revision)}`);
-  guidelineViewingVersion = { ...version, sourceName };
-  guidelineHistoryOpen = true;
-  guidelineMarkdownMode = "preview";
-  configEditorDirty.guidelines = false;
-  renderGuidelinesPage(true);
-  updateConfigChatContext();
-}
-
-function closeGuidelineVersion() {
-  guidelineViewingVersion = null;
-  guidelineMarkdownMode = "preview";
-  renderGuidelinesPage(true);
-  updateConfigChatContext();
-}
-
-async function restoreGuidelineVersion(revision, versionName = "") {
-  if (!selectedGuidelineName) return;
-  const historicalName = guidelineViewingVersion?.revision === revision
-    ? guidelineViewingVersion.name : (versionName || selectedGuidelineName);
-  if (!await uiConfirm(`把准则恢复到版本 ${revision.slice(0, 10)}${historicalName !== selectedGuidelineName
-    ? `（名称将恢复为 ${historicalName}）` : ""}？恢复会写入一个新版本，后续历史仍保留。`)) return;
-  const restored = await api("POST",
-    `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(selectedGuidelineName)}/restore`,
-    { revision });
-  selectedGuidelineName = restored.name;
-  guidelineViewingVersion = null;
-  guidelineHistoryOpen = true;
-  guidelineMarkdownMode = "preview";
-  configEditorDirty.guidelines = false;
-  await loadOverview();
-  renderGuidelinesPage(true);
-  syncUrl();
-  toast(`准则已恢复，新版本 ${restored.revision.slice(0, 10)}`, "success");
 }
 
 /* ---- Skills ---- */

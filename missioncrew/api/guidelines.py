@@ -5,7 +5,8 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from ..collab.guidelines import (guideline_history, read_guideline_version,
+from ..collab.guidelines import (_GUIDELINE_NAME_RE, guideline_history,
+                                 read_guideline_version,
                                  restore_guideline,
                                  save_guideline as save_guideline_document,
                                  sync_guideline_library)
@@ -18,8 +19,10 @@ from ..collab.skills import (import_skill_folder, import_skill_zip,
                              sync_project_skill_library)
 from ..core.models import ProjectSkill
 from .context import MENTION_ID_RE, ApiContext
-from .schemas import (GuidelineInput, GuidelineRestore, SkillFolderImport,
-                      SkillInput)
+from .diffutil import (_NonTextDocumentError, _decode_pure_text,
+                       build_diff_ops, build_text_diff)
+from .schemas import (GuidelineCompare, GuidelineInput, GuidelineRestore,
+                      SkillFolderImport, SkillInput)
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -71,6 +74,38 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/guidelines/{guideline_name}/compare")
+    def compare_guideline_versions(project_id: str, guideline_name: str,
+                                   body: GuidelineCompare):
+        """比较同一准则的两个历史版本，返回 unified diff 与行级操作。"""
+        project = ctx.must_project(project_id)
+        if not _GUIDELINE_NAME_RE.fullmatch(guideline_name):
+            raise HTTPException(400, "准则 name 只能包含字母、数字、下划线、连字符")
+        if not any(item.name == guideline_name for item in project.guidelines):
+            raise HTTPException(404, "准则不存在")
+        library = sync_guideline_library(store, project)
+        path = f"{guideline_name}.md"
+        try:
+            before = _decode_pure_text(
+                library.read_history(path, body.from_revision).encode("utf-8"))
+            after = _decode_pure_text(
+                library.read_history(path, body.to_revision).encode("utf-8"))
+        except (UnicodeDecodeError, _NonTextDocumentError) as exc:
+            raise HTTPException(415, "二进制或非 UTF-8 内容不能比较版本") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        label_a = f"{path}@{body.from_revision[:10]}"
+        label_b = f"{path}@{body.to_revision[:10]}"
+        return {
+            "guideline": guideline_name,
+            "from_revision": body.from_revision,
+            "to_revision": body.to_revision,
+            **build_text_diff(before, after, label_a, label_b),
+            "ops": build_diff_ops(before, after),
+        }
 
     @app.post("/api/projects/{project_id}/guidelines/{guideline_name}/restore")
     def restore_guideline_version(project_id: str, guideline_name: str,

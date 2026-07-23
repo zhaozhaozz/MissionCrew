@@ -59,7 +59,7 @@ function syncUrl(push = true) {
   if (currentTab === "custom")
     path = missionCrewResourceUrl(currentProject, "dashboards",
       ...(currentCustomBoard ? [currentCustomBoard.replace(`${currentProject}:`, "")] : []));
-  if (currentTab === "docs" && docMode === "view" && !docViewingRevision)
+  if (currentTab === "docs" && docMode !== "new" && !docViewer.viewingRevision)
     path = missionCrewDocumentUrl(currentProject, docSelected || "");
   if (currentTab === "guidelines")
     path = missionCrewResourceUrl(currentProject, "guidelines",
@@ -84,9 +84,14 @@ async function applyRoute() {
   }
   routeApplying = true;
   try {
-    if (r.project !== currentProject) setProject(r.project, false);
+    // 任一步骤被未保存修改守卫取消时，跳过后续切换，最后统一把 URL 规范回当前状态
+    let cancelled = false;
+    if (r.project !== currentProject) {
+      const switched = await setProject(r.project, false);
+      if (switched === false) cancelled = true;   // 用户选择保留未保存修改，取消跳转
+    }
 
-    if (r.tab === "chat") {
+    if (!cancelled && r.tab === "chat") {
       const channel = projChannels().find(item =>
         item.id === r.chan || item.id === `${r.project}:${r.chan}`)
         || (!r.chan ? projChannels()[0] : null);
@@ -98,12 +103,16 @@ async function applyRoute() {
     }
 
     const documentChanged = r.tab === "docs" && r.doc !== docSelected;
+    if (!cancelled && documentChanged && !await confirmDocDiscard()) cancelled = true;
+    const guidelineChanged = r.tab === "guidelines" && r.guideline
+      && selectedGuidelineName !== undefined && r.guideline !== selectedGuidelineName;
+    if (!cancelled && guidelineChanged && !await guidelineViewer.confirmDiscard())
+      cancelled = true;
+    if (!cancelled) {
     if (r.tab === "docs") {
       docSelected = r.doc;
       docMode = "view";
-      docViewingRevision = null;
-      docHistoryOpen = false;
-      resetDocumentVersionCompare();
+      docViewer.activate();
     }
     if (r.tab === "custom") {
       const board = projBoards().find(item =>
@@ -112,9 +121,14 @@ async function applyRoute() {
       customBoardEditing = false;
       boardEditorVisible = false;
     }
-    if (r.tab === "guidelines")
-      selectedGuidelineName = (projObj()?.guidelines || [])
+    if (r.tab === "guidelines") {
+      const next = (projObj()?.guidelines || [])
         .some(item => item.name === r.guideline) ? r.guideline : undefined;
+      if (next !== selectedGuidelineName) {
+        selectedGuidelineName = next;
+        guidelineViewer.activate();
+      }
+    }
     if (r.tab === "skills") {
       selectedSkillId = (projObj()?.skills || [])
         .some(item => item.id === r.skill) ? r.skill : undefined;
@@ -132,6 +146,7 @@ async function applyRoute() {
     if (r.tab === "board" && r.task) {
       const task = projTasks().find(item => item.id === r.task);
       if (task) await openTask(task.id, false);
+    }
     }
   } finally {
     routeApplying = false;
@@ -153,15 +168,19 @@ function openMissionCrewResourceLink(event, target) {
 
 window.addEventListener("popstate", applyRoute);
 
-function setProject(id, updateRoute = true) {
+async function setProject(id, updateRoute = true) {
+  if (id !== currentProject && !await confirmDiscardUnsaved()) {
+    // 用户取消：还原顶部项目选择框，保持当前项目
+    const select = document.getElementById("proj-sel");
+    if (select && currentProject) select.value = currentProject;
+    return false;
+  }
   currentProject = id;
   localStorage.setItem("mc.project", id);
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
   currentCustomBoard = null; customBoardEditing = false;
   selectedGuidelineName = undefined;
-  guidelineMarkdownMode = "preview";
-  guidelineHistoryOpen = false;
-  guidelineViewingVersion = null;
+  guidelineViewer.reset();
   selectedSkillId = undefined;
   skillMarkdownMode = "preview";
   skillOpenFile = null;
@@ -174,8 +193,8 @@ function setProject(id, updateRoute = true) {
   document.getElementById("msgs").innerHTML = "";
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   docFiles = []; docFilesMeta = []; docSelected = null;
-  docMode = "view"; docViewingRevision = null; docHistoryOpen = false;
-  resetDocumentVersionCompare();
+  docMode = "view";
+  docViewer.reset();
   docExpanded.clear();
   closeTaskDialog(false);
   renderSidebar(); renderBoard(); renderCustomBoards();
@@ -187,6 +206,7 @@ function setProject(id, updateRoute = true) {
   const chans = projChannels();
   if (chans.length) selectChannel(chans[0].id, false);
   if (updateRoute) syncUrl();
+  return true;
 }
 
 function switchTab(tab) {
@@ -251,7 +271,7 @@ async function loadOverview() {
     `<option value="${esc(p.id)}" ${p.id === currentProject ? "selected" : ""}>${esc(p.name || p.id)}</option>`).join("");
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   renderSidebar(); renderBoard(); renderCustomBoards();
-  if (currentTab === "docs" && docMode === "view") renderDocuments(true);
+  if (currentTab === "docs" && docMode !== "new") renderDocuments(true);
   else loadDocFiles().then(changed => { if (changed) renderSidebar(); });
   renderProjectConfigPage(currentTab);
   updateConfigChatContext();

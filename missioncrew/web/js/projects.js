@@ -20,7 +20,7 @@ async function createProject() {
   });
   pdlg.close();
   await loadOverview();
-  setProject(id);
+  if (await setProject(id) === false) return;
   switchTab("proj");   // 引导补充章程与准则
   toast("项目已创建,请补充章程与准则", "success");
 }

@@ -115,6 +115,13 @@ class GuidelineRestore(BaseModel):
     actor_role_id: Optional[str] = None
 
 
+class GuidelineCompare(BaseModel):
+    from_revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+    to_revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+
+
 class SkillInput(BaseModel):
     id: str
     name: str = ""

@@ -1,4 +1,6 @@
-/* ---- 版本化文档库 ---- */
+/* ---- 版本化文档库 ----
+   查看/编辑/历史/对比统一由 viewer.js 的 docViewer 渲染，本文件是适配层：
+   侧栏目录树、上传、新建文档、以及 docViewer 的数据回调。 */
 let docFiles = [];   // 文档库文件清单缓存，供应用侧栏目录树使用
 
 async function loadDocFiles() {
@@ -19,39 +21,25 @@ async function loadDocFiles() {
 // ---- 文档库:应用侧栏目录树 + 主区阅读/编辑 ----
 let docFilesMeta = [];            // [{path,size,modified_at}]
 let docSelected = null;           // 当前选中文件路径
-let docMode = "view";             // view | edit | new
-let docViewingRevision = null;    // 查看历史版本时的 revision
-let docHistoryOpen = false;
-let docHistoryRows = [];
-let docHistoryCanCompare = true;
-let docCompareRevisions = [];     // 按用户选择顺序表示 A → B
-let docCompareResult = null;
-let docCompareRequestToken = 0;
+let docMode = "view";             // view | new；查看/编辑模式由 docViewer 管理
 const docExpanded = new Set();    // 用户在当前页面显式展开的目录前缀
 let docPaneRenderSignature = null;
-let docPaneRenderToken = 0;
 let documentRefreshToken = 0;
 let docPaneContent = null;        // 当前阅读页正文，供配置对话写入工作区快照
 let docPaneContentIdentity = null;
-let docPaneContentType = null;    // text | binary；二进制页仍可向主控传递文件身份
-
-function resetDocumentVersionCompare() {
-  docCompareRequestToken += 1;
-  docHistoryRows = [];
-  docCompareRevisions = [];
-  docCompareResult = null;
-}
+let docPaneContentType = null;    // text | binary；二进制与图片页仍可向主控传递文件身份
 
 function currentDocContentIdentity() {
   return JSON.stringify(docMode === "new"
     ? [currentProject, "new"]
-    : [currentProject, docSelected, docMode, docViewingRevision]);
+    : [currentProject, docSelected, docViewer.mode, docViewer.viewingRevision]);
 }
 
 function currentDocPaneSignature() {
   const meta = docFilesMeta.find(file => file.path === docSelected) || null;
   return JSON.stringify([
-    currentProject, docSelected, docMode, docViewingRevision, docHistoryOpen, meta,
+    currentProject, docSelected, docMode, docViewer.viewingRevision,
+    docViewer.historyOpen, meta,
   ]);
 }
 
@@ -87,6 +75,21 @@ function resolvedDocumentLink(path) {
            url: missionCrewDocumentUrl(currentProject, target) };
 }
 
+// Markdown 图片等相对路径：相对当前文档目录解析为文档库内路径。
+function resolveDocRelativePath(src) {
+  const raw = String(src || "").split(/[?#]/, 1)[0];
+  let decoded = raw;
+  try { decoded = decodeURIComponent(raw); } catch (_) { /* 保留原始路径 */ }
+  const parts = decoded.startsWith("/") || !docSelected
+    ? [] : docSelected.split("/").slice(0, -1);
+  for (const part of decoded.replace(/^\/+/, "").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") { if (!parts.length) return null; parts.pop(); }
+    else parts.push(part);
+  }
+  return parts.length ? parts.join("/") : null;
+}
+
 function openMarkdownDocumentLink(event, path) {
   event.preventDefault();
   void revealMissionCrewDocument(path);
@@ -99,7 +102,10 @@ async function revealMissionCrewDocument(path) {
     toast("找不到 MissionCrew 项目文档", "error");
     return;
   }
-  if (target.projectId !== currentProject) setProject(target.projectId, false);
+  if (target.projectId !== currentProject) {
+    const switched = await setProject(target.projectId, false);
+    if (switched === false) return;
+  }
   await loadDocFiles();
   if (target.path && !docFiles.includes(target.path)) {
     toast(`找不到项目文档：${target.projectId}/${target.path}`, "error");
@@ -108,9 +114,7 @@ async function revealMissionCrewDocument(path) {
   docSelected = target.path || null;
   expandDocAncestors(docSelected);
   docMode = "view";
-  docViewingRevision = null;
-  docHistoryOpen = false;
-  resetDocumentVersionCompare();
+  docViewer.activate();
   configChatSelection = null;
   if (currentTab === "docs") {
     renderSidebar();
@@ -137,6 +141,12 @@ async function renderDocuments(backgroundRefresh = false) {
   }
   if (!backgroundRefresh || fileListBefore !== JSON.stringify(docFilesMeta)) renderSidebar();
   const signature = currentDocPaneSignature();
+  if (docViewer.hasUnsaved() && docMode !== "new") {
+    // 编辑中有未保存修改：保留编辑现场，仅刷新侧栏
+    docPaneRenderSignature = signature;
+    updateConfigChatContext();
+    return;
+  }
   if (!backgroundRefresh || signature !== docPaneRenderSignature)
     await renderDocPane(backgroundRefresh);
   updateConfigChatContext();
@@ -174,7 +184,7 @@ function documentSidebarHtml() {
   };
   walk(buildDocTree(docFilesMeta), "", 0);
   return rows.join("")
-    || `<div class="side-item" onclick="switchTab('docs');newDocument()">＋ 新建第一篇文档…</div>`;
+    || `<div class="side-item" onclick="openNewDocumentFromSidebar()">＋ 新建第一篇文档…</div>`;
 }
 
 function toggleDocDir(key) {
@@ -182,11 +192,25 @@ function toggleDocDir(key) {
   renderSidebar();
 }
 
-function selectDocument(path) {
+// 新建文档草稿（路径或正文已填写）也算未保存修改。
+function docNewDraftDirty() {
+  if (docMode !== "new") return false;
+  return Boolean(document.getElementById("doc-content")?.value
+    || document.getElementById("doc-new-path")?.value);
+}
+registerViewerDirtyChecker(docNewDraftDirty);
+
+async function confirmDocDiscard() {
+  if (docViewer.hasUnsaved() || docNewDraftDirty())
+    return uiConfirm("当前文档有尚未保存的修改，离开将丢失这些修改。是否继续？", "未保存的修改");
+  return true;
+}
+
+async function selectDocument(path) {
+  if (!await confirmDocDiscard()) return;
   docSelected = path; docMode = "view";
   configChatSelection = null;
-  docViewingRevision = null; docHistoryOpen = false;
-  resetDocumentVersionCompare();
+  docViewer.activate();
   renderSidebar(); renderDocPane(); syncUrl();
 }
 
@@ -269,9 +293,7 @@ async function uploadDocuments(input) {
       docSelected = uploaded[0];
       expandDocAncestors(docSelected);
       docMode = "view";
-      docViewingRevision = null;
-      docHistoryOpen = false;
-      resetDocumentVersionCompare();
+      docViewer.activate();
       renderSidebar();
       await renderDocPane();
       syncUrl();
@@ -289,35 +311,40 @@ async function uploadDocuments(input) {
   }
 }
 
-function newDocument() {
+async function newDocument() {
   if (!currentProject) return;
+  if (!await confirmDocDiscard()) return;
   docSelected = null; docMode = "new";
   configChatSelection = null;
-  docViewingRevision = null; docHistoryOpen = false;
-  resetDocumentVersionCompare();
+  docViewer.activate();
+  renderSidebar();
+  renderDocPane();
+  syncUrl();
+}
+
+async function openNewDocumentFromSidebar() {
+  if (!await confirmDocDiscard()) return;
+  if (currentTab !== "docs") switchTab("docs");
+  docSelected = null; docMode = "new";
+  configChatSelection = null;
+  docViewer.activate();
   renderSidebar();
   renderDocPane();
   syncUrl();
 }
 
 function isMarkdownDoc(path) {
-  return /\.(md|markdown|txt)$/i.test(path) || !path.includes(".");
+  return /\.(md|markdown)$/i.test(path || "");
 }
 
-function documentDownloadUrl(path = docSelected, revision = docViewingRevision) {
+function documentDownloadUrl(path = docSelected, revision = docViewer.viewingRevision,
+                             inline = false) {
   let url = `/api/projects/${encodeURIComponent(currentProject)}/documents/download/${docEncode(path)}`;
-  if (revision) url += `?revision=${encodeURIComponent(revision)}`;
-  return url;
-}
-
-function downloadDocument() {
-  if (!docSelected) return;
-  const link = document.createElement("a");
-  link.href = documentDownloadUrl();
-  link.download = docSelected.split("/").pop();
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
+  const query = new URLSearchParams();
+  if (revision) query.set("revision", revision);
+  if (inline) query.set("inline", "1");
+  const suffix = query.toString();
+  return suffix ? `${url}?${suffix}` : url;
 }
 
 async function fetchDocumentPayload(url) {
@@ -330,34 +357,104 @@ async function fetchDocumentPayload(url) {
   return { binary: false, data: await response.json() };
 }
 
+/* ---- 统一查看/编辑组件：文档库实例 ---- */
+const docViewer = createTextViewer({
+  containerId: "doc-pane",
+  textareaId: "doc-content",
+  editorClass: "doc-editor",
+  previewClass: "",
+  surfaceClass: "viewer-edit-surface",
+  identity: () => JSON.stringify([currentProject, docSelected, docViewer.viewingRevision]),
+  title: () => docSelected || "",
+  metaLine: () => {
+    const meta = docFilesMeta.find(f => f.path === docSelected);
+    return meta
+      ? `${meta.size} B · ${new Date(meta.modified_at * 1000).toLocaleString()}` : "";
+  },
+  editKind: () => isMarkdownDoc(docSelected) ? "markdown" : "text",
+  loadView: async revision => {
+    docPaneContentIdentity = currentDocContentIdentity();
+    if (isViewerImagePath(docSelected)) {
+      docPaneContent = null;
+      docPaneContentType = "binary";
+      configChatSelection = null;
+      return { kind: "image" };
+    }
+    const rev = revision ? `?revision=${encodeURIComponent(revision)}` : "";
+    const payload = await fetchDocumentPayload(
+      `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}${rev}`);
+    if (payload.binary) {
+      docPaneContent = null;
+      docPaneContentType = "binary";
+      configChatSelection = null;
+      return { kind: "binary" };
+    }
+    docPaneContent = payload.data.content;
+    docPaneContentType = "text";
+    return {
+      kind: isMarkdownDoc(docSelected) ? "markdown" : "text",
+      content: payload.data.content,
+    };
+  },
+  loadEdit: async () => {
+    const d = await api("GET",
+      `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
+    docPaneContent = d.content;
+    docPaneContentIdentity = currentDocContentIdentity();
+    docPaneContentType = "text";
+    return d.content;
+  },
+  save: async content => {
+    await api("PUT",
+      `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`, {
+        content,
+        message: `Update ${docSelected} from project document editor`,
+      });
+    docPaneContent = content;
+    expandDocAncestors(docSelected);
+    await loadDocFiles();
+    renderSidebar();
+    toast("文档已保存为新版本", "success");
+  },
+  listHistory: () => api("GET",
+    `/api/projects/${encodeURIComponent(currentProject)}/documents/history?path=${encodeURIComponent(docSelected)}`),
+  compare: (from, to) => api("POST",
+    `/api/projects/${encodeURIComponent(currentProject)}/documents/compare`, {
+      path: docSelected,
+      from_revision: from,
+      to_revision: to,
+    }),
+  restore: async revision => {
+    if (!await uiConfirm(
+      `把 ${docSelected} 恢复到版本 ${revision.slice(0, 10)}?(以新版本写入,历史保留)`))
+      throw new Error("cancelled");
+    const r = await api("POST",
+      `/api/projects/${encodeURIComponent(currentProject)}/documents/restore`,
+      { path: docSelected, revision });
+    await loadDocFiles();
+    renderSidebar();
+    toast(`已恢复,新版本 ${r.revision.slice(0, 10)}`, "success");
+  },
+  extrasHtml: mode => mode === "view"
+    ? `${documentLibraryButtons()}
+       <button class="danger" type="button" onclick="deleteDocument()">删除</button>`
+    : "",
+  downloadUrl: (revision, inline) => documentDownloadUrl(docSelected, revision, inline),
+  imageResolver: src => {
+    const target = resolveDocRelativePath(src);
+    return target ? documentDownloadUrl(target, null, true) : null;
+  },
+  scrollSelectors: () => ["#doc-pane"],
+  onChange: () => updateConfigChatContext(),
+});
+
 async function renderDocPane(preserveScroll = false) {
   const pane = document.getElementById("doc-pane");
   if (!pane) return;
-  const renderToken = ++docPaneRenderToken;
-  const projectId = currentProject;
-  const selectedPath = docSelected;
-  const selectedMode = docMode;
-  const selectedRevision = docViewingRevision;
-  docPaneContent = null;
-  docPaneContentIdentity = null;
-  docPaneContentType = null;
-  const stillCurrent = () => renderToken === docPaneRenderToken
-    && projectId === currentProject && selectedPath === docSelected
-    && selectedMode === docMode && selectedRevision === docViewingRevision;
-  let scrollState = [];
-  const captureScroll = () => {
-    scrollState = preserveScroll ? captureScrollPositions(["#doc-pane"]) : [];
-  };
-  const finish = () => {
-    docPaneRenderSignature = currentDocPaneSignature();
-    restoreScrollPositions(scrollState);
-    updateConfigChatContext();
-  };
   if (docMode === "new") {
     docPaneContent = "";
     docPaneContentIdentity = currentDocContentIdentity();
     docPaneContentType = "text";
-    captureScroll();
     pane.innerHTML = `
       <div class="doc-head"><b>新建文档</b>
         <button class="action" onclick="saveDocument()">保存新版本</button>
@@ -368,104 +465,31 @@ async function renderDocPane(preserveScroll = false) {
       <label>正文</label>
       <textarea id="doc-content" class="doc-editor" aria-label="文档正文"></textarea>`;
     document.getElementById("doc-new-path")?.focus();
-    finish();
+    docPaneRenderSignature = currentDocPaneSignature();
+    updateConfigChatContext();
     return;
   }
   if (!docSelected) {
     docPaneContent = null;
-    captureScroll();
+    docPaneContentIdentity = null;
+    docPaneContentType = null;
     pane.innerHTML = `<div class="doc-head"><span class="guideline-toolbar-spacer"></span>
         ${documentLibraryButtons()}</div>
       <div class="empty">从左侧目录树选择一个文档查看，或上传已有文件。</div>`;
-    finish();
+    docPaneRenderSignature = currentDocPaneSignature();
+    updateConfigChatContext();
     return;
   }
-  const meta = docFilesMeta.find(f => f.path === docSelected);
-  const metaLine = meta ? `${meta.size} B · ${new Date(meta.modified_at * 1000).toLocaleString()}` : "";
-  // 编辑模式:文本编辑器
-  if (docMode === "edit") {
-    let content = "";
-    const d = await api("GET",
-      `/api/projects/${encodeURIComponent(projectId)}/documents/file/${docEncode(selectedPath)}`);
-    if (!stillCurrent()) return;
-    content = d.content;
-    docPaneContent = content;
-    docPaneContentIdentity = currentDocContentIdentity();
-    docPaneContentType = "text";
-    captureScroll();
-    pane.innerHTML = `
-      <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">编辑中</span>
-        <button class="action" onclick="saveDocument()">保存新版本</button>
-        <button class="ghost" onclick="cancelDocEdit()">取消</button></div>
-      <textarea id="doc-content" class="doc-editor" aria-label="文档正文">${esc(content)}</textarea>`;
-    finish();
-    return;
-  }
-  // 查看:渲染 markdown / 纯文本;支持查看历史版本
-  let d, binary = false;
-  try {
-    const rev = docViewingRevision ? `?revision=${encodeURIComponent(docViewingRevision)}` : "";
-    const payload = await fetchDocumentPayload(
-      `/api/projects/${encodeURIComponent(projectId)}/documents/file/${docEncode(selectedPath)}${rev}`);
-    d = payload.data;
-    binary = payload.binary;
-    if (!stillCurrent()) return;
-  } catch (e) {
-    if (!stillCurrent()) return;
-    captureScroll();
-    docPaneContent = null;
-    pane.innerHTML = `<div class="doc-head"><b>${esc(docSelected)}</b></div>
-      <div class="empty">${esc(e.message || "无法在线查看文档")}</div>`;
-    finish();
-    return;
-  }
-  const revBanner = docViewingRevision
-    ? `<div class="muted" style="margin-bottom:8px">正在查看历史版本 ${esc(docViewingRevision.slice(0, 10))}
-        <button class="ghost" data-rev="${esc(docViewingRevision)}" onclick="restoreDocumentVersion(this.dataset.rev)">恢复此版本</button>
-        <button class="ghost" onclick="docViewingRevision=null;renderDocPane()">返回最新</button></div>`
-    : "";
-  if (binary) {
-    docHistoryCanCompare = false;
-    docPaneContentIdentity = currentDocContentIdentity();
-    docPaneContentType = "binary";
-    configChatSelection = null;
-    captureScroll();
-    pane.innerHTML = `
-      <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
-        ${documentLibraryButtons()}
-        <button class="action" onclick="downloadDocument()">下载</button>
-        <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
-        <button class="danger" onclick="deleteDocument()">删除</button></div>
-      <div id="doc-history"></div><div id="doc-compare"></div>
-      ${revBanner}<div class="empty">该文件不是 UTF-8 纯文本，不能在线编辑或比较版本；可以下载原文件。</div>`;
-    finish();
-    if (docHistoryOpen) await showDocumentHistory(renderToken);
-    if (!stillCurrent()) return;
-    return;
-  }
-  docHistoryCanCompare = true;
-  docPaneContent = d.content;
-  docPaneContentIdentity = currentDocContentIdentity();
-  docPaneContentType = "text";
-  const body = isMarkdownDoc(docSelected)
-    ? `<article class="doc-body markdown-body">${markdownPreviewHtml(d.content)}</article>`
-    : `<pre style="white-space:pre-wrap;font-size:12.5px">${esc(d.content)}</pre>`;
-  captureScroll();
-  pane.innerHTML = `
-    <div class="doc-head"><b>${esc(docSelected)}</b><span class="muted">${metaLine}</span>
-      ${documentLibraryButtons()}
-      <button class="action" onclick="docMode='edit';renderDocPane()">编辑</button>
-      <button class="ghost" onclick="toggleDocHistory()">${docHistoryOpen ? "收起历史" : "版本历史"}</button>
-      <button class="danger" onclick="deleteDocument()">删除</button></div>
-    <div id="doc-history"></div><div id="doc-compare"></div>
-    ${revBanner}${body}`;
-  finish();
-  if (docHistoryOpen) await showDocumentHistory(renderToken);
-  if (!stillCurrent()) return;
+  await docViewer.render(preserveScroll);
+  docPaneRenderSignature = currentDocPaneSignature();
 }
 
-function cancelDocEdit() {
-  if (docMode === "new") { docSelected = null; }
+async function cancelDocEdit() {
+  if (docMode === "new") {
+    if (docNewDraftDirty() && !await uiConfirm(
+      "新建文档尚未保存，取消将丢失已填写的内容。是否继续？", "未保存的修改")) return;
+    docSelected = null;
+  }
   docMode = "view";
   configChatSelection = null;
   renderSidebar();
@@ -473,9 +497,8 @@ function cancelDocEdit() {
 }
 
 async function saveDocument() {
-  const path = docMode === "new"
-    ? document.getElementById("doc-new-path").value.trim()
-    : docSelected;
+  if (docMode !== "new") return;   // 已有文档的保存由 docViewer 处理
+  const path = document.getElementById("doc-new-path").value.trim();
   if (!path) { uiAlert("请输入文档库内相对路径"); return; }
   docSelected = path;
   await api("PUT",
@@ -485,8 +508,7 @@ async function saveDocument() {
   });
   expandDocAncestors(path);
   docMode = "view";
-  docHistoryOpen = false;
-  resetDocumentVersionCompare();
+  docViewer.activate();
   await renderDocuments();
   syncUrl();
   toast("文档已保存为新版本", "success");
@@ -497,137 +519,9 @@ async function deleteDocument() {
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
   docSelected = null; docMode = "view";
-  docViewingRevision = null; docHistoryOpen = false;
-  resetDocumentVersionCompare();
+  docViewer.activate();
   configChatSelection = null;
   await renderDocuments();
   syncUrl();
   toast("文档已移入回收站", "success");
-}
-
-async function toggleDocHistory() {
-  docHistoryOpen = !docHistoryOpen;
-  await renderDocPane();
-}
-
-async function showDocumentHistory(renderToken = docPaneRenderToken) {
-  if (!docSelected) return;
-  const rows = await api("GET",
-    `/api/projects/${encodeURIComponent(currentProject)}/documents/history?path=${encodeURIComponent(docSelected)}`);
-  if (renderToken !== docPaneRenderToken) return;
-  const el = document.getElementById("doc-history");
-  if (!el) return;
-  docHistoryRows = rows;
-  renderDocumentHistoryTable();
-}
-
-function renderDocumentHistoryTable() {
-  const el = document.getElementById("doc-history");
-  if (!el || !docHistoryOpen) return;
-  if (!docHistoryRows.length) {
-    el.innerHTML = `<section class="doc-history-panel"><div class="empty">暂无版本历史。</div></section>`;
-    return;
-  }
-  const full = docCompareRevisions.length >= 2;
-  const compareHint = docHistoryCanCompare
-    ? `选择两个纯文本版本（按 A → B 比较）`
-    : `二进制或非 UTF-8 文件不支持版本比较`;
-  el.innerHTML = `<section class="doc-history-panel">
-    <div class="doc-history-head"><h3>版本历史</h3><span class="muted">${compareHint}</span>
-      <span class="guideline-toolbar-spacer"></span>
-      <button class="action compact" type="button" onclick="compareDocumentVersions()"
-        ${docHistoryCanCompare && docCompareRevisions.length === 2 ? "" : "disabled"}>
-        比较已选版本 (${docCompareRevisions.length}/2)</button></div>
-    <div class="doc-history-table-wrap"><table>
-      <tr><th>比较</th><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>` +
-    docHistoryRows.map((version, index) => {
-      const slot = docCompareRevisions.indexOf(version.revision);
-      const checked = slot >= 0;
-      const disabled = !docHistoryCanCompare || (full && !checked);
-      return `<tr class="${docViewingRevision === version.revision ? "selected" : ""}">
-        <td class="doc-compare-choice"><input type="checkbox" data-rev="${esc(version.revision)}"
-          aria-label="选择版本 ${esc(version.revision.slice(0, 10))} 进行比较"
-          onchange="toggleDocumentCompareRevision(this.dataset.rev)"
-          ${checked ? "checked" : ""} ${disabled ? "disabled" : ""}>
-          ${checked ? `<span class="doc-compare-slot">${slot === 0 ? "A" : "B"}</span>` : ""}</td>
-        <td><code>${esc(version.revision.slice(0, 10))}</code>
-          ${index === 0 ? `<span class="pill st-done">最新</span>` : ""}</td>
-        <td>${new Date(version.created_at * 1000).toLocaleString()}</td>
-        <td>${esc(version.actor)}</td><td>${esc(version.message)}</td><td>
-          <button class="ghost compact" data-rev="${esc(version.revision)}"
-            onclick="docViewingRevision=this.dataset.rev;docHistoryOpen=true;renderDocPane()">查看</button>
-          <button class="ghost compact" data-rev="${esc(version.revision)}"
-            onclick="restoreDocumentVersion(this.dataset.rev)">恢复</button></td></tr>`;
-    }).join("") + `</table></div></section>`;
-  renderDocumentComparison();
-}
-
-function toggleDocumentCompareRevision(revision) {
-  const index = docCompareRevisions.indexOf(revision);
-  if (index >= 0) docCompareRevisions.splice(index, 1);
-  else if (docCompareRevisions.length < 2) docCompareRevisions.push(revision);
-  docCompareResult = null;
-  renderDocumentHistoryTable();
-}
-
-async function compareDocumentVersions() {
-  if (!docSelected || !docHistoryCanCompare || docCompareRevisions.length !== 2) return;
-  const token = ++docCompareRequestToken;
-  const projectId = currentProject;
-  const documentPath = docSelected;
-  const revisions = [...docCompareRevisions];
-  const comparePane = document.getElementById("doc-compare");
-  if (comparePane) comparePane.innerHTML = `<div class="muted">正在比较版本…</div>`;
-  let result = null;
-  try {
-    result = await api(
-      "POST", `/api/projects/${encodeURIComponent(projectId)}/documents/compare`, {
-        path: documentPath,
-        from_revision: revisions[0],
-        to_revision: revisions[1],
-      });
-  } catch (_) { /* api() 已显示具体错误 */ }
-  if (token !== docCompareRequestToken || projectId !== currentProject
-      || documentPath !== docSelected
-      || revisions.some((revision, index) => revision !== docCompareRevisions[index])) return;
-  docCompareResult = result;
-  renderDocumentComparison();
-}
-
-function renderDocumentComparison() {
-  const el = document.getElementById("doc-compare");
-  if (!el) return;
-  if (!docCompareResult) { el.innerHTML = ""; return; }
-  const result = docCompareResult;
-  const heading = `<div class="doc-compare-head"><strong>版本比较</strong>
-    <code>A ${esc(result.from_revision.slice(0, 10))}</code><span>→</span>
-    <code>B ${esc(result.to_revision.slice(0, 10))}</code>
-    <span class="st-done">+${result.additions}</span>
-    <span class="st-failed">−${result.deletions}</span>
-    <span class="guideline-toolbar-spacer"></span>
-    <button class="ghost compact" type="button" onclick="docCompareResult=null;renderDocumentComparison()">关闭比较</button></div>`;
-  if (result.identical) {
-    el.innerHTML = `<section class="doc-compare-panel">${heading}
-      <div class="empty">两个版本的文本内容完全相同。</div></section>`;
-    return;
-  }
-  const lines = result.diff.split("\n").map(line => {
-    let kind = "context";
-    if (line.startsWith("@@") || line.startsWith("---") || line.startsWith("+++")) kind = "meta";
-    else if (line.startsWith("+")) kind = "added";
-    else if (line.startsWith("-")) kind = "removed";
-    return `<span class="${kind}">${esc(line) || "&#8203;"}</span>`;
-  }).join("");
-  el.innerHTML = `<section class="doc-compare-panel">${heading}
-    <pre class="doc-version-diff">${lines}</pre></section>`;
-}
-
-async function restoreDocumentVersion(revision) {
-  if (!docSelected || !await uiConfirm(`把 ${docSelected} 恢复到版本 ${revision.slice(0, 10)}?(以新版本写入,历史保留)`)) return;
-  const r = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/documents/restore`,
-                      { path: docSelected, revision });
-  toast(`已恢复,新版本 ${r.revision.slice(0, 10)}`, "success");
-  docViewingRevision = null;
-  resetDocumentVersionCompare();
-  await renderDocuments();
 }

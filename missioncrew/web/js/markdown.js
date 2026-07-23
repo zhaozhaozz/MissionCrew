@@ -67,11 +67,37 @@ function missionCrewDocumentReference(target) {
   return { ...resource, path: resource.segments.join("/") };
 }
 
+/* Markdown 图片：只允许 http(s)、MissionCrew 文档库文件与宿主提供的
+   imageResolver 解析结果；其他 scheme（data:、javascript: 等）一律不渲染。 */
+let markdownImageResolver = null;
+
+function missionCrewDocumentInlineUrl(projectId, path) {
+  const encoded = String(path).split("/").filter(Boolean)
+    .map(encodeURIComponent).join("/");
+  return `/api/projects/${encodeURIComponent(projectId)}/documents/download/${encoded}?inline=1`;
+}
+
+function resolveMarkdownImageSource(target) {
+  const src = String(target || "").trim();
+  if (!src) return null;
+  if (/^https?:\/\//i.test(src)) return src;
+  const resource = missionCrewDocumentReference(src);
+  if (resource) return missionCrewDocumentInlineUrl(resource.projectId, resource.path);
+  if (/^[a-z][a-z0-9+.-]*:/i.test(src) || src.startsWith("#")) return null;
+  return markdownImageResolver?.(src) || null;
+}
+
 function markdownInline(source) {
   const tokens = [];
   const hold = html => `\uE000${tokens.push(html) - 1}\uE001`;
   let value = String(source ?? "");
   value = value.replace(/`([^`\n]+)`/g, (_, code) => hold(`<code>${esc(code)}</code>`));
+  value = value.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
+    (_, alt, target) => {
+      const src = resolveMarkdownImageSource(target);
+      if (!src) return alt;   // 无法安全解析：按普通文本处理（后续统一转义）
+      return hold(`<img class="markdown-image" src="${esc(src)}" alt="${esc(alt)}" loading="lazy">`);
+    });
   value = value.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (_, label, target) => {
       const safeLabel = markdownInline(label);
@@ -226,9 +252,15 @@ function markdownFrontmatterTableHtml(source) {
   </table></div>`;
 }
 
-function markdownPreviewHtml(markdown, { showFrontmatter = true } = {}) {
+function markdownPreviewHtml(markdown, { showFrontmatter = true, imageResolver = null } = {}) {
   const parsed = splitMarkdownFrontmatter(markdown);
   const properties = showFrontmatter && parsed.frontmatter !== null
     ? markdownFrontmatterTableHtml(parsed.frontmatter) : "";
-  return `${properties}${miniMarkdown(parsed.content)}`;
+  const previousResolver = markdownImageResolver;
+  markdownImageResolver = imageResolver;
+  try {
+    return `${properties}${miniMarkdown(parsed.content)}`;
+  } finally {
+    markdownImageResolver = previousResolver;
+  }
 }

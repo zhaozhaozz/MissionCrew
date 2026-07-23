@@ -777,6 +777,46 @@
   .doc-version-diff .added { color: var(--ok); background: var(--ok-soft); }
   .doc-version-diff .removed { color: var(--bad); background: var(--bad-soft); }
 
+  /* ---- 统一文本查看器（文档库与准则共用）：头部、行号、图片、编辑徽标 ---- */
+  .viewer-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
+                 flex: none; padding-bottom: 10px; border-bottom: 1px solid var(--line);
+                 margin-bottom: 12px; }
+  .viewer-head > b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                     max-width: 46%; }
+  .viewer-dirty-badge { display: inline-block; border: 1px solid var(--warn);
+                        border-radius: 999px; padding: 0 8px; font-size: 11.5px;
+                        color: var(--warn); }
+  .viewer-dirty-badge[hidden] { display: none; }
+  .text-lines { font: 12.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .text-line { display: flex; }
+  .text-line .line-no { flex: none; width: 3.4em; padding-right: 10px; margin-right: 10px;
+                        text-align: right; color: var(--muted);
+                        border-right: 1px solid var(--line); user-select: none; }
+  .text-line .line-text { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .doc-image { display: flex; justify-content: center; padding: 14px;
+               background: var(--bg-soft); border-radius: 10px; }
+  .doc-image img { max-width: 100%; max-height: 68vh; object-fit: contain; }
+  .markdown-body img.markdown-image { max-width: 100%; border-radius: 6px; }
+  .viewer-edit-surface { height: calc(100% - 64px); min-height: 320px; }
+  .viewer-edit-surface .doc-editor { height: 100%; }
+  .viewer-edit-preview { height: 100%; min-height: 240px; overflow: auto;
+                         padding: 8px 20px 24px; }
+  .viewer-edit-preview[hidden] { display: none; }
+
+  /* 左右分栏版本对比 */
+  .doc-diff-split-wrap { overflow: auto; max-height: 420px; background: var(--bg); }
+  .doc-diff-split { width: 100%; border-collapse: collapse; margin: 0;
+                    font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .doc-diff-split td { padding: 1px 8px; vertical-align: top; }
+  .doc-diff-split .diff-no { width: 3.2em; min-width: 3.2em; text-align: right;
+                             color: var(--muted); background: var(--bg-soft);
+                             border-right: 1px solid var(--line); user-select: none; }
+  .doc-diff-split .diff-text { width: 50%; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .doc-diff-split .diff-text.added { color: var(--ok); background: var(--ok-soft); }
+  .doc-diff-split .diff-text.removed { color: var(--bad); background: var(--bad-soft); }
+  .doc-diff-split .diff-fold td { padding: 4px 8px; text-align: center;
+                                  color: var(--muted); background: var(--bg-soft); }
+
   /* 安全 Markdown 阅读样式，供准则预览和版本化文档共用。 */
   .markdown-body { color: var(--text-2); font-size: 14px; line-height: 1.72;
                    overflow-wrap: anywhere; }

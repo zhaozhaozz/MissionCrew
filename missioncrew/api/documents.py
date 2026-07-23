@@ -1,9 +1,7 @@
 """版本化文档库端点:文件树、历史、读写与版本恢复。"""
 from __future__ import annotations
 
-import difflib
 import mimetypes
-import unicodedata
 from pathlib import PurePosixPath
 from typing import Optional
 from urllib.parse import quote
@@ -13,23 +11,12 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from ..collab.documents import document_resource_url, library_for
 from ..collab.recycle_bin import recycle_document
 from .context import ApiContext
+from .diffutil import (_NonTextDocumentError, _decode_pure_text,
+                       build_diff_ops, build_text_diff)
 from .schemas import DocumentCompare, DocumentRestore, DocumentWrite
 
 
 MAX_DOCUMENT_UPLOAD_BYTES = 50 * 1024 * 1024
-
-
-class _NonTextDocumentError(Exception):
-    pass
-
-
-def _decode_pure_text(content: bytes) -> str:
-    """严格识别可比较文本，拒绝非 UTF-8 和二进制控制字符。"""
-    text = content.decode("utf-8")
-    if any(unicodedata.category(char) == "Cc" and char not in "\t\n\r"
-           for char in text):
-        raise _NonTextDocumentError
-    return text
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -70,34 +57,14 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
-        lines = list(difflib.unified_diff(
-            before.splitlines(), after.splitlines(),
-            fromfile=f"{body.path}@{body.from_revision[:10]}",
-            tofile=f"{body.path}@{body.to_revision[:10]}",
-            lineterm="",
-        ))
-        identical = before == after
-        if not identical and not lines:
-            # splitlines() 会忽略文件末换行和 CRLF/LF 差异，但这些仍是文本变更。
-            lines = [
-                f"--- {body.path}@{body.from_revision[:10]}",
-                f"+++ {body.path}@{body.to_revision[:10]}",
-                "@@ line endings @@",
-                "-A 版本的换行编码或文件末换行状态",
-                "+B 版本的换行编码或文件末换行状态",
-            ]
-        additions = sum(line.startswith("+") and not line.startswith("+++")
-                        for line in lines)
-        deletions = sum(line.startswith("-") and not line.startswith("---")
-                        for line in lines)
+        label_a = f"{body.path}@{body.from_revision[:10]}"
+        label_b = f"{body.path}@{body.to_revision[:10]}"
         return {
             "path": body.path,
             "from_revision": body.from_revision,
             "to_revision": body.to_revision,
-            "additions": additions,
-            "deletions": deletions,
-            "identical": identical,
-            "diff": "\n".join(lines),
+            **build_text_diff(before, after, label_a, label_b),
+            "ops": build_diff_ops(before, after),
         }
 
     @app.post("/api/projects/{project_id}/documents/upload")
@@ -135,8 +102,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/projects/{project_id}/documents/download/{file_path:path}")
     def download_document(project_id: str, file_path: str,
-                          revision: Optional[str] = None):
-        """下载文本或二进制文档；可指定历史 revision。"""
+                          revision: Optional[str] = None,
+                          inline: bool = False):
+        """下载文本或二进制文档；可指定历史 revision；inline 时浏览器内联预览。"""
         ctx.must_project(project_id)
         try:
             content = library_for(project_id).read_bytes(file_path, revision)
@@ -146,12 +114,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, str(exc)) from exc
         filename = PurePosixPath(file_path).name
         media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+        disposition = "inline" if inline else "attachment"
         return Response(
             content=content,
             media_type=media_type,
             headers={
                 "Content-Disposition": (
-                    f"attachment; filename*=UTF-8''{quote(filename, safe='')}"),
+                    f"{disposition}; filename*=UTF-8''{quote(filename, safe='')}"),
                 "X-Content-Type-Options": "nosniff",
             },
         )
