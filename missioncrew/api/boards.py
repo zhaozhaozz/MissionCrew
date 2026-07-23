@@ -29,20 +29,20 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if kind == "tasks":
             want_status = source.get("status") or []
             want_labels = source.get("labels") or []
-            want_type = source.get("task_type") or []
+            want_channels = source.get("channel_ids") or []
             rows = []
             for t in store.list_tasks():
                 if t.project_id != project_id:
                     continue
                 if want_status and t.status not in want_status:
                     continue
-                if want_type and t.task_type not in want_type:
+                if want_channels and not set(t.channel_ids) & set(want_channels):
                     continue
                 if want_labels and not set(t.labels) & set(want_labels):
                     continue
-                stage = t.current_stage.name if t.current_stage else "-"
                 rows.append({"id": t.id, "标题": t.title, "状态": t.status,
-                             "类型": t.task_type, "风险": t.risk, "阶段": stage,
+                             "简介": t.summary,
+                             "频道": ", ".join(t.channel_ids),
                              "标签": ", ".join(t.labels)})
             return {"rows": rows}
         if kind == "audit":

@@ -1,7 +1,7 @@
 [project]
 name = "missioncrew"
 version = "0.4.0"
-description = "策略驱动的多 Agent 研发任务执行平台:动态装配执行实例,证据驱动门禁"
+description = "Channel 驱动的本地多 Agent 协作平台，支持 Issue 化 Task 与项目资料"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110",

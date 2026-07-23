@@ -33,9 +33,9 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             task_resource_url)
 from .skills import save_project_skill, save_project_skill_markdown
 from .workspace import chat_workspace_dir, write_task_files
-from ..core.models import (BOARD_WIDGET_TYPES, TIER_ORDER, Board, BoardWidget,
+from ..core.models import (BOARD_WIDGET_TYPES, Board, BoardWidget,
                            Channel, Project, ProjectSkill,
-                           Task, new_id)
+                           Task)
 from ..core.store import Store
 
 
@@ -85,13 +85,12 @@ class AgentRunContext:
 
 ACTION_DEFINITIONS = {
     "task.create": {
-        "description": "创建结构化项目任务",
+        "description": "创建一个可绑定多个 Channel 的 Issue 化 Task",
         "orchestrator_only": False,
         "arguments": {
-            "title": "任务标题", "description": "描述与验收要求",
-            "task_type": "feature/bug/chore/research", "labels": "标签数组",
-            "risk": "low/normal/high", "security_level": "非负整数",
-            "max_tier": "null/economy/standard/expert",
+            "title": "任务标题", "summary": "一句话简介", "body": "正文",
+            "labels": "标签数组", "channel_ids": "绑定的 Channel id 数组",
+            "status": "open/in_progress/blocked/done",
         },
     },
     "task.update": {
@@ -99,8 +98,15 @@ ACTION_DEFINITIONS = {
         "orchestrator_only": False,
         "arguments": {
             "id": "任务 id", "snapshot_updated_at": "读取任务时的更新时间",
-            "title/description/task_type/labels/risk/security_level/max_tier":
-                "要更新的字段",
+            "title/summary/body/status/labels/channel_ids": "要更新的字段",
+        },
+    },
+    "task.brief": {
+        "description": "为 Task 追加一条状态简报，并可同时更新状态",
+        "orchestrator_only": False,
+        "arguments": {
+            "id": "任务 id", "content": "状态简报正文",
+            "status": "可选 open/in_progress/blocked/done",
         },
     },
     "document.publish": {
@@ -185,13 +191,13 @@ ACTION_DEFINITIONS = {
 
 ACTION_ARGUMENTS = {
     "task.create": {
-        "title", "description", "task_type", "labels", "risk",
-        "security_level", "max_tier",
+        "title", "summary", "body", "labels", "channel_ids", "status",
     },
     "task.update": {
-        "id", "snapshot_updated_at", "title", "description", "task_type",
-        "labels", "risk", "security_level", "max_tier",
+        "id", "snapshot_updated_at", "title", "summary", "body", "status",
+        "labels", "channel_ids",
     },
+    "task.brief": {"id", "content", "status"},
     "document.publish": {
         "path", "content", "content_base64", "overwrite", "message",
     },
@@ -442,6 +448,7 @@ class AgentActionService:
         handlers = {
             "task.create": self._create_task,
             "task.update": self._update_task,
+            "task.brief": self._add_task_brief,
             "document.publish": self._publish_document,
             "document.delete": self._delete_document,
             "message.publish": self._publish_message,
@@ -460,14 +467,13 @@ class AgentActionService:
 
     def _create_task(self, project: Project, identity: AgentIdentity,
                      arguments: dict, _context: AgentRunContext) -> dict:
-        from ..taskflow import workflow
+        from .tasks import create_task
 
-        values = self._task_values(arguments)
-        task = Task(
-            id=new_id("t"), project_id=project.id, **values,
-            stages=workflow.build_plan(values["task_type"], values["risk"]),
+        task = create_task(
+            self.store, project.id, **arguments,
+            actor=f"role:{identity.role_id}",
+            fallback_channel_id=identity.channel_id,
         )
-        self.store.put_task(task)
         self._refresh_task_snapshot(project.id, identity)
         self.store.audit(
             f"role:{identity.role_id}", "agent_task_created", task.id,
@@ -480,28 +486,24 @@ class AgentActionService:
 
     def _update_task(self, project: Project, identity: AgentIdentity,
                      arguments: dict, _context: AgentRunContext) -> dict:
-        from ..taskflow import workflow
+        from .tasks import update_task
 
         task_id = str(arguments.get("id", "")).strip()
         task = self.store.get_task(task_id)
         if task is None or task.project_id != project.id:
             raise AgentToolError("task_not_found", f"任务不存在: {task_id}", 404)
-        snapshot = arguments.get("snapshot_updated_at")
-        if (not isinstance(snapshot, (int, float)) or isinstance(snapshot, bool)
-                or abs(float(snapshot) - task.updated_at) > 1e-6):
-            raise AgentToolError(
-                "version_conflict", "任务已被其他执行更新，请重新读取后再修改", 409)
-        values = self._task_values(arguments, existing=task)
-        pristine = (task.stage_index == 0
-                    and all(stage.status == "pending" and stage.attempts == 0
-                            for stage in task.stages))
-        plan_changed = (task.task_type != values["task_type"]
-                        or task.risk != values["risk"])
-        for key, value in values.items():
-            setattr(task, key, value)
-        if pristine and plan_changed:
-            task.stages = workflow.build_plan(task.task_type, task.risk)
-        self.store.put_task(task)
+        changes = {key: value for key, value in arguments.items()
+                   if key not in {"id", "snapshot_updated_at"}}
+        try:
+            update_task(
+                self.store, task,
+                snapshot_updated_at=arguments.get("snapshot_updated_at"),
+                changes=changes, actor=f"role:{identity.role_id}",
+            )
+        except ValueError as exc:
+            if "重新读取" in str(exc):
+                raise AgentToolError("version_conflict", str(exc), 409) from exc
+            raise AgentToolError("invalid_arguments", str(exc), 400) from exc
         self._refresh_task_snapshot(project.id, identity)
         self.store.audit(
             f"role:{identity.role_id}", "agent_task_updated", task.id,
@@ -512,40 +514,27 @@ class AgentActionService:
             "task": task.to_dict(), "resource_url": url,
         }
 
-    @staticmethod
-    def _task_values(arguments: dict, existing: Optional[Task] = None) -> dict:
-        def value(name: str, default):
-            return arguments[name] if name in arguments else default
+    def _add_task_brief(self, project: Project, identity: AgentIdentity,
+                        arguments: dict, _context: AgentRunContext) -> dict:
+        from .tasks import add_task_brief
 
-        title = value("title", existing.title if existing else "")
-        description = value("description", existing.description if existing else "")
-        task_type = value("task_type", existing.task_type if existing else "feature")
-        labels = value("labels", existing.labels if existing else [])
-        risk = value("risk", existing.risk if existing else "normal")
-        security_level = value(
-            "security_level", existing.security_level if existing else 0)
-        max_tier = value("max_tier", existing.max_tier if existing else None) or None
-        if not isinstance(title, str) or not title.strip():
-            raise AgentToolError("invalid_arguments", "title 必须是非空字符串")
-        if not isinstance(description, str):
-            raise AgentToolError("invalid_arguments", "description 必须是字符串")
-        if task_type not in ("feature", "bug", "chore", "research"):
-            raise AgentToolError(
-                "invalid_arguments", "task_type 必须是 feature/bug/chore/research")
-        if not isinstance(labels, list) or not all(isinstance(item, str) for item in labels):
-            raise AgentToolError("invalid_arguments", "labels 必须是字符串数组")
-        if risk not in ("low", "normal", "high"):
-            raise AgentToolError("invalid_arguments", "risk 必须是 low/normal/high")
-        if (isinstance(security_level, bool) or not isinstance(security_level, int)
-                or security_level < 0):
-            raise AgentToolError("invalid_arguments", "security_level 必须是非负整数")
-        if max_tier is not None and max_tier not in TIER_ORDER:
-            raise AgentToolError(
-                "invalid_arguments", "max_tier 必须为空或 economy/standard/expert")
+        task_id = str(arguments.get("id", "")).strip()
+        task = self.store.get_task(task_id)
+        if task is None or task.project_id != project.id:
+            raise AgentToolError("task_not_found", f"任务不存在: {task_id}", 404)
+        try:
+            brief = add_task_brief(
+                self.store, task, content=arguments.get("content", ""),
+                status=arguments.get("status"), author=identity.role_id,
+                author_type="agent",
+            )
+        except ValueError as exc:
+            raise AgentToolError("invalid_arguments", str(exc), 400) from exc
+        self._refresh_task_snapshot(project.id, identity)
+        url = task_resource_url(project.id, task.id)
         return {
-            "title": title.strip(), "description": description,
-            "task_type": task_type, "labels": list(labels), "risk": risk,
-            "security_level": security_level, "max_tier": max_tier,
+            "summary": f"已为任务 [{task.title}]({url}) 追加状态简报",
+            "task": task.to_dict(), "brief": brief, "resource_url": url,
         }
 
     def _refresh_task_snapshot(self, project_id: str,

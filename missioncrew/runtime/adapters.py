@@ -1,7 +1,6 @@
 """执行后端适配器。
 
-适配器只负责"启动一次执行并等待结束":任务阶段的证据由引擎从工作区 manifest
-读取;聊天协作的回复取自适配器输出。
+适配器只负责启动一次 Channel 协作执行并等待结束，回复取自 Runtime 输出。
 
 本地 Agent CLI 支持矩阵(参考 Multica 的本地 agent 列表):
 - 打印模式:claude、codex、opencode、copilot、cursor-agent、codebuddy、pi
@@ -29,9 +28,8 @@ from typing import Optional
 
 from . import acp
 from .base import RuntimeInstance
-from ..taskflow.assembler import MANIFEST
 from ..core.config import mc_home
-from ..core.models import Backend, ExecutionConfig, RunResult, TIER_ORDER
+from ..core.models import Backend, ExecutionConfig, RunResult
 
 _CLI_SESSION_LOCKS: dict[str, threading.Lock] = {}
 _CLI_SESSION_LOCKS_GUARD = threading.Lock()
@@ -407,8 +405,8 @@ def detect_report(with_version: bool = True) -> list[dict]:
 def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
     """按检测报告生成注册项:一个工具一条记录,模型阶梯自动挂在 models 下。
 
-    档位/成本/能力是结构化任务的路由属性(自动填充,不在工具页配置);
-    聊天角色在创建时固定 runtime/model,执行时不使用这些属性重新路由。
+    默认档位/成本/能力作为 Runtime 元数据自动填充；角色在创建时固定
+    runtime/model，执行时不再进行 Task 阶段路由。
     """
     by_adapter = {a: (caps, tier, cost) for _, a, caps, tier, cost in KNOWN_CLIS}
     found = []
@@ -599,19 +597,6 @@ def _emit_execution_start(emit, command: list[str], prompt: str) -> None:
             pass
 
 
-def _append_manifest(workdir: str, entries: list[dict]) -> None:
-    p = Path(workdir) / MANIFEST
-    p.parent.mkdir(parents=True, exist_ok=True)
-    data = []
-    if p.exists():
-        try:
-            data = json.loads(p.read_text())
-        except json.JSONDecodeError:
-            data = []
-    data.extend(entries)
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2))
-
-
 def _diagnostic_log_path(cfg: ExecutionConfig, adapter_name: str) -> Path:
     """把 Runtime 诊断输出放进 harness 工作区，避免污染业务代码仓。"""
     root = Path(cfg.env.get("MISSIONCREW_WORKSPACE")
@@ -622,50 +607,22 @@ def _diagnostic_log_path(cfg: ExecutionConfig, adapter_name: str) -> Path:
 
 
 class MockAdapter:
-    """确定性模拟后端:任务阶段产出证据文件;聊天协作生成可级联的回复。
+    """确定性模拟后端：为 Channel 协作生成可级联的回复。
 
-    模拟能力边界(用于演示路由升级):
-    - 任务带 hard 标签时,economy 档执行失败;
-    - 任务带 very-hard 标签时,非 expert 档执行失败。
-    聊天协作:触发消息中出现"请 @某角色"时,回复会用显式 @[角色] 语法；
+    触发消息中出现"请 @某角色"时，回复会用显式 @[角色] 语法；
     是否触发仍由 ChatEngine 按"只有项目主控可以调度"的规则决定。
     """
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
-        if "# 聊天协作请求" in cfg.prompt:
-            if cfg.session_key:
-                with _named_session_lock(cfg.session_key):
-                    if cfg.cancellation_requested():
-                        return RunResult(False, "执行已停止")
-                    _refresh_session(cfg)
-                    return self._chat(cfg)
-            if cfg.cancellation_requested():
-                return RunResult(False, "执行已停止")
-            return self._chat(cfg)
-        return self._task_stage(cfg)
-
-    def _task_stage(self, cfg: ExecutionConfig) -> RunResult:
-        labels = _labels_from_prompt(cfg.prompt)
-        tier_idx = TIER_ORDER.index(cfg.backend.tier)
-        if "very-hard" in labels and tier_idx < TIER_ORDER.index("expert"):
-            return RunResult(False, f"{cfg.backend.id} 能力不足,未能完成阶段 {cfg.stage_name}")
-        if "hard" in labels and tier_idx < TIER_ORDER.index("standard"):
-            return RunResult(False, f"{cfg.backend.id} 能力不足,未能完成阶段 {cfg.stage_name}")
-
-        produces = _produces_from_prompt(cfg.prompt)
-        entries = []
-        for ev_type in produces:
-            rel = f".missioncrew/evidence/{cfg.stage_name}_{ev_type}.md"
-            Path(cfg.workdir, rel).write_text(
-                f"# {ev_type}\n\n[mock] 阶段 {cfg.stage_name} 由 {cfg.backend.id} "
-                f"(tier={cfg.backend.tier}) 产出的模拟证据。\n"
-            )
-            entries.append({"type": ev_type, "path": rel,
-                            "summary": f"mock 生成的 {ev_type}"})
-        if entries:
-            _append_manifest(cfg.workdir, entries)
-        return RunResult(True, f"{cfg.backend.id} 完成阶段 {cfg.stage_name},"
-                               f"产出证据: {', '.join(produces) or '无'}")
+        if cfg.session_key:
+            with _named_session_lock(cfg.session_key):
+                if cfg.cancellation_requested():
+                    return RunResult(False, "执行已停止")
+                _refresh_session(cfg)
+                return self._chat(cfg)
+        if cfg.cancellation_requested():
+            return RunResult(False, "执行已停止")
+        return self._chat(cfg)
 
     def _chat(self, cfg: ExecutionConfig) -> RunResult:
         reused = bool(cfg.session_id)
@@ -699,13 +656,12 @@ class MockAdapter:
             Path(tasks_dir, "new-task.md").write_text(
                 "---\n"
                 "title: Agent 创建的任务\n"
-                "task_type: chore\n"
+                "summary: 通过 MissionCrew workspace 创建\n"
+                "status: open\n"
                 "labels:\n  - workspace\n"
-                "risk: normal\n"
-                "security_level: 0\n"
-                "max_tier: economy\n"
+                "channel_ids: []\n"
                 "---\n\n"
-                "通过 MissionCrew workspace 创建。\n",
+                "补充任务正文。\n",
                 encoding="utf-8",
             )
             reply += "\n已在 MissionCrew workspace 创建任务。"
@@ -1179,23 +1135,7 @@ def get_adapter(name: str):
     return CliAdapter(name)
 
 
-# ---- Mock 从装配后的 Prompt 中还原上下文(保持与真实后端相同的接口) ----
-
-def _labels_from_prompt(prompt: str) -> list[str]:
-    for line in prompt.splitlines():
-        if line.startswith("类型: ") and "标签: " in line:
-            return [x.strip() for x in line.split("标签: ")[1].split(",")]
-    return []
-
-
-def _produces_from_prompt(prompt: str) -> list[str]:
-    for line in prompt.splitlines():
-        if line.startswith("本阶段必须产出的证据类型: "):
-            raw = line.split(": ", 1)[1]
-            if raw == "无强制要求":
-                return []
-            return [x.strip() for x in raw.split(",")]
-    return []
+# ---- Mock 从装配后的 Prompt 中还原聊天上下文 ----
 
 
 def _role_from_prompt(prompt: str) -> str:

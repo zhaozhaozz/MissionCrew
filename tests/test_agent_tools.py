@@ -61,7 +61,7 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     capabilities = client.get("/api/agent/v1/actions", headers=headers)
     assert capabilities.status_code == 200
     assert set(capabilities.json()["result"]["actions"]) == {
-        "document.publish", "task.create", "task.update"}
+        "document.publish", "task.brief", "task.create", "task.update"}
 
     published = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "document.publish",
@@ -249,8 +249,9 @@ def test_agent_tool_task_update_uses_optimistic_version_and_run_scope(seeded):
     created = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "task.create", "run_id": run_id, "request_id": "task-create",
         "arguments": {
-            "title": "补齐接口测试", "description": "验证角色工具调用",
-            "task_type": "chore", "labels": ["agent-tool"], "risk": "low",
+            "title": "补齐接口测试", "summary": "验证角色工具调用",
+            "body": "覆盖权限与错误返回", "labels": ["agent-tool"],
+            "channel_ids": ["general"],
         },
     })
     assert created.status_code == 200
@@ -267,6 +268,16 @@ def test_agent_tool_task_update_uses_optimistic_version_and_run_scope(seeded):
     assert updated.json()["result"]["task"]["title"] == "补齐接口与权限测试"
     task_file = Path(_config.env["MISSIONCREW_TASKS_DIR"]) / f"{task['id']}.md"
     assert "title: 补齐接口与权限测试" in task_file.read_text(encoding="utf-8")
+
+    briefed = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "task.brief", "run_id": run_id, "request_id": "task-brief",
+        "arguments": {
+            "id": task["id"], "status": "in_progress",
+            "content": "已补齐首轮接口用例。",
+        },
+    })
+    assert briefed.status_code == 200
+    assert briefed.json()["result"]["brief"]["author"] == "dev"
 
     stale = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "task.update", "run_id": run_id, "request_id": "task-stale",

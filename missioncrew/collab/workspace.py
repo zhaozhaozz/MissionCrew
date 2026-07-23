@@ -1,6 +1,6 @@
 """Agent 可见的 MissionCrew 工作区。
 
-每次聊天角色或结构化任务执行都会获得一个独立的 ``.missioncrew`` 目录。
+每次聊天角色执行都会获得一个独立的 ``.missioncrew`` 目录。
 该目录位于平台数据根而不是业务代码仓，集中提供项目文档、准则、Skills、
 任务文件和（聊天执行时的）角色隔离频道历史。
 """
@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..core.config import mc_home, workspaces_dir
-from ..core.models import Project, Task, TIER_ORDER, new_id
+from ..core.models import Project, TASK_STATUSES, Task
 from .documents import document_resource_url
 from .project_context import guideline_context_dir, write_guideline_context
 from .resource_urls import missioncrew_project_url
@@ -77,8 +77,8 @@ def platform_history_dir(project_id: str, channel_id: str) -> Path:
             / ".missioncrew").resolve()
 
 
-def task_workspace_dir(task_workdir: Path) -> Path:
-    """结构化任务工作区本就是平台目录，可直接在其中建立 harness 入口。"""
+def _legacy_task_workspace_dir(task_workdir: Path) -> Path:
+    """返回旧阶段式 Task 的历史 harness 路径，仅供启动迁移。"""
     return (task_workdir / ".missioncrew").resolve()
 
 
@@ -127,7 +127,7 @@ def migrate_legacy_workspace_layout() -> int:
             if documents.is_symlink():
                 documents.unlink()
                 migrated += 1
-            harness = task_workspace_dir(task_dir)
+            harness = _legacy_task_workspace_dir(task_dir)
             legacy_evidence = task_dir / "evidence"
             evidence = harness / "evidence"
             if legacy_evidence.is_dir():
@@ -252,7 +252,7 @@ def _link_managed_directory(link: Path, target: Path) -> bool:
 
 
 def _project_workspace_roots(store: Store, project_id: str) -> list[Path]:
-    """列出已经存在的聊天与结构化任务 harness，不提前创建未使用工作区。"""
+    """列出现有 Channel harness，并兼容迁移旧 Task harness。"""
     roots: set[Path] = set()
     channel_root = (mc_home() / "agent-workspaces" / _safe_segment(project_id)
                     / "channels")
@@ -263,7 +263,7 @@ def _project_workspace_roots(store: Store, project_id: str) -> list[Path]:
     for task in store.list_tasks():
         if task.project_id != project_id:
             continue
-        root = task_workspace_dir(workspaces_dir() / task.id)
+        root = _legacy_task_workspace_dir(workspaces_dir() / task.id)
         if root.is_dir():
             roots.add(root.resolve())
     return sorted(roots, key=str)
@@ -316,17 +316,12 @@ def _render_workspace_readme(workspace: AgentWorkspace, project_id: str,
 不要读取或打印 `.agent-tool-token`；使用 Agent Tool CLI，它会自行读取令牌文件。每次
 写调用都显式传入最新 Prompt 给出的 `run_id`。
 """
-        if has_history else
-        """## 修改 MissionCrew 资源
-
-这是结构化任务工作区，不使用聊天角色令牌。按照本任务的工作区、证据和任务同步协议
-写入；不要尝试使用其他聊天角色工作区中的 Agent Tool token。
-"""
+        if has_history else ""
     )
     return f"""# MissionCrew Agent Harness Workspace
 
 MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模型、项目上下文、
-共享资料和协作/任务流程；它不是当前业务代码仓。
+共享资料和 Channel 协作；它不是当前业务代码仓。
 
 此 `.missioncrew` 目录是平台提供的独立工作区，绝对路径为：
 `{workspace.root}`
@@ -337,7 +332,7 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 ## 可用内容
 
 - `documents/`：项目版本化文档库的读取入口；协作草稿、报告和普通聊天产生的验证记录也归入该文档库。
-- `tasks/`：只存放项目任务的 Markdown 视图，不是草稿、报告或证据目录。状态、阶段和审批由平台管理。
+- `tasks/`：项目 Task 的 Markdown 快照；Task 是可编辑 Issue，状态简报是只读快照。
 - `guidelines/`：已启用项目准则的共享实时视图；根据 description 判断是否需要读取。
 - `skills/`：已启用项目 Skill 的共享实时视图；先读 SKILL.md，再按需使用同目录 scripts/、references/、assets/ 等文件。
 - `project.md`：项目简介与资源索引。
@@ -362,44 +357,45 @@ MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模�
 ```markdown
 ---
 title: 任务标题
-task_type: feature
+summary: 一句话简介
+status: open
 labels: []
-risk: normal
-security_level: 0
-max_tier: null
+channel_ids:
+  - {project_id}:general
 ---
 
-任务描述与验收要求。
+任务正文与验收要求。
 ```
 
-`task_type` 可选 `feature`、`bug`、`chore`、`research`；`risk` 可选 `low`、
-`normal`、`high`；`max_tier` 可为空或 `economy`、`standard`、`expert`。
-编辑既有任务时保留 `id` 和 `snapshot_updated_at`，不要修改 `status` 或阶段字段。
+`status` 可选 `open`、`in_progress`、`blocked`、`done`；`channel_ids` 至少绑定
+一个当前项目的可用 Channel。编辑既有任务时保留 `id` 和
+`snapshot_updated_at`。新增状态简报使用 `task.brief` Agent Tool；文件中的
+`status_briefs` 是平台生成的只读历史。
 
 不要把业务源码或业务仓交付物写进 `.missioncrew`。正式项目文档和协作草稿写入
-`documents/`；结构化任务的阶段证据写入该任务工作区的 `evidence/`；`tasks/` 只写上述
-带 YAML frontmatter 的任务记录。
+`documents/`；`tasks/` 只写上述带 YAML frontmatter 的 Task 记录。
 """
 
 
-def _render_task(task: Task) -> str:
-    current = task.current_stage.name if task.current_stage else ""
+def _render_task(task: Task, briefs: list[dict] | None = None) -> str:
     attributes = {
         "id": task.id,
         "title": task.title,
-        "task_type": task.task_type,
-        "labels": task.labels,
-        "risk": task.risk,
-        "security_level": task.security_level,
-        "max_tier": task.max_tier,
+        "summary": task.summary,
         "status": task.status,
-        "current_stage": current,
+        "labels": task.labels,
+        "channel_ids": task.channel_ids,
         "snapshot_updated_at": task.updated_at,
+        "status_briefs": [
+            {key: brief.get(key) for key in
+             ("id", "status", "author", "author_type", "created_at", "content")}
+            for brief in (briefs or [])
+        ],
     }
     header = yaml.safe_dump(
         attributes, allow_unicode=True, sort_keys=False,
         default_flow_style=False).strip()
-    body = task.description.rstrip()
+    body = task.body.rstrip()
     return f"---\n{header}\n---\n" + (f"\n{body}\n" if body else "")
 
 
@@ -412,7 +408,10 @@ def write_task_files(store: Store, project_id: str, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     for task in store.list_tasks():
         if task.project_id == project_id:
-            _atomic_write_text(_task_path(directory, task.id), _render_task(task))
+            _atomic_write_text(
+                _task_path(directory, task.id),
+                _render_task(task, store.list_task_briefs(task.id)),
+            )
 
 
 def _parse_task_file(path: Path) -> tuple[dict, str] | None:
@@ -440,37 +439,33 @@ def _parse_task_file(path: Path) -> tuple[dict, str] | None:
     return attributes, body.rstrip()
 
 
-def _editable_task_values(attributes: dict, description: str) -> dict:
+def _editable_task_values(attributes: dict, body: str) -> dict:
     title = attributes.get("title", "")
-    task_type = attributes.get("task_type", "feature")
+    summary = attributes.get("summary", "")
+    status = attributes.get("status", "open")
     labels = attributes.get("labels", [])
-    risk = attributes.get("risk", "normal")
-    security_level = attributes.get("security_level", 0)
-    max_tier = attributes.get("max_tier") or None
+    channel_ids = attributes.get("channel_ids", [])
     if not isinstance(title, str) or not title.strip():
         raise ValueError("title 必须是非空字符串")
-    if task_type not in ("feature", "bug", "chore", "research"):
-        raise ValueError("task_type 必须是 feature/bug/chore/research")
+    if not isinstance(summary, str):
+        raise ValueError("summary 必须是字符串")
+    if status not in TASK_STATUSES:
+        raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
     if not isinstance(labels, list) or not all(isinstance(item, str) for item in labels):
         raise ValueError("labels 必须是字符串数组")
-    if risk not in ("low", "normal", "high"):
-        raise ValueError("risk 必须是 low/normal/high")
-    if isinstance(security_level, bool) or not isinstance(security_level, int) \
-            or security_level < 0:
-        raise ValueError("security_level 必须是非负整数")
-    if max_tier is not None and max_tier not in TIER_ORDER:
-        raise ValueError("max_tier 必须为空或 economy/standard/expert")
+    if not isinstance(channel_ids, list) or not all(
+            isinstance(item, str) for item in channel_ids):
+        raise ValueError("channel_ids 必须是字符串数组")
     return {
-        "title": title.strip(), "description": description,
-        "task_type": task_type, "labels": labels, "risk": risk,
-        "security_level": security_level, "max_tier": max_tier,
+        "title": title.strip(), "summary": summary, "body": body,
+        "status": status, "labels": labels, "channel_ids": channel_ids,
     }
 
 
 def sync_task_files(store: Store, project_id: str, directory: Path,
                     actor: str) -> list[str]:
     """摄入 Agent 对任务 Markdown 的创建/编辑，返回未能同步的错误。"""
-    from ..taskflow import workflow
+    from .tasks import create_task, update_task
 
     if not directory.is_dir():
         return []
@@ -480,8 +475,8 @@ def sync_task_files(store: Store, project_id: str, directory: Path,
             parsed = _parse_task_file(path)
             if parsed is None:
                 continue
-            attributes, description = parsed
-            values = _editable_task_values(attributes, description)
+            attributes, body = parsed
+            values = _editable_task_values(attributes, body)
             raw_id = attributes.get("id")
             if raw_id is not None and not isinstance(raw_id, str):
                 raise ValueError("id 必须是字符串或留空")
@@ -501,30 +496,23 @@ def sync_task_files(store: Store, project_id: str, directory: Path,
                               for key, value in values.items())
                 if not changed:
                     continue
-                pristine = (existing.stage_index == 0
-                            and all(stage.status == "pending" and stage.attempts == 0
-                                    for stage in existing.stages))
-                plan_changed = (existing.task_type != values["task_type"]
-                                or existing.risk != values["risk"])
-                for key, value in values.items():
-                    setattr(existing, key, value)
-                if pristine and plan_changed:
-                    existing.stages = workflow.build_plan(existing.task_type, existing.risk)
-                store.put_task(existing)
+                update_task(
+                    store, existing, snapshot_updated_at=snapshot,
+                    changes=values, actor=actor,
+                )
                 store.audit(actor, "task_workspace_updated", existing.id,
                             f"path={path.name}")
-                _atomic_write_text(path, _render_task(existing))
+                _atomic_write_text(
+                    path, _render_task(existing, store.list_task_briefs(existing.id)))
                 continue
 
-            task = Task(
-                id=new_id("t"), project_id=project_id, **values,
-                stages=workflow.build_plan(values["task_type"], values["risk"]),
+            task = create_task(
+                store, project_id, **values, actor=actor,
             )
-            store.put_task(task)
             store.audit(actor, "task_workspace_created", task.id,
                         f"source={path.name}")
             target = _task_path(directory, task.id)
-            _atomic_write_text(target, _render_task(task))
+            _atomic_write_text(target, _render_task(task, []))
             if path != target:
                 path.unlink()
         except (OSError, UnicodeError, ValueError) as exc:

@@ -1,7 +1,6 @@
 import pytest
 
 from missioncrew.core import seed as seed_mod
-from missioncrew.taskflow.engine import Engine
 from missioncrew.core.store import Store
 
 
@@ -16,8 +15,3 @@ def store(tmp_path, monkeypatch):
 def seeded(store):
     seed_mod.seed(store)
     return store
-
-
-@pytest.fixture()
-def engine(seeded):
-    return Engine(seeded)

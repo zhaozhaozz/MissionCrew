@@ -358,25 +358,27 @@
 </dialog>
 
 <dialog id="tdlg">
-  <div class="dlg-head"><strong>新建任务</strong>
-    <button class="ghost" onclick="tdlg.close()">取消</button></div>
+  <div class="dlg-head"><strong id="tdlg-title">新建 Task</strong>
+    <button class="ghost" onclick="cancelTaskForm()">取消</button></div>
   <div class="dlg-body form">
     <label>标题</label><input type="text" id="nt-title">
-    <label>描述</label><textarea id="nt-desc" rows="3" style="height:auto"></textarea>
+    <label>简介</label><input type="text" id="nt-summary" placeholder="一句话说明要解决什么">
+    <label>正文</label><textarea id="nt-body" rows="8" style="height:auto"
+      placeholder="背景、要求、验收标准……支持 Markdown"></textarea>
     <div class="row">
-      <div><label>类型</label><select id="nt-type">
-        <option value="feature">feature</option><option value="bug">bug</option>
-        <option value="chore">chore</option><option value="research">research</option>
-      </select></div>
-      <div><label>风险</label><select id="nt-risk">
-        <option value="low">low</option><option value="normal" selected>normal</option>
-        <option value="high">high</option>
+      <div><label>状态</label><select id="nt-status">
+        <option value="open">待处理</option>
+        <option value="in_progress">处理中</option>
+        <option value="blocked">已阻塞</option>
+        <option value="done">已完成</option>
       </select></div>
       <div><label>标签(逗号分隔)</label><input type="text" id="nt-labels" placeholder="ui, auth"></div>
     </div>
-    <p class="muted">任务使用固定基础工作流推进；项目特定要求由 Agent 结合准则判断。</p>
+    <label>绑定 Channel（至少一个）</label>
+    <div class="task-channel-options" id="nt-channels"></div>
+    <p class="muted">处理 Task 时，平台会在所有绑定 Channel 中向项目主控发送消息。</p>
   </div>
-  <div class="actions"><button class="action" onclick="createTask()">创建任务</button></div>
+  <div class="actions"><button class="action" id="task-save-btn" onclick="saveTask()">创建 Task</button></div>
 </dialog>
 
 <dialog id="udlg" style="max-width:520px">

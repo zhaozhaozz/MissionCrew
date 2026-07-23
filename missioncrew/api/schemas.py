@@ -9,19 +9,30 @@ from pydantic import BaseModel, Field
 class TaskCreate(BaseModel):
     project_id: str
     title: str
-    description: str = ""
-    task_type: str = "feature"
-    labels: list[str] = []
-    risk: str = "normal"
-    security_level: int = 0
-    max_tier: Optional[str] = None
+    summary: str = ""
+    body: str = ""
+    labels: list[str] = Field(default_factory=list)
+    channel_ids: list[str] = Field(default_factory=list)
+    status: str = "open"
 
 
-class ApprovalInput(BaseModel):
-    approver: str = "human"
-    decision: str = "approved"
-    note: str = ""
-    stage: Optional[str] = None
+class TaskUpdate(BaseModel):
+    snapshot_updated_at: float
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    body: Optional[str] = None
+    labels: Optional[list[str]] = None
+    channel_ids: Optional[list[str]] = None
+    status: Optional[str] = None
+
+
+class TaskBriefInput(BaseModel):
+    content: str
+    status: Optional[str] = None
+
+
+class TaskProcessInput(BaseModel):
+    message: str = ""
 
 
 class MessageMentionInput(BaseModel):

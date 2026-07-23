@@ -23,7 +23,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 | `qodercli` | `qoder` | ACP stdio | 不支持自动更新 |
 | `traecli` | `trae` | ACP stdio | `traecli update`(不做最新版比对) |
 
-每个工具在检测表中还带默认能力位、档位与单次成本估算,注册时自动填充;这些属性服务于结构化任务的阶段路由与配额记账,聊天角色不用它们做路由。
+每个工具在检测表中还带默认能力位、档位与单次成本估算，注册时自动填充；这些属性用于展示与使用量估算。项目角色固定绑定 Runtime/模型，Task 不再进行阶段路由。
 
 ## 统一 Runtime 抽象边界
 
@@ -53,13 +53,13 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 快照区分两种生命周期：
 
 - `persistent`：服务进程内长驻并可复用的 Claude stream-json、Codex app-server 或 ACP stdio session。运行中显示 `running`，轮次结束但进程仍在时显示 `idle`，进程异常退出但实例记录尚在时显示 `disconnected`。
-- `one_shot`：任务阶段、兼容打印模式、自定义命令和无 session key 的 ACP 调用。子进程存在时显示 `running`，退出后立即从状态页移除。
+- `one_shot`：兼容打印模式、自定义命令和无 session key 的 ACP 调用。子进程存在时显示 `running`，退出后立即从状态页移除。
 
-每个实例统一提供 backend、adapter、transport、PID、session key、原生 session/thread id、任务与阶段、模型、工作目录、启动时间和最近活动时间。打印模式通过活动进程注册表上报；ACP 同时上报长驻池与一次性 client；Claude/Codex 原生 provider 直接上报其会话对象。页面的后端概览始终列出全部已注册 Runtime，即使当前没有进程，也会明确显示未运行或已停用。
+每个实例统一提供 backend、adapter、transport、PID、session key、原生 session/thread id、项目、角色、模型、工作目录、启动时间和最近活动时间。打印模式通过活动进程注册表上报；ACP 同时上报长驻池与一次性 client；Claude/Codex 原生 provider 直接上报其会话对象。页面的后端概览始终列出全部已注册 Runtime，即使当前没有进程，也会明确显示未运行或已停用。
 
-页面下方的「使用历史」来自独立的 `GET /api/runtime/history`，记录的是每次 `RuntimeManager.start()` 调用，而不是进程实例生命周期。`RuntimeProvider.execution_info()` 声明该次调用的 `persistent` / `one_shot` 形态与 transport；统一管理器在调用 provider 前写入 `running`，返回后更新为 `succeeded` 或 `failed`。记录包含 Runtime、任务/阶段、session key、模型、effort、工作目录、起止时间和耗时，保存在平台 SQLite 中，因此服务重启后仍保留。若服务退出时调用尚未结束，后续读取会在确认原所属进程已经消失后标记为 `interrupted`。页面显示最近 100 条并每三秒刷新一次历史列表。
+页面下方的「使用历史」来自独立的 `GET /api/runtime/history`，记录的是每次 `RuntimeManager.start()` 调用，而不是进程实例生命周期。`RuntimeProvider.execution_info()` 声明该次调用的 `persistent` / `one_shot` 形态与 transport；统一管理器在调用 provider 前写入 `running`，返回后更新为 `succeeded` 或 `failed`。记录包含 Runtime、项目、角色、session key、模型、effort、工作目录、起止时间和耗时，保存在平台 SQLite 中，因此服务重启后仍保留。
 
-`ExecutionConfig`、`RuntimeInstance` 与 `runtime_usage` 同时携带 `project_id` 和 `role_id`。因此全局后端概览会聚合当前实例所属的项目和角色，实例表与历史表也直接显示这两个字段；结构化任务只有项目没有角色，非项目调用两者可以为空。
+`ExecutionConfig`、`RuntimeInstance` 与 `runtime_usage` 同时携带 `project_id` 和 `role_id`。因此全局后端概览会聚合当前实例所属的项目和角色，实例表与历史表也直接显示这两个字段；非项目调用两者可以为空。
 
 ## 接入技术
 
@@ -153,11 +153,11 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。每轮任务输入另给出最新 `run_id`；持久 Runtime 必须显式传这个值，不能使用进程启动时遗留的 `MISSIONCREW_AGENT_RUN_ID`。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
 
-最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和任务分别位于 `MISSIONCREW_WORKSPACE` 下，并提供 `MISSIONCREW_CHANNEL_HISTORY`、`MISSIONCREW_DOCUMENTS_DIR`、`MISSIONCREW_GUIDELINES_DIR`、`MISSIONCREW_SKILLS_DIR`、`MISSIONCREW_TASKS_DIR` 兼容入口。文档直接链接事实工作树，准则和 Skill 入口分别链接项目级共享实时视图；保存、启停或删除成功后，已有 workspace 无需重新装配就能读取最新内容和成员列表。聊天角色新建或修改文档、任务时使用 `document.publish`、`task.create` 或 `task.update`，主控删除文档、准则或 Skill 时使用对应的 `*.delete` 动作；执行后扫描直接写入的文件仅作为迁移兼容。准则编辑器、后端模型和运行时文件统一使用 `name` / `description` YAML frontmatter，后端直接解析文件头，不从 `id` / `summary` 转换。
+最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和 Task 分别位于 `MISSIONCREW_WORKSPACE` 下，并提供对应环境变量。聊天角色新建或修改文档、Task 时使用 `document.publish`、`task.create`、`task.update` 或 `task.brief`；执行后扫描直接写入的文件仅作为迁移兼容。
 
 ### Mock(`MockAdapter`)
 
-确定性模拟后端,零成本走通全流程:任务阶段按要求产出证据文件；聊天协作可按触发消息让主控生成 `@[角色ID]` 显式调度，普通 `@角色ID` 只保留为正文引用。平台只接受主控的显式调度语法，执行角色结果自动返回主控。它同时模拟档位能力边界(hard 标签下 economy 档失败等)，测试与演示种子数据使用它。
+确定性模拟后端，零成本走通 Channel 协作：可按触发消息让主控生成 `@[角色ID]` 显式调度，普通 `@角色ID` 只保留为正文引用。平台只接受主控的显式调度语法，执行角色结果自动返回主控。测试与演示种子数据使用它。
 
 ## 检测与注册
 
@@ -188,7 +188,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。
 
-effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI 默认,总是合法;执行时经命令模板的 `{effort}` 占位符注入,为空时连同紧邻标志一起移除,结构化任务的阶段执行不使用它。注意:用 `Backend.command` 覆盖默认模板时,模板需自带 `{effort}` 占位符,否则角色配置的 effort 不会生效。
+effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 默认，总是合法；执行时经命令模板的 `{effort}` 占位符注入，为空时连同紧邻标志一起移除。用 `Backend.command` 覆盖默认模板时，模板需自带 `{effort}` 占位符，否则角色配置的 effort 不会生效。
 
 ## 升级
 
@@ -202,9 +202,9 @@ effort 与模型一样属于角色定义时固定的执行组合:空值 = CLI �
 
 ## 执行环境
 
-每次执行的进程环境:工作目录仍是频道 workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`、文档链接或诊断日志。另一个绝对路径 `MISSIONCREW_WORKSPACE` 指向平台数据根内、当前 channel×role 或结构化任务独享的 `.missioncrew` harness 工作区；其中集中放置 `README.md`、`project.md`、`documents/`、`tasks/`、`guidelines/`、`skills/`，聊天执行另有角色隔离的 `channel-history.json`、角色令牌文件和 Agent Tool 环境，任务执行另有 `evidence/`。`MISSIONCREW_DOCUMENTS_DIR` 是 Runtime 内部读取入口，`MISSIONCREW_PROJECT_URL` 是频道、任务、面板、准则、Skill 和文档的统一 `/resources/<project>` Web 前缀，`MISSIONCREW_DOCUMENTS_URL` 是其文档便捷入口；Agent 不应向频道发布前者的真实路径。`ExecutionConfig.allowed_dirs` 包含项目全部现存本地资源目录、真实文档工作树、完整项目 Skill 根及该 harness 根；所有 Runtime 都会收到 JSON 形式的 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录参数的适配器还会把它转换为目录授权。`MISSIONCREW_SKILLS_DIR` 指向 harness 中仅含已启用 Skill 的目录视图，每个条目保留完整包结构。子进程 `PWD` 与实际 cwd 强制保持一致，避免 Runtime 从继承环境误判工作根。聊天角色通过 Agent Tool 发布文档和修改任务，以获得即时错误与角色审计；直接文件同步是兼容机制。结构化任务仍按工作区和证据协议运行。聊天与结构化任务的 Agent 执行均不设置时间上限，直到 Runtime 返回完成、失败，或用户主动停止；模型发现、版本检查、升级和协议握手等控制面操作仍保留独立超时，避免 HTTP 请求永久占用服务线程。
+每次执行的进程环境中，工作目录仍是 Channel workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`。`MISSIONCREW_WORKSPACE` 指向平台数据根内当前 channel×role 的 harness，集中放置项目资料、Task 快照、角色隔离历史、令牌和 Runtime 诊断。Agent 通过 Agent Tool 发布文档、编辑 Task 和追加状态简报；直接文件同步仅用于兼容。Channel 中的 Agent 执行不设置时间上限，直到 Runtime 返回、失败或用户主动停止。
 
-完整的目录职责、历史隔离、证据和内部数据边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
+完整的目录职责、历史隔离和内部数据边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
 
 ## 接入新工具
 

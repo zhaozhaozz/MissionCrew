@@ -2,7 +2,7 @@
 
 MC_HOME 布局:
   db.sqlite3        平台数据库
-  workspaces/<task> 每个任务一个隔离工作区(跨阶段共享,Agent 文件在 .missioncrew/)
+  workspaces/<task> 旧阶段式 Task 的历史工作区（仅迁移兼容）
   agent-workspaces/<project>/channels/<channel>/<role>/.missioncrew
                     聊天角色隔离的 Agent harness 工作区
   projects/<id>/documents              项目文档库普通目录

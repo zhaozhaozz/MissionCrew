@@ -26,7 +26,7 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 | 资源 | 规范 URL | 稳定标识 | Web 打开结果 |
 | --- | --- | --- | --- |
 | 频道 | `/resources/<project>/channels/<channel-id>` | 项目内频道短 ID | 对应聊天频道 |
-| 结构化任务 | `/resources/<project>/tasks/<task-id>` | 全局任务 ID | 内置任务看板及任务详情 |
+| Task | `/resources/<project>/tasks/<task-id>` | 全局 Task ID | 内置 Task 看板及详情 |
 | 自定义面板 | `/resources/<project>/dashboards/<board-id>` | 项目内面板短 ID | 对应自定义面板 |
 | 内置任务看板 | `/resources/<project>/dashboards/tasks` | 保留标识 `tasks` | 项目任务看板 |
 | 准则 | `/resources/<project>/guidelines/<name>` | Markdown frontmatter 的 `name` | 对应准则编辑/预览页 |
@@ -63,18 +63,19 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 - `POST /api/chat/<channel-id>/messages`
 - `POST /api/chat/<channel-id>/stop`
 
-### 结构化任务
+### Task
 
-任务状态、阶段、审批、执行记录和证据索引的事实源是平台数据库。任务 URL 打开内置任务看板并展开指定任务的详情对话框。
+Task 是类似 Issue 的协作入口，事实源是平台数据库。它包含标题、简介、正文、状态、标签、一个或多个 Channel 绑定，以及多条追加式状态简报。Task URL 打开内置任务看板并展开详情。
 
-Agent harness 同时提供 `.missioncrew/tasks/` Markdown 视图。Agent 可以新建任务，也可以编辑既有任务的标题、描述、类型、标签、风险、密级和成本上限；状态、阶段和审批仍由平台控制。任务文件同步后获得正式任务 ID，对外引用应使用任务 URL，而不是任务 Markdown 的真实路径。
+Agent harness 同时提供 `.missioncrew/tasks/` Markdown 快照。Agent 使用 `task.create`、`task.update` 和 `task.brief` 修改事实源；人类使用同一组 Web/API 字段。处理 Task 时，平台不启动独立执行引擎，而是在每个绑定 Channel 中向项目主控发送普通消息，由既有 Channel 协作流程接管。
 
 主要 API：
 
 - `POST /api/tasks`
 - `GET /api/tasks/<task-id>`
-- `POST /api/tasks/<task-id>/advance`
-- `POST /api/tasks/<task-id>/approve`
+- `PATCH /api/tasks/<task-id>`
+- `POST /api/tasks/<task-id>/briefs`
+- `POST /api/tasks/<task-id>/process`
 
 ### 面板
 
@@ -128,7 +129,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 ### 项目文档
 
-文档的事实源是项目文档工作树，独立 bare Git 仓库保存版本历史。聊天角色通过 `document.publish` Agent Tool 动作发布文件；直接编辑后的执行结束快照只作为旧会话兼容。结构化任务仍按任务工作区协议写入。人类也可以在 Web 文档页一次选择多个文件上传：未选中文档时保存到文档库根目录，选中文档时保存到该文档所在目录；同名文件必须确认后才能覆盖，且每个文件分别形成版本。单文件上限为 50 MB。
+文档的事实源是项目文档工作树，独立 bare Git 仓库保存版本历史。聊天角色通过 `document.publish` Agent Tool 动作发布文件；直接编辑后的执行结束快照只作为旧会话兼容。人类也可以在 Web 文档页一次选择多个文件上传：未选中文档时保存到文档库根目录，选中文档时保存到该文档所在目录；同名文件必须确认后才能覆盖，且每个文件分别形成版本。单文件上限为 50 MB。
 
 文本文件上传后可以继续在线编辑和预览。版本历史表位于当前文档内容之前，首行明确标记最新版本；用户可按 A → B 的顺序选择任意两个纯文本版本查看 unified diff。二进制、非 UTF-8 或包含二进制控制字符的文件按原始字节保存，不会被文本转换，也不允许版本比较；文档页仍提供当前版本和历史版本下载。用户从文档页悬浮对话栏询问主控时，纯文本内容只通过角色工作区中的临时快照路径按需读取；`.xlsx` 等非文本文件不生成文本快照、行号或选区，而是把文件名、文档库相对路径和资源 URL 交给主控，由 Runtime 以 `MISSIONCREW_DOCUMENTS_DIR` 为根使用适合该格式的工具读取。
 
@@ -150,7 +151,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 回收站页面是项目级单页视图，可以按资源类型筛选。每项显示原名称、稳定标识、删除时间、操作者和大小。恢复会重建资源事实源，并同步 Project 索引及准则/Skill 实时视图；只有整条链完成才移除回收项。若原路径或 ID 已被新资源占用，恢复返回 `409`，现有资源和回收项都保持不变。永久删除单项和清空回收站不可撤销，Web 会先要求确认。
 
-回收站保存的是“恢复当前资源所需的副本”，不是所有历史的唯一事实源。永久删除回收项后，文档与准则的 Git 历史、频道消息和审计记录仍按各自保留策略存在。内置任务看板、项目本身、全局 Runtime、全局角色模板以及目前没有删除操作的结构化任务不进入项目回收站。
+回收站保存的是“恢复当前资源所需的副本”，不是所有历史的唯一事实源。永久删除回收项后，文档与准则的 Git 历史、频道消息和审计记录仍按各自保留策略存在。内置 Task 看板、项目本身、全局 Runtime、全局角色模板以及目前没有删除操作的 Task 不进入项目回收站。
 
 主要 API：
 
@@ -161,7 +162,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 
 ## Runtime 可见的文件资源
 
-每次聊天角色或结构化任务执行都会获得独立的 `MISSIONCREW_WORKSPACE`。典型结构如下：
+每次 Channel 角色执行都会获得独立的 `MISSIONCREW_WORKSPACE`。典型结构如下：
 
 ```text
 .missioncrew/
@@ -173,7 +174,6 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 ├── skills/
 ├── channel-history.json
 ├── .agent-tool-token
-├── evidence/
 └── runtime/
 ```
 
@@ -181,7 +181,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 | --- | --- |
 | `MISSIONCREW_PROJECT_URL` | 当前项目公开资源 URL 前缀 `/resources/<project>` |
 | `MISSIONCREW_DOCUMENTS_URL` | 当前项目文档 URL 前缀 |
-| `MISSIONCREW_WORKSPACE` | 当前角色或任务的 harness 根目录 |
+| `MISSIONCREW_WORKSPACE` | 当前 Channel 角色的 harness 根目录 |
 | `MISSIONCREW_DOCUMENTS_DIR` | 项目文档读取入口；聊天写入使用 Agent Tool |
 | `MISSIONCREW_TASKS_DIR` | 项目任务 Markdown 快照；聊天写入使用 Agent Tool |
 | `MISSIONCREW_GUIDELINES_DIR` | 已启用准则的 Markdown 目录 |
@@ -198,7 +198,6 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 下列内容可能位于 MissionCrew 工作区或设置中，但没有项目资源 URL：
 
 - `channel-history.json` 是供当前 Agent 按需读取的角色隔离历史，不是频道事实源的公开下载地址。
-- `evidence/` 是结构化任务阶段产物目录；任务详情展示证据索引，但证据文件目前没有独立 Web 资源 URL。
 - `runtime/` 是诊断和最近输出目录，不应出现在最终回复或业务提交中。
 - 项目代码仓和普通本地路径属于 Runtime 授权资源，不由 `/resources/...` 暴露。
 - Runtime、模型、全局设置和项目设置是系统页面，不是项目内容资源。

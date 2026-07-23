@@ -652,10 +652,6 @@ class ChatEngine:
         if stored is not None and stored.quota is not None:
             stored.quota = max(0.0, stored.quota - backend.cost_per_run)
             self.store.put_backend(stored)
-        if not cfg.cancellation_requested():
-            self.store.stats_record(
-                backend.id, channel.project_id or "_chat", "chat", result.success)
-
         # 从处理 Runtime 结果到发布消息/控制动作必须和频道停止原子互斥。
         # 停止先发生则丢弃迟到结果；发布先发生则停止会捕获新调度的运行。
         with self._run_state_lock:

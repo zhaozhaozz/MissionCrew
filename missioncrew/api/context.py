@@ -21,7 +21,6 @@ from ..core.config import db_path
 from ..core.models import Project
 from ..core.store import Store
 from ..runtime import runtime_manager
-from ..taskflow.engine import Engine
 
 MENTION_ID_RE = re.compile(r"[\w-]+")
 
@@ -29,7 +28,6 @@ MENTION_ID_RE = re.compile(r"[\w-]+")
 @dataclass
 class ApiContext:
     store: Store
-    engine: Engine
     chat: ChatEngine
     # 更新互斥与"更新中"标记:与 ChatEngine 共享同一集合,更新期间不派发该后端
     updating_backends: set[str] = field(default_factory=set)
@@ -60,7 +58,7 @@ class ApiContext:
             store.audit(
                 "platform", "resource_workspace_links_migrated",
                 detail=f"paths={resource_links}")
-        ctx = cls(store=store, engine=Engine(store), chat=ChatEngine(store))
+        ctx = cls(store=store, chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends
         return ctx
 

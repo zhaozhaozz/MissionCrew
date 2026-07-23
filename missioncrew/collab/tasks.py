@@ -1,0 +1,192 @@
+"""Issue 化 Task 的统一写入、状态简报与 Channel 派发逻辑。"""
+from __future__ import annotations
+
+from typing import Optional
+
+from .resource_urls import task_resource_url
+from ..core.models import TASK_STATUSES, Channel, Task, new_id
+from ..core.store import Store
+
+
+class TaskDispatchError(ValueError):
+    """多 Channel 派发只完成一部分时，保留已经产生的消息。"""
+
+
+def _text(value: object, field: str, *, required: bool = False) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field} 必须是字符串")
+    result = value.strip() if required else value
+    if required and not result:
+        raise ValueError(f"{field} 必须是非空字符串")
+    return result
+
+
+def _labels(value: object) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("labels 必须是字符串数组")
+    return list(dict.fromkeys(item.strip() for item in value if item.strip()))
+
+
+def task_channels(store: Store, project_id: str, channel_ids: object,
+                  *, fallback_channel_id: str = "") -> list[Channel]:
+    """校验绑定 Channel；新任务可回退到当前或项目 general Channel。"""
+    if not isinstance(channel_ids, list) or not all(
+            isinstance(item, str) for item in channel_ids):
+        raise ValueError("channel_ids 必须是字符串数组")
+    ids = list(dict.fromkeys(item.strip() for item in channel_ids if item.strip()))
+    available = [channel for channel in store.list_channels(project_id)
+                 if not channel.archived]
+    if not ids:
+        fallback = next(
+            (channel for channel in available if channel.id == fallback_channel_id),
+            None,
+        ) or next(
+            (channel for channel in available
+             if channel.id == "general" or channel.id.endswith(":general")),
+            available[0] if available else None,
+        )
+        if fallback is not None:
+            ids = [fallback.id]
+    if not ids:
+        raise ValueError("Task 至少需要绑定一个可用 Channel")
+    result = []
+    for channel_id in ids:
+        channel = (store.get_channel(channel_id)
+                   or store.get_channel(f"{project_id}:{channel_id}"))
+        if channel is None or channel.project_id != project_id:
+            raise ValueError(f"Channel 不存在或不属于当前项目: {channel_id}")
+        if channel.archived:
+            raise ValueError(f"Task 不能绑定已归档 Channel: {channel_id}")
+        if channel.id not in {item.id for item in result}:
+            result.append(channel)
+    return result
+
+
+def create_task(store: Store, project_id: str, *, title: object,
+                summary: object = "", body: object = "", labels: object = None,
+                channel_ids: object = None, status: object = "open",
+                actor: str = "human", fallback_channel_id: str = "") -> Task:
+    if store.get_project(project_id) is None:
+        raise ValueError("项目不存在")
+    status_value = str(status)
+    if status_value not in TASK_STATUSES:
+        raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
+    channels = task_channels(
+        store, project_id, channel_ids if channel_ids is not None else [],
+        fallback_channel_id=fallback_channel_id,
+    )
+    task = Task(
+        id=new_id("t"), project_id=project_id,
+        title=_text(title, "title", required=True),
+        summary=_text(summary, "summary"), body=_text(body, "body"),
+        labels=_labels(labels if labels is not None else []),
+        channel_ids=[channel.id for channel in channels], status=status_value,
+    )
+    store.put_task(task)
+    store.audit(actor, "task_created", task.id, f"project={project_id}")
+    return task
+
+
+def update_task(store: Store, task: Task, *, snapshot_updated_at: object,
+                changes: dict, actor: str = "human") -> Task:
+    if (not isinstance(snapshot_updated_at, (int, float))
+            or isinstance(snapshot_updated_at, bool)
+            or abs(float(snapshot_updated_at) - task.updated_at) > 1e-6):
+        raise ValueError("任务已被其他执行更新，请重新读取后再修改")
+    if "title" in changes:
+        task.title = _text(changes["title"], "title", required=True)
+    if "summary" in changes:
+        task.summary = _text(changes["summary"], "summary")
+    if "body" in changes:
+        task.body = _text(changes["body"], "body")
+    if "labels" in changes:
+        task.labels = _labels(changes["labels"])
+    if "status" in changes:
+        status = changes["status"]
+        if status not in TASK_STATUSES:
+            raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
+        task.status = status
+    if "channel_ids" in changes:
+        task.channel_ids = [channel.id for channel in task_channels(
+            store, task.project_id, changes["channel_ids"])]
+    store.put_task(task)
+    store.audit(actor, "task_updated", task.id, f"project={task.project_id}")
+    return task
+
+
+def add_task_brief(store: Store, task: Task, *, content: object,
+                   status: Optional[str] = None, author: str = "human",
+                   author_type: str = "human") -> dict:
+    text = _text(content, "content", required=True)
+    if status is not None:
+        if status not in TASK_STATUSES:
+            raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
+        if task.status != status:
+            task.status = status
+            store.put_task(task)
+    brief = store.add_task_brief(
+        task.id, author, author_type, text, status or task.status)
+    store.audit(author, "task_brief_added", task.id,
+                f"project={task.project_id} status={status or task.status}")
+    return brief
+
+
+def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
+                  author: str = "human") -> tuple[list[dict], dict]:
+    """把 Task 作为普通 Channel 消息交给每个绑定 Channel 的项目主控。"""
+    if task.status == "done":
+        raise ValueError("已完成 Task 不能再次派发；请先重新打开")
+    project = store.get_project(task.project_id)
+    if project is None:
+        raise ValueError("项目不存在")
+    lead_id = project.orchestrator_role_id
+    if store.get_role(project.id, lead_id) is None:
+        raise ValueError(f"项目主控角色不存在: @{lead_id}")
+    channels = task_channels(store, task.project_id, task.channel_ids)
+    task.channel_ids = [channel.id for channel in channels]
+    extra = message.strip()
+    content = (
+        f"@{lead_id} 请处理 Task [{task.id} · {task.title}]"
+        f"({task_resource_url(task.project_id, task.id)})。\n\n"
+        f"**简介**\n{task.summary or '（无）'}\n\n"
+        f"**正文**\n{task.body or '（无）'}\n\n"
+        "请在本 Channel 中协调处理，并通过 Task 编辑或状态简报同步进展。"
+    )
+    if extra:
+        content += f"\n\n**本次补充**\n{extra}"
+
+    previous_status = task.status
+    task.status = "in_progress"
+    store.put_task(task)
+    sent: list[dict] = []
+    try:
+        for channel in channels:
+            message_id = chat.post(
+                channel.id, author, content,
+                mention_spans=[{
+                    "role_id": lead_id, "start": 0, "end": len(lead_id) + 1,
+                }],
+            )
+            sent.append({"channel_id": channel.id, "message_id": message_id})
+    except ValueError as exc:
+        if sent:
+            store.add_task_brief(
+                task.id, "platform", "system",
+                f"已向 {len(sent)} 个 Channel 的 @{lead_id} 派发；后续派发失败：{exc}",
+                task.status,
+            )
+            raise TaskDispatchError(str(exc)) from exc
+        else:
+            task.status = previous_status
+            store.put_task(task)
+            raise
+
+    brief = store.add_task_brief(
+        task.id, author, "human",
+        f"已交给 @{lead_id} 处理：" + "、".join(channel.name or channel.id
+                                              for channel in channels),
+        task.status,
+    )
+    store.audit(author, "task_dispatched", task.id,
+                f"project={task.project_id} channels={','.join(task.channel_ids)}")
+    return sent, brief

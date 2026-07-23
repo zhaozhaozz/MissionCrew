@@ -1,8 +1,7 @@
 """领域模型。
 
-关键设计:Backend 只描述"能力、成本、安全等级"(选谁干活);
-Project 承载"准则、上下文、Skill"(领域怎么理解);
-两者在任务的每个阶段由路由器 + 装配器组合成一次性的执行实例。
+Backend 描述可用 Runtime，Project 承载项目上下文与协作角色；Task 是可由
+人类和 Agent 共同维护、通过 Channel 交给项目主控处理的 Issue。
 """
 from __future__ import annotations
 
@@ -18,6 +17,7 @@ import yaml as _yaml
 # 成本档位从低到高,路由优先低档,失败后逐级升级
 TIER_ORDER = ["economy", "standard", "expert"]
 DEFAULT_MAX_CHAIN_RUNS = 20
+TASK_STATUSES = ("open", "in_progress", "blocked", "done")
 
 # 能力约定(自由字符串,以下为内置约定):
 #   coding / reasoning / review / multimodal / web_search / sub_agents / security
@@ -387,64 +387,57 @@ class Resource:
 
 
 @dataclass
-class TaskStage:
-    """任务计划中的一个阶段:静态要求 + 运行状态。
-
-    kind: work(实现类) | verify(验证类) | review(独立审查) | final(平台收尾,无 Agent)
-    """
-
-    name: str
-    kind: str = "work"
-    goal: str = ""
-    produces: list[str] = field(default_factory=list)          # 本阶段必须产出的证据类型
-    requires_evidence: list[str] = field(default_factory=list)  # 通过前必须已存在的证据类型
-    required_capabilities: list[str] = field(default_factory=list)
-    independent: bool = False     # 必须由未参与 work 阶段的后端执行(独立审查)
-    human_gate: bool = False      # 通过前需要人工审批
-    status: str = "pending"       # pending | awaiting_approval | passed | failed
-    attempts: int = 0             # 失败次数,同时是升级档位的下限索引
-    backend_id: Optional[str] = None
-
-
-@dataclass
 class Task:
+    """项目 Issue：正文可编辑，状态简报单独以追加记录保存。"""
+
     id: str
     project_id: str
     title: str
-    description: str = ""
-    task_type: str = "feature"    # feature | bug | chore | research
+    summary: str = ""
+    body: str = ""
     labels: list[str] = field(default_factory=list)
-    risk: str = "normal"          # low | normal | high
-    security_level: int = 0       # 任务密级,决定可承接的后端范围
-    max_tier: Optional[str] = None  # 成本上限档位(预算控制)
-    status: str = "open"          # open | awaiting_approval | blocked | failed | done
-    stage_index: int = 0
-    stages: list[TaskStage] = field(default_factory=list)
+    channel_ids: list[str] = field(default_factory=list)
+    status: str = "open"          # open | in_progress | blocked | done
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
-
-    @property
-    def current_stage(self) -> Optional[TaskStage]:
-        if 0 <= self.stage_index < len(self.stages):
-            return self.stages[self.stage_index]
-        return None
-
-    def work_backends(self) -> set[str]:
-        """已参与非审查阶段的后端,用于独立审查的排除项。"""
-        return {
-            s.backend_id
-            for s in self.stages
-            if s.backend_id and s.kind in ("work", "verify")
-        }
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Task":
-        d = dict(d)
-        d["stages"] = [TaskStage(**s) for s in d.get("stages", [])]
-        return cls(**d)
+        """读取新版 Task，并把旧阶段式任务无损降级为 Issue 内容。"""
+        raw = dict(d)
+        legacy_description = raw.get("description", "")
+        body = raw.get("body", legacy_description)
+        summary = raw.get("summary", "")
+        if not summary and isinstance(legacy_description, str):
+            summary = next(
+                (line.strip() for line in legacy_description.splitlines()
+                 if line.strip()), "")[:240]
+        legacy_status = raw.get("status", "open")
+        status = {
+            "awaiting_approval": "in_progress",
+            "failed": "blocked",
+        }.get(legacy_status, legacy_status)
+        if status not in TASK_STATUSES:
+            status = "open"
+        labels = raw.get("labels", [])
+        channel_ids = raw.get("channel_ids", [])
+        return cls(
+            id=str(raw["id"]),
+            project_id=str(raw["project_id"]),
+            title=str(raw.get("title", "")),
+            summary=str(summary or ""),
+            body=str(body or ""),
+            labels=list(dict.fromkeys(
+                str(item) for item in labels if isinstance(item, str))),
+            channel_ids=list(dict.fromkeys(
+                str(item) for item in channel_ids if isinstance(item, str))),
+            status=status,
+            created_at=float(raw.get("created_at", now())),
+            updated_at=float(raw.get("updated_at", now())),
+        )
 
 
 # 角色能力是固定选项,只收录"硬性模态/工具事实"(能不能做到,而非负责什么):
@@ -452,8 +445,7 @@ class Task:
 # 不参与执行时路由——角色的 runtime/model 在定义时已固定。
 # 职责类描述(评审、安全审查等)写进定位/偏好自由文本;runtime 特性
 # (如多 Agent 编排)由绑定的 runtime 决定,不在角色上声明。
-# 注意与 Backend.capabilities 区分:后端能力位(含 review/security)
-# 仍是结构化任务路由的过滤条件,词表互相独立。
+# 注意与 Backend.capabilities 区分：后端能力位是 Runtime 元数据，词表互相独立。
 ROLE_ABILITIES: dict[str, str] = {
     "coding":      "代码执行",
     "reasoning":   "深度推理",
@@ -687,7 +679,7 @@ class ExecutionConfig:
     # Agent 执行默认没有时间上限；由完成信号或用户主动停止结束。
     # Optional 值保留给测试和显式调用方设置局部截止时间。
     timeout: Optional[float] = None
-    effort: str = ""      # 推理力度(聊天执行由角色填入;任务阶段暂不使用)
+    effort: str = ""      # 推理力度，由角色绑定的 Runtime 配置填入
     routing_trace: list[str] = field(default_factory=list)
     # 聊天 Runtime 会话按 channel×role 复用。common_prompt 每轮重注入，确保
     # Runtime 压缩历史时仍拿到最新 MissionCrew 公共输入；recovery_prompt 只在
@@ -704,10 +696,10 @@ class ExecutionConfig:
     load_session: Optional[Callable[[], tuple[str, str]]] = None
     save_session: Optional[Callable[[str, str], None]] = None
     # 运行过程回调 (kind, text):适配器在执行期间实时上报思考/工具/输出等
-    # 事件,None 表示调用方不关心过程(如结构化任务阶段)
+    # 事件；None 表示调用方不关心运行过程。
     emit: Optional[Callable[[str, str], None]] = None
     # 双向协议中的权限/用户输入请求。回调会阻塞当前原生请求，直到聊天 UI
-    # 返回 decision/answers；结构化任务未设置时 provider 按无头策略处理。
+    # 返回 decision/answers；未设置时 provider 按无头策略处理。
     interact: Optional[Callable[[str, dict], dict]] = None
     # 执行在 Runtime 自己的 session 锁后仍可能排队；真正启动 turn/进程前
     # 再检查一次，保证频道停止不会只中断当前轮、却放行同会话的下一轮。

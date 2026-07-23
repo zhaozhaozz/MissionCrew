@@ -1,61 +1,94 @@
-"""结构化任务端点:创建、详情、推进与审批。"""
+"""Issue 化 Task 端点：编辑、状态简报与 Channel 派发。"""
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from ..collab.resource_urls import task_resource_url
+from ..collab.resource_urls import channel_resource_url, task_resource_url
+from ..collab.tasks import (TaskDispatchError, add_task_brief, create_task,
+                            dispatch_task, update_task)
 from .context import ApiContext
-from .schemas import ApprovalInput, TaskCreate
+from .schemas import TaskBriefInput, TaskCreate, TaskProcessInput, TaskUpdate
+
+
+def _task_data(store, task) -> dict:
+    channels = []
+    for channel_id in task.channel_ids:
+        channel = store.get_channel(channel_id)
+        if channel is not None:
+            channels.append({
+                **channel.to_dict(),
+                "resource_url": channel_resource_url(channel.project_id, channel.id),
+            })
+    return {
+        "task": {**task.to_dict(),
+                 "resource_url": task_resource_url(task.project_id, task.id)},
+        "channels": channels,
+        "briefs": store.list_task_briefs(task.id),
+        "audit": store.list_audit(task.id, 100),
+    }
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
-    store, engine = ctx.store, ctx.engine
+    store = ctx.store
 
     @app.post("/api/tasks")
-    def create_task(body: TaskCreate):
+    def create(body: TaskCreate):
         try:
-            t = engine.create_task(body.project_id, body.title, body.description,
-                                   body.task_type, body.labels, body.risk,
-                                   body.security_level, body.max_tier)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        return {**t.to_dict(), "resource_url": task_resource_url(t.project_id, t.id)}
+            task = create_task(
+                store, body.project_id, title=body.title, summary=body.summary,
+                body=body.body, labels=body.labels, channel_ids=body.channel_ids,
+                status=body.status,
+            )
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {**task.to_dict(),
+                "resource_url": task_resource_url(task.project_id, task.id)}
 
     @app.get("/api/tasks/{task_id}")
-    def task_detail(task_id: str):
-        t = store.get_task(task_id)
-        if t is None:
+    def detail(task_id: str):
+        task = store.get_task(task_id)
+        if task is None:
             raise HTTPException(404, "任务不存在")
-        return {
-            "task": {**t.to_dict(),
-                     "resource_url": task_resource_url(t.project_id, t.id)},
-            "evidence": store.list_evidence(task_id),
-            "runs": store.list_runs(task_id),
-            "approvals": store.list_approvals(task_id),
-            "audit": store.list_audit(task_id, 100),
-        }
+        return _task_data(store, task)
 
-    @app.post("/api/tasks/{task_id}/advance")
-    def advance(task_id: str):
+    @app.patch("/api/tasks/{task_id}")
+    def edit(task_id: str, body: TaskUpdate):
+        task = store.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
+        changes = body.model_dump(exclude_none=True, exclude={"snapshot_updated_at"})
         try:
-            reports = engine.run(task_id)
-        except ValueError as e:
-            raise HTTPException(404, str(e))
-        task = reports[-1].task if reports else store.get_task(task_id)
-        return {"messages": [r.message for r in reports],
-                "task": ({**task.to_dict(),
-                          "resource_url": task_resource_url(task.project_id, task.id)}
-                         if task else None)}
+            update_task(
+                store, task, snapshot_updated_at=body.snapshot_updated_at,
+                changes=changes,
+            )
+        except ValueError as exc:
+            status = 409 if "重新读取" in str(exc) else 400
+            raise HTTPException(status, str(exc)) from exc
+        return _task_data(store, task)
 
-    @app.post("/api/tasks/{task_id}/approve")
-    def approve(task_id: str, body: ApprovalInput):
+    @app.post("/api/tasks/{task_id}/briefs")
+    def add_brief(task_id: str, body: TaskBriefInput):
+        task = store.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
         try:
-            engine.approve(task_id, body.approver, body.decision, body.note, body.stage)
-            reports = engine.run(task_id) if body.decision == "approved" else []
-        except ValueError as e:
-            raise HTTPException(400, str(e))
-        t = store.get_task(task_id)
-        return {"messages": [r.message for r in reports],
-                "task": ({**t.to_dict(),
-                          "resource_url": task_resource_url(t.project_id, t.id)}
-                         if t else None)}
+            brief = add_task_brief(
+                store, task, content=body.content, status=body.status)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"brief": brief, **_task_data(store, task)}
+
+    @app.post("/api/tasks/{task_id}/process")
+    def process(task_id: str, body: TaskProcessInput):
+        task = store.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
+        try:
+            sent, brief = dispatch_task(
+                store, ctx.chat, task, message=body.message)
+        except TaskDispatchError as exc:
+            raise HTTPException(409, f"Task 仅部分派发：{exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return {"sent": sent, "brief": brief, **_task_data(store, task)}

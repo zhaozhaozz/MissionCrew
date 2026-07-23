@@ -128,7 +128,7 @@ def _render_skill_summary(project_id: str, skill: ProjectSkill, path: Path,
 
 def render_project_context(project: Project, library: DocumentLibrary,
                            workspace_dir: Path | None = None) -> str:
-    """生成聊天与结构化任务共用的项目上下文。"""
+    """生成 Channel 角色共用的项目上下文。"""
     canonical_guidelines = write_guideline_context(project)
     guideline_dir = (workspace_dir / "guidelines" if workspace_dir is not None
                      else guideline_context_dir(project))
@@ -166,7 +166,8 @@ def render_project_context(project: Project, library: DocumentLibrary,
     return "\n\n".join([
         "# MissionCrew 简介\n"
         "MissionCrew 是本地多 Agent harness，负责装配角色、Runtime/模型、项目上下文、"
-        "共享资料以及协作和任务流程；它不是业务代码仓。",
+        "共享资料以及 Channel 协作；Task 是进入 Channel 的 Issue，不是独立执行流程；"
+        "它不是业务代码仓。",
         (f"# MissionCrew 工作区\n目录：{workspace_dir}\n"
          "也可通过环境变量 MISSIONCREW_WORKSPACE 获取。该 `.missioncrew` 目录位于"
          "业务代码仓之外，其中的文件不会进入业务源码或业务代码提交。"
@@ -201,10 +202,10 @@ def render_project_context(project: Project, library: DocumentLibrary,
         f"最终回复引用项目文档时必须写成 `[标题]({documents_url}/路径)`；"
         "不得输出内部读写目录、`.missioncrew` 真实路径或 `file://` 链接。",
         (f"# 项目任务文件\n目录：{tasks_dir}\n"
-         "该目录只存放项目任务记录，不是草稿、报告或证据目录。可读取全部项目任务 Markdown，"
-         "也可新建或编辑任务；任务文件必须从第一行开始使用 YAML frontmatter，格式见工作区 "
-         "README.md。平台只同步声明了 frontmatter 的任务候选；普通 Markdown 不会创建任务。"
-         "任务状态、阶段、审批等系统字段由平台管理，不通过文件修改。")
+         "该目录只存放项目 Task 快照，不是草稿或报告目录。可读取全部 Task Markdown；"
+         "创建、编辑和追加状态简报优先使用 Agent Tool。Task 包含标题、简介、正文、状态、"
+         "标签和 Channel 绑定；每个 Task 至少绑定一个可用 Channel。文件同步只兼容旧会话，"
+         "格式见工作区 README.md。frontmatter 中的 status_briefs 是平台生成的只读历史。")
         if tasks_dir is not None else "# 项目任务文件\n（本次执行未物化）",
         "# 本次可读写目录\n以下项目资源和 MissionCrew workspace 已显式授权，可直接读写：\n"
         + dirs_section,

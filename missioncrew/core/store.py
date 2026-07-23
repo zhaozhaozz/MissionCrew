@@ -1,8 +1,4 @@
-"""SQLite 持久化层。
-
-对象类文档(项目/后端/资源/任务)按 JSON 文档存储,记录类(证据/审批/运行/审计/
-统计/授权)用固定列,便于查询与审计。
-"""
+"""SQLite 持久化层：领域对象用 JSON，消息、简报和审计用查询友好的记录表。"""
 from __future__ import annotations
 
 import json
@@ -20,39 +16,18 @@ CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS backends  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks     (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS task_briefs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id TEXT NOT NULL, author TEXT NOT NULL, author_type TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, created_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_task_briefs_task_created
+  ON task_briefs(task_id, created_at DESC);
 
-CREATE TABLE IF NOT EXISTS evidence (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id TEXT NOT NULL, stage TEXT NOT NULL, type TEXT NOT NULL,
-  path TEXT NOT NULL, summary TEXT DEFAULT '', source TEXT DEFAULT 'agent',
-  created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS approvals (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id TEXT NOT NULL, stage TEXT NOT NULL, approver TEXT NOT NULL,
-  decision TEXT NOT NULL, note TEXT DEFAULT '', created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id TEXT NOT NULL, stage TEXT NOT NULL, backend_id TEXT NOT NULL,
-  tier TEXT NOT NULL, success INTEGER NOT NULL, cost REAL NOT NULL,
-  summary TEXT DEFAULT '', trace TEXT DEFAULT '', workdir TEXT DEFAULT '',
-  created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS grants (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  task_id TEXT NOT NULL, stage TEXT NOT NULL, resource_id TEXT NOT NULL,
-  expires_at REAL NOT NULL, created_at REAL NOT NULL
-);
 CREATE TABLE IF NOT EXISTS audit (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts REAL NOT NULL, actor TEXT NOT NULL, action TEXT NOT NULL,
   task_id TEXT DEFAULT '', detail TEXT DEFAULT ''
-);
-CREATE TABLE IF NOT EXISTS stats (
-  backend_id TEXT NOT NULL, project_id TEXT NOT NULL, task_type TEXT NOT NULL,
-  success INTEGER DEFAULT 0, failure INTEGER DEFAULT 0,
-  PRIMARY KEY (backend_id, project_id, task_type)
 );
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS roles    (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -133,15 +108,46 @@ class Store:
         self._conn.executescript(_SCHEMA)
         self._migrate_chat_messages()
         self._migrate_runtime_usage()
-        self._migrate_harness_paths()
+        self._migrate_tasks_to_issues()
         self._conn.commit()
 
-    def _migrate_harness_paths(self) -> int:
-        """旧任务证据从工作区根目录迁入 `.missioncrew/evidence/`。"""
-        cursor = self._conn.execute(
-            "UPDATE evidence SET path='.missioncrew/' || path "
-            "WHERE path LIKE 'evidence/%'")
-        return cursor.rowcount
+    def _migrate_tasks_to_issues(self) -> int:
+        """把旧阶段任务文档原地升级，并为其绑定项目默认 Channel。"""
+        channel_rows = self._conn.execute("SELECT data FROM channels").fetchall()
+        channels_by_project: dict[str, list[Channel]] = {}
+        for row in channel_rows:
+            try:
+                channel = Channel.from_dict(json.loads(row["data"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not channel.archived:
+                channels_by_project.setdefault(channel.project_id, []).append(channel)
+
+        changed = 0
+        for row in self._conn.execute("SELECT id, data FROM tasks").fetchall():
+            try:
+                raw = json.loads(row["data"])
+                task = Task.from_dict(raw)
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                continue
+            available = channels_by_project.get(task.project_id, [])
+            valid_ids = {channel.id for channel in available}
+            task.channel_ids = [cid for cid in task.channel_ids if cid in valid_ids]
+            if not task.channel_ids and available:
+                default = next(
+                    (channel for channel in available
+                     if channel.id == "general" or channel.id.endswith(":general")),
+                    available[0],
+                )
+                task.channel_ids = [default.id]
+            normalized = task.to_dict()
+            if normalized != raw:
+                self._conn.execute(
+                    "UPDATE tasks SET data=? WHERE id=?",
+                    (json.dumps(normalized, ensure_ascii=False), row["id"]),
+                )
+                changed += 1
+        return changed
 
     def _migrate_chat_messages(self) -> int:
         """升级聊天消息字段，并修复旧版末尾 4000 字符回复。
@@ -273,6 +279,21 @@ class Store:
         self._execute("DELETE FROM chat_sessions WHERE backend_id=?", (id,))
         self._delete("backends", id)
     def delete_channel(self, id: str) -> None:
+        channel = self.get_channel(id)
+        if channel is not None:
+            available = [item for item in self.list_channels(channel.project_id)
+                         if item.id != id and not item.archived]
+            fallback = next(
+                (item for item in available if item.is_general),
+                available[0] if available else None,
+            )
+            for task in self.list_tasks():
+                if task.project_id != channel.project_id or id not in task.channel_ids:
+                    continue
+                task.channel_ids = [item for item in task.channel_ids if item != id]
+                if not task.channel_ids and fallback is not None:
+                    task.channel_ids = [fallback.id]
+                self.put_task(task)
         self._execute("DELETE FROM chat_sessions WHERE channel=?", (id,))
         self.revoke_agent_tokens(channel=id)
         self._delete("channels", id)
@@ -285,6 +306,9 @@ class Store:
             self.delete_channel(c.id)
         for board in self.list_boards(id):
             self.delete_board(board.id)
+        for task in self.list_tasks():
+            if task.project_id == id:
+                self.delete_task(task.id)
         self._delete("projects", id)
 
     # ---- Projects / Backends / Resources / Tasks ----
@@ -317,55 +341,30 @@ class Store:
         ts = [Task.from_dict(d) for d in self._list("tasks")]
         return sorted(ts, key=lambda t: t.created_at, reverse=True)
 
-    # ---- 证据 ----
-    def add_evidence(self, task_id: str, stage: str, type: str, path: str,
-                     summary: str = "", source: str = "agent") -> None:
-        self._execute(
-            "INSERT INTO evidence(task_id, stage, type, path, summary, source, created_at) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (task_id, stage, type, path, summary, source, time.time()),
-        )
+    def delete_task(self, id: str) -> None:
+        self._execute("DELETE FROM task_briefs WHERE task_id=?", (id,))
+        self._delete("tasks", id)
 
-    def list_evidence(self, task_id: str) -> list[dict]:
-        return [dict(r) for r in self._query(
-            "SELECT * FROM evidence WHERE task_id=? ORDER BY id", (task_id,))]
-
-    def evidence_types(self, task_id: str) -> set[str]:
-        rows = self._query("SELECT DISTINCT type FROM evidence WHERE task_id=?", (task_id,))
-        return {r["type"] for r in rows}
-
-    # ---- 审批 ----
-    def add_approval(self, task_id: str, stage: str, approver: str,
-                     decision: str, note: str = "") -> None:
-        self._execute(
-            "INSERT INTO approvals(task_id, stage, approver, decision, note, created_at) "
+    def add_task_brief(self, task_id: str, author: str, author_type: str,
+                       content: str, status: str = "") -> dict:
+        created_at = time.time()
+        brief_id = self._execute(
+            "INSERT INTO task_briefs(task_id,author,author_type,status,content,created_at) "
             "VALUES(?,?,?,?,?,?)",
-            (task_id, stage, approver, decision, note, time.time()),
+            (task_id, author, author_type, status, content, created_at),
         )
+        return {
+            "id": brief_id, "task_id": task_id, "author": author,
+            "author_type": author_type, "status": status,
+            "content": content, "created_at": created_at,
+        }
 
-    def get_approval(self, task_id: str, stage: str) -> Optional[dict]:
+    def list_task_briefs(self, task_id: str, limit: int = 200) -> list[dict]:
         rows = self._query(
-            "SELECT * FROM approvals WHERE task_id=? AND stage=? ORDER BY id DESC LIMIT 1",
-            (task_id, stage))
-        return dict(rows[0]) if rows else None
-
-    def list_approvals(self, task_id: str) -> list[dict]:
-        return [dict(r) for r in self._query(
-            "SELECT * FROM approvals WHERE task_id=? ORDER BY id", (task_id,))]
-
-    # ---- 运行记录 / 授权 / 审计 ----
-    def add_run(self, task_id: str, stage: str, backend_id: str, tier: str,
-                success: bool, cost: float, summary: str, trace: str, workdir: str) -> None:
-        self._execute(
-            "INSERT INTO runs(task_id, stage, backend_id, tier, success, cost, summary, "
-            "trace, workdir, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (task_id, stage, backend_id, tier, int(success), cost, summary,
-             trace, workdir, time.time()),
+            "SELECT * FROM task_briefs WHERE task_id=? ORDER BY id DESC LIMIT ?",
+            (task_id, max(1, min(int(limit), 1000))),
         )
-
-    def list_runs(self, task_id: str) -> list[dict]:
-        return [dict(r) for r in self._query(
-            "SELECT * FROM runs WHERE task_id=? ORDER BY id", (task_id,))]
+        return [dict(row) for row in rows]
 
     # ---- 系统全局 Runtime 使用历史 ----
     def start_runtime_usage(self, *, backend_id: str, adapter: str,
@@ -452,13 +451,6 @@ class Store:
             result.append(item)
         return result
 
-    def add_grant(self, task_id: str, stage: str, resource_id: str, expires_at: float) -> None:
-        self._execute(
-            "INSERT INTO grants(task_id, stage, resource_id, expires_at, created_at) "
-            "VALUES(?,?,?,?,?)",
-            (task_id, stage, resource_id, expires_at, time.time()),
-        )
-
     def audit(self, actor: str, action: str, task_id: str = "", detail: str = "") -> None:
         self._execute(
             "INSERT INTO audit(ts, actor, action, task_id, detail) VALUES(?,?,?,?,?)",
@@ -522,23 +514,6 @@ class Store:
             self._conn.commit()
             return cursor.rowcount
 
-    # ---- 成功率统计(路由器的"成功概率"依据) ----
-    def stats_record(self, backend_id: str, project_id: str, task_type: str, success: bool) -> None:
-        col = "success" if success else "failure"
-        self._execute(
-            f"INSERT INTO stats(backend_id, project_id, task_type, {col}) VALUES(?,?,?,1) "
-            f"ON CONFLICT(backend_id, project_id, task_type) DO UPDATE SET {col}={col}+1",
-            (backend_id, project_id, task_type),
-        )
-
-    def stats_prob(self, backend_id: str, project_id: str, task_type: str) -> float:
-        """拉普拉斯平滑的历史成功率,无记录时为 0.5。"""
-        rows = self._query(
-            "SELECT success, failure FROM stats WHERE backend_id=? AND project_id=? AND task_type=?",
-            (backend_id, project_id, task_type))
-        s, f = (rows[0]["success"], rows[0]["failure"]) if rows else (0, 0)
-        return (s + 1) / (s + f + 2)
-
     # ---- 聊天:频道 / 角色(均按项目隔离,项目是第一层级) ----
     def put_channel(self, c: Channel) -> None:
         # general 是每个项目稳定的入口，不允许因旧数据或内部调用进入归档态。
@@ -546,6 +521,11 @@ class Store:
             c.archived = False
             c.archived_at = 0.0
         self._put("channels", c.id, c.to_dict())
+        if not c.archived:
+            for task in self.list_tasks():
+                if task.project_id == c.project_id and not task.channel_ids:
+                    task.channel_ids = [c.id]
+                    self.put_task(task)
 
     def get_channel(self, id: str) -> Optional[Channel]:
         d = self._get("channels", id)

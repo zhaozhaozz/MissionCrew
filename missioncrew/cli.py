@@ -13,8 +13,8 @@ import yaml
 from .runtime import runtime_manager
 from .core import seed as seed_mod
 from .collab.chat import ChatEngine
+from .collab.tasks import add_task_brief, create_task, dispatch_task
 from .core.config import db_path, mc_home
-from .taskflow.engine import Engine
 from .collab.documents import library_for
 from .collab.skills import (materialize_project_skills,
                             sync_all_project_skill_libraries,
@@ -23,7 +23,7 @@ from .collab.workspace import migrate_legacy_workspace_layout
 from .core.models import Backend, Channel, Project, Role, Task
 from .core.store import Store
 
-app = typer.Typer(help="MissionCrew:策略驱动的多 Agent 研发任务执行平台(纯本地)")
+app = typer.Typer(help="MissionCrew:Channel 驱动的多 Agent 协作平台(纯本地)")
 project_app = typer.Typer(help="项目中心")
 backend_app = typer.Typer(help="后端与模型注册表")
 task_app = typer.Typer(help="任务")
@@ -52,37 +52,24 @@ def _store() -> Store:
     return store
 
 
-def _engine() -> Engine:
-    return Engine(_store())
-
-
 def _fmt_ts(ts: float) -> str:
     return time.strftime("%m-%d %H:%M:%S", time.localtime(ts))
 
 
 def _print_task(t: Task) -> None:
     typer.echo(f"[{t.id}] {t.title}")
-    typer.echo(f"  项目={t.project_id} 类型={t.task_type} 风险={t.risk} "
-               f"密级={t.security_level} 状态={t.status}")
-    for i, s in enumerate(t.stages):
-        mark = "▶" if i == t.stage_index and t.status not in ("done",) else " "
-        extra = []
-        if s.backend_id:
-            extra.append(f"by {s.backend_id}")
-        if s.attempts:
-            extra.append(f"重试 {s.attempts}")
-        if s.human_gate:
-            extra.append("需人工审批")
-        if s.independent:
-            extra.append("独立")
-        typer.echo(f"  {mark} {s.name:<16} [{s.status:^17}] {' '.join(extra)}")
+    typer.echo(f"  项目={t.project_id} 状态={t.status}")
+    typer.echo(f"  频道={', '.join(t.channel_ids)} 标签={', '.join(t.labels) or '-'}")
+    typer.echo(f"  简介={t.summary or '-'}")
+    if t.body:
+        typer.echo(f"\n{t.body}")
 
 
 # ---------------- 平台 ----------------
 
 @app.command()
-def demo(run: bool = typer.Option(True, help="是否顺带演示典型流程")):
-    """写入演示数据(mock 后端 + WebShop 项目 + 默认角色),并演示典型流程。"""
+def demo(run: bool = typer.Option(True, help="是否顺带演示 Channel 派发")):
+    """写入演示数据，并演示 Task 经 Channel 交给主控。"""
     store = _store()
     seed_mod.seed(store)
     typer.echo(f"演示数据已写入 {mc_home()}")
@@ -91,28 +78,17 @@ def demo(run: bool = typer.Option(True, help="是否顺带演示典型流程")):
     if not run:
         return
 
-    engine = Engine(store)
-    typer.echo("\n=== 演示 1:困难 Bug(经济档失败 -> 自动升级标准档) ===")
-    t1 = engine.create_task(
-        "webshop", "购物车合计金额在优惠券叠加时错误", task_type="bug",
-        labels=["hard"], description="多张优惠券叠加时合计金额偏大")
-    for r in engine.run(t1.id):
-        typer.echo(f"  · {r.message}")
-
-    typer.echo("\n=== 演示 2:高风险认证改动(安全审查 + 人工审批门禁) ===")
-    t2 = engine.create_task(
-        "webshop", "登录接口增加多因素认证", task_type="feature",
-        labels=["auth"], risk="high", description="新增 TOTP 二次验证")
-    for r in engine.run(t2.id):
-        typer.echo(f"  · {r.message}")
-    typer.echo(f"  批准命令: mc approve {t2.id} --approver 你的名字")
-
-    typer.echo("\n=== 演示 3:聊天协作(主控分派,执行结果自动返回主控) ===")
     chat = ChatEngine(store)
-    chat.post("general", "lead", "@[dev] 请排查优惠券叠加的边界条件。",
-              author_type="agent")
+    task = create_task(
+        store, "webshop", title="购物车优惠券叠加金额错误",
+        summary="多张优惠券叠加时合计金额偏大",
+        body="请复现、修复并补充覆盖叠加边界条件的测试。",
+        labels=["bug"], channel_ids=[],
+    )
+    sent, _ = dispatch_task(store, chat, task)
+    typer.echo(f"\nTask {task.id} 已发送到 {len(sent)} 个 Channel 的项目主控。")
     chat.wait_idle()
-    for m in store.list_messages("general"):
+    for m in store.list_messages(task.channel_ids[0]):
         who = f"@{m['author']}" if m["author_type"] == "agent" else m["author"]
         typer.echo(f"  [{who}] {m['content'].splitlines()[0]}")
     typer.echo(
@@ -131,23 +107,6 @@ def serve(host: str = DEFAULT_SERVE_HOST, port: int = DEFAULT_SERVE_PORT):
         f"http://127.0.0.1:{port}/api/agent/v1")
     typer.echo(f"MissionCrew 看板: http://{host}:{port}")
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
-
-
-@app.command()
-def approve(task_id: str,
-            approver: str = typer.Option("human", help="审批人"),
-            stage: Optional[str] = typer.Option(None, help="阶段名,默认当前阶段"),
-            reject: bool = typer.Option(False, help="拒绝而不是批准"),
-            note: str = typer.Option("", help="审批意见")):
-    """人工审批当前等待的门禁,批准后自动继续推进。"""
-    engine = _engine()
-    decision = "rejected" if reject else "approved"
-    task = engine.approve(task_id, approver, decision, note, stage)
-    typer.echo(f"审批已记录: {decision}")
-    if decision == "approved":
-        for r in engine.run(task.id):
-            typer.echo(f"  · {r.message}")
-    _print_task(engine.store.get_task(task_id))  # type: ignore[arg-type]
 
 
 @app.command()
@@ -369,62 +328,66 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
 @task_app.command("create")
 def task_create(project: str = typer.Option(..., "-p", "--project"),
                 title: str = typer.Option(..., "--title"),
-                description: str = typer.Option("", "-d", "--desc"),
-                task_type: str = typer.Option("feature", "-t", "--type"),
+                summary: str = typer.Option("", "-s", "--summary"),
+                body: str = typer.Option("", "-b", "--body"),
                 label: list[str] = typer.Option([], "-l", "--label"),
-                risk: str = typer.Option("normal", help="low|normal|high"),
-                security_level: int = typer.Option(0, help="任务密级"),
-                max_tier: Optional[str] = typer.Option(None, help="成本上限档位"),
-                run: bool = typer.Option(False, help="创建后立即推进")):
-    engine = _engine()
-    t = engine.create_task(project, title, description, task_type, list(label),
-                           risk, security_level, max_tier)
-    typer.echo(f"任务已创建: {t.id},计划: {' -> '.join(s.name for s in t.stages)}")
-    if run:
-        for r in engine.run(t.id):
-            typer.echo(f"  · {r.message}")
-        _print_task(engine.store.get_task(t.id))  # type: ignore[arg-type]
+                channel: list[str] = typer.Option([], "-c", "--channel"),
+                status: str = typer.Option("open", help="open|in_progress|blocked|done"),
+                process: bool = typer.Option(False, help="创建后发送给绑定 Channel 的主控")):
+    store = _store()
+    task = create_task(
+        store, project, title=title, summary=summary, body=body,
+        labels=list(label), channel_ids=list(channel), status=status,
+    )
+    typer.echo(f"任务已创建: {task.id}")
+    if process:
+        sent, _ = dispatch_task(store, ChatEngine(store), task)
+        typer.echo(f"已派发到 {len(sent)} 个 Channel")
+    _print_task(task)
 
 
-@task_app.command("run")
-def task_run(task_id: str, step: bool = typer.Option(False, help="只推进一步")):
-    engine = _engine()
-    reports = [engine.step(task_id)] if step else engine.run(task_id)
-    for r in reports:
-        typer.echo(f"  · {r.message}")
-    _print_task(engine.store.get_task(task_id))  # type: ignore[arg-type]
+@task_app.command("process")
+def task_process(task_id: str,
+                 message: str = typer.Option("", "-m", "--message")):
+    """在每个绑定 Channel 中通知项目主控处理 Task。"""
+    store = _store()
+    task = store.get_task(task_id)
+    if task is None:
+        raise typer.BadParameter("任务不存在")
+    sent, _ = dispatch_task(store, ChatEngine(store), task, message=message)
+    typer.echo(f"已派发到 {len(sent)} 个 Channel")
+
+
+@task_app.command("brief")
+def task_brief(task_id: str, content: str = typer.Option(..., "-m", "--message"),
+               status: Optional[str] = typer.Option(None)):
+    """追加状态简报，并可同时更新 Task 状态。"""
+    store = _store()
+    task = store.get_task(task_id)
+    if task is None:
+        raise typer.BadParameter("任务不存在")
+    add_task_brief(store, task, content=content, status=status)
+    typer.echo("状态简报已追加")
 
 
 @task_app.command("list")
 def task_list():
     for t in _store().list_tasks():
-        stage = t.current_stage.name if t.current_stage else "-"
-        typer.echo(f"{t.id:<12} [{t.status:^17}] {t.task_type:<8} 阶段={stage:<16} {t.title}")
+        typer.echo(f"{t.id:<12} [{t.status:^12}] {t.title}  "
+                   f"channels={','.join(t.channel_ids)}")
 
 
 @task_app.command("show")
-def task_show(task_id: str, verbose: bool = typer.Option(False, "-v")):
+def task_show(task_id: str):
     store = _store()
     t = store.get_task(task_id)
     if t is None:
         raise typer.Exit(1)
     _print_task(t)
-    typer.echo("\n证据:")
-    for e in store.list_evidence(task_id):
-        typer.echo(f"  [{e['type']:<22}] {e['path']}  ({e['stage']}) {e['summary']}")
-    typer.echo("\n执行记录:")
-    for r in store.list_runs(task_id):
-        ok = "✓" if r["success"] else "✗"
-        typer.echo(f"  {ok} {r['stage']:<16} {r['backend_id']:<10} tier={r['tier']:<8} "
-                   f"成本={r['cost']:g}  {r['summary']}")
-        if verbose and r["trace"]:
-            for line in json.loads(r["trace"]):
-                typer.echo(f"      路由: {line}")
-    approvals = store.list_approvals(task_id)
-    if approvals:
-        typer.echo("\n审批:")
-        for a in approvals:
-            typer.echo(f"  {a['stage']:<16} {a['decision']:<10} by {a['approver']} {a['note']}")
+    typer.echo("\n状态简报:")
+    for brief in reversed(store.list_task_briefs(task_id)):
+        typer.echo(f"  {_fmt_ts(brief['created_at'])} [{brief['status']}] "
+                   f"{brief['author']}: {brief['content']}")
 
 
 if __name__ == "__main__":
