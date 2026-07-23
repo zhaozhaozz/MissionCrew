@@ -27,7 +27,7 @@ let docHistoryCanCompare = true;
 let docCompareRevisions = [];     // 按用户选择顺序表示 A → B
 let docCompareResult = null;
 let docCompareRequestToken = 0;
-const docCollapsed = new Set();   // 收起的目录前缀
+const docExpanded = new Set();    // 用户在当前页面显式展开的目录前缀
 let docPaneRenderSignature = null;
 let docPaneRenderToken = 0;
 let documentRefreshToken = 0;
@@ -57,6 +57,15 @@ function currentDocPaneSignature() {
 
 function docEncode(path) {
   return path.split("/").map(encodeURIComponent).join("/");
+}
+
+function expandDocAncestors(path) {
+  let prefix = "";
+  for (const part of String(path || "").split("/").slice(0, -1)) {
+    if (!part) continue;
+    prefix = prefix ? `${prefix}/${part}` : part;
+    docExpanded.add(prefix);
+  }
 }
 
 function resolvedDocumentLink(path) {
@@ -97,6 +106,7 @@ async function revealMissionCrewDocument(path) {
     return;
   }
   docSelected = target.path || null;
+  expandDocAncestors(docSelected);
   docMode = "view";
   docViewingRevision = null;
   docHistoryOpen = false;
@@ -149,7 +159,7 @@ function documentSidebarHtml() {
   const walk = (node, prefix, depth) => {
     for (const dir of Object.keys(node.dirs).sort()) {
       const key = prefix ? `${prefix}/${dir}` : dir;
-      const closed = docCollapsed.has(key);
+      const closed = !docExpanded.has(key);
       rows.push(`<div class="side-item side-tree-dir" style="padding-left:${22 + depth * 14}px"
           data-dir="${esc(key)}" onclick="toggleDocDir(this.dataset.dir)">
           <span class="caret">${closed ? "▸" : "▾"}</span> 📁 ${esc(dir)}</div>`);
@@ -168,7 +178,7 @@ function documentSidebarHtml() {
 }
 
 function toggleDocDir(key) {
-  docCollapsed.has(key) ? docCollapsed.delete(key) : docCollapsed.add(key);
+  docExpanded.has(key) ? docExpanded.delete(key) : docExpanded.add(key);
   renderSidebar();
 }
 
@@ -257,6 +267,7 @@ async function uploadDocuments(input) {
     await renderDocuments();
     if (uploaded.length) {
       docSelected = uploaded[0];
+      expandDocAncestors(docSelected);
       docMode = "view";
       docViewingRevision = null;
       docHistoryOpen = false;
@@ -472,6 +483,7 @@ async function saveDocument() {
     content: document.getElementById("doc-content").value,
     message: `Update ${path} from project document editor`,
   });
+  expandDocAncestors(path);
   docMode = "view";
   docHistoryOpen = false;
   resetDocumentVersionCompare();

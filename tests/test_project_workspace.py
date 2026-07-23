@@ -782,10 +782,14 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "downloadDocument" in documents and "/documents/download/" in documents
     assert "不能在线编辑或比较版本" in documents
     assert "documentSidebarHtml" in documents
+    assert "const docExpanded = new Set()" in documents
+    assert "const closed = !docExpanded.has(key)" in documents
     assert (
-        'localStorage.getItem("mc.sideCollapsed") ?? \'["docs"]\''
-        in router
+        "docExpanded.has(key) ? docExpanded.delete(key) : docExpanded.add(key)"
+        in documents
     )
+    assert "expandDocAncestors(docSelected)" in documents
+    assert 'localStorage.getItem("mc.sideCollapsed") || "[]"' in router
     assert 'localStorage.setItem("mc.sideCollapsed"' in router
     assert "版本历史" in documents
     assert "compareDocumentVersions" in documents

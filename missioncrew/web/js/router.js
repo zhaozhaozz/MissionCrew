@@ -176,7 +176,7 @@ function setProject(id, updateRoute = true) {
   docFiles = []; docFilesMeta = []; docSelected = null;
   docMode = "view"; docViewingRevision = null; docHistoryOpen = false;
   resetDocumentVersionCompare();
-  docCollapsed.clear();
+  docExpanded.clear();
   closeTaskDialog(false);
   renderSidebar(); renderBoard(); renderCustomBoards();
   if (currentTab === "proj") renderProjSettings();
@@ -264,9 +264,8 @@ async function loadOverview() {
   }
 }
 
-// 首次访问默认收起文档树；用户操作后继续使用跨会话记忆的完整状态。
-const sideCollapsed = new Set(JSON.parse(
-  localStorage.getItem("mc.sideCollapsed") ?? '["docs"]'));
+// 侧栏各可折叠分区的状态跨会话记忆。
+const sideCollapsed = new Set(JSON.parse(localStorage.getItem("mc.sideCollapsed") || "[]"));
 
 function toggleSection(sec) {
   sideCollapsed.has(sec) ? sideCollapsed.delete(sec) : sideCollapsed.add(sec);
