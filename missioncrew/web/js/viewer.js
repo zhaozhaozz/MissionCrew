@@ -300,7 +300,7 @@ function createTextViewer(config) {
   function compareHtml() {
     const result = V.compareResult;
     if (result.loading)
-      return `<section class="doc-compare-panel"><div class="empty">正在比较版本…</div></section>`;
+      return `<section class="doc-compare-panel viewer-compare"><div class="empty">正在比较版本…</div></section>`;
     const head = `<div class="doc-compare-head"><strong>版本比较</strong>
       <code>A ${esc(result.from_revision.slice(0, 10))}</code><span>→</span>
       <code>B ${esc(result.to_revision.slice(0, 10))}</code>
@@ -315,12 +315,12 @@ function createTextViewer(config) {
       </div>
       <button class="ghost compact" type="button" data-vact="exit-compare">退出比较</button></div>`;
     if (result.identical)
-      return `<section class="doc-compare-panel">${head}
+      return `<section class="doc-compare-panel viewer-compare">${head}
         <div class="empty">两个版本的文本内容完全相同。</div></section>`;
     const body = V.compareStyle === "split"
       ? viewerSplitDiffHtml(result.ops)
       : viewerInlineDiffHtml(result.ops);
-    return `<section class="doc-compare-panel">${head}${body}</section>`;
+    return `<section class="doc-compare-panel viewer-compare">${head}${body}</section>`;
   }
 
   async function render(preserveScroll = false) {

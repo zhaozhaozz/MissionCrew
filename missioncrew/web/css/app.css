@@ -746,7 +746,8 @@
   .doc-pane .doc-editor:focus { outline: none; border-color: var(--accent);
                                 box-shadow: 0 0 0 3px var(--accent-soft); }
   .doc-history-panel { margin: 0 0 14px; border: 1px solid var(--line);
-                       border-radius: 9px; background: var(--bg-soft); overflow: hidden; }
+                       border-radius: 9px; background: var(--bg-soft); overflow: hidden;
+                       flex: none; }
   .doc-history-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
                       padding: 8px 10px; border-bottom: 1px solid var(--line); }
   .doc-history-head h3 { margin: 0; color: var(--text); }
@@ -816,6 +817,16 @@
   .doc-diff-split .diff-text.removed { color: var(--bad); background: var(--bad-soft); }
   .doc-diff-split .diff-fold td { padding: 4px 8px; text-align: center;
                                   color: var(--muted); background: var(--bg-soft); }
+
+  /* 对比视图替换正文区时占满剩余高度：不再套用 420px 上限，
+     准则页（flex 布局）内部滚动，文档页由 .doc-pane 整体滚动。 */
+  .viewer-compare { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .viewer-compare .doc-version-diff,
+  .viewer-compare .doc-diff-split-wrap { flex: 1; min-height: 0; max-height: none; }
+
+  /* 准则页阅读正文（预览/原始）同样填满剩余高度并可滚动。 */
+  .guideline-workspace > .doc-body,
+  .guideline-workspace > .text-lines { flex: 1; min-height: 0; overflow: auto; }
 
   /* 安全 Markdown 阅读样式，供准则预览和版本化文档共用。 */
   .markdown-body { color: var(--text-2); font-size: 14px; line-height: 1.72;
