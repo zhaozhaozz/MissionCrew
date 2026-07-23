@@ -264,8 +264,9 @@ async function loadOverview() {
   }
 }
 
-// 侧栏各可折叠分区的状态跨会话记忆。
-const sideCollapsed = new Set(JSON.parse(localStorage.getItem("mc.sideCollapsed") || "[]"));
+// 首次访问默认收起文档树；用户操作后继续使用跨会话记忆的完整状态。
+const sideCollapsed = new Set(JSON.parse(
+  localStorage.getItem("mc.sideCollapsed") ?? '["docs"]'));
 
 function toggleSection(sec) {
   sideCollapsed.has(sec) ? sideCollapsed.delete(sec) : sideCollapsed.add(sec);
