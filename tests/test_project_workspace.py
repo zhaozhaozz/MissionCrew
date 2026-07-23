@@ -974,6 +974,9 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert "快照对当前执行只读" in cfg.prompt
     assert "包括 `/tmp`、`/var/tmp`" in cfg.prompt
     assert str(workspace / "temp") in cfg.prompt
+    assert "MissionCrew 注入的项目 Skill 是额外能力" in cfg.prompt
+    assert "不要把 `MISSIONCREW_SKILLS_DIR` 当作唯一 Skill 来源" in cfg.prompt
+    assert "`.agent/skills`、`.agents/skills`、`.claude/skills`" in cfg.prompt
     assert "MissionCrew 是一个本地 Agent harness" in (
         workspace / "README.md").read_text(encoding="utf-8")
     assert "Shell 重定向、后台日志和工具自动生成" in (

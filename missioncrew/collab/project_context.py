@@ -221,13 +221,17 @@ def render_project_context(project: Project, library: DocumentLibrary,
            f"没有项目约定时使用 `{temp_dir}`，并在任务完成后清理。"
            if temp_dir is not None else
            "临时文件必须放在当前工作目录内符合项目约定的位置，并在任务完成后清理。"),
-        ("# 项目 Skills\n"
-         + (f"文件目录：{skills_dir}\n\n" if skills_dir is not None else "")
-         + "\n".join(skill_summaries)
-         + "\n先根据 description 判断相关性；需要时读取对应 SKILL.md，"
-           "并以 Skill 目录为根解析 scripts/、references/、assets/ 等相对文件。")
-        if skill_summaries else
-        "# 项目 Skills\n（未配置）",
+        "# 项目 Skills\n"
+        "MissionCrew 注入的项目 Skill 是额外能力，不替代当前代码仓原有的 Agent 配置"
+        "或 Skill。代码仓内的 `AGENTS.md`、`CLAUDE.md` 以及 Runtime 原生支持的目录"
+        "（如 `.agent/skills`、`.agents/skills`、`.claude/skills`）仍可按原生规则发现"
+        "和使用；不要把 `MISSIONCREW_SKILLS_DIR` 当作唯一 Skill 来源。仓内文件仍须位于"
+        "本次授权的代码仓目录中。\n"
+        + (f"MissionCrew Skill 目录：{skills_dir}\n" if skills_dir is not None else "")
+        + ("\n".join(skill_summaries) if skill_summaries else
+           "（本项目未配置额外的 MissionCrew Skill）")
+        + "\n先根据 description 判断相关性；需要时读取对应 SKILL.md，"
+          "并以 Skill 目录为根解析 scripts/、references/、assets/ 等相对文件。",
         "# 准则与 Skill 使用方式\n结合当前任务自行判断哪些条目适用；"
         "准则先看 description、相关时再读全文，不要机械执行无关条目。",
     ])
