@@ -106,10 +106,29 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        self._migrate_backend_commands()
         self._migrate_chat_messages()
         self._migrate_runtime_usage()
         self._migrate_tasks_to_issues()
         self._conn.commit()
+
+    def _migrate_backend_commands(self) -> int:
+        """删除旧 Backend 记录中的命令覆盖，统一回到内置 Runtime 启动方式。"""
+        changed = 0
+        for row in self._conn.execute("SELECT id, data FROM backends").fetchall():
+            try:
+                raw = json.loads(row["data"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(raw, dict) or "command" not in raw:
+                continue
+            raw.pop("command")
+            self._conn.execute(
+                "UPDATE backends SET data=? WHERE id=?",
+                (json.dumps(raw, ensure_ascii=False), row["id"]),
+            )
+            changed += 1
+        return changed
 
     def _migrate_tasks_to_issues(self) -> int:
         """把旧阶段任务文档原地升级，并为其绑定项目默认 Channel。"""

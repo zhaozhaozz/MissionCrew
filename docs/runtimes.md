@@ -53,7 +53,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 快照区分两种生命周期：
 
 - `persistent`：服务进程内长驻并可复用的 Claude stream-json、Codex app-server 或 ACP stdio session。运行中显示 `running`，轮次结束但进程仍在时显示 `idle`，进程异常退出但实例记录尚在时显示 `disconnected`。
-- `one_shot`：兼容打印模式、自定义命令和无 session key 的 ACP 调用。子进程存在时显示 `running`，退出后立即从状态页移除。
+- `one_shot`：打印模式和无 session key 的 ACP 调用。子进程存在时显示 `running`，退出后立即从状态页移除。
 
 每个实例统一提供 backend、adapter、transport、PID、session key、原生 session/thread id、项目、角色、模型、工作目录、启动时间和最近活动时间。打印模式通过活动进程注册表上报；ACP 同时上报长驻池与一次性 client；Claude/Codex 原生 provider 直接上报其会话对象。页面的后端概览始终列出全部已注册 Runtime，即使当前没有进程，也会明确显示未运行或已停用。
 
@@ -87,7 +87,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 会话元数据保存在 SQLite `chat_sessions`：除原生 ID 外，还记录 backend id、adapter、解析后的 workdir 和最后成功接收的公共上下文版本。只有 backend、adapter、workdir 均兼容时才恢复；角色、频道或 backend 删除时同步清理。项目设置变化在下一轮把完整新版公共上下文注入原会话；Claude 的模型、effort、目录或进程环境变化会重启 OS 进程，但仍以原生 id 恢复同一会话。若 Claude/Codex 明确报告 session/thread 不存在或无效，本轮会失败并删除旧记录，绝不在同一轮静默新建；用户下一次明确重试时才使用恢复输入建立新会话。
 
-`Backend.command` 的处理取决于接入方式：ACP 自定义命令仍遵循统一协议，因此可以正常复用；Claude/Codex 或打印模式的自定义命令可能是任意 wrapper，平台无法安全假定它支持 stream-json/app-server/session 参数，因此显式退回 `CliAdapter`，不沿用原生 provider 的能力。若新增打印 Runtime，必须在 `DEFAULT_COMMANDS` 和会话策略集合中同时登记，并补首轮、续接和缺失 ID 的测试。
+Runtime 启动命令由 provider 固定维护，不允许通过 Backend 数据覆盖。若新增或调整打印 Runtime，必须在 `DEFAULT_COMMANDS` 和会话策略集合中同时登记，并补首轮、续接和缺失 ID 的测试；ACP serve 命令则统一维护在 `ACP_SERVE_COMMANDS`。
 
 ### Claude 双向 stream-json
 
@@ -119,7 +119,7 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 
 ### 打印模式 CLI(`CliAdapter`)
 
-未实现原生双向 provider 的工具仍使用打印模式：一次执行 = 一个子进程，按命令模板渲染参数，在频道工作目录内启动，收集 stdout/stderr，以退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板在 `DEFAULT_COMMANDS` 中定义，`Backend.command` 可整体覆盖；自定义打印命令的参数语义未知，平台不会猜测其 resume 标志，而是每轮发送带最近对话的完整恢复 Prompt。
+未实现原生双向 provider 的工具仍使用打印模式：一次执行 = 一个子进程，按内置命令模板渲染参数，在频道工作目录内启动，收集 stdout/stderr，以退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板统一在 `DEFAULT_COMMANDS` 中定义，不接受 Backend 数据覆盖。
 
 模板占位符(`render_command`):
 
@@ -130,11 +130,11 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 - `{allowed_dirs}` — 当前项目全部本地资源目录与文档库；会展开为重复的 `--add-dir <path>`；
 - `{workdir}` — 本次主工作目录，用于需要显式工作根参数的 CLI。
 
-打印模板统一带各 CLI 的非交互参数，保证无头执行不阻塞在终端确认提示上。Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则并显式传入主工作目录；Cursor print 模式带 `--force`。Claude/Codex 仅在用户提供自定义 `Backend.command` 时走此兼容路径。诊断输出尾部落盘到独立 harness 工作区 `.missioncrew/runtime/last-output-<adapter>.log` 便于回查，不在业务代码仓生成日志；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
+打印模板统一带各 CLI 的非交互参数，保证无头执行不阻塞在终端确认提示上。Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则并显式传入主工作目录；Cursor print 模式带 `--force`。Claude/Codex 始终使用各自的原生双向 provider。诊断输出尾部落盘到独立 harness 工作区 `.missioncrew/runtime/last-output-<adapter>.log` 便于回查，不在业务代码仓生成日志；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
 
 ### ACP stdio(`AcpAdapter`,Grok / kimi / kiro / qoder / trae)
 
-这类 CLI 不接受"命令行传 prompt"的调用方式,而是作为 JSON-RPC 2.0 服务挂在 stdio 上(换行分隔)。serve 命令在 `ACP_SERVE_COMMANDS` 中定义；Grok 以 `grok agent stdio` 启动，并用 `--cwd` 固定项目工作目录；Kimi、Qoder、Trae 会在启动 ACP 服务前逐个传入项目额外目录，Kiro 使用其 trust-all-tools 模式并由 ACP 权限请求应答完成外部访问。`Backend.command` 同样可覆盖，也可使用 `{allowed_dirs}` / `{workdir}` 占位符。协议流程(`acp.py`):
+这类 CLI 不接受"命令行传 prompt"的调用方式,而是作为 JSON-RPC 2.0 服务挂在 stdio 上(换行分隔)。固定 serve 命令在 `ACP_SERVE_COMMANDS` 中定义；Grok 以 `grok agent stdio` 启动，并用 `--cwd` 固定项目工作目录；Kimi、Qoder、Trae 会在启动 ACP 服务前逐个传入项目额外目录，Kiro 使用其 trust-all-tools 模式并由 ACP 权限请求应答完成外部访问。协议流程(`acp.py`):
 
 ```text
 initialize → session/new|session/load → [session/set_model] → session/prompt
@@ -188,7 +188,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。
 
-effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 默认，总是合法；执行时经命令模板的 `{effort}` 占位符注入，为空时连同紧邻标志一起移除。用 `Backend.command` 覆盖默认模板时，模板需自带 `{effort}` 占位符，否则角色配置的 effort 不会生效。
+effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 默认，总是合法；打印模式执行时经内置命令模板的 `{effort}` 占位符注入，为空时连同紧邻标志一起移除。
 
 ## 升级
 
@@ -213,4 +213,4 @@ effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 
 3. 在 Runtime manager 内补充二进制发现、模型目录和升级策略；模型、effort 与 capability 均通过统一查询接口暴露。
 4. 双向协议统一通过 `ExecutionConfig.emit` 输出过程事件，通过 `ExecutionConfig.interact` 请求权限或用户输入；provider 不得直接依赖 Store、FastAPI 或 Web 数据结构。
 5. 为 provider 增加契约测试，并保留“`missioncrew/runtime` 之外不得导入原始执行器”的架构边界测试。测试使用确定性协议进程，不能依赖真实模型额度。
-6. 自定义 `Backend.command` 仍可覆盖默认命令，但 provider 必须明确声明这种配置是否能可靠复用原生 session；不满足原生协议时应显式降级能力。
+6. Runtime 启动命令属于 provider 实现，不进入 Backend 数据模型；新增工具时同时实现固定命令、权限翻译、会话复用和对应测试。

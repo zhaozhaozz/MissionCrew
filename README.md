@@ -74,7 +74,7 @@ MissionCrew 是一个**多项目管理器**,项目之间互不相干(类似 Mult
 
 角色配置:必须先选 runtime,模型下拉合并该工具的配置阶梯与向 runtime 动态查询的模型目录(空模型名表示明确使用 CLI 默认),再配置角色定位、能力与偏好。新项目从全局角色模板一次性复制并保存固定组合,之后不会因模板修改、成本、能力或历史成功率自动换 runtime/model。
 
-两类接入方式的差别:打印模式 CLI 通过命令行直接传 prompt(命令模板支持 `{prompt}` / `{model}` 占位符),并用各工具的 session/resume 参数恢复会话;ACP 协议 CLI 作为长驻 JSON-RPC 服务挂在 stdio 上(`initialize → session/new|session/load → session/prompt`,平台自动应答其权限请求),`Backend.command` 可覆盖默认的 serve 命令。
+两类接入方式的差别:打印模式 CLI 通过内置命令模板传递 prompt，并用各工具的 session/resume 参数恢复会话；ACP 协议 CLI 作为长驻 JSON-RPC 服务挂在 stdio 上(`initialize → session/new|session/load → session/prompt`,平台自动应答其权限请求)。Runtime 启动命令由对应 provider 固定维护，不属于 Backend 配置。
 
 接入细节(协议流程、检测与升级机制、模型清单来源、新工具接入步骤)见 [docs/runtimes.md](docs/runtimes.md)。
 

@@ -108,11 +108,11 @@ def test_existing_message_table_gets_execution_metadata_columns(tmp_path):
 
 def test_cli_adapter_parses_stream_json_events(tmp_path):
     events, emit = _collect()
-    backend = Backend(id="c", name="c", adapter="claude_code",
-                      command=[sys.executable, FAKE_STREAM, "stream-json"])
+    backend = Backend(id="c", name="c", adapter="claude_code")
     cfg = _cfg(tmp_path, backend, emit)
     cfg.env["MISSIONCREW_WORKSPACE"] = str(tmp_path / "harness" / ".missioncrew")
-    result = adapters.CliAdapter("claude_code").run(cfg)
+    result = adapters.CliAdapter(
+        "claude_code", [sys.executable, FAKE_STREAM, "stream-json"]).run(cfg)
     assert result.success
     assert result.output == "最终回复:OK"          # 回复取 result 事件,不是原始 JSONL
     kinds = [k for k, _ in events]
@@ -129,27 +129,30 @@ def test_cli_adapter_parses_stream_json_events(tmp_path):
 
 def test_cli_adapter_keeps_full_long_stream_reply(tmp_path):
     events, emit = _collect()
-    backend = Backend(id="c", name="c", adapter="claude_code",
-                      command=[sys.executable, FAKE_STREAM, "long", "stream-json"])
-    result = adapters.CliAdapter("claude_code").run(_cfg(tmp_path, backend, emit))
+    backend = Backend(id="c", name="c", adapter="claude_code")
+    result = adapters.CliAdapter(
+        "claude_code", [sys.executable, FAKE_STREAM, "long", "stream-json"],
+    ).run(_cfg(tmp_path, backend, emit))
     assert len(result.output) > 4000
     assert result.output.startswith("完整开头：不能丢失")
 
 
 def test_plain_cli_adapter_keeps_more_than_tail_lines(tmp_path):
     events, emit = _collect()
-    backend = Backend(id="p", name="p", adapter="pi",
-                      command=[sys.executable, FAKE_STREAM, "plain-long"])
-    result = adapters.CliAdapter("pi").run(_cfg(tmp_path, backend, emit))
+    backend = Backend(id="p", name="p", adapter="pi")
+    result = adapters.CliAdapter(
+        "pi", [sys.executable, FAKE_STREAM, "plain-long"],
+    ).run(_cfg(tmp_path, backend, emit))
     assert result.output.startswith("完整回复第000行")
     assert result.output.endswith("完整回复第499行")
 
 
 def test_cli_adapter_streams_plain_lines(tmp_path):
     events, emit = _collect()
-    backend = Backend(id="p", name="p", adapter="pi",
-                      command=[sys.executable, FAKE_STREAM, "plain", "{prompt}"])
-    result = adapters.CliAdapter("pi").run(_cfg(tmp_path, backend, emit))
+    backend = Backend(id="p", name="p", adapter="pi")
+    result = adapters.CliAdapter(
+        "pi", [sys.executable, FAKE_STREAM, "plain", "{prompt}"],
+    ).run(_cfg(tmp_path, backend, emit))
     assert result.success and "最终回复" in result.output
     command = next(t for k, t in events if k == "command")
     assert "<输入>" in command and "# 聊天协作请求" not in command
@@ -160,12 +163,12 @@ def test_cli_adapter_streams_plain_lines(tmp_path):
 
 def test_plain_cli_execution_accepts_no_deadline(tmp_path):
     events, emit = _collect()
-    backend = Backend(id="p", name="p", adapter="pi",
-                      command=[sys.executable, FAKE_STREAM, "plain"])
+    backend = Backend(id="p", name="p", adapter="pi")
     config = _cfg(tmp_path, backend, emit)
     config.timeout = None
 
-    result = adapters.CliAdapter("pi").run(config)
+    result = adapters.CliAdapter(
+        "pi", [sys.executable, FAKE_STREAM, "plain"]).run(config)
 
     assert result.success and "最终回复" in result.output
 
@@ -174,20 +177,21 @@ def test_cli_adapter_survives_raising_emit(tmp_path):
     """emit 落库失败只丢事件:读线程不能死,否则管道写满整次执行假死。"""
     def bad_emit(kind, text):
         raise RuntimeError("db unavailable")
-    backend = Backend(id="p", name="p", adapter="pi",
-                      command=[sys.executable, FAKE_STREAM, "plain"])
+    backend = Backend(id="p", name="p", adapter="pi")
     cfg = _cfg(tmp_path, backend, bad_emit)
     cfg.timeout = 15
-    result = adapters.CliAdapter("pi").run(cfg)
+    result = adapters.CliAdapter(
+        "pi", [sys.executable, FAKE_STREAM, "plain"]).run(cfg)
     assert result.success and "最终回复" in result.output
 
 
 def test_stream_json_without_result_falls_back_to_text_blocks(tmp_path):
     """异常中断没等到 result 事件:回复退回已解析文本块,不发原始 JSONL。"""
     events, emit = _collect()
-    backend = Backend(id="c", name="c", adapter="claude_code",
-                      command=[sys.executable, FAKE_STREAM, "noresult", "stream-json"])
-    result = adapters.CliAdapter("claude_code").run(_cfg(tmp_path, backend, emit))
+    backend = Backend(id="c", name="c", adapter="claude_code")
+    result = adapters.CliAdapter(
+        "claude_code", [sys.executable, FAKE_STREAM, "noresult", "stream-json"],
+    ).run(_cfg(tmp_path, backend, emit))
     assert result.output == "中断前的部分回复"
     assert '"type"' not in result.output          # 不把 JSONL 泄给频道
 
@@ -196,12 +200,12 @@ def test_cli_adapter_reaps_pipe_holding_grandchildren(tmp_path):
     """子进程退出但孙进程握着管道:按进程组清理,不悬挂、回复不被污染。"""
     import time
     events, emit = _collect()
-    backend = Backend(id="p", name="p", adapter="pi",
-                      command=[sys.executable, FAKE_STREAM, "grandchild"])
+    backend = Backend(id="p", name="p", adapter="pi")
     cfg = _cfg(tmp_path, backend, emit)
     cfg.timeout = 30
     t0 = time.time()
-    result = adapters.CliAdapter("pi").run(cfg)
+    result = adapters.CliAdapter(
+        "pi", [sys.executable, FAKE_STREAM, "grandchild"]).run(cfg)
     assert time.time() - t0 < 15          # join 超时后组清理,不等满 timeout
     assert result.success and "REAL-ANSWER" in result.output
     n_before = len(events)
@@ -213,9 +217,10 @@ def test_codex_stderr_parsed_into_sections(tmp_path):
     """codex 的 stderr 过程日志分节归类:头部/思考/命令,提示词回显去重,
     回复回显跳过(stdout 已有),tokens used 并入状态。"""
     events, emit = _collect()
-    backend = Backend(id="cx", name="cx", adapter="codex",
-                      command=[sys.executable, FAKE_STREAM, "codex"])
-    result = adapters.CliAdapter("codex").run(_cfg(tmp_path, backend, emit))
+    backend = Backend(id="cx", name="cx", adapter="codex")
+    result = adapters.CliAdapter(
+        "codex", [sys.executable, FAKE_STREAM, "codex"],
+    ).run(_cfg(tmp_path, backend, emit))
     assert result.success and result.output == "最终回复正文"
     joined = {k: "".join(t for kk, t in events if kk == k)
               for k in ("input", "status", "thinking", "tool", "tool_result", "stdout")}
@@ -235,9 +240,10 @@ def test_codex_stderr_parsed_into_sections(tmp_path):
 
 def test_acp_adapter_emits_process_events(tmp_path):
     events, emit = _collect()
-    backend = Backend(id="kimi", name="k", adapter="kimi",
-                      command=[sys.executable, FAKE_ACP])
-    result = adapters.get_adapter("kimi").run(_cfg(tmp_path, backend, emit))
+    backend = Backend(id="kimi", name="k", adapter="kimi")
+    result = adapters.AcpAdapter(
+        "kimi", [sys.executable, FAKE_ACP],
+    ).run(_cfg(tmp_path, backend, emit))
     assert result.success
     kinds = [k for k, _ in events]
     assert {"command", "input", "thinking", "tool", "text"} <= set(kinds)
@@ -252,9 +258,10 @@ def test_acp_adapter_keeps_full_long_reply(tmp_path, monkeypatch):
     long_reply = "ACP 完整开头\n" + "长回复" * 1600
     monkeypatch.setattr(adapters.acp, "run_prompt",
                         lambda *args, **kwargs: (True, long_reply))
-    backend = Backend(id="kimi", name="k", adapter="kimi",
-                      command=[sys.executable, FAKE_ACP])
-    result = adapters.AcpAdapter("kimi").run(_cfg(tmp_path, backend, None))
+    backend = Backend(id="kimi", name="k", adapter="kimi")
+    result = adapters.AcpAdapter(
+        "kimi", [sys.executable, FAKE_ACP],
+    ).run(_cfg(tmp_path, backend, None))
     assert result.output == long_reply
 
 

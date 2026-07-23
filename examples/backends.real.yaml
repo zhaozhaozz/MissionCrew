@@ -21,5 +21,3 @@
   tier: standard
   cost_per_run: 5
   capabilities: [coding, reasoning, review, security]
-  # 审查场景建议只读沙箱,可覆盖默认命令模板:
-  # command: [codex, exec, --sandbox, read-only, -m, "{model}", "{prompt}"]

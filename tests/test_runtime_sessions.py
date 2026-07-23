@@ -20,7 +20,7 @@ def _cfg(session_id=""):
 def test_fixed_id_cli_creates_then_resumes_same_session():
     cfg = _cfg()
     prompt, session_id, reused = adapters._prepare_cli_session(
-        "claude_code", cfg, using_default=True)
+        "claude_code", cfg)
     assert session_id and not reused and "最近对话" in prompt
     initial, _ = adapters._apply_cli_session_args(
         "claude_code", ["claude", "-p", prompt], session_id, reused)
@@ -28,7 +28,7 @@ def test_fixed_id_cli_creates_then_resumes_same_session():
 
     cfg.session_id = session_id
     prompt, resumed_id, reused = adapters._prepare_cli_session(
-        "claude_code", cfg, using_default=True)
+        "claude_code", cfg)
     assert reused and resumed_id == session_id and prompt == "公共\n当前任务"
     resumed, _ = adapters._apply_cli_session_args(
         "claude_code", ["claude", "-p", prompt], resumed_id, reused)
@@ -48,14 +48,6 @@ def test_captured_and_directory_session_arguments(tmp_path):
         "pi", ["pi", "-p", "任务"], f"pi-dir:{session_dir}", True)
     assert not structured
     assert pi[:4] == ["pi", "--session-dir", session_dir, "--continue"]
-
-
-def test_custom_cli_command_uses_full_recovery_prompt_without_guessing_flags():
-    cfg = _cfg("native-session")
-    prompt, session_id, reused = adapters._prepare_cli_session(
-        "claude_code", cfg, using_default=False)
-    assert prompt == cfg.prompt
-    assert session_id == "" and not reused
 
 
 def test_every_default_print_runtime_has_a_session_strategy():

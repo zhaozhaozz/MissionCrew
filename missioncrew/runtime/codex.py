@@ -474,8 +474,6 @@ class CodexRuntimeProvider(RuntimeProvider):
         return list(self.command or [backend.binary_path or "codex", "app-server"])
 
     def start(self, config: ExecutionConfig) -> RunResult:
-        if config.backend.command:
-            return self.fallback.start(config)
         ephemeral = not config.session_key
         key = config.session_key or f"{config.task_id}:{config.stage_name}:{id(config)}"
         with self._guard:
@@ -509,15 +507,11 @@ class CodexRuntimeProvider(RuntimeProvider):
         return stopped + len(sessions)
 
     def capabilities(self, backend: Backend) -> RuntimeCapabilities:
-        if backend.command:
-            return self.fallback.capabilities(backend)
         return RuntimeCapabilities(
             session_reuse=True, structured_events=True,
             user_interaction=True, permission_control=True, interrupt=True)
 
     def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
-        if config.backend.command:
-            return self.fallback.execution_info(config)
         return RuntimeExecutionInfo(
             mode="persistent" if config.session_key else "one_shot",
             transport="codex-app-server",
@@ -537,8 +531,6 @@ class CodexRuntimeProvider(RuntimeProvider):
         return interrupted
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
-        if backend.command:
-            return self.fallback.list_models(backend, timeout)
         client = JsonLineProcess(
             self._command(backend), cwd=str(Path.cwd()), env=dict(os.environ),
             notification_handler=lambda _method, _params: None,
@@ -571,13 +563,10 @@ class CodexRuntimeProvider(RuntimeProvider):
             client.close()
 
     def instances(self, backend: Backend) -> list[RuntimeInstance]:
-        fallback = self.fallback.instances(backend)
-        if backend.command:
-            return fallback
         with self._guard:
             sessions = [session for session in self._sessions.values()
                         if session.backend_id == backend.id]
-        return [*fallback, *(session.snapshot() for session in sessions)]
+        return [session.snapshot() for session in sessions]
 
     def shutdown(self) -> None:
         with self._guard:

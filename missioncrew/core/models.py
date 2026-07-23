@@ -68,7 +68,6 @@ class Backend:
     cost_per_run: float = 1.0         # 默认单次成本(models 为空时生效)
     quota: Optional[float] = None     # 剩余配额(工具级),None 表示不限
     environments: list[str] = field(default_factory=list)
-    command: Optional[list[str]] = None  # 覆盖适配器默认命令模板,支持 {prompt}/{model}
     models: list[dict] = field(default_factory=list)  # [{name, tier, cost}],name=""=CLI 默认
     binary_path: str = ""             # 检测到的可执行文件路径
     version: str = ""                 # 检测到的 CLI 版本
@@ -88,7 +87,9 @@ class Backend:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Backend":
-        return cls(**d)
+        value = dict(d)
+        value.pop("command", None)  # 兼容升级前持久化的自定义命令字段
+        return cls(**value)
 
 
 @dataclass

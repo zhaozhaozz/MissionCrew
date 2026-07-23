@@ -6,7 +6,7 @@
 - 打印模式:claude、codex、opencode、copilot、cursor-agent、codebuddy、pi
   (命令行直接传 prompt,{prompt}/{model} 占位符渲染)
 - ACP stdio 协议:grok、kimi、kiro、qoder、trae(CLI 作为 JSON-RPC 服务挂在
-  stdio 上,见 acp.py;Backend.command 可覆盖默认的 serve 命令)
+  stdio 上,见 acp.py)
 """
 from __future__ import annotations
 
@@ -52,8 +52,7 @@ class _ActiveProcess:
 _ACTIVE_PROCESSES: dict[int, _ActiveProcess] = {}
 _ACTIVE_PROCESSES_GUARD = threading.Lock()
 
-# 默认命令中能够可靠恢复原生会话的打印模式 Runtime。Backend.command 是
-# 完整命令覆盖，平台不会猜测其参数语义；自定义模板暂走完整恢复 Prompt。
+# 能够可靠恢复原生会话的打印模式 Runtime。
 _FIXED_ID_SESSIONS = {"claude_code", "copilot", "codebuddy"}
 _CAPTURED_ID_SESSIONS = {"codex", "opencode", "cursor"}
 _DIRECTORY_SESSIONS = {"pi"}
@@ -192,13 +191,11 @@ def _session_missing(text: str) -> bool:
 
 
 def supports_native_session(backend: Backend) -> bool:
-    """返回当前配置是否能可靠复用原生会话，不向业务层暴露后端常量。"""
+    """返回内置 Runtime 是否能可靠复用原生会话。"""
     if backend.adapter == "mock":
         return True
-    if not backend.command:
-        return (backend.adapter in _CLI_SESSION_ADAPTERS
-                or backend.adapter in ACP_SERVE_COMMANDS)
-    return backend.adapter in ACP_SERVE_COMMANDS
+    return (backend.adapter in _CLI_SESSION_ADAPTERS
+            or backend.adapter in ACP_SERVE_COMMANDS)
 
 # 各适配器的默认命令模板；除 prompt/model/effort 外，workdir 与
 # allowed_dirs 由平台按本次项目动态渲染。
@@ -224,8 +221,7 @@ DEFAULT_COMMANDS = {
     "pi": ["pi", "-p", "{prompt}", "--model", "{model}"],
 }
 
-# ACP 协议工具的 serve 命令(来自 Multica 各后端的实际调用参数);
-# Backend.command 可整体覆盖(ACP 命令没有 {prompt} 占位符,prompt 走协议)
+# ACP 协议工具的固定 serve 命令(ACP 没有 {prompt} 占位符，prompt 走协议)。
 ACP_SERVE_COMMANDS = {
     # Grok 的 print 模式按无换行 token flush，通用逐行读取器无法实时消费；
     # 原生 ACP 同时提供正文、思考、工具、权限和可复用 session 生命周期。
@@ -660,11 +656,13 @@ class MockAdapter:
 class AcpAdapter:
     """ACP stdio 协议适配器:CLI 作为 JSON-RPC 服务运行,prompt 走协议传递。"""
 
-    def __init__(self, adapter_name: str):
+    def __init__(self, adapter_name: str,
+                 command: Optional[list[str]] = None):
         self.adapter_name = adapter_name
+        self.command = command
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
-        template = cfg.backend.command or ACP_SERVE_COMMANDS.get(self.adapter_name)
+        template = self.command or ACP_SERVE_COMMANDS.get(self.adapter_name)
         if not template:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置 ACP serve 命令")
         workdir = str(Path(cfg.workdir).expanduser().resolve())
@@ -674,7 +672,7 @@ class AcpAdapter:
             allowed_dirs=_additional_allowed_dirs(workdir, cfg.allowed_dirs),
             workdir=workdir,
         )
-        if not cfg.backend.command:
+        if self.command is None:
             cmd = _apply_permission_policy(cmd, self.adapter_name, cfg)
         # ACP 的真实输入由协议层在确定“复用 / load / 新建恢复”后上报；这里
         # 只打印 serve 命令，避免先展示一个最终没有发送的 Prompt。
@@ -882,11 +880,10 @@ def _new_session_id() -> str:
     return str(uuid.uuid4())
 
 
-def _prepare_cli_session(adapter_name: str, cfg: ExecutionConfig,
-                         using_default: bool) -> tuple[str, str, bool]:
+def _prepare_cli_session(adapter_name: str,
+                         cfg: ExecutionConfig) -> tuple[str, str, bool]:
     """返回 (本轮输入,原生会话 id,是否恢复既有会话)。"""
-    supported = bool(cfg.session_key and using_default
-                     and adapter_name in _CLI_SESSION_ADAPTERS)
+    supported = bool(cfg.session_key and adapter_name in _CLI_SESSION_ADAPTERS)
     if not supported:
         return cfg.prompt, "", False
     reused = bool(cfg.session_id)
@@ -942,31 +939,30 @@ class CliAdapter:
     (claude)按事件解析出思考/工具/文本;其余 CLI 按原始行透传。
     """
 
-    def __init__(self, adapter_name: str):
+    def __init__(self, adapter_name: str,
+                 command: Optional[list[str]] = None):
         self.adapter_name = adapter_name
+        self.command = command
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
-        using_default = not cfg.backend.command
-        if (cfg.session_key and using_default
-                and self.adapter_name in _CLI_SESSION_ADAPTERS):
+        if cfg.session_key and self.adapter_name in _CLI_SESSION_ADAPTERS:
             with _named_session_lock(cfg.session_key):
                 if cfg.cancellation_requested():
                     return RunResult(False, "执行已停止")
                 _refresh_session(cfg)
-                return self._run(cfg, using_default=True)
+                return self._run(cfg)
         if cfg.cancellation_requested():
             return RunResult(False, "执行已停止")
-        return self._run(cfg, using_default=using_default)
+        return self._run(cfg)
 
-    def _run(self, cfg: ExecutionConfig, using_default: bool) -> RunResult:
-        template = cfg.backend.command or DEFAULT_COMMANDS.get(self.adapter_name)
+    def _run(self, cfg: ExecutionConfig) -> RunResult:
+        template = self.command or DEFAULT_COMMANDS.get(self.adapter_name)
         if not template:
-            return RunResult(False, f"适配器 {self.adapter_name} 未配置命令模板"
-                                    f"(ACP 类 CLI 请在 Backend.command 中配置)")
+            return RunResult(False, f"适配器 {self.adapter_name} 未配置命令模板")
         workdir = str(Path(cfg.workdir).expanduser().resolve())
         extra_dirs = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
         input_prompt, native_session_id, reused = _prepare_cli_session(
-            self.adapter_name, cfg, using_default)
+            self.adapter_name, cfg)
         cmd = render_command(
             template, input_prompt, cfg.backend.model,
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
@@ -979,12 +975,12 @@ class CliAdapter:
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
             allowed_dirs=extra_dirs, workdir=workdir,
         )
-        if using_default:
+        if self.command is None:
             cmd = _apply_permission_policy(cmd, self.adapter_name, cfg)
             command_preview = _apply_permission_policy(
                 command_preview, self.adapter_name, cfg)
         structured_json = False
-        if cfg.session_key and using_default and self.adapter_name in _CLI_SESSION_ADAPTERS:
+        if cfg.session_key and self.adapter_name in _CLI_SESSION_ADAPTERS:
             cmd, structured_json = _apply_cli_session_args(
                 self.adapter_name, cmd, native_session_id, reused)
             command_preview, _ = _apply_cli_session_args(
@@ -1100,7 +1096,7 @@ class CliAdapter:
         if not out and (stream_json or structured_json):
             out = "\n".join(text_acc).strip() or "\n".join(err_full).strip()
         out = out or raw_out
-        if proc.returncode == 0 and cfg.session_key and using_default:
+        if proc.returncode == 0 and cfg.session_key:
             saved_id = native_session_id or (
                 captured_sessions[-1] if captured_sessions else "")
             if saved_id:
@@ -1206,7 +1202,7 @@ def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
     except (OSError, subprocess.TimeoutExpired):
         return []
     if adapter in ACP_SERVE_COMMANDS:
-        template = backend.command or ACP_SERVE_COMMANDS[adapter]
+        template = ACP_SERVE_COMMANDS[adapter]
         cmd = render_command(template, "", backend.model, allowed_dirs=[])
         return acp.list_models(cmd, timeout=timeout, runtime_id=backend.id)
     return []

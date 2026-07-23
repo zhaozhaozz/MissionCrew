@@ -171,6 +171,26 @@ def test_existing_runtime_usage_table_gets_project_and_role_columns(tmp_path):
     assert {"project_id", "role_id"} <= columns
 
 
+def test_legacy_backend_command_is_removed_from_storage(tmp_path):
+    from missioncrew.core.store import Store
+
+    path = tmp_path / "legacy-backend.sqlite3"
+    legacy = Store(path)
+    legacy._put("backends", "legacy", {
+        "id": "legacy",
+        "name": "Legacy",
+        "adapter": "codex",
+        "command": ["custom-codex", "{prompt}"],
+    })
+
+    migrated = Store(path)
+
+    assert migrated.get_backend("legacy") == Backend(
+        id="legacy", name="Legacy", adapter="codex")
+    assert "command" not in migrated._get("backends", "legacy")
+    assert migrated._migrate_backend_commands() == 0
+
+
 @pytest.mark.parametrize(("adapter", "mode", "transport"), [
     ("claude_code", "persistent", "claude-stream-json"),
     ("codex", "persistent", "codex-app-server"),

@@ -19,41 +19,43 @@ def _cfg(tmp_path, backend):
                            workdir=str(tmp_path), timeout=30)
 
 
+def _adapter(name: str, *extra: str) -> adapters.AcpAdapter:
+    return adapters.AcpAdapter(name, [sys.executable, FAKE, *extra])
+
+
 def test_acp_end_to_end_with_permission(tmp_path):
     """完整协议轮:收集文本块 + 自动选择 allow_once 权限项。"""
-    backend = Backend(id="qoder", name="q", adapter="qoder",
-                      command=[sys.executable, FAKE])
-    result = adapters.get_adapter("qoder").run(_cfg(tmp_path, backend))
+    backend = Backend(id="qoder", name="q", adapter="qoder")
+    result = _adapter("qoder").run(_cfg(tmp_path, backend))
     assert result.success, result.summary
     assert "ACP 收到任务" in result.output
     assert "权限选择=yes-once" in result.output   # 选了 allow_once,而不是 reject
 
 
 def test_acp_set_model_flows_through(tmp_path):
-    backend = Backend(id="kimi", name="k", adapter="kimi", model="k2",
-                      command=[sys.executable, FAKE])
-    result = adapters.get_adapter("kimi").run(_cfg(tmp_path, backend))
+    backend = Backend(id="kimi", name="k", adapter="kimi", model="k2")
+    result = _adapter("kimi").run(_cfg(tmp_path, backend))
     assert result.success
     assert "模型=k2" in result.output
 
 
 def test_acp_execution_has_no_default_deadline(tmp_path):
-    backend = Backend(id="grok", name="g", adapter="grok_build",
-                      command=[sys.executable, FAKE, "slow"])
+    backend = Backend(id="grok", name="g", adapter="grok_build")
     config = ExecutionConfig(
         task_id="chat", stage_name="chat", backend=backend,
         prompt="keep working", workdir=str(tmp_path))
 
-    result = adapters.get_adapter("grok_build").run(config)
+    result = _adapter("grok_build", "slow").run(config)
 
     assert config.timeout is None
     assert result.success and "ACP 收到任务" in result.output
 
 
 def test_acp_process_start_failure_is_reported(tmp_path):
-    backend = Backend(id="trae", name="t", adapter="trae",
-                      command=["/nonexistent/acp-tool"])
-    result = adapters.get_adapter("trae").run(_cfg(tmp_path, backend))
+    backend = Backend(id="trae", name="t", adapter="trae")
+    result = adapters.AcpAdapter(
+        "trae", ["/nonexistent/acp-tool"],
+    ).run(_cfg(tmp_path, backend))
     assert not result.success
     assert "启动失败" in result.summary
 
@@ -119,9 +121,8 @@ def test_acp_one_shot_execution_appears_in_runtime_status(tmp_path):
     assert result["value"][0] is True
 
 
-def _chat_cfg(tmp_path, saved, emit=None, shape="config"):
-    backend = Backend(id="kimi", name="k", adapter="kimi",
-                      command=[sys.executable, FAKE, shape])
+def _chat_cfg(tmp_path, saved, emit=None):
+    backend = Backend(id="kimi", name="k", adapter="kimi")
     return ExecutionConfig(
         task_id="chat", stage_name="chat", backend=backend,
         prompt="公共\n恢复历史\n当前任务", workdir=str(tmp_path), timeout=30,
@@ -138,7 +139,7 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
     saved = {}
     first_events = []
     try:
-        first = adapters.AcpAdapter("kimi").run(
+        first = _adapter("kimi").run(
             _chat_cfg(tmp_path, saved,
                       lambda kind, text: first_events.append((kind, text))))
         assert first.success
@@ -150,7 +151,7 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
         assert active[0].state == "idle" and active[0].session_key == "channel::role"
         assert (active[0].project_id, active[0].role_id) == ("project-a", "lead")
         second_events = []
-        second = adapters.AcpAdapter("kimi").run(
+        second = _adapter("kimi").run(
             _chat_cfg(tmp_path, saved,
                       lambda kind, text: second_events.append((kind, text))))
         assert second.success
@@ -162,12 +163,13 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
         acp.close_sessions()
 
 
-def test_runtime_manager_stops_acp_live_session(tmp_path):
+def test_runtime_manager_stops_acp_live_session(tmp_path, monkeypatch):
     saved = {}
-    backend = Backend(id="kimi-stop", name="k", adapter="kimi",
-                      command=[sys.executable, FAKE])
+    backend = Backend(id="kimi-stop", name="k", adapter="kimi")
     config = _chat_cfg(tmp_path, saved)
     config.backend = backend
+    monkeypatch.setitem(
+        adapters.ACP_SERVE_COMMANDS, "kimi", [sys.executable, FAKE])
     try:
         assert runtime_manager.start(config).success
         assert runtime_manager.stop(backend, "channel::role") == 1
@@ -178,11 +180,11 @@ def test_runtime_manager_stops_acp_live_session(tmp_path):
 def test_acp_loads_persisted_session_after_process_restart(tmp_path):
     saved = {}
     try:
-        first = adapters.AcpAdapter("kimi").run(_chat_cfg(tmp_path, saved))
+        first = _adapter("kimi").run(_chat_cfg(tmp_path, saved))
         assert first.success and saved["id"] == "s-test"
         acp.close_sessions()  # 模拟 MissionCrew 服务进程重启后内存会话消失
         events = []
-        second = adapters.AcpAdapter("kimi").run(
+        second = _adapter("kimi").run(
             _chat_cfg(tmp_path, saved,
                       lambda kind, text: events.append((kind, text))))
         assert second.success
@@ -196,10 +198,9 @@ def test_acp_without_load_capability_starts_recovery_session(tmp_path):
     saved = {"id": "persisted-session", "context": "v1"}
     events = []
     try:
-        result = adapters.AcpAdapter("kimi").run(
+        result = _adapter("kimi", "noload").run(
             _chat_cfg(tmp_path, saved,
-                      lambda kind, text: events.append((kind, text)),
-                      shape="noload"))
+                      lambda kind, text: events.append((kind, text))))
         assert result.success
         assert "轮次=1;new=1;load=0" in result.output
         assert ("input", "公共上下文\n最近对话\n当前任务") in events
