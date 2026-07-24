@@ -261,6 +261,67 @@ def test_worker_failure_reason_is_delivered_to_orchestrator(
         for m in _log(seeded) if m["author_type"] == "agent")
 
 
+@pytest.mark.parametrize(
+    ("runtime_success", "exit_kind"),
+    [(True, "正常退出"), (False, "异常退出")],
+)
+def test_worker_exit_without_output_notifies_orchestrator(
+        chat, seeded, monkeypatch, runtime_success, exit_kind):
+    """执行角色退出但无输出时，平台补发原因并自动交给主控。"""
+    lead_prompts = []
+    worker_backends = []
+
+    def _start(config):
+        if config.role_id == "dev":
+            worker_backends.append(config.backend.id)
+            return RunResult(runtime_success, " \n", output="\t")
+        lead_prompts.append(config.prompt)
+        return RunResult(True, "已处理", output="已收到无输出告警并重新安排。")
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
+    chat.post("general", "human", "@[dev] 执行检查。")
+    chat.wait_idle()
+
+    platform = [m for m in _log(seeded) if m["author_type"] == "platform"]
+    assert len(platform) == 1
+    assert f"@dev(后端 {worker_backends[0]}){exit_kind}" in platform[0]["content"]
+    assert "未产生任何可回传输出" in platform[0]["content"]
+    assert len(lead_prompts) == 1
+    assert platform[0]["content"] in lead_prompts[0]
+    dev_run = seeded._query(
+        "SELECT status, error FROM chat_runs WHERE role_id='dev' ORDER BY id DESC"
+    )[0]
+    assert dev_run["status"] == "failed"
+    assert "未产生可回传输出" in dev_run["error"]
+
+
+def test_orchestrator_exit_without_output_posts_platform_message(
+        chat, seeded, monkeypatch):
+    """主控自身无输出时补发平台消息，但不能再次触发自己形成循环。"""
+    lead_backends = []
+
+    def _start(config):
+        lead_backends.append(config.backend.id)
+        return RunResult(True, "", output="   ")
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
+
+    chat.post("general", "human", "请主控检查项目。")
+    chat.wait_idle()
+
+    messages = _log(seeded)
+    platform = [m for m in messages if m["author_type"] == "platform"]
+    assert len(platform) == 1
+    assert f"@lead(后端 {lead_backends[0]})正常退出" in platform[0]["content"]
+    assert "未产生任何可回传输出" in platform[0]["content"]
+    assert not [m for m in messages if m["author_type"] == "agent"]
+    runs = seeded._query(
+        "SELECT role_id, status FROM chat_runs ORDER BY id"
+    )
+    assert [(run["role_id"], run["status"]) for run in runs] == [
+        ("lead", "failed")]
+
+
 def test_orchestrator_self_message_not_looped_back(chat, seeded):
     """主控自己发言(Agent 回复与以主控身份调用接口)都不触发自己。"""
     chat.post("general", "lead", "我先梳理一下需求。", author_type="agent")

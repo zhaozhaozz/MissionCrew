@@ -649,10 +649,30 @@ class ChatEngine:
         with self._run_state_lock:
             if not self.store.chat_run_is_active(run_id):
                 return
+            result_output = (result.output or "").strip()
+            result_summary = (result.summary or "").strip()
+            if not result_output and not result_summary:
+                # Runtime 进程退出不等于协作完成。统一补一条平台消息，执行
+                # 角色会自动交回主控；主控自身无输出时也能让人类看到异常。
+                exit_kind = "正常退出" if result.success else "异常退出"
+                no_output = (
+                    f"@{role_id}(后端 {backend.id}){exit_kind}，"
+                    "但未产生任何可回传输出。请主控检查该运行的过程事件、"
+                    "Task brief 和已发布产物，再决定重试、调整安排或收口。"
+                )
+                try:
+                    self._post_failure(
+                        channel, role_id, msg_id, root_id, depth, no_output)
+                finally:
+                    self.store.update_chat_run(
+                        run_id, "failed", backend_id=backend.id,
+                        error=f"Runtime {exit_kind}但未产生可回传输出")
+                return
             if not result.success:
+                failure = result_summary or result_output
                 public_summary = (normalize_document_resource_urls(
-                    result.summary, project.id, document_roots)
-                    if project else result.summary)
+                    failure, project.id, document_roots)
+                    if project else failure)
                 try:
                     self._post_failure(
                         channel, role_id, msg_id, root_id, depth,
@@ -662,7 +682,7 @@ class ChatEngine:
                         run_id, "failed", backend_id=backend.id, error=public_summary)
                 return
 
-            reply = (result.output or result.summary or "(无输出)").strip()
+            reply = result_output or result_summary
             if project and role.id == project.orchestrator_role_id:
                 reply = self._apply_orchestrator_actions(
                     project, role.id, reply, root_id=root_id, depth=depth)
