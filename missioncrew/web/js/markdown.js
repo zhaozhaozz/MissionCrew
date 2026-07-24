@@ -88,7 +88,11 @@ function resolveMarkdownImageSource(target) {
 }
 
 function markdownInline(source) {
-  const tokens = [];
+  return markdownInlineWithTokens(source, []);
+}
+
+// 链接标题可以包含代码等行内标记；递归解析时必须复用占位符表。
+function markdownInlineWithTokens(source, tokens) {
   const hold = html => `\uE000${tokens.push(html) - 1}\uE001`;
   let value = String(source ?? "");
   value = value.replace(/`([^`\n]+)`/g, (_, code) => hold(`<code>${esc(code)}</code>`));
@@ -100,7 +104,7 @@ function markdownInline(source) {
     });
   value = value.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (_, label, target) => {
-      const safeLabel = markdownInline(label);
+      const safeLabel = markdownInlineWithTokens(label, tokens);
       const href = target.trim();
       const resource = missionCrewResourceReference(href);
       if (resource)
