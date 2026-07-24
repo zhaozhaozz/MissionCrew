@@ -196,6 +196,41 @@ def test_stream_json_without_result_falls_back_to_text_blocks(tmp_path):
     assert '"type"' not in result.output          # 不把 JSONL 泄给频道
 
 
+def test_opencode_tool_denial_without_final_text_is_failure(tmp_path):
+    """OpenCode 正常退出但停在 tool-calls 时，不能把开工句当最终回复。"""
+    events, emit = _collect()
+    backend = Backend(id="oc", name="OpenCode", adapter="opencode")
+    cfg = _cfg(tmp_path, backend, emit)
+    cfg.session_key = "project:channel:tester"
+    result = adapters.CliAdapter(
+        "opencode",
+        [sys.executable, FAKE_STREAM, "opencode-tool-denied", "{prompt}"],
+    ).run(cfg)
+
+    assert not result.success
+    assert "step_finish.reason=tool-calls" in result.summary
+    assert "最后工具 read（/vault/Daily/today.md）失败" in result.summary
+    assert "external_directory (/vault/Daily/*)" in result.summary
+    assert "auto-rejecting" in result.summary
+    assert "我先开始检查" not in result.output
+
+
+def test_opencode_uses_text_after_last_tool_as_final_reply(tmp_path):
+    """工具失败后若 Agent 已降级并正常 stop，只回传工具之后的最终答复。"""
+    events, emit = _collect()
+    backend = Backend(id="oc", name="OpenCode", adapter="opencode")
+    cfg = _cfg(tmp_path, backend, emit)
+    cfg.session_key = "project:channel:tester"
+    result = adapters.CliAdapter(
+        "opencode",
+        [sys.executable, FAKE_STREAM, "opencode-recovered", "{prompt}"],
+    ).run(cfg)
+
+    assert result.success
+    assert result.output == "已跳过无权限目录，核心任务完成。"
+    assert "我先开始检查" not in result.output
+
+
 def test_cli_adapter_reaps_pipe_holding_grandchildren(tmp_path):
     """子进程退出但孙进程握着管道:按进程组清理,不悬挂、回复不被污染。"""
     import time

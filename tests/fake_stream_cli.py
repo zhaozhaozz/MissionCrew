@@ -3,7 +3,8 @@
 
 argv 模式:"plain" 普通 CLI 行输出;"noresult" 只发文本块、不发 result
 事件就退出(模拟异常中断);"grandchild" 打印回复后留下持有 stdout 的
-孙进程(验证进程组清理)。缺省输出完整事件流。
+孙进程(验证进程组清理)；"opencode-*" 模拟 OpenCode JSON 终态。
+缺省输出完整事件流。
 """
 import json
 import subprocess
@@ -35,6 +36,38 @@ def main():
     if "noresult" in sys.argv:
         line({"type": "assistant", "message": {"content": [
             {"type": "text", "text": "中断前的部分回复"}]}})
+        return
+    if "opencode-tool-denied" in sys.argv:
+        line({"type": "text", "part": {
+            "type": "text", "text": "我先开始检查。"}})
+        line({"type": "step_finish", "part": {
+            "type": "step-finish", "reason": "tool-calls"}})
+        line({"type": "tool_use", "part": {
+            "type": "tool", "tool": "read", "state": {
+                "status": "error",
+                "input": {"filePath": "/vault/Daily/today.md"},
+                "error": "The user rejected permission to use this specific tool call.",
+            }}})
+        line({"type": "step_finish", "part": {
+            "type": "step-finish", "reason": "tool-calls"}})
+        print("permission requested: external_directory (/vault/Daily/*); "
+              "auto-rejecting", file=sys.stderr, flush=True)
+        return
+    if "opencode-recovered" in sys.argv:
+        line({"type": "text", "part": {
+            "type": "text", "text": "我先开始检查。"}})
+        line({"type": "tool_use", "part": {
+            "type": "tool", "tool": "read", "state": {
+                "status": "error",
+                "input": {"filePath": "/vault/Daily/today.md"},
+                "error": "permission denied",
+            }}})
+        line({"type": "step_finish", "part": {
+            "type": "step-finish", "reason": "tool-calls"}})
+        line({"type": "text", "part": {
+            "type": "text", "text": "已跳过无权限目录，核心任务完成。"}})
+        line({"type": "step_finish", "part": {
+            "type": "step-finish", "reason": "stop"}})
         return
     if "codex" in sys.argv:
         # 模仿 codex exec:过程日志全走 stderr(实测 0.144 分节格式),

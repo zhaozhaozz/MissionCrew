@@ -22,7 +22,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -816,6 +816,24 @@ _SESSION_ID_KEYS = {
 }
 
 
+@dataclass
+class _GenericJsonState:
+    """OpenCode/Cursor JSON 流的终态线索。
+
+    OpenCode 退出码为 0 只表示 CLI 正常退出；最后一步仍为 tool-calls 时，
+    必须保留工具错误并拒绝把更早的进度文本冒充最终回复。
+    """
+
+    event_index: int = 0
+    last_step_reason: str = ""
+    last_tool_index: int = -1
+    last_tool_name: str = ""
+    last_tool_target: str = ""
+    last_tool_status: str = ""
+    last_tool_error: str = ""
+    terminal_texts: list[str] = field(default_factory=list)
+
+
 def _extract_session_id(line: str) -> str:
     """从 CLI 的 JSON 事件或可读头部提取原生会话 id。"""
     try:
@@ -846,15 +864,41 @@ def _extract_session_id(line: str) -> str:
     return _walk(data)
 
 
-def _generic_json_event(line: str, emit) -> Optional[str]:
+def _generic_json_event(line: str, emit,
+                        state: Optional[_GenericJsonState] = None) -> Optional[str]:
     """解析 OpenCode/Cursor 的 JSON 输出，返回明确的最终回复（若有）。"""
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
         emit("stdout", line + "\n")
         return None
+    if state is not None:
+        state.event_index += 1
     kind = str(data.get("type") or data.get("event") or "")
     part = data.get("part") if isinstance(data.get("part"), dict) else {}
+    part_type = str(part.get("type") or "")
+
+    if state is not None and (
+            kind in ("tool_use", "tool-use") or part_type == "tool"):
+        state.last_tool_index = state.event_index
+        state.terminal_texts.clear()
+        state.last_tool_name = str(part.get("tool") or data.get("tool") or "")
+        tool_state = part.get("state")
+        tool_state = tool_state if isinstance(tool_state, dict) else {}
+        state.last_tool_status = str(tool_state.get("status") or "")
+        state.last_tool_error = str(tool_state.get("error") or "")
+        tool_input = tool_state.get("input")
+        tool_input = tool_input if isinstance(tool_input, dict) else {}
+        state.last_tool_target = str(
+            tool_input.get("filePath") or tool_input.get("path")
+            or tool_input.get("url") or "")
+
+    if state is not None and (
+            kind in ("step_finish", "step-finish")
+            or part_type in ("step_finish", "step-finish")):
+        state.last_step_reason = str(
+            part.get("reason") or data.get("reason") or "")
+
     final = data.get("result") or data.get("output")
     if isinstance(final, str) and (not kind or kind in ("result", "final", "completed")):
         return final
@@ -872,8 +916,44 @@ def _generic_json_event(line: str, emit) -> Optional[str]:
             )
     if text and (kind in ("text", "message", "assistant", "assistant_message")
                  or part.get("type") == "text"):
+        if state is not None:
+            state.terminal_texts.append(text)
         emit("text", text)
     return None
+
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _opencode_incomplete_error(
+        state: _GenericJsonState, stderr_lines: list[str]) -> str:
+    """把 OpenCode 的非终态正常退出转换为可交给主控的失败原因。"""
+    if state.last_step_reason != "tool-calls" and state.terminal_texts:
+        return ""
+
+    if state.last_step_reason == "tool-calls":
+        reason = ("OpenCode 未生成最终答复：最后执行阶段仍停在工具调用"
+                  "（step_finish.reason=tool-calls）")
+    else:
+        reason = "OpenCode 未生成可回传的最终文本"
+
+    details: list[str] = []
+    if state.last_tool_name:
+        tool = f"最后工具 {state.last_tool_name}"
+        if state.last_tool_target:
+            tool += f"（{state.last_tool_target}）"
+        if state.last_tool_error:
+            tool += f"失败：{state.last_tool_error}"
+        elif state.last_tool_status:
+            tool += f"状态：{state.last_tool_status}"
+        details.append(tool)
+
+    for raw in reversed(stderr_lines):
+        clean = _ANSI_ESCAPE_RE.sub("", raw).strip()
+        if "permission requested:" in clean or "auto-rejecting" in clean:
+            details.append(f"权限信息：{clean}")
+            break
+    return "；".join([reason, *details])
 
 
 def _new_session_id() -> str:
@@ -1021,6 +1101,7 @@ class CliAdapter:
         err_full: list[str] = []               # stdout 为空时的完整错误通道兜底
         final_box: list[str] = []             # stream-json 的 result 最终回复
         text_acc: list[str] = []              # stream-json 的文本块(无 result 时兜底)
+        generic_state = _GenericJsonState()
         captured_sessions: list[str] = []
 
         def parse_emit(kind, text):
@@ -1049,7 +1130,7 @@ class CliAdapter:
                     if final is not None:
                         final_box.append(final)
                 elif kind == "stdout" and structured_json:
-                    final = _generic_json_event(line, parse_emit)
+                    final = _generic_json_event(line, parse_emit, generic_state)
                     if final is not None:
                         final_box.append(final)
                 elif kind == "stderr" and codex_err:
@@ -1093,9 +1174,20 @@ class CliAdapter:
         # stream-json:回复取 result 事件;异常中断没等到 result 时退回已解析
         # 的文本块或 stderr,不把原始 JSONL 发进频道
         out = (final_box[-1].strip() if final_box else "")
-        if not out and (stream_json or structured_json):
+        if not out and structured_json and self.adapter_name == "opencode":
+            # OpenCode 可能先输出开工说明、执行多轮工具，再输出最终答复；
+            # 只取最后一个工具事件之后的文本，避免旧进度污染结果。
+            out = "\n".join(generic_state.terminal_texts).strip()
+        elif not out and (stream_json or structured_json):
             out = "\n".join(text_acc).strip() or "\n".join(err_full).strip()
         out = out or raw_out
+        completion_error = ""
+        if (structured_json and self.adapter_name == "opencode"
+                and not final_box):
+            completion_error = _opencode_incomplete_error(
+                generic_state, err_full)
+            if completion_error:
+                out = completion_error
         if proc.returncode == 0 and cfg.session_key:
             saved_id = native_session_id or (
                 captured_sessions[-1] if captured_sessions else "")
@@ -1106,7 +1198,9 @@ class CliAdapter:
         elif reused and _session_missing(out + "\n" + "\n".join(err_full)):
             _clear_session(cfg)
         _untrack_process(proc)
-        return RunResult(proc.returncode == 0, out[-300:], output=out)
+        success = proc.returncode == 0 and not completion_error
+        summary = completion_error or out[-300:]
+        return RunResult(success, summary, output=out)
 
 
 def get_adapter(name: str):

@@ -232,6 +232,35 @@ def test_worker_reply_automatically_returns_to_orchestrator(chat, seeded):
     assert authors == ["dev", "lead"]
 
 
+def test_worker_failure_reason_is_delivered_to_orchestrator(
+        chat, seeded, monkeypatch):
+    """执行角色失败时，主控收到具体 Runtime 原因并负责后续处理。"""
+    lead_prompts = []
+    failure = ("OpenCode 未生成最终答复：最后执行阶段仍停在工具调用"
+               "（step_finish.reason=tool-calls）；最后工具 read 失败："
+               "The user rejected permission；权限信息：external_directory "
+               "auto-rejecting")
+
+    def _start(config):
+        if config.role_id == "dev":
+            return RunResult(False, failure)
+        lead_prompts.append(config.prompt)
+        return RunResult(True, "已处理失败", output="已看到 dev 的失败原因并调整安排。")
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
+    chat.post("general", "human", "@[dev] 检查外部文档。")
+    chat.wait_idle()
+
+    platform = [m for m in _log(seeded) if m["author_type"] == "platform"]
+    assert len(platform) == 1
+    assert failure in platform[0]["content"]
+    assert len(lead_prompts) == 1
+    assert failure in lead_prompts[0]
+    assert any(
+        m["author"] == "lead" and "已看到 dev 的失败原因" in m["content"]
+        for m in _log(seeded) if m["author_type"] == "agent")
+
+
 def test_orchestrator_self_message_not_looped_back(chat, seeded):
     """主控自己发言(Agent 回复与以主控身份调用接口)都不触发自己。"""
     chat.post("general", "lead", "我先梳理一下需求。", author_type="agent")
