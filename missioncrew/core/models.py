@@ -558,6 +558,8 @@ class Channel:
     workdir: Optional[str] = None      # 执行工作目录,默认 MC_HOME/channels/<id>
     purpose: str = ""                 # 本频道负责的任务/讨论边界
     created_by_role_id: str = ""      # 为空表示人类/平台创建
+    content_kind: str = ""            # 绑定的内容页类型：docs / guidelines / skills
+    content_key: str = ""             # 内容页在项目内的稳定键（路径、name 或 Skill id）
     context_start_message_id: int = 0  # 最近一次清除上下文的可见分隔消息
     archived: bool = False             # 归档后对人类只读，Agent 默认不感知
     archived_at: float = 0.0

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS messages (
   channel TEXT NOT NULL, author TEXT NOT NULL, author_type TEXT NOT NULL,
   content TEXT NOT NULL, mentions TEXT DEFAULT '[]',
   mention_spans TEXT DEFAULT '[]',
+  context TEXT DEFAULT '{}',
   kind TEXT DEFAULT 'message',
   runtime_id TEXT DEFAULT '', model TEXT DEFAULT '', effort TEXT DEFAULT '',
   reply_to INTEGER, root_id INTEGER, depth INTEGER DEFAULT 0,
@@ -178,10 +179,11 @@ class Store:
         """
         columns = {row["name"] for row in self._conn.execute(
             "PRAGMA table_info(messages)").fetchall()}
-        for name in ("runtime_id", "model", "effort", "kind", "mention_spans"):
+        for name in ("runtime_id", "model", "effort", "kind", "mention_spans", "context"):
             if name not in columns:
                 default = ("'message'" if name == "kind" else
-                           "'[]'" if name == "mention_spans" else "''")
+                           "'[]'" if name == "mention_spans" else
+                           "'{}'" if name == "context" else "''")
                 self._conn.execute(
                     f"ALTER TABLE messages ADD COLUMN {name} TEXT DEFAULT {default}")
 
@@ -656,14 +658,16 @@ class Store:
                     root_id: Optional[int] = None, depth: int = 0,
                     runtime_id: str = "", model: str = "", effort: str = "",
                     kind: str = "message",
-                    mention_spans: Optional[list[dict]] = None) -> int:
+                    mention_spans: Optional[list[dict]] = None,
+                    context: Optional[dict] = None) -> int:
         msg_id = self._execute(
             "INSERT INTO messages(channel, author, author_type, content, mentions, "
-            "mention_spans, runtime_id, model, effort, kind, reply_to, root_id, depth, "
-            "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "mention_spans, context, runtime_id, model, effort, kind, reply_to, root_id, "
+            "depth, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (channel, author, author_type, content,
              json.dumps(mentions, ensure_ascii=False),
              json.dumps(mention_spans or [], ensure_ascii=False),
+             json.dumps(context or {}, ensure_ascii=False),
              runtime_id, model, effort, kind, reply_to, root_id, depth, time.time()),
         )
         if root_id is None:  # 人类发起的消息,自身就是协作链的根

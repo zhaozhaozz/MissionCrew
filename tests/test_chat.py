@@ -41,6 +41,32 @@ def test_mention_triggers_agent_reply(chat, seeded):
     assert json.loads(agents[0]["mentions"]) == ["lead"]
 
 
+def test_message_context_is_persisted_and_added_to_runtime_trigger(chat, seeded):
+    page_context = {
+        "page_collaboration": {
+            "page_kind": "docs",
+            "current_item": "architecture.md",
+            "selection": {"line_start": 4, "line_end": 6},
+        },
+    }
+    message_id = seeded.add_message(
+        "general", "human", "human", "解释这几行", [],
+        context=page_context,
+    )
+
+    stored = seeded.get_message(message_id)
+    record = chat._message_record(
+        stored,
+        seeded.get_role("webshop", "lead"),
+        seeded.get_project("webshop"),
+    )
+
+    assert stored["content"] == "解释这几行"
+    assert json.loads(stored["context"]) == page_context
+    assert record["content"] == "解释这几行"
+    assert record["context"] == page_context
+
+
 def test_agent_document_links_are_published_as_resource_urls(
         chat, seeded, monkeypatch):
     library = library_for("webshop")

@@ -5,6 +5,7 @@ import time
 
 from fastapi import FastAPI
 
+from ..collab.content_channels import ensure_project_content_channels
 from ..collab.skills import sync_all_project_skill_libraries
 from ..collab.resource_urls import (channel_resource_url,
                                     dashboard_resource_url,
@@ -22,6 +23,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def overview():
         # 用户可直接向项目 skills/ 投放目录；轮询总览时自动发现并同步。
         sync_all_project_skill_libraries(store)
+        for project in store.list_projects():
+            ensure_project_content_channels(store, project)
 
         def project_data(project):
             data = project.to_dict()

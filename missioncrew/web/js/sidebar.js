@@ -355,15 +355,15 @@ function toggleMessageBody(button) {
   button.textContent = expanded ? "收起长回复" : `展开完整回复（${button.dataset.size} 字符）`;
 }
 
-function appendMessages(list) {
-  const pane = document.getElementById("msgs");
+function appendMessagesToSurface(list, surface) {
+  const pane = surface.pane;
   if (list.length) pane.querySelector(".chat-empty")?.remove();
   const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
   for (const m of list) {
     const d = new Date(m.created_at * 1000);
     const day = d.toLocaleDateString();
-    if (day !== lastMsgDate) {
-      lastMsgDate = day;
+    if (day !== surface.lastMsgDate) {
+      surface.lastMsgDate = day;
       const sep = document.createElement("div");
       sep.className = "date-sep";
       sep.innerHTML = `<span>${esc(day)}</span>`;
@@ -375,7 +375,7 @@ function appendMessages(list) {
       boundary.dataset.msgId = m.id;
       boundary.innerHTML = `<span>${esc(m.content || "上下文已清除")}</span>`;
       pane.appendChild(boundary);
-      lastMsgId = Math.max(lastMsgId, m.id);
+      surface.lastMsgId = Math.max(surface.lastMsgId, m.id);
       continue;
     }
     const isAgent = m.author_type === "agent";
@@ -398,16 +398,28 @@ function appendMessages(list) {
           aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;
     pane.appendChild(div);
-    lastMsgId = Math.max(lastMsgId, m.id);
+    surface.lastMsgId = Math.max(surface.lastMsgId, m.id);
   }
-  if (list.length && currentChan) {
-    const channel = overview.channels.find(item => item.id === currentChan);
+  if (list.length && surface.channelId) {
+    const channel = overview.channels.find(item => item.id === surface.channelId);
     if (channel)
       channel.last_message_at = Math.max(channelActivity(channel),
         ...list.map(message => Number(message.created_at || 0)));
     renderSidebar();
   }
   if (list.length && nearBottom) pane.scrollTop = pane.scrollHeight;
+}
+
+function appendMessages(list) {
+  const surface = {
+    pane: document.getElementById("msgs"),
+    channelId: currentChan,
+    lastMsgDate,
+    lastMsgId,
+  };
+  appendMessagesToSurface(list, surface);
+  lastMsgDate = surface.lastMsgDate;
+  lastMsgId = surface.lastMsgId;
 }
 
 /* ---- 运行过程卡片:内联在触发消息之后,可折叠,实时刷新 ---- */
@@ -568,13 +580,15 @@ function renderRunEvent(run, event, openEventId) {
 }
 
 async function sendRuntimeInteraction(runId, requestId, decision, answers = {}) {
-  const card = runCards.get(runId);
+  const card = runCards.get(runId)
+    || (typeof findConfigChatRunCard === "function" ? findConfigChatRunCard(runId) : null);
   card?.el.querySelectorAll(".ri-actions button").forEach(button => button.disabled = true);
   try {
     await api("POST", `/api/chat/runs/${runId}/interactions/${encodeURIComponent(requestId)}`,
       { decision, answers });
     if (card) card.key = null;
     await pollMessages();
+    if (typeof pollConfigChat === "function") await pollConfigChat();
   } catch (error) {
     card?.el.querySelectorAll(".ri-actions button").forEach(button => button.disabled = false);
   }
@@ -593,14 +607,13 @@ function submitRuntimeAnswers(runId, requestId, button) {
   sendRuntimeInteraction(runId, requestId, "submit", answers);
 }
 
-async function renderRunEvents(run, card) {
+async function renderRunEvents(run, card, pane = document.getElementById("msgs")) {
   // 静默拉取(不弹 toast,服务重启间隙下轮重试);成功才返回 true,
   // 调用方据此提交 card.key,失败时下轮按 key 未变化重试
   try {
     const r = await fetch(`/api/chat/runs/${run.id}/events`);
     if (!r.ok) return false;
     const d = await r.json();
-    const pane = document.getElementById("msgs");
     const outerNear = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
     const body = card.el.querySelector(".rc-events");
     const innerNear = !body.childElementCount ||
@@ -634,16 +647,18 @@ async function renderRunEvents(run, card) {
   } catch (_) { return false; }
 }
 
-function syncRuns(runs) {
-  const pane = document.getElementById("msgs");
+function syncRuns(runs, surface = null) {
+  const pane = surface?.pane || document.getElementById("msgs");
+  const cards = surface?.runCards || runCards;
+  const surfaceLastMsgId = surface?.lastMsgId ?? lastMsgId;
   const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
   for (const run of runs) {
-    let card = runCards.get(run.id);
+    let card = cards.get(run.id);
     if (!card) {
       // 内联定位:触发消息之后、同触发的更早卡片之后。触发消息还没
       // 分页加载进来时先不建卡,下轮消息就位后再挂,避免卡片错位搁浅
       let anchor = pane.querySelector(`[data-msg-id="${run.trigger_message_id}"]`);
-      if (!anchor && run.trigger_message_id > lastMsgId) continue;
+      if (!anchor && run.trigger_message_id > surfaceLastMsgId) continue;
       const el = document.createElement("details");
       el.className = "run-card";
       el.dataset.trigger = run.trigger_message_id;
@@ -659,7 +674,7 @@ function syncRuns(runs) {
              && Number(anchor.nextElementSibling.dataset.runId) < run.id)
         anchor = anchor.nextElementSibling;
       if (anchor) anchor.after(el); else pane.appendChild(el);
-      runCards.set(run.id, card);
+      cards.set(run.id, card);
     }
     const live = ["queued", "running", "waiting_user"].includes(run.status);
     const key = `${run.status}:${run.events_size}`;
@@ -668,7 +683,7 @@ function syncRuns(runs) {
       if (!card.userToggled) card.el.open = live;   // 运行中自动展开,结束自动收起
       if (run.events_size > 0 || !live) {
         card.fetching = true;
-        renderRunEvents(run, card).then(ok => {
+        renderRunEvents(run, card, pane).then(ok => {
           card.fetching = false;
           if (ok) card.key = key;
         });

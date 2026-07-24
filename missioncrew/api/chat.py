@@ -13,7 +13,7 @@ from ..collab.workspace import write_page_context_snapshot
 from ..core.config import projects_dir
 from ..core.models import Channel
 from .context import ApiContext
-from .schemas import (ChannelCreate, MessageInput, PageContextInput,
+from .schemas import (ChannelCreate, ContentChannelInput, MessageInput, PageContextInput,
                       RuntimeInteractionInput)
 
 
@@ -48,12 +48,32 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         store.audit(actor, "channel_created", detail=f"project={body.project_id} channel={cid}")
         return channel_data(c)
 
+    @app.post("/api/projects/{project_id}/content-channel")
+    def content_channel(project_id: str, body: ContentChannelInput):
+        from ..collab.content_channels import ensure_content_channel
+
+        project = ctx.must_project(project_id)
+        try:
+            channel, created = ensure_content_channel(
+                store, project, body.content_kind, body.content_key, body.label)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if created:
+            store.audit(
+                "platform", "content_channel_created",
+                detail=(f"project={project_id} kind={body.content_kind} "
+                        f"key={body.content_key} channel={channel.id}"),
+            )
+        return {**channel_data(channel), "created": created}
+
     def mutable_channel(channel_id: str) -> Channel:
         channel = store.get_channel(channel_id)
         if channel is None:
             raise HTTPException(404, "频道不存在")
         if channel.is_general:
             raise HTTPException(409, "general 是项目默认频道，不能归档或删除")
+        if channel.content_kind:
+            raise HTTPException(409, "内容专属频道由对应文章管理，不能单独归档或删除")
         if store.active_chat_runs(channel_id):
             raise HTTPException(409, "频道仍有 Agent 正在运行，请先停止或等待本轮结束")
         return channel
@@ -106,6 +126,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 item["mention_spans"] = json.loads(item.get("mention_spans") or "[]")
             except (json.JSONDecodeError, TypeError):
                 item["mention_spans"] = []
+            try:
+                item["context"] = json.loads(item.get("context") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                item["context"] = {}
             if project and document_root:
                 original = str(item.get("content", ""))
                 normalized = normalize_document_resource_urls(
@@ -149,6 +173,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             msg_id = chat.post(
                 channel_id, body.author, body.content,
                 mention_spans=[item.model_dump() for item in body.mentions],
+                context=body.context,
             )
         except ValueError as e:
             conflict = "已归档" in str(e) or "正在停止" in str(e)

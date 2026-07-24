@@ -233,7 +233,8 @@ class ChatEngine:
              root_id: Optional[int] = None, depth: int = 0,
              runtime_id: Optional[str] = None, model: Optional[str] = None,
              effort: Optional[str] = None,
-             mention_spans: Optional[list[dict]] = None) -> int:
+             mention_spans: Optional[list[dict]] = None,
+             context: Optional[dict] = None) -> int:
         """发布消息，并只按可信的结构化提及异步触发角色。
 
         Web 人类消息必须传选择器生成的 ``mention_spans``；省略该参数的
@@ -293,7 +294,7 @@ class ChatEngine:
             msg_id = self.store.add_message(
                 channel_id, author, author_type, content, mentions, reply_to,
                 root_id, depth, runtime_id or "", model or "", effort or "",
-                mention_spans=legal_spans)
+                mention_spans=legal_spans, context=context)
             self._write_channel_history(channel)
             root = root_id if root_id is not None else msg_id
             for role_id in mentions:
@@ -1010,6 +1011,14 @@ class ChatEngine:
         content = str(message.get("content", ""))
         mentions = self._decoded_mentions(message)
         mention_spans = self._decoded_mention_spans(message)
+        raw_context = message.get("context", "{}")
+        try:
+            message_context = (json.loads(raw_context)
+                               if isinstance(raw_context, str) else raw_context)
+        except (json.JSONDecodeError, TypeError):
+            message_context = {}
+        if not isinstance(message_context, dict):
+            message_context = {}
         if project:
             document_root = mc_home() / "projects" / project.id / "documents"
             original_content = content
@@ -1066,6 +1075,8 @@ class ChatEngine:
             },
             "created_at": message.get("created_at"),
         }
+        if message_context:
+            record["context"] = message_context
         if not redact_author and any(message.get(key) for key in
                                      ("runtime_id", "model", "effort")):
             record["execution"] = {

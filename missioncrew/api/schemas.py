@@ -45,6 +45,7 @@ class MessageInput(BaseModel):
     author: str = "human"
     content: str
     mentions: list[MessageMentionInput] = Field(default_factory=list, max_length=50)
+    context: dict = Field(default_factory=dict)
 
 
 class PageContextInput(BaseModel):
@@ -74,6 +75,12 @@ class ChannelCreate(BaseModel):
     workdir: Optional[str] = None
     purpose: str = ""
     actor_role_id: Optional[str] = None
+
+
+class ContentChannelInput(BaseModel):
+    content_kind: str = Field(pattern=r"^(docs|guidelines|skills)$")
+    content_key: str = Field(min_length=1, max_length=1000)
+    label: str = Field(default="", max_length=1000)
 
 
 class RoleTemplateInput(BaseModel):

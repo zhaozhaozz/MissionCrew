@@ -19,6 +19,7 @@ const CONFIG_FIELD_LABELS = {
 let configChatSelection = null;
 let configChatPolling = false;
 const configChatThreads = new Map();
+const configChatResolving = new Map();
 const CONFIG_CHAT_COLLAPSED_KEY = "mc.configChatCollapsed";
 const CONFIG_CHAT_HEIGHT_KEY = "mc.configChatHeight";
 let configChatCollapsed = localStorage.getItem(CONFIG_CHAT_COLLAPSED_KEY) === "1";
@@ -95,6 +96,7 @@ function configChatContext() {
   if (!project || !CONFIG_CHAT_TABS.has(currentTab) || !target) return null;
   let item = "未选择条目";
   let itemKey = "none";
+  let contentKey = null;
   if (currentTab === "guidelines") {
     const guideline = project.guidelines?.find(value => value.name === selectedGuidelineName);
     const draftName = guidelineFrontmatterValue(valueOf("gf-content"), "name");
@@ -102,6 +104,7 @@ function configChatContext() {
       ? `，历史版本 ${guidelineViewer.viewingRevision.slice(0, 10)}` : ""}）`
                      : `新建准则（${draftName || "name 未填写"}，未保存）`;
     itemKey = guideline?.name || "new";
+    contentKey = guideline?.name || null;
   } else if (currentTab === "skills") {
     const skill = project.skills?.find(value => value.id === selectedSkillId);
     const draftName = guidelineFrontmatterValue(valueOf("sf-content"), "name");
@@ -109,14 +112,16 @@ function configChatContext() {
     item = skill ? `${draftName || skill.name || skill.id}（id: ${skill.id}）`
                  : `新建 Skill（${draftName || draftId || "未命名"}，未保存）`;
     itemKey = skill?.id || "new";
+    contentKey = skill?.id || null;
   } else if (currentTab === "docs") {
     const draftPath = document.getElementById("doc-new-path")?.value.trim();
     item = docMode === "new" ? `新建文档（${draftPath || "路径未填写"}）`
                              : (docSelected || "未选择文档");
     itemKey = docMode === "new" ? "new" : (docSelected || "none");
+    contentKey = docMode === "new" ? null : docSelected;
   }
   return {
-    ...target, tab: currentTab, item,
+    ...target, tab: currentTab, item, contentKey,
     key: `${project.id}:${currentTab}:${itemKey}`,
   };
 }
@@ -232,6 +237,25 @@ function clearConfigChatSelection() {
   setConfigChatSelection(null);
 }
 
+function openConfigChatChannel() {
+  const context = configChatContext();
+  const channelId = context ? configChatThread(context)?.channelId : null;
+  if (channelId) selectChannel(channelId);
+}
+
+async function stopConfigChatAgents() {
+  const context = configChatContext();
+  const thread = context ? configChatThread(context) : null;
+  const count = thread?.activeRuns.filter(run =>
+    ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
+  if (!thread?.channelId || !count) return;
+  if (!await uiConfirm(
+      `停止此内容频道中正在排队、运行或等待交互的 ${count} 个 Agent？已完成的文件修改不会自动回滚。`,
+      "停止内容频道 Agent")) return;
+  await api("POST", `/api/chat/${encodeURIComponent(thread.channelId)}/stop`);
+  await pollConfigChat();
+}
+
 function configFieldLabel(element) {
   if (CONFIG_FIELD_LABELS[element.id]) return CONFIG_FIELD_LABELS[element.id];
   if (element.id?.endsWith("-extra")) return "额外引用路径";
@@ -287,39 +311,90 @@ function captureConfigChatSelection() {
 function configChatThread(context, create = false) {
   let thread = configChatThreads.get(context.key);
   if (!thread && create) {
-    thread = { channelId: null, roots: new Set(), cursor: 0, entries: [],
-               running: false, refreshedAfterReply: false };
+    thread = {
+      channelId: null, cursor: 0, entries: [], runs: [], activeRuns: [],
+      runCards: new Map(), lastMsgDate: "", lastRenderedId: 0,
+      running: false, loaded: false, refreshedAfterReply: false,
+    };
     configChatThreads.set(context.key, thread);
   }
   return thread;
+}
+
+function upsertOverviewChannel(channel) {
+  const index = overview.channels.findIndex(item => item.id === channel.id);
+  if (index >= 0) overview.channels[index] = { ...overview.channels[index], ...channel };
+  else overview.channels.push(channel);
+  renderSidebar();
+}
+
+async function ensureConfigChatChannel(context) {
+  if (!context?.contentKey) return null;
+  const thread = configChatThread(context, true);
+  if (thread.channelId) return thread;
+  if (configChatResolving.has(context.key)) return configChatResolving.get(context.key);
+  const request = (async () => {
+    const channel = await api(
+      "POST", `/api/projects/${encodeURIComponent(currentProject)}/content-channel`, {
+        content_kind: context.tab,
+        content_key: context.contentKey,
+        label: context.item.replace(/（.*$/, ""),
+      });
+    thread.channelId = channel.id;
+    upsertOverviewChannel(channel);
+    return thread;
+  })();
+  configChatResolving.set(context.key, request);
+  try { return await request; }
+  finally {
+    if (configChatResolving.get(context.key) === request)
+      configChatResolving.delete(context.key);
+  }
+}
+
+function findConfigChatRunCard(runId) {
+  for (const thread of configChatThreads.values()) {
+    const card = thread.runCards.get(runId);
+    if (card) return card;
+  }
+  return null;
 }
 
 function renderConfigChatThread(context) {
   const root = document.getElementById("config-chat-thread");
   if (!root) return;
   const thread = configChatThread(context);
-  const entries = thread?.entries.slice(-16) || [];
-  const renderKey = `${context.key}:${JSON.stringify(entries.map(entry => [
-    entry.id, entry.author, entry.author_type, entry.content,
-  ]))}`;
-  if (root.dataset.renderKey === renderKey) return;
-  const sameContext = root.dataset.contextKey === context.key;
-  const shouldFollow = !sameContext || isNearScrollBottom(root);
-  const expanded = new Set([...root.querySelectorAll(".config-chat-message details[open]")]
-    .map(details => details.closest(".config-chat-message")?.dataset.messageId).filter(Boolean));
-  root.classList.toggle("has-messages", Boolean(entries.length));
-  root.innerHTML = entries.map(entry => {
-    const long = entry.content.length > 1200;
-    const body = long
-      ? `<details ${expanded.has(String(entry.id)) ? "open" : ""}><summary>展开完整回复（${entry.content.length} 字符）</summary>` +
-        `<div class="content">${esc(entry.content)}</div></details>`
-      : `<div class="content">${esc(entry.content)}</div>`;
-    return `<div class="config-chat-message ${entry.author_type}" data-message-id="${esc(entry.id)}">
-      <span class="who">${entry.author_type === "human" ? "你" : "@" + esc(entry.author)}</span>${body}</div>`;
-  }).join("");
-  root.dataset.contextKey = context.key;
-  root.dataset.renderKey = renderKey;
-  if (entries.length && shouldFollow) root.scrollTop = root.scrollHeight;
+  if (root.dataset.contextKey !== context.key) {
+    root.replaceChildren();
+    root.dataset.contextKey = context.key;
+    if (thread) {
+      thread.lastMsgDate = "";
+      thread.lastRenderedId = 0;
+      thread.runCards.clear();
+    }
+  }
+  if (!thread) {
+    root.innerHTML = context.contentKey
+      ? `<div class="chat-empty empty">正在连接内容频道…</div>`
+      : `<div class="chat-empty empty">保存当前条目后会自动创建专属频道。</div>`;
+    return;
+  }
+  const pending = thread.entries.filter(entry => entry.id > thread.lastRenderedId);
+  if (pending.length) {
+    const surface = {
+      pane: root, channelId: thread.channelId,
+      lastMsgDate: thread.lastMsgDate, lastMsgId: thread.lastRenderedId,
+    };
+    appendMessagesToSurface(pending, surface);
+    thread.lastMsgDate = surface.lastMsgDate;
+    thread.lastRenderedId = surface.lastMsgId;
+  }
+  syncRuns(thread.runs, {
+    pane: root, runCards: thread.runCards, lastMsgId: thread.cursor,
+  });
+  root.classList.toggle("has-messages", Boolean(thread.entries.length));
+  if (!thread.entries.length && thread.loaded && !root.querySelector(".chat-empty"))
+    root.innerHTML = `<div class="chat-empty empty">此内容频道还没有消息。</div>`;
 }
 
 function updateConfigChatContext() {
@@ -354,10 +429,31 @@ function updateConfigChatContext() {
   document.getElementById("config-chat-input").placeholder =
     `询问或修改${context.label}「${context.item}」…（Enter 发送）`;
   const thread = configChatThread(context);
-  if (thread) document.getElementById("config-chat-status").textContent = thread.running
-    ? "项目主控正在处理…"
-    : (thread.entries.some(entry => entry.author_type === "agent") ? "项目主控已回复。" : "");
+  const openChannel = document.getElementById("config-chat-open-channel");
+  openChannel.style.display = thread?.channelId ? "inline-block" : "none";
+  const stop = document.getElementById("config-chat-stop");
+  const activeCount = thread?.activeRuns.filter(run =>
+    ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
+  stop.hidden = activeCount === 0;
+  stop.textContent = activeCount > 1 ? `停止全部 (${activeCount})` : "停止 Agent";
+  const input = document.getElementById("config-chat-input");
+  input.disabled = !context.contentKey;
+  if (!context.contentKey) {
+    document.getElementById("config-chat-status").textContent =
+      "请先保存当前条目；保存后会自动创建并绑定专属频道。";
+  } else if (thread) {
+    document.getElementById("config-chat-status").textContent = thread.running
+      ? "项目主控正在处理…"
+      : (thread.entries.some(entry => entry.author_type === "agent") ? "项目主控已回复。" : "");
+  }
   renderConfigChatThread(context);
+  if (context.contentKey && (!thread?.channelId || !thread.loaded)) {
+    void ensureConfigChatChannel(context).then(() => pollConfigChat()).catch(error => {
+      if (configChatContext()?.key === context.key)
+        document.getElementById("config-chat-status").textContent =
+          error.message || "内容频道连接失败。";
+    });
+  }
 }
 
 async function sendConfigChat() {
@@ -370,14 +466,17 @@ async function sendConfigChat() {
     status.textContent = project ? "请输入要询问或修改的内容。" : "请先选择项目。";
     return;
   }
-  const channel = projChannels().find(item =>
-    item.id === `${project.id}:general` || item.id === "general" || item.id.endsWith(":general"))
-    || projChannels()[0];
-  if (!channel) { status.textContent = "当前项目没有频道，无法联系主控。"; return; }
+  if (!context.contentKey) {
+    status.textContent = "请先保存当前条目，再开始页面内对话。";
+    return;
+  }
   const selection = configChatSelection?.context_key === context.key
     ? configChatSelection : null;
   status.textContent = `正在发送给 @${project.orchestrator_role_id}…`;
   try {
+    const thread = await ensureConfigChatChannel(context);
+    const channel = projChannels().find(item => item.id === thread.channelId);
+    if (!channel) throw new Error("内容频道尚未就绪");
     const fileBackedPage = context.tab === "guidelines" || context.tab === "docs";
     const currentPage = fileBackedPage ? await stageConfigPage(channel, context) : null;
     const effectiveSelection = currentPage?.text_snapshot_available === false
@@ -396,8 +495,6 @@ async function sendConfigChat() {
                          : { current_draft: currentConfigDraft(context) }),
       selection: selectionPayload, user_message: request,
     };
-    // Skill 草稿中的 @role 只是正文；JSON Unicode 转义避免被误判为额外调度。
-    const serializedPayload = JSON.stringify(payload, null, 2).replace(/@/g, "\\u0040");
     const guidelineEditingTip = context.tab === "guidelines"
       ? `当前准则正文没有内嵌在消息中；先读取 current_page.content_path。文件包含 YAML frontmatter 和正文，` +
         `frontmatter 只使用 name、description。保存时把修改后的完整文件放入 ${context.action}.markdown，` +
@@ -417,27 +514,21 @@ async function sendConfigChat() {
         `frontmatter 必须含 name、description，其他附加属性保持原样。保存时把修改后的完整文件放入 ` +
         `${context.action}.markdown，id 传 current_draft.id（Skill 目录名，不可修改）。`
       : "";
-    const content = `@${project.orchestrator_role_id} 项目配置页协作消息（JSON）：\n` +
-      `${serializedPayload}\n\n` +
+    const instructions =
       `这是围绕当前页面的对话：若用户只是提问、解释或讨论，只需回答，不要写入；` +
       `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
       `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
       guidelineEditingTip + documentEditingTip + skillEditingTip;
     input.value = "";
-    const response = await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
-      author: "human", content,
+    await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
+      author: "human", content: request,
+      context: { page_collaboration: { ...payload, instructions } },
     });
-    const thread = configChatThread(context, true);
-    thread.channelId = channel.id;
-    thread.roots.add(response.id);
-    thread.cursor = Math.max(thread.cursor, response.id);
     thread.running = true;
     thread.refreshedAfterReply = false;
-    thread.entries.push({ id: response.id, author: "human", author_type: "human", content: request });
-    renderConfigChatThread(context);
     status.textContent = `@${project.orchestrator_role_id} 正在处理；回复会显示在此处。`;
     if (currentChan === channel.id) pollMessages();
-    pollConfigChat();
+    await pollConfigChat();
   } catch (error) {
     input.value = request;
     status.textContent = error.message || "发送失败，请重试。";
@@ -447,26 +538,27 @@ async function sendConfigChat() {
 async function pollConfigChat() {
   if (configChatPolling) return;
   const context = configChatContext();
-  if (!context) return;
-  const thread = configChatThread(context);
-  if (!thread?.channelId || !thread.roots.size) return;
+  if (!context?.contentKey) return;
   configChatPolling = true;
   try {
+    const thread = await ensureConfigChatChannel(context);
+    if (!thread?.channelId) return;
     const response = await fetch(`/api/chat/${encodeURIComponent(thread.channelId)}/messages?after_id=${thread.cursor}`);
     if (!response.ok) return;
     const data = await response.json();
     for (const message of data.messages || []) {
       thread.cursor = Math.max(thread.cursor, message.id);
-      if (!thread.roots.has(message.root_id) || thread.entries.some(entry => entry.id === message.id)) continue;
+      if (thread.entries.some(entry => entry.id === message.id)) continue;
       thread.entries.push(message);
     }
-    thread.running = (data.active_runs || []).some(run => thread.roots.has(run.root_id));
+    thread.runs = data.runs || [];
+    thread.activeRuns = data.active_runs || [];
+    thread.running = thread.activeRuns.some(run =>
+      ["queued", "running", "waiting_user"].includes(run.status));
+    thread.loaded = true;
     const stillCurrent = configChatContext()?.key === context.key;
     if (stillCurrent) {
-      const status = document.getElementById("config-chat-status");
-      status.textContent = thread.running ? "项目主控正在处理…"
-        : (thread.entries.some(entry => entry.author_type === "agent") ? "项目主控已回复。" : status.textContent);
-      renderConfigChatThread(context);
+      updateConfigChatContext();
     }
     if (!thread.running && !thread.refreshedAfterReply
         && thread.entries.some(entry => entry.author_type === "agent")) {

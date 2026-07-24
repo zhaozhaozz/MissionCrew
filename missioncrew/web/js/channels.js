@@ -1,8 +1,9 @@
 /* ---- 频道(当前项目) ---- */
 function channelSidebarItem(channel) {
   const general = channelIsGeneral(channel);
+  const managed = general || channelIsContent(channel);
   const status = channel.archived ? `<span class="channel-state">已归档</span>` : "";
-  const actions = general ? "" : `<span class="channel-item-actions">
+  const actions = managed ? "" : `<span class="channel-item-actions">
     <button class="channel-more" type="button" aria-label="频道操作" title="频道操作"
       onclick="toggleChannelActions(event,this)">•••</button>
     <span class="channel-actions-menu" hidden onclick="event.stopPropagation()">
@@ -85,7 +86,8 @@ function renderChanTable() {
     <td class="muted">${esc(c.workdir || "(平台内置工作区)")}</td>
     <td class="muted">${esc(c.created_by_role_id ? "@" + c.created_by_role_id : "human/platform")}</td>
     <td>${c.archived ? `<span class="badge">已归档</span>` : `<span class="badge">活跃</span>`}</td>
-    <td>${channelIsGeneral(c) ? `<span class="muted">默认频道</span>` : `
+    <td>${channelIsGeneral(c) ? `<span class="muted">默认频道</span>`
+      : channelIsContent(c) ? `<span class="muted">内容专属频道</span>` : `
       ${c.archived
         ? `<button class="ghost" data-channel-id="${esc(c.id)}" onclick="restoreChannel(this.dataset.channelId)">恢复</button>`
         : `<button class="ghost" data-channel-id="${esc(c.id)}" onclick="archiveChannel(this.dataset.channelId)">归档</button>`}

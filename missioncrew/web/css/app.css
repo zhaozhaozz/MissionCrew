@@ -668,21 +668,26 @@
   .config-chat-head strong { flex: none; color: var(--text); }
   .config-chat-head > span { min-width: 0; color: var(--accent); overflow: hidden;
                              text-overflow: ellipsis; white-space: nowrap; }
-  .config-chat-head .ghost { margin-left: auto; padding: 2px 8px; font-size: 11px; }
+  .config-chat-head .ghost { padding: 2px 8px; font-size: 11px; }
+  #config-chat-open-channel { margin-left: auto; }
   .config-chat-selection { color: var(--muted); font-size: 11.5px; min-height: 18px;
                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .config-chat-selection.has-selection { color: var(--warn); }
   .config-chat-thread { display: block; flex: 1; min-height: 0; overflow-y: auto;
                         margin: 5px 0 7px; padding: 6px 0; border-top: 1px solid var(--line); }
   .config-chat-thread:not(.has-messages) { margin: 0; padding: 0; border-top: 0; }
-  .config-chat-message { display: flex; gap: 7px; margin: 4px 0; font-size: 12px;
-                         line-height: 1.45; }
-  .config-chat-message .who { flex: none; color: var(--muted); font-weight: 600; }
-  .config-chat-message .content { min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-  .config-chat-message.human .content { color: var(--text-2); }
-  .config-chat-message.agent .content { color: var(--text); }
-  .config-chat-message details { min-width: 0; }
-  .config-chat-message summary { color: var(--accent); cursor: pointer; }
+  /* 页面内对话直接复用正式频道的消息、Markdown 与运行过程结构，仅缩小尺寸。 */
+  .config-chat-thread .msg { max-width: calc(100% - 8px); margin-bottom: 10px; gap: 7px;
+                             animation: none; }
+  .config-chat-thread .msg .avatar { width: 24px; height: 24px; font-size: 10px; }
+  .config-chat-thread .msg .head { font-size: 11.5px; }
+  .config-chat-thread .msg .time, .config-chat-thread .msg .via { font-size: 10.5px; }
+  .config-chat-thread .msg .body { padding: 7px 10px; font-size: 12px; line-height: 1.55; }
+  .config-chat-thread .msg.human .body { max-width: min(86%, 620px); }
+  .config-chat-thread .date-sep { margin: 10px 0; }
+  .config-chat-thread .run-card { max-width: calc(100% - 31px); margin: -4px 0 10px 31px; }
+  .config-chat-thread .rc-events { max-height: 220px; }
+  .config-chat-thread .chat-empty { padding: 24px 12px; font-size: 12px; }
   .config-chat-compose { display: flex; gap: 9px; align-items: flex-end; }
   .config-chat-compose textarea { min-height: 44px; height: 48px; max-height: 120px;
                                    resize: vertical; background: var(--bg); }

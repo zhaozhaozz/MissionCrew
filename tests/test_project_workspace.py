@@ -32,6 +32,75 @@ def _client(seeded):
     return TestClient(create_app())
 
 
+def test_content_page_uses_stable_dedicated_channel_with_persisted_messages(seeded):
+    client = _client(seeded)
+    guideline = client.post("/api/projects/webshop/guidelines", json={
+        "markdown": "---\nname: api-style\ndescription: API 风格\n---\n\n正文\n",
+        "enabled": True,
+    })
+    assert guideline.status_code == 200
+
+    first = client.post("/api/projects/webshop/content-channel", json={
+        "content_kind": "guidelines",
+        "content_key": "api-style",
+        "label": "api-style",
+    })
+    second = client.post("/api/projects/webshop/content-channel", json={
+        "content_kind": "guidelines",
+        "content_key": "api-style",
+        "label": "api-style",
+    })
+    assert first.status_code == second.status_code == 200
+    channel = first.json()
+    assert second.json()["id"] == channel["id"]
+    assert channel["content_kind"] == "guidelines"
+    assert channel["content_key"] == "api-style"
+    assert not channel["id"].endswith(":general")
+
+    posted = client.post(f"/api/chat/{channel['id']}/messages", json={
+        "author": "human",
+        "content": "解释选中的段落",
+        "mentions": [],
+        "context": {
+            "page_collaboration": {
+                "page_kind": "guidelines",
+                "current_item": "api-style",
+                "selection": {"line_start": 5, "line_end": 7},
+            },
+        },
+    })
+    assert posted.status_code == 200
+    history = client.get(f"/api/chat/{channel['id']}/messages").json()["messages"]
+    human = next(item for item in history if item["id"] == posted.json()["id"])
+    assert human["content"] == "解释选中的段落"
+    assert human["context"]["page_collaboration"]["selection"]["line_start"] == 5
+
+    # 重新解析相当于刷新文章页：仍绑定同一个频道，消息无需另行保存。
+    refreshed = client.post("/api/projects/webshop/content-channel", json={
+        "content_kind": "guidelines",
+        "content_key": "api-style",
+        "label": "api-style",
+    }).json()
+    assert refreshed["id"] == channel["id"]
+    assert any(item["id"] == posted.json()["id"] for item in
+               client.get(f"/api/chat/{refreshed['id']}/messages").json()["messages"])
+    assert client.post(f"/api/chat/channels/{channel['id']}/archive").status_code == 409
+    assert client.delete(f"/api/chat/channels/{channel['id']}").status_code == 409
+
+    renamed = client.post("/api/projects/webshop/guidelines", json={
+        "original_name": "api-style",
+        "markdown": "---\nname: api-contract\ndescription: API 风格\n---\n\n正文\n",
+        "enabled": True,
+    })
+    assert renamed.status_code == 200
+    rebound = next(item for item in seeded.list_channels("webshop")
+                   if item.content_kind == "guidelines"
+                   and item.content_key == "api-contract")
+    assert rebound.id == channel["id"]
+    assert any(item["id"] == posted.json()["id"]
+               for item in seeded.list_messages(rebound.id))
+
+
 def test_project_has_one_configurable_orchestrator_and_protects_it(seeded):
     client = _client(seeded)
     project = next(p for p in client.get("/api/overview").json()["projects"]
@@ -829,7 +898,9 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "roleBindingPicker" not in js and "role_ids" not in js
     assert "fileRefPicker" not in js and "runtime_instructions" not in js
     assert "line_start" in js and "selected_text" in js
-    assert 'replace(/@/g, "\\\\u0040")' in js
+    assert "context: { page_collaboration:" in js
+    assert "content: request" in js
+    assert "/content-channel" in js and "content_key: context.contentKey" in js
     assert "只需回答，不要写入" in js
     assert "setInterval(pollConfigChat, 2000)" in main
     assert "openMarkdownDocumentLink" in documents
@@ -926,8 +997,10 @@ def test_background_refresh_preserves_scrollable_view_state(seeded):
     assert 'root.dataset.itemKey === itemKey' in configs
     assert '"#skill-markdown-preview"' in configs
     assert '".skill-file-viewer-body"' in configs
-    assert "isNearScrollBottom(root)" in configs
-    assert "root.dataset.renderKey === renderKey" in configs
+    assert "appendMessagesToSurface(pending" in configs
+    assert "syncRuns(thread.runs" in configs
+    assert "root.dataset.contextKey !== context.key" in configs
+    assert "thread.lastRenderedId" in configs
 
     assert "renderDocuments(true)" in router
     assert "signature !== docPaneRenderSignature" in documents

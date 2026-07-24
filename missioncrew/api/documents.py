@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
+from ..collab.content_channels import ensure_content_channel
 from ..collab.documents import document_resource_url, library_for
 from ..collab.recycle_bin import recycle_document
 from .context import ApiContext
@@ -24,12 +25,14 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/projects/{project_id}/documents")
     def list_documents(project_id: str):
-        ctx.must_project(project_id)
+        project = ctx.must_project(project_id)
         library = library_for(project_id)
         files = [
             {**item, "resource_url": document_resource_url(project_id, item["path"])}
             for item in library.list_files()
         ]
+        for item in files:
+            ensure_content_channel(store, project, "docs", item["path"], item["path"])
         return {"resource_url": document_resource_url(project_id), "files": files,
                 "history": library.history(limit=20)}
 
@@ -71,7 +74,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     async def upload_document(project_id: str, request: Request, path: str,
                               overwrite: bool = False, actor: str = "human"):
         """接收单个文件原始字节；多文件上传由前端逐个调用并独立版本化。"""
-        ctx.must_project(project_id)
+        project = ctx.must_project(project_id)
         content_length = request.headers.get("content-length")
         if content_length:
             try:
@@ -96,6 +99,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         store.audit(actor, "document_uploaded",
                     detail=(f"project={project_id} path={path} "
                             f"size={len(content)} revision={revision}"))
+        ensure_content_channel(store, project, "docs", path, path)
         return {"path": path, "size": len(content),
                 "resource_url": document_resource_url(project_id, path),
                 "revision": revision}
@@ -159,7 +163,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.put("/api/projects/{project_id}/documents/file/{file_path:path}")
     def write_document(project_id: str, file_path: str, body: DocumentWrite):
-        ctx.must_project(project_id)
+        project = ctx.must_project(project_id)
         try:
             revision = library_for(project_id).write(
                 file_path, body.content, body.actor, body.message)
@@ -167,6 +171,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, str(exc))
         store.audit(body.actor, "document_saved",
                     detail=f"project={project_id} path={file_path} revision={revision}")
+        ensure_content_channel(store, project, "docs", file_path, file_path)
         return {"path": file_path,
                 "resource_url": document_resource_url(project_id, file_path),
                 "revision": revision}

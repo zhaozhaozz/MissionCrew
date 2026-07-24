@@ -155,6 +155,7 @@ if (!CHANNEL_FILTERS.has(channelFilter)) channelFilter = "active";
 const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);
 const globalRoleTemplates = () => overview.role_templates || [];
 const channelIsGeneral = channel => channel.id === "general" || channel.id.endsWith(":general");
+const channelIsContent = channel => Boolean(channel.content_kind && channel.content_key);
 const channelActivity = channel => Number(channel.last_message_at || channel.created_at || 0);
 const projChannels = () => overview.channels
   .filter(channel => channel.project_id === currentProject)

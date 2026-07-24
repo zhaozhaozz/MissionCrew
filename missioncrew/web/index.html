@@ -324,6 +324,10 @@
       <div class="config-chat-head">
         <strong>与项目主控交流</strong>
         <span id="config-chat-context">当前页面：—</span>
+        <button class="ghost" id="config-chat-open-channel" type="button"
+          onclick="openConfigChatChannel()" style="display:none">打开频道</button>
+        <button class="danger compact" id="config-chat-stop" type="button"
+          onclick="stopConfigChatAgents()" hidden>停止 Agent</button>
         <button class="ghost" id="config-chat-clear-selection" type="button"
           onclick="clearConfigChatSelection()" style="display:none">清除选区</button>
       </div>
