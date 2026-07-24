@@ -88,23 +88,3 @@ def rebind_content_channel(
     channel.purpose = f"围绕{CONTENT_KIND_LABELS[content_kind]}「{title}」的页面内协作"
     store.put_channel(channel)
     return channel
-
-
-def ensure_project_content_channels(store: Store, project: Project) -> int:
-    """为项目当前已有的每篇文档、准则和 Skill 补齐专属频道。"""
-    from .documents import library_for
-
-    created = 0
-    for item in library_for(project.id).list_files():
-        _channel, is_new = ensure_content_channel(
-            store, project, "docs", item["path"], item["path"])
-        created += int(is_new)
-    for guideline in project.guidelines:
-        _channel, is_new = ensure_content_channel(
-            store, project, "guidelines", guideline.name, guideline.name)
-        created += int(is_new)
-    for skill in project.skills:
-        _channel, is_new = ensure_content_channel(
-            store, project, "skills", skill.id, skill.name or skill.id)
-        created += int(is_new)
-    return created

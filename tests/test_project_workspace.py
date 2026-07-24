@@ -39,6 +39,14 @@ def test_content_page_uses_stable_dedicated_channel_with_persisted_messages(seed
         "enabled": True,
     })
     assert guideline.status_code == 200
+    assert not any(item.content_kind == "guidelines"
+                   and item.content_key == "api-style"
+                   for item in seeded.list_channels("webshop"))
+    missing = client.get("/api/projects/webshop/content-channel", params={
+        "content_kind": "guidelines",
+        "content_key": "api-style",
+    })
+    assert missing.status_code == 404
 
     first = client.post("/api/projects/webshop/content-channel", json={
         "content_kind": "guidelines",
@@ -56,6 +64,12 @@ def test_content_page_uses_stable_dedicated_channel_with_persisted_messages(seed
     assert channel["content_kind"] == "guidelines"
     assert channel["content_key"] == "api-style"
     assert not channel["id"].endswith(":general")
+    resolved = client.get("/api/projects/webshop/content-channel", params={
+        "content_kind": "guidelines",
+        "content_key": "api-style",
+    })
+    assert resolved.status_code == 200
+    assert resolved.json()["id"] == channel["id"]
 
     posted = client.post(f"/api/chat/{channel['id']}/messages", json={
         "author": "human",
@@ -99,6 +113,33 @@ def test_content_page_uses_stable_dedicated_channel_with_persisted_messages(seed
     assert rebound.id == channel["id"]
     assert any(item["id"] == posted.json()["id"]
                for item in seeded.list_messages(rebound.id))
+
+
+def test_content_channels_are_not_precreated_by_startup_lists_or_saves(seeded):
+    library_for("webshop").write(
+        "lazy-channel.md", "# Lazy channel\n", "human", "Seed document")
+    client = _client(seeded)
+
+    assert client.get("/api/overview").status_code == 200
+    assert client.get("/api/projects/webshop/documents").status_code == 200
+    assert client.get("/api/projects/webshop/guidelines").status_code == 200
+    assert client.get("/api/projects/webshop/skills").status_code == 200
+    assert client.put("/api/projects/webshop/documents/file/saved-lazily.md", json={
+        "content": "# Saved lazily\n",
+        "actor": "human",
+        "message": "Save document",
+    }).status_code == 200
+    assert client.post("/api/projects/webshop/skills", json={
+        "id": "lazy-skill",
+        "markdown": (
+            "---\nname: Lazy Skill\ndescription: Test lazy channel creation\n"
+            "---\n\n# Lazy Skill\n"
+        ),
+        "enabled": True,
+    }).status_code == 200
+
+    assert not any(channel.content_kind
+                   for channel in seeded.list_channels("webshop"))
 
 
 def test_project_has_one_configurable_orchestrator_and_protects_it(seeded):
@@ -901,6 +942,9 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "context: { page_collaboration:" in js
     assert "content: request" in js
     assert "/content-channel" in js and "content_key: context.contentKey" in js
+    assert "resolveConfigChatChannel" in js
+    assert '"POST", `/api/projects/${encodeURIComponent(currentProject)}/content-channel`' in js
+    assert "fetch(" in js and "response.status === 404" in js
     assert "只需回答，不要写入" in js
     assert "setInterval(pollConfigChat, 2000)" in main
     assert "openMarkdownDocumentLink" in documents

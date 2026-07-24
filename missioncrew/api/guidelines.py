@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request
 
-from ..collab.content_channels import ensure_content_channel, rebind_content_channel
+from ..collab.content_channels import rebind_content_channel
 from ..collab.guidelines import (_GUIDELINE_NAME_RE, guideline_history,
                                  read_guideline_version,
                                  restore_guideline,
@@ -33,9 +33,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def list_guidelines(project_id: str):
         project = ctx.must_project(project_id)
         sync_guideline_library(store, project)
-        for guideline in project.guidelines:
-            ensure_content_channel(
-                store, project, "guidelines", guideline.name, guideline.name)
         return [{**g.to_dict(),
                  "resource_url": guideline_resource_url(project_id, g.name)}
                 for g in project.guidelines]
@@ -55,8 +52,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         rebind_content_channel(
             store, project, "guidelines", body.original_name or "",
             guideline.name, guideline.name)
-        ensure_content_channel(
-            store, project, "guidelines", guideline.name, guideline.name)
         return {**guideline.to_dict(),
                 "resource_url": guideline_resource_url(project_id, guideline.name),
                 "revision": revision}
@@ -158,8 +153,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def list_skills(project_id: str):
         project = ctx.must_project(project_id)
         project, _ = sync_project_skill_library(store, project)
-        for skill in project.skills:
-            ensure_content_channel(store, project, "skills", skill.id, skill.name or skill.id)
         return [{**s.__dict__, "resource_url": skill_resource_url(project_id, s.id)}
                 for s in project.skills]
 
@@ -178,14 +171,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 saved = save_project_skill_markdown(
                     store, project, body.id, body.markdown,
                     enabled=body.enabled, actor=actor)
-                ensure_content_channel(
-                    store, project, "skills", saved.id, saved.name or saved.id)
                 return {**saved.__dict__,
                         "resource_url": skill_resource_url(project_id, saved.id)}
             skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id", "markdown"}))
             saved = save_project_skill(store, project, skill, actor=actor)
-            ensure_content_channel(
-                store, project, "skills", saved.id, saved.name or saved.id)
             return {**saved.__dict__,
                     "resource_url": skill_resource_url(project_id, saved.id)}
         except ValueError as exc:

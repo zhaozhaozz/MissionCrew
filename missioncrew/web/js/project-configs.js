@@ -314,7 +314,8 @@ function configChatThread(context, create = false) {
     thread = {
       channelId: null, cursor: 0, entries: [], runs: [], activeRuns: [],
       runCards: new Map(), lastMsgDate: "", lastRenderedId: 0,
-      running: false, loaded: false, refreshedAfterReply: false,
+      running: false, loaded: false, resolved: false, missing: false,
+      refreshedAfterReply: false,
     };
     configChatThreads.set(context.key, thread);
   }
@@ -328,11 +329,52 @@ function upsertOverviewChannel(channel) {
   renderSidebar();
 }
 
-async function ensureConfigChatChannel(context) {
+async function resolveConfigChatChannel(context, refresh = false) {
   if (!context?.contentKey) return null;
   const thread = configChatThread(context, true);
-  if (thread.channelId) return thread;
-  if (configChatResolving.has(context.key)) return configChatResolving.get(context.key);
+  if (thread.channelId || (thread.resolved && !refresh)) return thread;
+  const resolvingKey = `${context.key}:lookup`;
+  if (configChatResolving.has(resolvingKey))
+    return configChatResolving.get(resolvingKey);
+  const request = (async () => {
+    const query = new URLSearchParams({
+      content_kind: context.tab, content_key: context.contentKey,
+    });
+    const response = await fetch(
+      `/api/projects/${encodeURIComponent(currentProject)}/content-channel?${query}`);
+    if (response.status === 404) {
+      thread.resolved = true;
+      thread.missing = true;
+      thread.loaded = true;
+      return thread;
+    }
+    if (!response.ok) {
+      let detail = "内容频道连接失败";
+      try { detail = (await response.json()).detail || detail; } catch (_) {}
+      throw new Error(detail);
+    }
+    const channel = await response.json();
+    thread.resolved = true;
+    thread.channelId = channel.id;
+    thread.missing = false;
+    thread.loaded = false;
+    upsertOverviewChannel(channel);
+    return thread;
+  })();
+  configChatResolving.set(resolvingKey, request);
+  try { return await request; }
+  finally {
+    if (configChatResolving.get(resolvingKey) === request)
+      configChatResolving.delete(resolvingKey);
+  }
+}
+
+async function ensureConfigChatChannel(context) {
+  const thread = await resolveConfigChatChannel(context);
+  if (!thread || thread.channelId) return thread;
+  const resolvingKey = `${context.key}:create`;
+  if (configChatResolving.has(resolvingKey))
+    return configChatResolving.get(resolvingKey);
   const request = (async () => {
     const channel = await api(
       "POST", `/api/projects/${encodeURIComponent(currentProject)}/content-channel`, {
@@ -341,14 +383,17 @@ async function ensureConfigChatChannel(context) {
         label: context.item.replace(/（.*$/, ""),
       });
     thread.channelId = channel.id;
+    thread.resolved = true;
+    thread.missing = false;
+    thread.loaded = false;
     upsertOverviewChannel(channel);
     return thread;
   })();
-  configChatResolving.set(context.key, request);
+  configChatResolving.set(resolvingKey, request);
   try { return await request; }
   finally {
-    if (configChatResolving.get(context.key) === request)
-      configChatResolving.delete(context.key);
+    if (configChatResolving.get(resolvingKey) === request)
+      configChatResolving.delete(resolvingKey);
   }
 }
 
@@ -375,8 +420,16 @@ function renderConfigChatThread(context) {
   }
   if (!thread) {
     root.innerHTML = context.contentKey
-      ? `<div class="chat-empty empty">正在连接内容频道…</div>`
-      : `<div class="chat-empty empty">保存当前条目后会自动创建专属频道。</div>`;
+      ? `<div class="chat-empty empty">正在查找已有内容频道…</div>`
+      : `<div class="chat-empty empty">请先保存当前条目；发送第一条消息时会创建专属频道。</div>`;
+    return;
+  }
+  if (!thread.channelId) {
+    root.innerHTML = `<div class="chat-empty empty">${
+      thread.resolved
+        ? "发送第一条消息时会创建专属频道。"
+        : "正在查找已有内容频道…"
+    }</div>`;
     return;
   }
   const pending = thread.entries.filter(entry => entry.id > thread.lastRenderedId);
@@ -393,6 +446,8 @@ function renderConfigChatThread(context) {
     pane: root, runCards: thread.runCards, lastMsgId: thread.cursor,
   });
   root.classList.toggle("has-messages", Boolean(thread.entries.length));
+  if (!thread.entries.length && !thread.loaded && !root.querySelector(".chat-empty"))
+    root.innerHTML = `<div class="chat-empty empty">正在加载内容频道记录…</div>`;
   if (!thread.entries.length && thread.loaded && !root.querySelector(".chat-empty"))
     root.innerHTML = `<div class="chat-empty empty">此内容频道还没有消息。</div>`;
 }
@@ -440,15 +495,19 @@ function updateConfigChatContext() {
   input.disabled = !context.contentKey;
   if (!context.contentKey) {
     document.getElementById("config-chat-status").textContent =
-      "请先保存当前条目；保存后会自动创建并绑定专属频道。";
+      "请先保存当前条目；发送第一条消息时会创建专属频道。";
   } else if (thread) {
     document.getElementById("config-chat-status").textContent = thread.running
       ? "项目主控正在处理…"
       : (thread.entries.some(entry => entry.author_type === "agent") ? "项目主控已回复。" : "");
   }
   renderConfigChatThread(context);
-  if (context.contentKey && (!thread?.channelId || !thread.loaded)) {
-    void ensureConfigChatChannel(context).then(() => pollConfigChat()).catch(error => {
+  if (context.contentKey && !thread?.resolved) {
+    void resolveConfigChatChannel(context).then(resolved => {
+      if (resolved?.channelId) return pollConfigChat();
+      if (configChatContext()?.key === context.key) updateConfigChatContext();
+      return null;
+    }).catch(error => {
       if (configChatContext()?.key === context.key)
         document.getElementById("config-chat-status").textContent =
           error.message || "内容频道连接失败。";
@@ -541,7 +600,8 @@ async function pollConfigChat() {
   if (!context?.contentKey) return;
   configChatPolling = true;
   try {
-    const thread = await ensureConfigChatChannel(context);
+    // 尚未创建时也定期做只读查找，使其他页面首次发起的对话能同步回来。
+    const thread = await resolveConfigChatChannel(context, true);
     if (!thread?.channelId) return;
     const response = await fetch(`/api/chat/${encodeURIComponent(thread.channelId)}/messages?after_id=${thread.cursor}`);
     if (!response.ok) return;

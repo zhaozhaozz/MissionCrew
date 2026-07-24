@@ -6,6 +6,9 @@ import time
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.content_channels import (CONTENT_KIND_LABELS,
+                                       content_channel as find_content_channel,
+                                       ensure_content_channel)
 from ..collab.documents import normalize_document_resource_urls
 from ..collab.recycle_bin import recycle_channel
 from ..collab.resource_urls import channel_resource_url
@@ -50,8 +53,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.post("/api/projects/{project_id}/content-channel")
     def content_channel(project_id: str, body: ContentChannelInput):
-        from ..collab.content_channels import ensure_content_channel
-
         project = ctx.must_project(project_id)
         try:
             channel, created = ensure_content_channel(
@@ -65,6 +66,20 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                         f"key={body.content_key} channel={channel.id}"),
             )
         return {**channel_data(channel), "created": created}
+
+    @app.get("/api/projects/{project_id}/content-channel")
+    def get_content_channel(project_id: str, content_kind: str, content_key: str):
+        """只查找已有绑定；打开内容页时不得隐式创建频道。"""
+        ctx.must_project(project_id)
+        key = content_key.strip()
+        if content_kind not in CONTENT_KIND_LABELS:
+            raise HTTPException(400, f"不支持的内容类型：{content_kind}")
+        if not key:
+            raise HTTPException(400, "内容键不能为空")
+        channel = find_content_channel(store, project_id, content_kind, key)
+        if channel is None:
+            raise HTTPException(404, "该内容尚未发起对话")
+        return {**channel_data(channel), "created": False}
 
     def mutable_channel(channel_id: str) -> Channel:
         channel = store.get_channel(channel_id)
