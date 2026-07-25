@@ -35,6 +35,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             ]
             return data
 
+        active_run_counts = store.active_chat_run_counts()
+
         return {
             "projects": [project_data(p) for p in store.list_projects()],
             "backends": [b.to_dict() for b in store.list_backends()],
@@ -43,7 +45,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                       for t in store.list_tasks()],
             "roles": [r.to_dict() for r in store.list_roles()],
             "role_templates": [r.to_dict() for r in store.list_role_templates()],
-            "channels": [{**c.to_dict(), **(
+            "channels": [{**c.to_dict(),
+                          "active_run_count": active_run_counts.get(c.id, 0), **(
                 {"resource_url": channel_resource_url(c.project_id, c.id)}
                 if c.project_id else {})}
                 for c in store.list_channels()],

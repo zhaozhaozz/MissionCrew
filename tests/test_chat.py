@@ -230,6 +230,23 @@ def test_channels_sort_general_then_latest_message_and_filter_archived(seeded):
             "webshop", include_archived=False)}
 
 
+def test_overview_reports_active_run_count_per_channel(seeded):
+    seeded.put_channel(Channel(id="webshop:idle", name="idle", project_id="webshop"))
+    trigger = seeded.add_message("general", "human", "human", "跑起来", [])
+    running = seeded.add_chat_run("general", "dev", trigger, trigger, 0)
+    seeded.update_chat_run(running, "running", backend_id="std-1")
+    seeded.add_chat_run("general", "lead", trigger, trigger, 0)   # queued 也算在跑
+    finished = seeded.add_chat_run("general", "expert", trigger, trigger, 0)
+    seeded.update_chat_run(finished, "succeeded")
+
+    channels = {channel["id"]: channel
+                for channel in TestClient(create_app()).get("/api/overview")
+                .json()["channels"]}
+
+    assert channels["general"]["active_run_count"] == 2
+    assert channels["webshop:idle"]["active_run_count"] == 0
+
+
 # ---- 人类不 @ 任何角色时默认交给项目主控 ----
 
 def test_human_message_without_mention_goes_to_orchestrator(chat, seeded):

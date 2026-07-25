@@ -870,6 +870,12 @@ class Store:
             "AND status IN ('queued','running','waiting_user') "
             "ORDER BY id", (channel,))]
 
+    def active_chat_run_counts(self) -> dict[str, int]:
+        """按频道汇总未结束的运行数;侧栏一次查询即可标记哪些频道有 Agent 在跑。"""
+        return {row["channel"]: int(row["n"]) for row in self._query(
+            "SELECT channel, COUNT(*) AS n FROM chat_runs "
+            "WHERE status IN ('queued','running','waiting_user') GROUP BY channel")}
+
     def count_chain_runs(self, root_id: int) -> int:
         """一条协作链(同一 root 消息)累计触发的执行数,用于防爆炸。"""
         rows = self._query("SELECT COUNT(*) AS n FROM chat_runs WHERE root_id=?", (root_id,))

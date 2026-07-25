@@ -158,6 +158,11 @@
   .channel-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .channel-state { flex: none; padding: 0 5px; border: 1px solid var(--line);
                    border-radius: 999px; color: var(--muted); font-size: 9.5px; font-weight: 500; }
+  /* 有 Agent 在跑的频道亮一个呼吸圆点；用 --ok 与选中态的 accent 区分开 */
+  .channel-running-marker { flex: none; display: inline-flex; align-items: center; }
+  .channel-running-marker[hidden] { display: none; }
+  .channel-running-marker i { width: 6px; height: 6px; border-radius: 50%;
+                              background: var(--ok); animation: blink 1.2s infinite; }
   .channel-item-actions { position: relative; flex: none; margin-left: auto; }
   .channel-more { width: 25px; padding: 0; border: 0; border-radius: 5px;
                   background: transparent; color: var(--muted); cursor: pointer; line-height: 20px; }

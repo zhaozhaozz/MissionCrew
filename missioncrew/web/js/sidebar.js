@@ -726,6 +726,8 @@ async function pollMessages() {
     appendMessages(d.messages);
     syncRuns(d.runs || []);
     updateChatRunControls(d.active_runs || []);
+    if (setChannelRunningCount(chan, (d.active_runs || []).length))
+      refreshChannelRunningMarkers();
     const pane = document.getElementById("msgs");
     if (!pane.children.length)
       pane.innerHTML = `<div class="chat-empty empty">还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。</div>`;

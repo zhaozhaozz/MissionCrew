@@ -3,6 +3,11 @@ function channelSidebarItem(channel) {
   const general = channelIsGeneral(channel);
   const managed = general;
   const status = channel.archived ? `<span class="channel-state">已归档</span>` : "";
+  // 频道内有排队/执行/等待用户的运行时亮起；轮询到新状态后就地更新，不必重绘侧栏
+  const runCount = channelRunningCount(channel);
+  const runMarker = `<span class="channel-running-marker" data-channel-id="${esc(channel.id)}"
+    title="${channelRunningTitle(runCount)}" role="img"
+    aria-label="${channelRunningTitle(runCount)}" ${runCount ? "" : "hidden"}><i></i></span>`;
   const actions = managed ? "" : `<span class="channel-item-actions">
     <button class="channel-more" type="button" aria-label="频道操作" title="频道操作"
       onclick="toggleChannelActions(event,this)">•••</button>
@@ -20,7 +25,32 @@ function channelSidebarItem(channel) {
       channel.id === currentChan && currentTab === "chat" ? "selected" : ""}"
       data-channel-id="${esc(channel.id)}" onclick="selectChannel(this.dataset.channelId)"
       title="${esc(channel.purpose || "")}">
-    <span class="channel-name"># ${esc(channel.name || channel.id)}</span>${status}${actions}</div>`;
+    <span class="channel-name"># ${esc(channel.name || channel.id)}</span>${runMarker}${status}${actions}</div>`;
+}
+
+const channelRunningCount = channel => Number(channel?.active_run_count || 0);
+const channelRunningTitle = count => `${count || 1} 个 Agent 正在运行`;
+
+/* 侧栏频道的运行标记；总览 8s 一轮，当前频道与内容频道轮询会更早更新计数。 */
+function refreshChannelRunningMarkers() {
+  const counts = new Map(overview.channels.map(
+    channel => [channel.id, channelRunningCount(channel)]));
+  document.querySelectorAll(".channel-running-marker").forEach(marker => {
+    const count = counts.get(marker.dataset.channelId) || 0;
+    marker.hidden = count === 0;
+    if (count) {
+      marker.title = channelRunningTitle(count);
+      marker.setAttribute("aria-label", marker.title);
+    }
+  });
+}
+
+/* 频道消息轮询拿到的 active_runs 更新计数，返回标记是否需要刷新。 */
+function setChannelRunningCount(channelId, count) {
+  const channel = overview.channels.find(item => item.id === channelId);
+  if (!channel || channelRunningCount(channel) === count) return false;
+  channel.active_run_count = count;
+  return true;
 }
 
 function renderChannelFilter() {

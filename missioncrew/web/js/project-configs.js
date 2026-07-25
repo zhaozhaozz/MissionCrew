@@ -657,6 +657,8 @@ async function pollConfigChat() {
     thread.running = thread.activeRuns.some(run =>
       ["queued", "running", "waiting_user"].includes(run.status));
     thread.loaded = true;
+    if (setChannelRunningCount(thread.channelId, thread.activeRuns.length))
+      refreshChannelRunningMarkers();
     const stillCurrent = configChatContext()?.key === context.key;
     if (stillCurrent) {
       updateConfigChatContext();
