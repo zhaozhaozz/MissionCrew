@@ -365,6 +365,13 @@
 
   /* ---- 看板 ---- */
   #board-view { flex: 1; overflow-y: auto; display: none; }
+  .task-board-toolbar { padding: 14px 22px 0; display: flex; gap: 10px;
+                        align-items: center; flex-wrap: wrap; }
+  .task-board-toolbar label { color: var(--muted); font-size: 12px; display: flex;
+                              align-items: center; gap: 6px; }
+  .task-board-toolbar select { background: var(--card); color: var(--text);
+                               border: 1px solid var(--line); border-radius: 8px;
+                               padding: 6px 9px; font: inherit; }
   main.board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
                padding: 16px 22px; align-items: start; }
   @media (max-width: 1000px) { main.board { grid-template-columns: repeat(2, 1fr); } }
@@ -380,7 +387,9 @@
           padding: 10px 12px; margin-bottom: 10px; cursor: pointer; box-shadow: var(--shadow-sm);
           transition: all .15s; }
   .card:hover { border-color: var(--accent); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  .card.task-archived { opacity: .72; }
   .card .title { font-weight: 600; }
+  .task-archived-badge { margin-left: 7px; font-weight: 400; }
   .card .meta { color: var(--muted); font-size: 12px; margin-top: 3px; }
   .task-card-summary { margin-top: 5px; color: var(--text-2); font-size: 12.5px;
                        display: -webkit-box; -webkit-line-clamp: 2;

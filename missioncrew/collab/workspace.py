@@ -422,7 +422,7 @@ def write_task_files(store: Store, project_id: str, directory: Path) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     tasks = {
         task.id: task for task in store.list_tasks()
-        if task.project_id == project_id
+        if task.project_id == project_id and not task.archived
     }
     # 只清理事实源中已不存在的平台快照。未识别文件不会反向同步成 Task，
     # 也不会在刷新时静默删除，避免升级后破坏旧工作区遗留内容。

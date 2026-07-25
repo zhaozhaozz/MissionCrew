@@ -8,7 +8,8 @@ from fastapi.testclient import TestClient
 from missioncrew.api import create_app
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.tasks import create_task, dispatch_task, update_task
-from missioncrew.core.models import Channel
+from missioncrew.collab.workspace import write_task_files
+from missioncrew.core.models import Channel, Task
 from missioncrew.core.store import Store
 
 
@@ -58,6 +59,88 @@ def test_task_api_supports_issue_fields_updates_and_briefs(seeded):
         payload = briefed.json()
         assert payload["task"]["status"] == "blocked"
         assert payload["briefs"][0]["content"] == "等待结算 API 字段冻结。"
+        assert payload["task"]["updated_at"] > edited_task["updated_at"]
+
+
+def test_tasks_sort_by_latest_edit_or_progress_for_existing_data(seeded):
+    tasks = [
+        Task(id="t_recent-created", project_id="webshop", title="最近创建",
+             channel_ids=["general"], created_at=30.0, updated_at=30.0),
+        Task(id="t_recent-edit", project_id="webshop", title="最近编辑",
+             channel_ids=["general"], created_at=10.0, updated_at=40.0),
+        Task(id="t_recent-progress", project_id="webshop", title="最近进展",
+             channel_ids=["general"], created_at=5.0, updated_at=20.0),
+    ]
+    for task in tasks:
+        seeded._put("tasks", task.id, task.to_dict())
+    brief = seeded.add_task_brief(
+        "t_recent-progress", "human", "human", "旧数据中的新进展", "open")
+    seeded._execute(
+        "UPDATE task_briefs SET created_at=50 WHERE id=?", (brief["id"],))
+
+    ordered = [
+        task for task in seeded.list_tasks("webshop")
+        if task.id.startswith("t_recent-")
+    ]
+    assert [task.id for task in ordered] == [
+        "t_recent-progress", "t_recent-edit", "t_recent-created"]
+    assert ordered[0].updated_at == 50.0
+    assert seeded.get_task("t_recent-progress").updated_at == 50.0
+
+    with TestClient(create_app()) as client:
+        overview = [
+            task for task in client.get("/api/overview").json()["tasks"]
+            if task["id"].startswith("t_recent-")
+        ]
+    assert [task["id"] for task in overview] == [
+        "t_recent-progress", "t_recent-edit", "t_recent-created"]
+
+
+def test_task_archive_hides_and_freezes_until_restored(seeded, tmp_path):
+    with TestClient(create_app()) as client:
+        task = client.post("/api/tasks", json={
+            "project_id": "webshop",
+            "title": "待归档任务",
+            "channel_ids": ["general"],
+        }).json()
+        workspace = tmp_path / "tasks"
+        write_task_files(seeded, "webshop", workspace)
+        snapshot = workspace / f"{task['id']}.md"
+        assert snapshot.is_file()
+
+        archived = client.post(f"/api/tasks/{task['id']}/archive")
+        assert archived.status_code == 200
+        archived_task = archived.json()["task"]
+        assert archived_task["archived"] is True
+        assert archived_task["archived_at"] > 0
+        assert archived_task["updated_at"] > task["updated_at"]
+        assert task["id"] not in {
+            item.id for item in seeded.list_tasks(
+                "webshop", include_archived=False)}
+
+        write_task_files(seeded, "webshop", workspace)
+        assert not snapshot.exists()
+        assert client.patch(f"/api/tasks/{task['id']}", json={
+            "snapshot_updated_at": archived_task["updated_at"],
+            "title": "归档后不应修改",
+        }).status_code == 409
+        assert client.post(f"/api/tasks/{task['id']}/briefs", json={
+            "content": "归档后不应追加",
+        }).status_code == 409
+        assert client.post(
+            f"/api/tasks/{task['id']}/process", json={"message": ""}
+        ).status_code == 409
+
+        restored = client.post(f"/api/tasks/{task['id']}/restore")
+        assert restored.status_code == 200
+        restored_task = restored.json()["task"]
+        assert restored_task["archived"] is False
+        assert restored_task["archived_at"] == 0
+        assert restored_task["updated_at"] > archived_task["updated_at"]
+        assert seeded.list_tasks("webshop")[0].id == task["id"]
+        assert client.post(f"/api/tasks/{task['id']}/briefs", json={
+            "content": "恢复后可以继续推进",
+        }).status_code == 200
 
 
 def test_processing_task_posts_to_each_bound_channel_and_triggers_lead(seeded):
@@ -154,5 +237,23 @@ def test_legacy_staged_task_is_migrated_to_issue(store):
     assert migrated.channel_ids == ["demo:general"]
     assert set(migrated.to_dict()) == {
         "id", "project_id", "title", "summary", "body", "labels",
-        "channel_ids", "status", "created_at", "updated_at",
+        "channel_ids", "status", "archived", "archived_at",
+        "created_at", "updated_at",
     }
+
+
+def test_task_board_exposes_activity_order_and_archive_filter(seeded):
+    with TestClient(create_app()) as client:
+        html = client.get("/").text
+        ui = client.get("/assets/js/ui.js").text
+        tasks = client.get("/assets/js/tasks.js").text
+        css = client.get("/assets/css/app.css").text
+
+    assert 'id="task-filter"' in html and 'id="task-filter-summary"' in html
+    assert all(label in html for label in (
+        "活跃 Task", "全部 Task", "已归档 Task"))
+    assert "taskActivity(right) - taskActivity(left)" in ui
+    assert "visibleProjTasks" in tasks and "setTaskFilter" in tasks
+    assert "function archiveTask" in tasks and "function restoreTask" in tasks
+    assert "/archive" in tasks and "/restore" in tasks
+    assert ".task-board-toolbar" in css and ".card.task-archived" in css

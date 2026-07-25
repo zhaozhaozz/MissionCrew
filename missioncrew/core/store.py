@@ -422,12 +422,40 @@ class Store:
     def put_task(self, t: Task) -> None:
         t.updated_at = time.time()
         self._put("tasks", t.id, t.to_dict())
+
+    def _task_activity(self, task: Task) -> Task:
+        """兼容旧数据：状态未变化的简报也应算作 Task 最近活动。"""
+        rows = self._query(
+            "SELECT MAX(created_at) AS latest FROM task_briefs WHERE task_id=?",
+            (task.id,),
+        )
+        latest = float(rows[0]["latest"] or 0)
+        task.updated_at = max(task.updated_at, latest)
+        return task
+
     def get_task(self, id: str) -> Optional[Task]:
         d = self._get("tasks", id)
-        return Task.from_dict(d) if d else None
-    def list_tasks(self) -> list[Task]:
+        return self._task_activity(Task.from_dict(d)) if d else None
+
+    def list_tasks(self, project_id: Optional[str] = None,
+                   include_archived: bool = True) -> list[Task]:
         ts = [Task.from_dict(d) for d in self._list("tasks")]
-        return sorted(ts, key=lambda t: t.created_at, reverse=True)
+        latest_briefs = {
+            row["task_id"]: float(row["latest"] or 0)
+            for row in self._query(
+                "SELECT task_id, MAX(created_at) AS latest "
+                "FROM task_briefs GROUP BY task_id")
+        }
+        for task in ts:
+            task.updated_at = max(
+                task.updated_at, latest_briefs.get(task.id, 0))
+        if project_id is not None:
+            ts = [task for task in ts if task.project_id == project_id]
+        if not include_archived:
+            ts = [task for task in ts if not task.archived]
+        return sorted(
+            ts, key=lambda task: (
+                -task.updated_at, -task.created_at, task.id))
 
     def delete_task(self, id: str) -> None:
         with self._lock, self._conn:

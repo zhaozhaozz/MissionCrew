@@ -34,6 +34,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             for t in store.list_tasks():
                 if t.project_id != project_id:
                     continue
+                if t.archived and not source.get("include_archived", False):
+                    continue
                 if want_status and t.status not in want_status:
                     continue
                 if want_channels and not set(t.channel_ids) & set(want_channels):

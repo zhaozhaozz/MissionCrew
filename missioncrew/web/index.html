@@ -147,8 +147,16 @@
     </div>
 
     <div id="board-view">
-      <div style="padding:14px 22px 0">
+      <div class="task-board-toolbar">
         <button class="action" onclick="openNewTask()">+ 新建任务</button>
+        <label>显示
+          <select id="task-filter" onchange="setTaskFilter(this.value)">
+            <option value="active">活跃 Task</option>
+            <option value="all">全部 Task</option>
+            <option value="archived">已归档 Task</option>
+          </select>
+        </label>
+        <span class="muted" id="task-filter-summary"></span>
       </div>
       <main class="board" id="board"></main>
     </div>

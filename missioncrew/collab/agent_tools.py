@@ -510,6 +510,8 @@ class AgentActionService:
         except ValueError as exc:
             if "重新读取" in str(exc):
                 raise AgentToolError("version_conflict", str(exc), 409) from exc
+            if "已归档" in str(exc):
+                raise AgentToolError("task_archived", str(exc), 409) from exc
             raise AgentToolError("invalid_arguments", str(exc), 400) from exc
         self._refresh_task_snapshot(project.id, identity)
         self.store.audit(
@@ -536,6 +538,8 @@ class AgentActionService:
                 author_type="agent",
             )
         except ValueError as exc:
+            if "已归档" in str(exc):
+                raise AgentToolError("task_archived", str(exc), 409) from exc
             raise AgentToolError("invalid_arguments", str(exc), 400) from exc
         self._refresh_task_snapshot(project.id, identity)
         url = task_resource_url(project.id, task.id)

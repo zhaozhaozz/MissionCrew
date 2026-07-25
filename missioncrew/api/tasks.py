@@ -5,8 +5,9 @@ from fastapi import FastAPI, HTTPException
 
 from ..collab.recycle_bin import recycle_task
 from ..collab.resource_urls import channel_resource_url, task_resource_url
-from ..collab.tasks import (TaskDispatchError, add_task_brief, create_task,
-                            dispatch_task, update_task)
+from ..collab.tasks import (TaskDispatchError, add_task_brief, archive_task,
+                            create_task, dispatch_task, restore_task,
+                            update_task)
 from .context import ApiContext
 from .schemas import TaskBriefInput, TaskCreate, TaskProcessInput, TaskUpdate
 
@@ -64,8 +65,25 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 changes=changes,
             )
         except ValueError as exc:
-            status = 409 if "重新读取" in str(exc) else 400
+            status = 409 if any(
+                text in str(exc) for text in ("重新读取", "已归档")) else 400
             raise HTTPException(status, str(exc)) from exc
+        return _task_data(store, task)
+
+    @app.post("/api/tasks/{task_id}/archive")
+    def archive(task_id: str):
+        task = store.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
+        archive_task(store, task)
+        return _task_data(store, task)
+
+    @app.post("/api/tasks/{task_id}/restore")
+    def restore(task_id: str):
+        task = store.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, "任务不存在")
+        restore_task(store, task)
         return _task_data(store, task)
 
     @app.delete("/api/tasks/{task_id}")
@@ -86,7 +104,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             brief = add_task_brief(
                 store, task, content=body.content, status=body.status)
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            raise HTTPException(
+                409 if "已归档" in str(exc) else 400, str(exc)) from exc
         return {"brief": brief, **_task_data(store, task)}
 
     @app.post("/api/tasks/{task_id}/process")
@@ -100,5 +119,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         except TaskDispatchError as exc:
             raise HTTPException(409, f"Task 仅部分派发：{exc}") from exc
         except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+            raise HTTPException(
+                409 if "已归档" in str(exc) else 400, str(exc)) from exc
         return {"sent": sent, "brief": brief, **_task_data(store, task)}

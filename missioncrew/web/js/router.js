@@ -145,7 +145,14 @@ async function applyRoute() {
 
     if (r.tab === "board" && r.task) {
       const task = projTasks().find(item => item.id === r.task);
-      if (task) await openTask(task.id, false);
+      if (task) {
+        if (task.archived && taskFilter === "active") {
+          taskFilter = "all";
+          localStorage.setItem("mc.taskFilter", taskFilter);
+          renderBoard();
+        }
+        await openTask(task.id, false);
+      }
     }
     }
   } finally {

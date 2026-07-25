@@ -399,6 +399,8 @@ class Task:
     labels: list[str] = field(default_factory=list)
     channel_ids: list[str] = field(default_factory=list)
     status: str = "open"          # open | in_progress | blocked | done
+    archived: bool = False
+    archived_at: float = 0.0
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
 
@@ -436,6 +438,8 @@ class Task:
             channel_ids=list(dict.fromkeys(
                 str(item) for item in channel_ids if isinstance(item, str))),
             status=status,
+            archived=bool(raw.get("archived", False)),
+            archived_at=float(raw.get("archived_at", 0.0)),
             created_at=float(raw.get("created_at", now())),
             updated_at=float(raw.get("updated_at", now())),
         )

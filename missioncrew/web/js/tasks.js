@@ -8,6 +8,9 @@ const COLS = [
   { title: "已阻塞", color: "var(--bad)", match: task => task.status === "blocked" },
   { title: "已完成", color: "var(--ok)", match: task => task.status === "done" },
 ];
+const TASK_FILTERS = new Set(["all", "active", "archived"]);
+let taskFilter = localStorage.getItem("mc.taskFilter") || "active";
+if (!TASK_FILTERS.has(taskFilter)) taskFilter = "active";
 let currentTaskId = null;
 let currentTaskDetail = null;
 let editingTaskId = null;
@@ -32,14 +35,43 @@ function taskChannelLabel(channelId) {
   return channel ? `#${channel.name || channel.id}` : channelId;
 }
 
+function visibleProjTasks() {
+  return projTasks().filter(task =>
+    taskFilter === "all"
+      || (taskFilter === "archived" ? task.archived : !task.archived));
+}
+
+function renderTaskFilter() {
+  const tasks = projTasks();
+  const archived = tasks.filter(task => task.archived).length;
+  const select = document.getElementById("task-filter");
+  if (select) select.value = taskFilter;
+  const summary = document.getElementById("task-filter-summary");
+  if (summary) {
+    const shown = visibleProjTasks().length;
+    summary.textContent = `显示 ${shown} 个 · 活跃 ${tasks.length - archived} · 已归档 ${archived}`;
+  }
+}
+
+function setTaskFilter(value) {
+  if (!TASK_FILTERS.has(value)) return;
+  taskFilter = value;
+  localStorage.setItem("mc.taskFilter", value);
+  renderBoard();
+}
+
 function renderBoard() {
   const scrollState = captureScrollPositions(["#board-view"]);
+  renderTaskFilter();
   document.getElementById("board").innerHTML = COLS.map(col => {
-    const items = projTasks().filter(col.match);
-    const cards = items.map(task => `<div class="card" onclick="openTask('${task.id}')">
-      <div class="title">${esc(task.title)}</div>
+    const items = visibleProjTasks().filter(col.match);
+    const cards = items.map(task => `<div class="card ${task.archived ? "task-archived" : ""}"
+        onclick="openTask('${task.id}')">
+      <div class="title">${esc(task.title)}${task.archived
+        ? '<span class="badge task-archived-badge">已归档</span>' : ""}</div>
       ${task.summary ? `<div class="task-card-summary">${esc(task.summary)}</div>` : ""}
-      <div class="meta">${esc(task.id)} · ${task.channel_ids.map(id => esc(taskChannelLabel(id))).join(" · ")}</div>
+      <div class="meta">更新 ${new Date(task.updated_at * 1000).toLocaleString()} ·
+        ${esc(task.id)} · ${task.channel_ids.map(id => esc(taskChannelLabel(id))).join(" · ")}</div>
       <div class="meta">${task.labels.map(label => `<span class="badge">${esc(label)}</span>`).join("")}</div>
     </div>`).join("") || `<div class="empty" style="padding:6px 4px">暂无 Task</div>`;
     return `<section class="col"><h2><span class="col-dot" style="background:${col.color}"></span>
@@ -71,6 +103,7 @@ async function openTask(id, updateRoute = true) {
   document.getElementById("dlg-body").innerHTML = `
     <div class="task-detail-meta">
       <span class="pill st-${esc(task.status)}">${esc(TASK_STATUS[task.status] || task.status)}</span>
+      ${task.archived ? '<span class="badge task-archived-badge">已归档</span>' : ""}
       <span>${channels || "未绑定 Channel"}</span>
       ${task.labels.map(label => `<span class="badge">${esc(label)}</span>`).join("")}
     </div>
@@ -79,13 +112,18 @@ async function openTask(id, updateRoute = true) {
     <article class="task-body markdown-body">${task.body ? markdownPreviewHtml(task.body, { showFrontmatter: false }) : '<span class="empty">暂无正文</span>'}</article>
     <h3>状态简报 (${detail.briefs.length})</h3>
     <div class="task-briefs">${briefs || '<div class="empty">暂无状态简报</div>'}</div>`;
-  const actions = [
+  const actions = task.archived ? [
+    `<button class="ghost" onclick="restoreTask('${task.id}')">恢复 Task</button>`,
+    `<button class="danger" onclick="deleteTask('${task.id}')">删除</button>`,
+  ] : [
     `<button class="ghost" onclick="openTaskEditor('${task.id}')">编辑</button>`,
     `<button class="ghost" onclick="openTaskBriefForm('${task.id}')">添加简报</button>`,
+    `<button class="ghost" onclick="archiveTask('${task.id}')">归档</button>`,
     `<button class="danger" onclick="deleteTask('${task.id}')">删除</button>`,
   ];
-  if (task.status !== "done")
-    actions.push(`<button class="action" onclick="processTask('${task.id}')">交给 Lead 处理</button>`);
+  if (!task.archived && task.status !== "done")
+    actions.push(
+      `<button class="action" onclick="processTask('${task.id}')">交给 Lead 处理</button>`);
   document.getElementById("dlg-actions").innerHTML = actions.join("");
   if (!dlg.open) dlg.showModal();
   if (updateRoute) syncUrl();
@@ -212,6 +250,26 @@ async function processTask(id) {
   await loadOverview();
   await openTask(id, false);
   toast("Task 已发送给绑定 Channel 的 Lead", "success");
+}
+
+async function archiveTask(id) {
+  const task = currentTaskDetail?.task;
+  if (!task || task.id !== id || task.archived || !await uiConfirm(
+    `归档 Task「${task.title}」？归档后会从活跃看板和 Agent Task 快照中隐藏。`,
+    "归档 Task")) return;
+  await api("POST", `/api/tasks/${encodeURIComponent(id)}/archive`);
+  closeTaskDialog();
+  await loadOverview();
+  toast("Task 已归档", "success");
+}
+
+async function restoreTask(id) {
+  const task = currentTaskDetail?.task;
+  if (!task || task.id !== id || !task.archived) return;
+  await api("POST", `/api/tasks/${encodeURIComponent(id)}/restore`);
+  closeTaskDialog();
+  await loadOverview();
+  toast("Task 已恢复并移到最新活动位置", "success");
 }
 
 async function deleteTask(id) {

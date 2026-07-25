@@ -166,7 +166,11 @@ const projChannels = () => overview.channels
   });
 const visibleProjChannels = () => projChannels().filter(channel =>
   channelFilter === "all" || (channelFilter === "archived" ? channel.archived : !channel.archived));
-const projTasks = () => overview.tasks.filter(t => t.project_id === currentProject);
+const taskActivity = task => Number(task.updated_at || task.created_at || 0);
+const projTasks = () => overview.tasks
+  .filter(task => task.project_id === currentProject)
+  .sort((left, right) => taskActivity(right) - taskActivity(left)
+    || String(left.id).localeCompare(String(right.id)));
 const projBoards = () => (overview.boards || []).filter(b => b.project_id === currentProject);
 // 任务看板是平台内置面板：参与面板导航，但不进入自定义 Board 的 CRUD。
 const BUILTIN_TASK_PANEL = Object.freeze({

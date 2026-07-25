@@ -1,6 +1,7 @@
 """Issue 化 Task 的统一写入、状态简报与 Channel 派发逻辑。"""
 from __future__ import annotations
 
+import time
 from typing import Optional
 
 from .resource_urls import task_resource_url
@@ -89,6 +90,8 @@ def create_task(store: Store, project_id: str, *, title: object,
 
 def update_task(store: Store, task: Task, *, snapshot_updated_at: object,
                 changes: dict, actor: str = "human") -> Task:
+    if task.archived:
+        raise ValueError("Task 已归档，请先恢复后再修改")
     if (not isinstance(snapshot_updated_at, (int, float))
             or isinstance(snapshot_updated_at, bool)
             or abs(float(snapshot_updated_at) - task.updated_at) > 1e-6):
@@ -117,15 +120,18 @@ def update_task(store: Store, task: Task, *, snapshot_updated_at: object,
 def add_task_brief(store: Store, task: Task, *, content: object,
                    status: Optional[str] = None, author: str = "human",
                    author_type: str = "human") -> dict:
+    if task.archived:
+        raise ValueError("Task 已归档，请先恢复后再追加状态简报")
     text = _text(content, "content", required=True)
     if status is not None:
         if status not in TASK_STATUSES:
             raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
         if task.status != status:
             task.status = status
-            store.put_task(task)
     brief = store.add_task_brief(
         task.id, author, author_type, text, status or task.status)
+    # 即使状态不变，新增进展也必须刷新最近活动时间和乐观锁版本。
+    store.put_task(task)
     store.audit(author, "task_brief_added", task.id,
                 f"project={task.project_id} status={status or task.status}")
     return brief
@@ -134,6 +140,8 @@ def add_task_brief(store: Store, task: Task, *, content: object,
 def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
                   author: str = "human") -> tuple[list[dict], dict]:
     """把 Task 作为普通 Channel 消息交给每个绑定 Channel 的项目主控。"""
+    if task.archived:
+        raise ValueError("Task 已归档，请先恢复后再派发")
     if task.status == "done":
         raise ValueError("已完成 Task 不能再次派发；请先重新打开")
     project = store.get_project(task.project_id)
@@ -175,6 +183,7 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
                 f"已向 {len(sent)} 个 Channel 的 @{lead_id} 派发；后续派发失败：{exc}",
                 task.status,
             )
+            store.put_task(task)
             raise TaskDispatchError(str(exc)) from exc
         else:
             task.status = previous_status
@@ -187,6 +196,29 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
                                               for channel in channels),
         task.status,
     )
+    store.put_task(task)
     store.audit(author, "task_dispatched", task.id,
                 f"project={task.project_id} channels={','.join(task.channel_ids)}")
     return sent, brief
+
+
+def archive_task(store: Store, task: Task, *, actor: str = "human") -> Task:
+    """把 Task 从活跃视图和 Agent 快照中收起，但保留全部内容。"""
+    if not task.archived:
+        task.archived = True
+        task.archived_at = time.time()
+        store.put_task(task)
+        store.audit(
+            actor, "task_archived", task.id, f"project={task.project_id}")
+    return task
+
+
+def restore_task(store: Store, task: Task, *, actor: str = "human") -> Task:
+    """恢复归档 Task，并把恢复动作计入最近活动。"""
+    if task.archived:
+        task.archived = False
+        task.archived_at = 0.0
+        store.put_task(task)
+        store.audit(
+            actor, "task_restored", task.id, f"project={task.project_id}")
+    return task
