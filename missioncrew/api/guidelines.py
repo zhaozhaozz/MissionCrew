@@ -140,14 +140,19 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         project = ctx.must_project(project_id)
         actor = ctx.validate_orchestrator_actor(project, actor_role_id)
         try:
+            channel, stopped = ctx.prepare_content_channel_deletion(
+                project_id, "guidelines", guideline_name)
             item = recycle_guideline(
                 store, project, guideline_name, actor=actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
+        conversation = ctx.purge_content_channel(
+            channel, actor=actor, reason="guideline_deleted",
+            stopped_runtimes=stopped)
         return {"ok": True, "revision": item["revision"],
-                "recycle_item": item}
+                "recycle_item": item, "conversation": conversation}
 
     @app.get("/api/projects/{project_id}/skills")
     def list_skills(project_id: str):
@@ -234,7 +239,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if not MENTION_ID_RE.fullmatch(skill_id):
             raise HTTPException(400, "Skill id 不合法")
         try:
+            channel, stopped = ctx.prepare_content_channel_deletion(
+                project_id, "skills", skill_id)
             item = recycle_skill(store, project, skill_id, actor=actor)
         except FileNotFoundError as exc:
             raise HTTPException(404, "Skill 不存在") from exc
-        return {"ok": True, "recycle_item": item}
+        conversation = ctx.purge_content_channel(
+            channel, actor=actor, reason="skill_deleted",
+            stopped_runtimes=stopped)
+        return {"ok": True, "recycle_item": item,
+                "conversation": conversation}

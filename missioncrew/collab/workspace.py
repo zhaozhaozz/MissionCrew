@@ -77,6 +77,32 @@ def platform_history_dir(project_id: str, channel_id: str) -> Path:
             / ".missioncrew").resolve()
 
 
+def purge_channel_workspaces(project_id: str, channel_id: str) -> int:
+    """删除平台持有的频道历史、角色工作区和默认 Runtime 工作目录。"""
+    removed = 0
+    channel_name = channel_id.removeprefix(f"{project_id}:")
+    workspace = (mc_home() / "agent-workspaces" / _safe_segment(project_id)
+                 / "channels" / _safe_segment(channel_name))
+    if workspace.is_symlink() or workspace.is_file():
+        workspace.unlink()
+        removed += 1
+    elif workspace.is_dir():
+        shutil.rmtree(workspace)
+        removed += 1
+
+    # ChatEngine 的默认工作目录使用原始频道 id。内容频道 id 由平台生成，
+    # 只包含安全字符；若遇到旧版异常 id，宁可保留也不扩大删除边界。
+    if re.fullmatch(r"[\w:-]+", channel_id):
+        runtime_dir = mc_home() / "channels" / channel_id
+        if runtime_dir.is_symlink() or runtime_dir.is_file():
+            runtime_dir.unlink()
+            removed += 1
+        elif runtime_dir.is_dir():
+            shutil.rmtree(runtime_dir)
+            removed += 1
+    return removed
+
+
 def _legacy_task_workspace_dir(task_workdir: Path) -> Path:
     """返回旧阶段式 Task 的历史 harness 路径，仅供启动迁移。"""
     return (task_workdir / ".missioncrew").resolve()

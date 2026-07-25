@@ -8,7 +8,8 @@ from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-from ..collab.documents import document_resource_url, library_for
+from ..collab.documents import (document_resource_url, library_for,
+                                safe_relative_path)
 from ..collab.recycle_bin import recycle_document
 from .context import ApiContext
 from .diffutil import (_NonTextDocumentError, _decode_pure_text,
@@ -175,11 +176,17 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def delete_document(project_id: str, file_path: str, actor: str = "human"):
         project = ctx.must_project(project_id)
         try:
-            item = recycle_document(store, project, file_path, actor=actor)
+            path = safe_relative_path(file_path)
+            channel, stopped = ctx.prepare_content_channel_deletion(
+                project_id, "docs", path)
+            item = recycle_document(store, project, path, actor=actor)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc))
+        conversation = ctx.purge_content_channel(
+            channel, actor=actor, reason="document_deleted",
+            stopped_runtimes=stopped)
         return {"ok": True, "recycle_item": item,
-                "resource_url": document_resource_url(project_id, file_path),
-                "revision": item["revision"]}
+                "resource_url": document_resource_url(project_id, path),
+                "revision": item["revision"], "conversation": conversation}

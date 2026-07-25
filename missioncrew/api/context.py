@@ -10,15 +10,17 @@ from typing import Optional
 from fastapi import HTTPException
 
 from ..collab.chat import ChatEngine
+from ..collab.content_channels import content_channel
 from ..collab.guidelines import sync_all_guideline_libraries
 from ..collab.recycle_bin import migrate_legacy_skill_trash
 from ..collab.skills import (sync_all_project_skill_libraries,
                              sync_project_skill_library)
 from ..collab.workspace import (migrate_legacy_workspace_layout,
-                                migrate_resource_workspace_links)
+                                migrate_resource_workspace_links,
+                                purge_channel_workspaces)
 from ..core import seed as seed_mod
 from ..core.config import db_path
-from ..core.models import Project
+from ..core.models import Channel, Project
 from ..core.store import Store
 from ..runtime import runtime_manager
 
@@ -91,3 +93,47 @@ class ApiContext:
         if not short_id or not MENTION_ID_RE.fullmatch(short_id):
             raise HTTPException(400, f"{kind} id 只能包含字母、数字、下划线、连字符")
         return f"{project_id}:{short_id}"
+
+    def prepare_content_channel_deletion(
+            self, project_id: str, content_kind: str,
+            content_key: str) -> tuple[Channel | None, int]:
+        """删除内容或其频道前做运行态检查，并关闭空闲的持久 Runtime。"""
+        channel = content_channel(
+            self.store, project_id, content_kind, content_key)
+        if channel is None:
+            return None, 0
+        if self.store.active_chat_runs(channel.id):
+            raise HTTPException(
+                409, "内容频道仍有 Agent 正在运行，请先停止或等待本轮结束")
+        return channel, self.chat.stop_channel_sessions(channel.id)
+
+    def purge_content_channel(
+            self, channel: Channel | None, *, actor: str,
+            reason: str, stopped_runtimes: int = 0) -> dict:
+        """永久清空内容频道，使同一页面下次从全新会话开始。"""
+        if channel is None:
+            return {
+                "deleted": False, "stopped_runtimes": stopped_runtimes,
+                "workspaces": 0,
+            }
+        workspaces = purge_channel_workspaces(
+            channel.project_id or "", channel.id)
+        try:
+            counts = self.store.purge_channel_conversation(channel.id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        self.store.audit(
+            actor, "content_channel_conversation_deleted",
+            detail=(
+                f"project={channel.project_id} channel={channel.id} "
+                f"kind={channel.content_kind} key={channel.content_key} "
+                f"reason={reason} stopped_runtimes={stopped_runtimes} "
+                f"records={counts} workspaces={workspaces}"
+            ),
+        )
+        return {
+            "deleted": bool(counts["channels"]),
+            "stopped_runtimes": stopped_runtimes,
+            "workspaces": workspaces,
+            "records": counts,
+        }

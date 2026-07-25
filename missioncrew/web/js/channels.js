@@ -1,7 +1,7 @@
 /* ---- 频道(当前项目) ---- */
 function channelSidebarItem(channel) {
   const general = channelIsGeneral(channel);
-  const managed = general || channelIsContent(channel);
+  const managed = general;
   const status = channel.archived ? `<span class="channel-state">已归档</span>` : "";
   const actions = managed ? "" : `<span class="channel-item-actions">
     <button class="channel-more" type="button" aria-label="频道操作" title="频道操作"
@@ -86,8 +86,8 @@ function renderChanTable() {
     <td class="muted">${esc(c.workdir || "(平台内置工作区)")}</td>
     <td class="muted">${esc(c.created_by_role_id ? "@" + c.created_by_role_id : "human/platform")}</td>
     <td>${c.archived ? `<span class="badge">已归档</span>` : `<span class="badge">活跃</span>`}</td>
-    <td>${channelIsGeneral(c) ? `<span class="muted">默认频道</span>`
-      : channelIsContent(c) ? `<span class="muted">内容专属频道</span>` : `
+    <td>${channelIsGeneral(c) ? `<span class="muted">默认频道</span>` : `
+      ${channelIsContent(c) ? `<span class="muted">内容专属频道</span>` : ""}
       ${c.archived
         ? `<button class="ghost" data-channel-id="${esc(c.id)}" onclick="restoreChannel(this.dataset.channelId)">恢复</button>`
         : `<button class="ghost" data-channel-id="${esc(c.id)}" onclick="archiveChannel(this.dataset.channelId)">归档</button>`}
@@ -130,16 +130,23 @@ async function createChannel() {
 }
 
 async function deleteChannel(id) {
-  if (!id || !await uiConfirm(`将频道 #${id} 移入项目回收站？Runtime 会话将停止，消息记录仍保留用于审计。`, "回收频道")) return;
+  const channel = projChannels().find(item => item.id === id);
+  const content = channelIsContent(channel || {});
+  const message = content
+    ? `永久清空频道 #${id} 的全部对话记录？对应的内容页不会删除；下次在页面发消息时会创建全新对话。此操作不可恢复。`
+    : `将频道 #${id} 移入项目回收站？Runtime 会话将停止，消息记录仍保留用于审计。`;
+  if (!id || !await uiConfirm(message, content ? "永久清空对话" : "回收频道")) return;
   await api("DELETE", `/api/chat/channels/${id}`);
   if (currentChan === id) currentChan = null;
+  if (content) resetConfigChatChannel(id);
   await loadOverview(); renderChanTable(); renderSidebar();
-  toast("频道已移入回收站", "success");
+  toast(content ? "内容页对话已永久清空" : "频道已移入回收站", "success");
 }
 
 async function archiveChannel(id) {
   if (!id || !await uiConfirm(`归档频道 #${id}？归档后频道只读，Agent 默认不会看到它。`, "归档频道")) return;
   const result = await api("POST", `/api/chat/channels/${id}/archive`);
+  setConfigChatChannelArchived(id, true);
   await loadOverview();
   if (currentChan === id && channelFilter === "active") {
     const next = visibleProjChannels()[0];
@@ -152,6 +159,7 @@ async function archiveChannel(id) {
 async function restoreChannel(id) {
   if (!id) return;
   await api("POST", `/api/chat/channels/${id}/restore`);
+  setConfigChatChannelArchived(id, false);
   if (channelFilter === "archived") {
     channelFilter = "active";
     localStorage.setItem("mc.channelFilter", channelFilter);

@@ -515,9 +515,12 @@ async function saveDocument() {
 }
 
 async function deleteDocument() {
-  if (!docSelected || !await uiConfirm(`将文档「${docSelected}」移入项目回收站？`)) return;
+  if (!docSelected || !await uiConfirm(
+      `将文档「${docSelected}」移入项目回收站，并永久清空它的页面对话？`)) return;
+  const threadKey = configChatContext()?.key;
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/documents/file/${docEncode(docSelected)}`);
+  if (threadKey) configChatThreads.delete(threadKey);
   docSelected = null; docMode = "view";
   docViewer.activate();
   configChatSelection = null;

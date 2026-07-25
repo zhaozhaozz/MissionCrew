@@ -384,6 +384,8 @@ def test_channel_sidebar_exposes_filter_archive_restore_and_delete(client):
     for function in ("archiveChannel", "restoreChannel", "deleteChannel",
                      "renderChannelFilter", "renderChannelState"):
         assert f"function {function}" in channels
+    assert "const managed = general;" in channels
+    assert "永久清空对话" in channels and "内容专属频道" in channels
     assert ".channel-filter-menu" in css and ".channel-actions-menu" in css
     assert client.get("/api/nonexistent").status_code == 404
 

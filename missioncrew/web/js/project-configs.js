@@ -243,6 +243,18 @@ function openConfigChatChannel() {
   if (channelId) selectChannel(channelId);
 }
 
+async function restoreConfigChatChannel() {
+  const context = configChatContext();
+  const thread = context ? configChatThread(context) : null;
+  if (!thread?.channelId || !thread.archived) return;
+  await api(
+    "POST", `/api/chat/channels/${encodeURIComponent(thread.channelId)}/restore`);
+  thread.archived = false;
+  await loadOverview();
+  updateConfigChatContext();
+  toast("内容频道已恢复", "success");
+}
+
 async function stopConfigChatAgents() {
   const context = configChatContext();
   const thread = context ? configChatThread(context) : null;
@@ -315,7 +327,7 @@ function configChatThread(context, create = false) {
       channelId: null, cursor: 0, entries: [], runs: [], activeRuns: [],
       runCards: new Map(), lastMsgDate: "", lastRenderedId: 0,
       running: false, loaded: false, resolved: false, missing: false,
-      refreshedAfterReply: false,
+      refreshedAfterReply: false, archived: false,
     };
     configChatThreads.set(context.key, thread);
   }
@@ -327,6 +339,20 @@ function upsertOverviewChannel(channel) {
   if (index >= 0) overview.channels[index] = { ...overview.channels[index], ...channel };
   else overview.channels.push(channel);
   renderSidebar();
+}
+
+function setConfigChatChannelArchived(channelId, archived) {
+  for (const thread of configChatThreads.values()) {
+    if (thread.channelId === channelId) thread.archived = archived;
+  }
+  if (configChatContext()) updateConfigChatContext();
+}
+
+function resetConfigChatChannel(channelId) {
+  for (const [key, thread] of configChatThreads.entries()) {
+    if (thread.channelId === channelId) configChatThreads.delete(key);
+  }
+  if (configChatContext()) updateConfigChatContext();
 }
 
 async function resolveConfigChatChannel(context, refresh = false) {
@@ -358,6 +384,7 @@ async function resolveConfigChatChannel(context, refresh = false) {
     thread.channelId = channel.id;
     thread.missing = false;
     thread.loaded = false;
+    thread.archived = Boolean(channel.archived);
     upsertOverviewChannel(channel);
     return thread;
   })();
@@ -386,6 +413,7 @@ async function ensureConfigChatChannel(context) {
     thread.resolved = true;
     thread.missing = false;
     thread.loaded = false;
+    thread.archived = Boolean(channel.archived);
     upsertOverviewChannel(channel);
     return thread;
   })();
@@ -486,16 +514,23 @@ function updateConfigChatContext() {
   const thread = configChatThread(context);
   const openChannel = document.getElementById("config-chat-open-channel");
   openChannel.style.display = thread?.channelId ? "inline-block" : "none";
+  const restore = document.getElementById("config-chat-restore");
+  restore.hidden = !thread?.archived;
   const stop = document.getElementById("config-chat-stop");
   const activeCount = thread?.activeRuns.filter(run =>
     ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
   stop.hidden = activeCount === 0;
   stop.textContent = activeCount > 1 ? `停止全部 (${activeCount})` : "停止 Agent";
   const input = document.getElementById("config-chat-input");
-  input.disabled = !context.contentKey;
+  input.disabled = !context.contentKey || Boolean(thread?.archived);
+  document.querySelector("#config-chat .config-chat-compose .send").disabled =
+    input.disabled;
   if (!context.contentKey) {
     document.getElementById("config-chat-status").textContent =
       "请先保存当前条目；发送第一条消息时会创建专属频道。";
+  } else if (thread?.archived) {
+    document.getElementById("config-chat-status").textContent =
+      "内容频道已归档；恢复后才能继续对话。";
   } else if (thread) {
     document.getElementById("config-chat-status").textContent = thread.running
       ? "项目主控正在处理…"
@@ -527,6 +562,11 @@ async function sendConfigChat() {
   }
   if (!context.contentKey) {
     status.textContent = "请先保存当前条目，再开始页面内对话。";
+    return;
+  }
+  const existingThread = configChatThread(context);
+  if (existingThread?.archived) {
+    status.textContent = "内容频道已归档；请先恢复后再继续对话。";
     return;
   }
   const selection = configChatSelection?.context_key === context.key
@@ -606,6 +646,7 @@ async function pollConfigChat() {
     const response = await fetch(`/api/chat/${encodeURIComponent(thread.channelId)}/messages?after_id=${thread.cursor}`);
     if (!response.ok) return;
     const data = await response.json();
+    thread.archived = Boolean(data.channel?.archived);
     for (const message of data.messages || []) {
       thread.cursor = Math.max(thread.cursor, message.id);
       if (thread.entries.some(entry => entry.id === message.id)) continue;
@@ -757,8 +798,11 @@ async function editGuideline(name) {
 }
 
 async function deleteGuideline(name) {
-  if (!await uiConfirm(`将准则文档「${name}」移入项目回收站？`)) return;
+  if (!await uiConfirm(
+      `将准则文档「${name}」移入项目回收站，并永久清空它的页面对话？`)) return;
+  const threadKey = configChatContext()?.key;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/guidelines/${encodeURIComponent(name)}`);
+  if (threadKey) configChatThreads.delete(threadKey);
   selectedGuidelineName = undefined;
   guidelineViewer.activate();
   configEditorDirty.guidelines = false;
@@ -1093,8 +1137,11 @@ async function saveSkill() {
 }
 
 async function deleteSkill(id) {
-  if (!await uiConfirm(`将 Skill「${id}」移入项目回收站？`)) return;
+  if (!await uiConfirm(
+      `将 Skill「${id}」移入项目回收站，并永久清空它的页面对话？`)) return;
+  const threadKey = configChatContext()?.key;
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/skills/${encodeURIComponent(id)}`);
+  if (threadKey) configChatThreads.delete(threadKey);
   selectedSkillId = undefined;
   skillOpenFile = null;
   configEditorDirty.skills = false;

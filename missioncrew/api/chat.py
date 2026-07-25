@@ -87,8 +87,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, "频道不存在")
         if channel.is_general:
             raise HTTPException(409, "general 是项目默认频道，不能归档或删除")
-        if channel.content_kind:
-            raise HTTPException(409, "内容专属频道由对应文章管理，不能单独归档或删除")
         if store.active_chat_runs(channel_id):
             raise HTTPException(409, "频道仍有 Agent 正在运行，请先停止或等待本轮结束")
         return channel
@@ -233,6 +231,16 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.delete("/api/chat/channels/{channel_id}")
     def delete_channel(channel_id: str):
         channel = mutable_channel(channel_id)
+        if channel.content_kind:
+            stopped = chat.stop_channel_sessions(channel_id)
+            conversation = ctx.purge_content_channel(
+                channel, actor="human", reason="channel_deleted",
+                stopped_runtimes=stopped)
+            return {
+                "ok": True, "permanent": True,
+                "stopped_runtimes": stopped,
+                "conversation": conversation,
+            }
         project = ctx.must_project(channel.project_id or "")
         stopped = chat.stop_channel_sessions(channel_id)
         item = recycle_channel(store, project, channel, actor="human")

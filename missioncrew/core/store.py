@@ -299,25 +299,92 @@ class Store:
     def delete_backend(self, id: str) -> None:
         self._execute("DELETE FROM chat_sessions WHERE backend_id=?", (id,))
         self._delete("backends", id)
+
+    def _unlink_channel_from_tasks(self, channel: Channel) -> None:
+        """移除 Task 对频道的引用，并在需要时绑定同项目的可用频道。"""
+        available = [item for item in self.list_channels(channel.project_id)
+                     if item.id != channel.id and not item.archived]
+        fallback = next(
+            (item for item in available if item.is_general),
+            available[0] if available else None,
+        )
+        for task in self.list_tasks():
+            if task.project_id != channel.project_id \
+                    or channel.id not in task.channel_ids:
+                continue
+            task.channel_ids = [
+                item for item in task.channel_ids if item != channel.id]
+            if not task.channel_ids and fallback is not None:
+                task.channel_ids = [fallback.id]
+            self.put_task(task)
+
     def delete_channel(self, id: str) -> None:
         channel = self.get_channel(id)
         if channel is not None:
-            available = [item for item in self.list_channels(channel.project_id)
-                         if item.id != id and not item.archived]
-            fallback = next(
-                (item for item in available if item.is_general),
-                available[0] if available else None,
-            )
-            for task in self.list_tasks():
-                if task.project_id != channel.project_id or id not in task.channel_ids:
-                    continue
-                task.channel_ids = [item for item in task.channel_ids if item != id]
-                if not task.channel_ids and fallback is not None:
-                    task.channel_ids = [fallback.id]
-                self.put_task(task)
+            self._unlink_channel_from_tasks(channel)
         self._execute("DELETE FROM chat_sessions WHERE channel=?", (id,))
         self.revoke_agent_tokens(channel=id)
         self._delete("channels", id)
+
+    def purge_channel_conversation(self, id: str) -> dict[str, int]:
+        """永久删除频道及其会话数据，供内容页“重新开始”语义使用。
+
+        普通频道删除仍通过回收站保留消息；只有显式要求永久清空的内容频道
+        才调用本方法。所有会话表在同一事务中删除，避免留下半套记录。
+        """
+        channel = self.get_channel(id)
+        if channel is None:
+            return {
+                "messages": 0, "runs": 0, "events": 0, "sessions": 0,
+                "tokens": 0, "runtime_usage": 0, "channels": 0,
+            }
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                active = self._conn.execute(
+                    "SELECT 1 FROM chat_runs WHERE channel=? "
+                    "AND status IN ('queued','running','waiting_user') LIMIT 1",
+                    (id,),
+                ).fetchone()
+                if active:
+                    raise ValueError(
+                        "频道仍有 Agent 正在运行，请先停止或等待本轮结束")
+
+                counts: dict[str, int] = {}
+                cursor = self._conn.execute(
+                    "DELETE FROM run_events WHERE run_id IN "
+                    "(SELECT id FROM chat_runs WHERE channel=?)", (id,))
+                counts["events"] = cursor.rowcount
+                cursor = self._conn.execute(
+                    "DELETE FROM chat_runs WHERE channel=?", (id,))
+                counts["runs"] = cursor.rowcount
+                cursor = self._conn.execute(
+                    "DELETE FROM messages WHERE channel=?", (id,))
+                counts["messages"] = cursor.rowcount
+                cursor = self._conn.execute(
+                    "DELETE FROM chat_sessions WHERE channel=?", (id,))
+                counts["sessions"] = cursor.rowcount
+                cursor = self._conn.execute(
+                    "DELETE FROM agent_tokens WHERE channel=?", (id,))
+                counts["tokens"] = cursor.rowcount
+                # session_key 以 "<channel>::<role>" 开头；使用 substr 避免
+                # LIKE 把旧数据中的通配字符解释成模式。
+                prefix = f"{id}::"
+                cursor = self._conn.execute(
+                    "DELETE FROM runtime_usage "
+                    "WHERE substr(session_key, 1, ?)=?",
+                    (len(prefix), prefix),
+                )
+                counts["runtime_usage"] = cursor.rowcount
+                cursor = self._conn.execute(
+                    "DELETE FROM channels WHERE id=?", (id,))
+                counts["channels"] = cursor.rowcount
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        self._unlink_channel_from_tasks(channel)
+        return counts
 
     def delete_project(self, id: str) -> None:
         """删除项目并级联其角色、频道与面板(消息记录保留,便于审计追溯)。"""

@@ -47,6 +47,19 @@ def test_project_resources_share_one_recycle_bin_and_restore(seeded, tmp_path):
     role = seeded.get_role(project_id, "reviewer")
     assert role is not None
 
+    content_channels = {}
+    for kind, key in (
+            ("docs", "recycle/note.bin"),
+            ("guidelines", "recycle-guide"),
+            ("skills", "recycle-skill")):
+        content = client.post(
+            f"/api/projects/{project_id}/content-channel", json={
+                "content_kind": kind, "content_key": key, "label": key,
+            }).json()
+        content_channels[(kind, key)] = content["id"]
+        seeded.add_message(
+            content["id"], "human", "human", f"{kind} private conversation", [])
+
     responses = [
         client.delete(f"/api/projects/{project_id}/documents/file/recycle/note.bin"),
         client.delete(f"/api/projects/{project_id}/guidelines/recycle-guide",
@@ -60,6 +73,11 @@ def test_project_resources_share_one_recycle_bin_and_restore(seeded, tmp_path):
         client.delete(f"/api/projects/{project_id}/resources/{resource['id']}"),
     ]
     assert all(response.status_code == 200 for response in responses)
+    for response in responses[:3]:
+        assert response.json()["conversation"]["deleted"] is True
+    for channel_id in content_channels.values():
+        assert seeded.get_channel(channel_id) is None
+        assert seeded.all_messages(channel_id) == []
 
     listing = client.get(f"/api/projects/{project_id}/recycle-bin").json()
     assert listing["resource_url"] == "/resources/webshop/recycle-bin"
@@ -88,6 +106,19 @@ def test_project_resources_share_one_recycle_bin_and_restore(seeded, tmp_path):
     assert seeded.get_channel(channel["id"]) is not None
     assert seeded.get_role(project_id, "reviewer") is not None
     assert any(item.id == resource["id"] for item in seeded.get_project(project_id).repos)
+    for (kind, key), old_channel_id in content_channels.items():
+        missing = client.get(
+            f"/api/projects/{project_id}/content-channel", params={
+                "content_kind": kind, "content_key": key,
+            })
+        assert missing.status_code == 404
+        fresh = client.post(
+            f"/api/projects/{project_id}/content-channel", json={
+                "content_kind": kind, "content_key": key, "label": key,
+            })
+        assert fresh.status_code == 200
+        assert fresh.json()["id"] == old_channel_id
+        assert seeded.all_messages(old_channel_id) == []
 
 
 def test_recycle_restore_conflict_keeps_item_and_purge_is_irreversible(seeded):

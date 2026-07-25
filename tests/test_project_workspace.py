@@ -1,5 +1,6 @@
 """项目主控、频道、文档库、自定义面板和结构化上下文的集成测试。"""
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ from missioncrew.collab.skills import (materialize_project_skills,
                                        project_skill_library_dir,
                                        skill_context_dir)
 from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
+                                          platform_history_dir,
                                           migrate_resource_workspace_links,
                                           write_task_files)
 from missioncrew.core.models import (DEFAULT_MAX_CHAIN_RUNS, Backend, Channel,
@@ -98,8 +100,19 @@ def test_content_page_uses_stable_dedicated_channel_with_persisted_messages(seed
     assert refreshed["id"] == channel["id"]
     assert any(item["id"] == posted.json()["id"] for item in
                client.get(f"/api/chat/{refreshed['id']}/messages").json()["messages"])
-    assert client.post(f"/api/chat/channels/{channel['id']}/archive").status_code == 409
-    assert client.delete(f"/api/chat/channels/{channel['id']}").status_code == 409
+
+    deadline = time.monotonic() + 3
+    while seeded.active_chat_runs(channel["id"]) and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert seeded.active_chat_runs(channel["id"]) == []
+    archived = client.post(f"/api/chat/channels/{channel['id']}/archive")
+    assert archived.status_code == 200 and archived.json()["archived"] is True
+    assert seeded.list_messages(channel["id"])
+    assert client.post(f"/api/chat/{channel['id']}/messages", json={
+        "author": "human", "content": "归档期间不能发送", "mentions": [],
+    }).status_code == 409
+    restored = client.post(f"/api/chat/channels/{channel['id']}/restore")
+    assert restored.status_code == 200 and restored.json()["archived"] is False
 
     renamed = client.post("/api/projects/webshop/guidelines", json={
         "original_name": "api-style",
@@ -113,6 +126,93 @@ def test_content_page_uses_stable_dedicated_channel_with_persisted_messages(seed
     assert rebound.id == channel["id"]
     assert any(item["id"] == posted.json()["id"]
                for item in seeded.list_messages(rebound.id))
+
+    # 内容频道删除是不可恢复的“重新开始”：清除数据库记录和工作区副本，
+    # 但不删除所绑定的准则；下次发起对话仍使用稳定 id，历史为空。
+    trigger = seeded.add_message(
+        rebound.id, "human", "human", "seed cleanup relations", [])
+    run_id = seeded.add_chat_run(
+        rebound.id, "lead", trigger, trigger, 0)
+    seeded.append_run_event(run_id, "text", "transient output")
+    seeded.update_chat_run(run_id, "done", backend_id="eco-1")
+    seeded.put_chat_session(
+        f"{rebound.id}::lead", rebound.id, "lead", "eco-1", "mock",
+        "/work", "native-session", "v1")
+    seeded.put_agent_token(
+        token_hash="content-delete-token", token_id="content-delete-token-id",
+        project_id="webshop", channel=rebound.id, role_id="lead",
+        scopes=["message.publish"], expires_at=time.time() + 60)
+    usage_id = seeded.start_runtime_usage(
+        backend_id="eco-1", adapter="mock", mode="persistent",
+        transport="mock", project_id="webshop", role_id="lead",
+        session_key=f"{rebound.id}::lead")
+    seeded.finish_runtime_usage(usage_id, True)
+    history_file = platform_history_dir(
+        "webshop", rebound.id) / "channel-history.json"
+    history_file.parent.mkdir(parents=True, exist_ok=True)
+    history_file.write_text("private history", encoding="utf-8")
+
+    deleted = client.delete(f"/api/chat/channels/{rebound.id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["permanent"] is True
+    assert deleted.json()["conversation"]["deleted"] is True
+    assert seeded.get_channel(rebound.id) is None
+    assert seeded.all_messages(rebound.id) == []
+    assert seeded._query(
+        "SELECT * FROM chat_runs WHERE channel=?", (rebound.id,)) == []
+    assert seeded._query(
+        "SELECT * FROM run_events WHERE run_id=?", (run_id,)) == []
+    assert seeded.chat_sessions_for_channel(rebound.id) == []
+    assert seeded._query(
+        "SELECT * FROM agent_tokens WHERE channel=?", (rebound.id,)) == []
+    assert seeded._query(
+        "SELECT * FROM runtime_usage WHERE session_key=?",
+        (f"{rebound.id}::lead",)) == []
+    assert not history_file.parent.parent.parent.exists()
+    assert any(item.name == "api-contract"
+               for item in seeded.get_project("webshop").guidelines)
+
+    fresh = client.post("/api/projects/webshop/content-channel", json={
+        "content_kind": "guidelines",
+        "content_key": "api-contract",
+        "label": "api-contract",
+    })
+    assert fresh.status_code == 200 and fresh.json()["created"] is True
+    # 重命名保留旧频道 id；永久清空后按新 key 重新计算一个干净 id。
+    assert fresh.json()["id"] != rebound.id
+    assert client.get(
+        f"/api/chat/{fresh.json()['id']}/messages").json()["messages"] == []
+
+
+def test_active_content_channel_blocks_page_and_conversation_deletion(seeded):
+    client = _client(seeded)
+    library_for("webshop").write(
+        "running.md", "# Running\n", "human", "Create running document")
+    channel = client.post("/api/projects/webshop/content-channel", json={
+        "content_kind": "docs",
+        "content_key": "running.md",
+        "label": "running.md",
+    }).json()
+    trigger = seeded.add_message(
+        channel["id"], "human", "human", "still running", [])
+    run_id = seeded.add_chat_run(
+        channel["id"], "lead", trigger, trigger, 0)
+
+    assert client.post(
+        f"/api/chat/channels/{channel['id']}/archive").status_code == 409
+    assert client.delete(
+        f"/api/chat/channels/{channel['id']}").status_code == 409
+    page_delete = client.delete(
+        "/api/projects/webshop/documents/file/running.md")
+    assert page_delete.status_code == 409
+    assert library_for("webshop").read("running.md") == "# Running\n"
+
+    seeded.update_chat_run(run_id, "done")
+    deleted = client.delete(
+        "/api/projects/webshop/documents/file/running.md")
+    assert deleted.status_code == 200
+    assert deleted.json()["conversation"]["deleted"] is True
+    assert seeded.get_channel(channel["id"]) is None
 
 
 def test_content_channels_are_not_precreated_by_startup_lists_or_saves(seeded):
@@ -913,6 +1013,8 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "viewer-dirty-badge" in viewer and "confirmDiscard" in viewer
     assert "documentSidebarHtml()" in router
     assert "sendConfigChat" in js and "pollConfigChat" in js
+    assert "restoreConfigChatChannel" in js and 'id="config-chat-restore"' in html
+    assert "thread.archived" in js and "resetConfigChatChannel" in js
     assert "currentConfigDraft" in js and "configPageSnapshot" in js
     assert "stageConfigPage" in js and "captureConfigChatSelection" in js
     assert "startConfigChatResize" in js and "toggleConfigChatCollapsed" in js
