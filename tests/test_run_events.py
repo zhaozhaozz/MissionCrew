@@ -353,6 +353,8 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert 'id="input" contenteditable="true"' in html and 'id="mention-picker"' in html
     assert "composerPayload" in js and "mention_spans" in js
     assert "mention legal-mention mention-compose" in js
+    assert "单个角色直接执行，多个角色交给主控协调" in html
+    assert "多选由主控协调" in js
     assert 'isAgent ? " markdown-body"' in js
     assert ".msg .body.markdown-body { white-space: normal; }" in css
     assert ".mention.legal-mention" in css and "cursor: default" in css

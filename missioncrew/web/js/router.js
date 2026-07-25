@@ -369,7 +369,7 @@ function renderSidebar() {
          ${r.id === orch ? `<span class="pill" style="color:var(--warn);border-color:var(--warn)">主控</span>` : ""}</div>`).join("");
   document.getElementById("role-bar").innerHTML = projRoles().map(r =>
     `<button data-role-id="${esc(r.id)}" onclick="insertMention(this.dataset.roleId)"
-       title="选择后会创建可触发执行的提及。${esc(r.description || "")}">
+       title="选择后会创建可信提及；单选直接执行，多选交给主控协调。${esc(r.description || "")}">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}
        <span class="role-running-marker" data-runtime-project="${esc(currentProject || "")}"
          data-runtime-role="${esc(r.id)}" hidden><i></i>运行中</span></button>`).join("");

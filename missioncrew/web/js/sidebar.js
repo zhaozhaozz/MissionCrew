@@ -154,7 +154,7 @@ function roleInfo(id) {
 
 function legalMentionTitle(id) {
   const role = roleInfo(id);
-  return `已确认提及：发送后会触发 @${id}${role?.name ? `（${role.name}）` : ""}`;
+  return `已确认提及：单选会触发 @${id}${role?.name ? `（${role.name}）` : ""}，多选由主控协调`;
 }
 
 function createComposerMention(id) {

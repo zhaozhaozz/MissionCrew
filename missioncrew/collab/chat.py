@@ -4,6 +4,8 @@
 - 人类在频道里通过角色选择器建立结构化提及;主控用 @[角色] 明确调度,
   普通 @角色 只是正文;角色由固定 runtime/model 执行,
   定位、能力与偏好用于协作方选人,不参与执行时路由;
+- 人类只选择一个角色时直接执行；同一消息选择多个角色时只启动主控，
+  由主控根据保留在触发消息中的完整提及名单统一协调;
 - 只有项目主控能在回复中用 @[角色] 发起工作;执行角色看不到其他角色名册,
   主控调度的结果自动交回主控，人类直接调度的结果只留在频道等待后续消息;
 - 所有主控调度与执行结果都对人类完全可见,全程审计。
@@ -155,6 +157,9 @@ ORCHESTRATOR_TEMPLATE = """\
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
   最合适的角色，用 @[角色ID] 明确调度并写清任务简报。只有这种方括号语法
   会触发执行；普通 @角色ID 只是正文引用，可用于描述已完成工作或其他角色。
+- 当人类在同一条触发消息中选择多个角色时，平台只启动你，不会直接启动这些
+  角色。触发消息 JSON 的 `mentions` 和 `mention_spans` 保留了用户选择的完整名单；
+  请理解整体目标后决定并行、顺序或调整人选，再用 @[角色ID] 分别写清任务并调度。
 - 协作链预算：本项目单条协作链最多 {max_runs} 次 Agent 执行。这只是防止失控循环的
   总次数兜底，不限制调度层级；请在预算内自主拆解、分派、验收并推进任务。
 
@@ -289,6 +294,13 @@ class ChatEngine:
             if (orchestrator and author != orchestrator
                     and self.store.get_role(channel.project_id, orchestrator)):
                 mentions = [orchestrator]
+        dispatch_targets = list(mentions)
+        if (author_type == "human" and len(mentions) > 1
+                and orchestrator and author != orchestrator
+                and self.store.get_role(channel.project_id or "", orchestrator)):
+            # 保留原始 mentions/mention_spans 供主控理解用户指定的角色，
+            # 但多人协作只启动主控，由主控决定顺序、并行方式和具体简报。
+            dispatch_targets = [orchestrator]
         with self._run_state_lock:
             if channel_id in self._stopping_channels:
                 raise ValueError("频道正在停止 Agent，请等待停止完成后再发送消息")
@@ -298,7 +310,7 @@ class ChatEngine:
                 mention_spans=legal_spans, context=context)
             self._write_channel_history(channel)
             root = root_id if root_id is not None else msg_id
-            for role_id in mentions:
+            for role_id in dispatch_targets:
                 self._trigger(channel, role_id, msg_id, root, depth)
         return msg_id
 

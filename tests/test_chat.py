@@ -428,11 +428,41 @@ def test_only_orchestrator_agent_can_dispatch_other_roles(chat, seeded):
         "SELECT role_id FROM chat_runs ORDER BY id")] == ["reviewer", "lead"]
 
 
-def test_multiple_mentions_run_in_parallel(chat, seeded):
-    chat.post("general", "human", "@[dev] 和 @[expert] 分别评估一下方案 A/B。")
+def test_multiple_human_mentions_start_only_orchestrator(
+        chat, seeded, monkeypatch):
+    """多人提及保留原名单，但只启动主控统一协调。"""
+    lead_prompts = []
+
+    def _start(config):
+        assert config.role_id == "lead"
+        lead_prompts.append(config.prompt)
+        return RunResult(True, "已规划", output="已读取角色名单并规划协作。")
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
+    content = "@dev 和 @expert 分别评估一下方案 A/B。"
+    expert_start = content.index("@expert")
+    chat.post("general", "human", content, mention_spans=[
+        {"role_id": "dev", "start": 0, "end": len("@dev")},
+        {"role_id": "expert", "start": expert_start,
+         "end": expert_start + len("@expert")},
+    ])
     chat.wait_idle()
-    agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
-    assert agents == {"dev", "expert"}
+
+    messages = _log(seeded)
+    trigger = messages[0]
+    assert json.loads(trigger["mentions"]) == ["dev", "expert"]
+    assert [span["role_id"] for span in
+            json.loads(trigger["mention_spans"])] == ["dev", "expert"]
+    assert [run["role_id"] for run in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")] == ["lead"]
+    assert [message["author"] for message in messages
+            if message["author_type"] == "agent"] == ["lead"]
+    runtime_trigger = _prompt_json_section(
+        lead_prompts[0], "触发消息(JSON,你的任务简报由发起者撰写)")
+    assert runtime_trigger["mentions"] == ["dev", "expert"]
+    assert [span["role_id"] for span in
+            runtime_trigger["mention_spans"]] == ["dev", "expert"]
+    assert "平台只启动你" in lead_prompts[0]
 
 
 def test_expert_role_uses_fixed_expert_runtime(chat, seeded):
@@ -734,7 +764,8 @@ def test_stop_channel_prevents_late_reply_and_queued_agent_start(
         lambda backend, session_key="": stopped.append(
             (backend.id, session_key)) or 1)
 
-    chat.post("general", "human", "@[dev] @[expert] 同时执行")
+    chat.post("general", "lead", "@[dev] @[expert] 同时执行",
+              author_type="agent")
     assert started.wait(5)
     result = chat.stop_channel_agents("general")
     release.set()
@@ -748,7 +779,8 @@ def test_stop_channel_prevents_late_reply_and_queued_agent_start(
     assert {row["status"] for row in seeded.chat_runs_for_channel("general")} \
         == {"stopped"}
     messages = seeded.list_messages("general")
-    assert not [message for message in messages if message["author_type"] == "agent"]
+    assert [message["author"] for message in messages
+            if message["author_type"] == "agent"] == ["lead"]
     assert messages[-1]["kind"] == "agent_stop"
 
 
