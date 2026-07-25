@@ -35,10 +35,10 @@ def test_mention_triggers_agent_reply(chat, seeded):
     chat.wait_idle()
     msgs = _log(seeded)
     agents = [m for m in msgs if m["author_type"] == "agent"]
-    assert [m["author"] for m in agents] == ["dev", "lead"]
+    assert [m["author"] for m in agents] == ["dev"]
     assert agents[0]["reply_to"] == msgs[0]["id"]
     assert agents[0]["root_id"] == msgs[0]["id"]
-    assert json.loads(agents[0]["mentions"]) == ["lead"]
+    assert json.loads(agents[0]["mentions"]) == []
 
 
 def test_message_context_is_persisted_and_added_to_runtime_trigger(chat, seeded):
@@ -140,7 +140,7 @@ def test_selected_scribe_does_not_dispatch_plain_dev_reference(chat, seeded):
         {"role_id": "scribe", "start": 0, "end": len("@scribe")},
     ]
     assert [row["role_id"] for row in seeded._query(
-        "SELECT role_id FROM chat_runs ORDER BY id")] == ["scribe", "lead"]
+        "SELECT role_id FROM chat_runs ORDER BY id")] == ["scribe"]
 
 
 def test_human_picker_offsets_use_unicode_code_points(chat, seeded):
@@ -250,17 +250,40 @@ def test_unrecognized_mention_still_falls_back_to_orchestrator(chat, seeded):
     assert agents == {"lead"}
 
 
-def test_worker_reply_automatically_returns_to_orchestrator(chat, seeded):
-    """执行角色无需知道主控 id；平台把完整结果自动交回主控。"""
-    chat.post("general", "human", "@[dev] 简单看一下就行,不用找别人。")
+def test_human_direct_worker_reply_waits_for_next_orchestrator_message(
+        chat, seeded, monkeypatch):
+    """人类直接点名执行角色时不拉起主控；主控稍后仍能读取完整记录。"""
+    lead_prompts = []
+
+    def _start(config):
+        if config.role_id == "dev":
+            return RunResult(True, "已完成检查", output="dev 的完整检查结果。")
+        lead_prompts.append(config.prompt)
+        return RunResult(True, "已接手", output="已读取先前记录并继续处理。")
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
+    chat.post("general", "human", "@[dev] 简单看一下就行，不用找别人。")
     chat.wait_idle()
-    authors = [m["author"] for m in _log(seeded) if m["author_type"] == "agent"]
-    assert authors == ["dev", "lead"]
+
+    messages = _log(seeded)
+    assert [m["author"] for m in messages
+            if m["author_type"] == "agent"] == ["dev"]
+    assert json.loads(messages[-1]["mentions"]) == []
+    assert [run["role_id"] for run in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")] == ["dev"]
+
+    chat.post("general", "human", "请主控接着处理。")
+    chat.wait_idle()
+
+    assert [m["author"] for m in _log(seeded)
+            if m["author_type"] == "agent"] == ["dev", "lead"]
+    assert len(lead_prompts) == 1
+    assert "dev 的完整检查结果。" in lead_prompts[0]
 
 
 def test_worker_failure_reason_is_delivered_to_orchestrator(
         chat, seeded, monkeypatch):
-    """执行角色失败时，主控收到具体 Runtime 原因并负责后续处理。"""
+    """主控派发的执行角色失败时，主控收到具体 Runtime 原因。"""
     lead_prompts = []
     failure = ("OpenCode 未生成最终答复：最后执行阶段仍停在工具调用"
                "（step_finish.reason=tool-calls）；最后工具 read 失败："
@@ -274,7 +297,8 @@ def test_worker_failure_reason_is_delivered_to_orchestrator(
         return RunResult(True, "已处理失败", output="已看到 dev 的失败原因并调整安排。")
 
     monkeypatch.setattr(runtime_manager, "start", _start)
-    chat.post("general", "human", "@[dev] 检查外部文档。")
+    chat.post("general", "lead", "@[dev] 检查外部文档。",
+              author_type="agent")
     chat.wait_idle()
 
     platform = [m for m in _log(seeded) if m["author_type"] == "platform"]
@@ -293,7 +317,7 @@ def test_worker_failure_reason_is_delivered_to_orchestrator(
 )
 def test_worker_exit_without_output_notifies_orchestrator(
         chat, seeded, monkeypatch, runtime_success, exit_kind):
-    """执行角色退出但无输出时，平台补发原因并自动交给主控。"""
+    """主控派发的执行角色无输出时，平台补发原因并交回主控。"""
     lead_prompts = []
     worker_backends = []
 
@@ -305,7 +329,7 @@ def test_worker_exit_without_output_notifies_orchestrator(
         return RunResult(True, "已处理", output="已收到无输出告警并重新安排。")
 
     monkeypatch.setattr(runtime_manager, "start", _start)
-    chat.post("general", "human", "@[dev] 执行检查。")
+    chat.post("general", "lead", "@[dev] 执行检查。", author_type="agent")
     chat.wait_idle()
 
     platform = [m for m in _log(seeded) if m["author_type"] == "platform"]
@@ -408,7 +432,7 @@ def test_multiple_mentions_run_in_parallel(chat, seeded):
     chat.post("general", "human", "@[dev] 和 @[expert] 分别评估一下方案 A/B。")
     chat.wait_idle()
     agents = {m["author"] for m in _log(seeded) if m["author_type"] == "agent"}
-    assert agents == {"dev", "expert", "lead"}
+    assert agents == {"dev", "expert"}
 
 
 def test_expert_role_uses_fixed_expert_runtime(chat, seeded):
@@ -474,7 +498,7 @@ def test_parallel_dispatch_cannot_exceed_chain_run_budget(chat, seeded):
 
 
 def test_agent_failure_posted_to_channel(chat, seeded):
-    # vision 固定 runtime 停用后，失败须公开并自动交回主控。
+    # 人类直接点名的角色失败须公开，但不能自动触发主控。
     b = seeded.get_backend("vis-1")
     b.enabled = False
     seeded.put_backend(b)
@@ -483,8 +507,8 @@ def test_agent_failure_posted_to_channel(chat, seeded):
     msgs = _log(seeded)
     assert any("无可用后端" in m["content"] for m in msgs
                if m["author_type"] == "platform")
-    assert any(r["role_id"] == "lead" for r in
-               seeded._query("SELECT role_id FROM chat_runs"))
+    assert [r["role_id"] for r in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")] == ["vision"]
 
 
 def test_prompt_separates_worker_context_from_orchestrator_roster(chat, seeded):
@@ -871,12 +895,13 @@ def test_lead_dispatcher_role_seeded(seeded):
     assert "调度" in lead.description and "不亲自实现" in lead.description
 
 
-def test_dispatch_and_worker_return_are_visible_to_human(chat, seeded):
-    """执行结果与自动回主控的闭环都保存在频道消息流中。"""
+def test_human_direct_dispatch_result_is_visible_without_orchestrator(chat, seeded):
+    """人类直接调度的执行结果保存在频道中，但不会自动拉起主控。"""
     chat.post("general", "human", "@[dev] 处理,完成后请 @reviewer 复核。")
     chat.wait_idle()
     msgs = seeded.list_messages("general")
     dev_msg = next(m for m in msgs if m["author"] == "dev")
     assert dev_msg["content"]
-    assert json.loads(dev_msg["mentions"]) == ["lead"]
-    assert any(m["author"] == "lead" for m in msgs if m["author_type"] == "agent")
+    assert json.loads(dev_msg["mentions"]) == []
+    assert not any(m["author"] == "lead" for m in msgs
+                   if m["author_type"] == "agent")

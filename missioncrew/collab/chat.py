@@ -5,7 +5,7 @@
   普通 @角色 只是正文;角色由固定 runtime/model 执行,
   定位、能力与偏好用于协作方选人,不参与执行时路由;
 - 只有项目主控能在回复中用 @[角色] 发起工作;执行角色看不到其他角色名册,
-  完成后由平台自动把完整结果交回主控继续调度;
+  主控调度的结果自动交回主控，人类直接调度的结果只留在频道等待后续消息;
 - 所有主控调度与执行结果都对人类完全可见,全程审计。
 
 防失控:项目可配置的单条协作链执行总数上限 + 不响应自己 @ 自己。
@@ -267,7 +267,8 @@ class ChatEngine:
                 content, mentions, legal_spans = self._parse_explicit_mentions(
                     content, channel.project_id or "", exclude=author)
             elif orchestrator and self.store.get_role(
-                    channel.project_id or "", orchestrator):
+                    channel.project_id or "", orchestrator
+            ) and not self._is_direct_human_dispatch(reply_to, author):
                 mentions = [orchestrator]
             else:
                 mentions = []
@@ -300,6 +301,22 @@ class ChatEngine:
             for role_id in mentions:
                 self._trigger(channel, role_id, msg_id, root, depth)
         return msg_id
+
+    def _is_direct_human_dispatch(
+            self, trigger_message_id: Optional[int], role_id: str) -> bool:
+        """判断角色是否由人类在触发消息中直接选择。
+
+        只看可信的落库 mentions，不解析正文中的普通 ``@role``。这样主控派发
+        的执行结果仍会自动回传，而人类直接点名角色后的结果只保留在频道中。
+        """
+        if trigger_message_id is None:
+            return False
+        trigger = self.store.get_message(trigger_message_id)
+        return bool(
+            trigger
+            and trigger.get("author_type") == "human"
+            and role_id in self._decoded_mentions(trigger)
+        )
 
     def wait_idle(self) -> None:
         """等待当前所有聊天执行(含级联)结束,供 CLI 同步模式与测试使用。"""
@@ -555,7 +572,7 @@ class ChatEngine:
 
     def _post_failure(self, channel: Channel, role_id: str, msg_id: int,
                       root_id: int, depth: int, content: str) -> None:
-        """公开执行失败；非主控失败也自动交回主控决定后续动作。"""
+        """公开执行失败；仅把主控派发的失败自动交回主控。"""
         project = self.store.get_project(channel.project_id or "")
         if project:
             content = normalize_document_resource_urls(
@@ -567,7 +584,8 @@ class ChatEngine:
         self._write_channel_history(channel)
         orchestrator = project.orchestrator_role_id if project else ""
         if (orchestrator and role_id != orchestrator
-                and self.store.get_role(channel.project_id or "", orchestrator)):
+                and self.store.get_role(channel.project_id or "", orchestrator)
+                and not self._is_direct_human_dispatch(msg_id, role_id)):
             self._trigger(channel, orchestrator, failure_id, root_id, result_depth)
 
     def _execute_inner(self, run_id: int, channel: Channel, role_id: str,
@@ -654,12 +672,13 @@ class ChatEngine:
             result_summary = (result.summary or "").strip()
             if not result_output and not result_summary:
                 # Runtime 进程退出不等于协作完成。统一补一条平台消息，执行
-                # 角色会自动交回主控；主控自身无输出时也能让人类看到异常。
+                # 结果是否交回主控仍遵循本轮由谁发起；主控自身无输出时也
+                # 能让人类看到异常。
                 exit_kind = "正常退出" if result.success else "异常退出"
                 no_output = (
                     f"@{role_id}(后端 {backend.id}){exit_kind}，"
-                    "但未产生任何可回传输出。请主控检查该运行的过程事件、"
-                    "Task brief 和已发布产物，再决定重试、调整安排或收口。"
+                    "但未产生任何可回传输出。请检查该运行的过程事件、"
+                    "Task brief 和已发布产物，再决定是否重试或另行安排。"
                 )
                 try:
                     self._post_failure(
@@ -703,7 +722,7 @@ class ChatEngine:
             # 运行中先实时展示模型输出；最终回复确定后，如果 text/stdout 与即将
             # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
             self.store.remove_duplicate_reply_output(run_id, reply)
-            # 主控回复中的 @ 才会分派；执行角色回复自动返回主控(深度 +1)。
+            # 主控回复中的 @ 才会分派；执行结果是否返回主控取决于触发方。
             self.post(channel.id, role_id, reply, author_type="agent",
                       reply_to=msg_id, root_id=root_id, depth=depth + 1,
                       runtime_id=backend.id, model=backend.model, effort=cfg.effort)
@@ -861,8 +880,8 @@ class ChatEngine:
             allowed_dirs.append(history_parent)
         env["MISSIONCREW_CHANNEL_HISTORY"] = str(channel_history_path)
 
-        # 只有主控拿到项目角色名册；执行角色只接收当前任务简报，完成后由
-        # 平台自动回传主控，不知道也不能横向调度其他执行角色。
+        # 只有主控拿到项目角色名册；执行角色只接收当前任务简报，不知道也
+        # 不能横向调度其他执行角色。
         def _tag(r):
             labels = "/".join([*r.ability_labels(),
                                *( [r.preference] if r.preference else [] )])
@@ -884,8 +903,9 @@ class ChatEngine:
             collaboration_section = (
                 "- 你不是项目主控，看不到其他执行角色名册，也不能使用 @[角色ID]"
                 "或调度其他角色。\n"
-                "- 只提交本次任务的完整结果；完成或失败后，平台会自动把结果交回"
-                "项目主控，由主控检查并继续后续流程。"
+                "- 只提交本次任务的完整结果。若本轮由项目主控派发，平台会把结果"
+                "自动交回主控；若由人类直接点名，结果只发布到频道，不会自动触发"
+                "主控，主控在后续被人类唤起时仍可读取完整记录。"
             )
         common_body = CHAT_COMMON_BODY.format(
             role_id=role.id, role_name=role.name, role_desc=role.description,
