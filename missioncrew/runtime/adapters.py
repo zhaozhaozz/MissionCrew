@@ -260,8 +260,9 @@ KNOWN_CLIS = [
 KNOWN_MODELS: dict[str, list[dict]] = {
     "claude_code": [
         {"name": "haiku", "tier": "economy", "cost": 1.0},
-        {"name": "", "tier": "standard", "cost": 5.0},
+        {"name": "sonnet", "tier": "standard", "cost": 5.0},
         {"name": "opus", "tier": "expert", "cost": 20.0},
+        {"name": "fable", "tier": "expert", "cost": 40.0},
     ],
 }
 

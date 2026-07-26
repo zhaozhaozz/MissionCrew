@@ -174,7 +174,7 @@ async function refreshModelOptions() {
   let opts = configured.map(m => {
     const name = String(m.name ?? "");
     return `<option value="${esc(name)}" ${cur === name ? "selected" : ""}>` +
-      `${esc(name || "(CLI 默认)")}${m.tier ? ` (${esc(m.tier)} · ${m.cost})` : ""}</option>`;
+      `${esc(name || "(CLI 默认)")}</option>`;   // 只呈现模型名,档位/成本不入选项
   }).join("");
   if (!configuredNames.has(""))
     opts = `<option value="" ${cur === "" ? "selected" : ""}>(CLI 默认)</option>` + opts;

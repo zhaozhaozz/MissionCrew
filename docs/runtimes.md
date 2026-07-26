@@ -162,14 +162,14 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 ## 检测与注册
 
 - **检测**(`detect_report`):对检测表逐个 `which` 探测 PATH,已安装的再跑 `--version` 提取语义版本号(输出中匹配不到语义版本就留空——有些安装 shim 会输出无关提示文本);
-- **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并按 `KNOWN_MODELS` 播种模型阶梯(目前只有 claude 预置三档:haiku/默认/opus);
+- **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并按 `KNOWN_MODELS` 播种模型阶梯(目前只有 claude 预置四档:haiku/sonnet/opus/fable);
 - Runtime 管理页只呈现工具、版本与安装状态;每条记录有启用开关,停用的 runtime 不能被角色绑定(保存时 400),已绑定角色的执行会明确报"不可用"。
 
 ## 模型清单
 
 角色编辑器的模型下拉合并两个来源:
 
-1. **配置阶梯**(`Backend.models`):带档位与成本的条目,检测时自动播种、可在全局设置编辑。它的作用是差异化记账——执行时若角色模型命中阶梯条目,本次配额按该档成本扣减;`name=""` 条目表示 CLI 默认模型。
+1. **配置阶梯**(`Backend.models`):带档位与成本的条目,检测时自动播种、可在全局设置编辑。它的作用是差异化记账——执行时若角色模型命中阶梯条目,本次配额按该档成本扣减;`name=""` 条目表示 CLI 默认模型,未配置该条目时空模型按工具自身的默认档位与成本记账。档位与成本只用于记账和全局设置编辑,角色下拉里只呈现模型名。
 2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟):
    - codex:默认通过 `codex app-server` 的 `model/list` 分页读取当前账号可用目录；协议启动失败时退回 `codex debug models --bundled`；
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);
