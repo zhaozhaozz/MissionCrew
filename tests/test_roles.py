@@ -495,8 +495,9 @@ def test_claude_catalog_lists_concrete_model_ids():
     from missioncrew.runtime import adapters
     models = adapters.list_runtime_models(
         Backend(id="c", name="c", adapter="claude_code"))
-    assert models[:3] == ["haiku", "sonnet", "opus"]          # 稳定别名在前
-    assert {"claude-sonnet-5", "claude-fable-5", "claude-opus-4-8"} <= set(models)
+    assert models[:4] == ["haiku", "sonnet", "opus", "fable"]  # 稳定别名在前
+    assert {"claude-opus-5", "claude-sonnet-5", "claude-fable-5",
+            "claude-opus-4-8"} <= set(models)
 
 
 def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch):

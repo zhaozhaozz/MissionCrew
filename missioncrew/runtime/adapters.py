@@ -1235,19 +1235,20 @@ def _trigger_from_prompt(prompt: str) -> str:
 
 # ---- 按 runtime 动态发现可用模型(仿 Multica 的 per-provider ListModels) ----
 
-# claude CLI 无模型枚举命令:用稳定别名目录(仿 claudeStaticModels 的静态策略)
 # claude CLI 无模型枚举命令;此目录对齐 Multica 的 claudeStaticModels,
-# 反映 `claude --model` 实际接受的值:别名(自动跟随最新版)在前,具体型号在后。
+# 反映 `claude --model` 实际接受的值:别名(自动跟随最新版)在前,具体型号按
+# 系列与新旧排列在后。别名列表以 `claude --help` 的 --model 说明为准。
 CLAUDE_MODEL_CATALOG = [
-    "haiku", "sonnet", "opus",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
+    "haiku", "sonnet", "opus", "fable",
     "claude-fable-5",
+    "claude-opus-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
-    "claude-haiku-4-5-20251001",
     "claude-opus-4-6",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
     "claude-sonnet-4-5",
+    "claude-haiku-4-5",
 ]
 
 

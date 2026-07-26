@@ -174,7 +174,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
    - codex:默认通过 `codex app-server` 的 `model/list` 分页读取当前账号可用目录；协议启动失败时退回 `codex debug models --bundled`；
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);
    - ACP 工具:一次性会话,从 `session/new` 响应解析模型目录——kimi 形态是 `configOptions` 中 `category=model` 的 select 选项;trae 形态是 `models.availableModels`(`{modelId,...}` 列表,含 `currentModelId`,与 Multica 的解析对齐),同时兼容 `available_models`/`available` 与裸数组;
-   - claude:CLI 无枚举命令,返回静态目录 `CLAUDE_MODEL_CATALOG`——稳定别名(haiku/sonnet/opus,自动跟随最新版)在前,`--model` 实际接受的具体型号在后;
+   - claude:CLI 无枚举命令,返回静态目录 `CLAUDE_MODEL_CATALOG`——稳定别名(haiku/sonnet/opus/fable,自动跟随最新版)在前,`--model` 实际接受的具体型号按系列与新旧排列在后;
    - mock:返回配置阶梯。
 
 保存角色时模型必须属于两个目录之一;空模型 = 显式使用 CLI 默认,总是合法。执行时把模型(及命中的档位/成本)套用到本次执行配置上,**不写回注册表**——注册表始终保持工具级条目。
