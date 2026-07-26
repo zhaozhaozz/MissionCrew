@@ -143,8 +143,8 @@ function importGlobalRoleTemplate(templateId) {
   editRole(null, templateId);
 }
 
-// 每个角色必须先选 runtime;模型清单向 runtime 本体动态查询(仿 Multica),
-// 配置阶梯(带档位/成本)与 runtime 目录合并展示,服务端缓存 10 分钟。
+// 每个角色必须先选 runtime;模型下拉先列工具自带清单((CLI 默认) + 稳定别名),
+// 再把 runtime 目录里剩下的带版本号型号归入「来自 runtime」,服务端缓存 10 分钟。
 const modelCatalogCache = {};   // backend id -> {configured, discovered}
 
 async function refreshModelOptions() {
@@ -163,19 +163,19 @@ async function refreshModelOptions() {
     try {
       catalog = await api("GET", `/api/backends/${encodeURIComponent(bid)}/models`);
       modelCatalogCache[bid] = catalog;
-    } catch (e) {   // 查询失败:退回配置阶梯
+    } catch (e) {   // 查询失败:退回工具自带清单
       const b = overview.backends.find(x => x.id === bid);
       catalog = { configured: b?.models || [], discovered: [] };
     }
     if (document.getElementById("rf-backend")?.value !== bid) return;  // 期间已切换
   }
-  const configured = catalog.configured || [];
-  const configuredNames = new Set(configured.map(m => String(m.name ?? "")));
-  let opts = configured.map(m => {
-    const name = String(m.name ?? "");
-    return `<option value="${esc(name)}" ${cur === name ? "selected" : ""}>` +
-      `${esc(name || "(CLI 默认)")}</option>`;   // 只呈现模型名,档位/成本不入选项
-  }).join("");
+  // configured 是模型名数组;旧版接口返回过 {name,tier,cost},一并兼容
+  const configured = (catalog.configured || []).map(
+    m => String(typeof m === "string" ? m : (m?.name ?? "")));
+  const configuredNames = new Set(configured);
+  let opts = configured.map(name =>
+    `<option value="${esc(name)}" ${cur === name ? "selected" : ""}>` +
+    `${esc(name || "(CLI 默认)")}</option>`).join("");
   if (!configuredNames.has(""))
     opts = `<option value="" ${cur === "" ? "selected" : ""}>(CLI 默认)</option>` + opts;
   const extra = (catalog.discovered || []).filter(n => !configuredNames.has(n));

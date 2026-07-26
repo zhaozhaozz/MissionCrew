@@ -23,7 +23,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 | `qodercli` | `qoder` | ACP stdio | 不支持自动更新 |
 | `traecli` | `trae` | ACP stdio | `traecli update`(不做最新版比对) |
 
-每个工具在检测表中还带默认能力位、档位与单次成本估算，注册时自动填充；这些属性用于展示与使用量估算。项目角色固定绑定 Runtime/模型，Task 不再进行阶段路由。
+每个工具在检测表中还带默认能力位、档位与单次成本估算，注册时自动填充；这些属性挂在工具级，用于展示与使用量估算，**不按模型细分**——同一工具下换模型不改变档位与配额扣减。项目角色固定绑定 Runtime/模型，Task 不再进行阶段路由。
 
 ## 统一 Runtime 抽象边界
 
@@ -162,22 +162,22 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 ## 检测与注册
 
 - **检测**(`detect_report`):对检测表逐个 `which` 探测 PATH,已安装的再跑 `--version` 提取语义版本号(输出中匹配不到语义版本就留空——有些安装 shim 会输出无关提示文本);
-- **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并按 `KNOWN_MODELS` 播种模型阶梯(目前只有 claude 预置四档:haiku/sonnet/opus/fable);
+- **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并按 `KNOWN_MODELS` 刷新工具自带模型清单(目前只有 claude 预置:`""`(CLI 默认)/haiku/sonnet/opus/fable);
 - Runtime 管理页只呈现工具、版本与安装状态;每条记录有启用开关,停用的 runtime 不能被角色绑定(保存时 400),已绑定角色的执行会明确报"不可用"。
 
 ## 模型清单
 
 角色编辑器的模型下拉合并两个来源:
 
-1. **配置阶梯**(`Backend.models`):带档位与成本的条目,检测时自动播种、可在全局设置编辑。它的作用是差异化记账——执行时若角色模型命中阶梯条目,本次配额按该档成本扣减;`name=""` 条目表示 CLI 默认模型,未配置该条目时空模型按工具自身的默认档位与成本记账。档位与成本只用于记账和全局设置编辑,角色下拉里只呈现模型名。
+1. **工具自带清单**(`Backend.models`):只有模型名的有序列表,`""` 表示 CLI 默认、排在最前。检测时按 `KNOWN_MODELS` 刷新,**不可编辑**——`POST /api/backends` 不接受 `models` 字段。平台不跟踪单个模型的档位与成本,配额一律按工具级 `cost_per_run` 扣减。
 2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟):
    - codex:默认通过 `codex app-server` 的 `model/list` 分页读取当前账号可用目录；协议启动失败时退回 `codex debug models --bundled`；
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);
    - ACP 工具:一次性会话,从 `session/new` 响应解析模型目录——kimi 形态是 `configOptions` 中 `category=model` 的 select 选项;trae 形态是 `models.availableModels`(`{modelId,...}` 列表,含 `currentModelId`,与 Multica 的解析对齐),同时兼容 `available_models`/`available` 与裸数组;
-   - claude:CLI 无枚举命令,返回静态目录 `CLAUDE_MODEL_CATALOG`——稳定别名(haiku/sonnet/opus/fable,自动跟随最新版)在前,`--model` 实际接受的具体型号按系列与新旧排列在后;
-   - mock:返回配置阶梯。
+   - claude:CLI 无枚举命令(`claude` 无 `models` 子命令,`--model` 传错值也不枚举),返回静态目录 `CLAUDE_MODEL_CATALOG`——只列 `--model` 接受的具体型号,按系列与新旧排列;稳定别名在工具自带清单里,不重复出现在这一组;
+   - mock:返回工具自带清单。
 
-保存角色时模型必须属于两个目录之一;空模型 = 显式使用 CLI 默认,总是合法。执行时把模型(及命中的档位/成本)套用到本次执行配置上,**不写回注册表**——注册表始终保持工具级条目。
+保存角色时模型必须属于两份清单之一;空模型 = 显式使用 CLI 默认,总是合法。执行时把模型套用到本次执行配置上,**不写回注册表**——注册表始终保持工具级条目。
 
 ## Effort(推理力度)
 

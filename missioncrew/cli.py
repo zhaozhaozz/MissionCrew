@@ -202,10 +202,9 @@ def backend_detect(register: bool = typer.Option(True, help="检测到后立即�
             existing = store.get_backend(b.id)
             if existing is None:
                 store.put_backend(b)
-            else:  # 只刷新检测信息,保留用户的启停/配额/模型调整
+            else:  # 刷新检测信息与工具自带模型清单,保留用户的启停/配额调整
                 existing.binary_path, existing.version = b.binary_path, b.version
-                if not existing.models:
-                    existing.models = b.models
+                existing.models = b.models
                 store.put_backend(existing)
         seed_mod.ensure_role_templates(store)
         seed_mod.ensure_default_project(store)  # 平台至少要有一个项目
@@ -314,7 +313,7 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
         backend = store.get_backend(r.runtime_id)
         if backend is None:
             raise typer.BadParameter(f"@{r.id} 缺少有效的 runtime_id")
-        known_models = {str(m.get("name", "")) for m in backend.models}
+        known_models = set(backend.models)
         if known_models and r.model not in known_models:
             raise typer.BadParameter(f"@{r.id} 的模型不属于 runtime {r.runtime_id}")
         if r.effort and r.effort not in runtime_manager.effort_options(backend):

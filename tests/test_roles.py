@@ -234,21 +234,32 @@ def test_enabling_first_runtime_initializes_global_role_templates(store):
     assert all(role["runtime_id"] == "paused" for role in templates)
 
 
-def test_runtime_and_model_in_use_cannot_be_removed(client, seeded):
+def test_runtime_in_use_cannot_be_removed(client, seeded):
     assert client.delete("/api/backends/std-1").status_code == 409
 
+
+def test_backend_model_list_is_not_editable(client, seeded):
+    """模型清单由工具自带,不接受写入——角色引用因此不会被改没。"""
     seeded.put_backend(Backend(
-        id="ladder", name="ladder", adapter="mock",
-        models=[{"name": "small", "tier": "economy", "cost": 1},
-                {"name": "large", "tier": "expert", "cost": 10}],
-    ))
-    seeded.put_role(Role(id="ladder-user", project_id="webshop",
-                         runtime_id="ladder", model="large"))
+        id="listed", name="listed", adapter="mock", models=["small", "large"]))
+    seeded.put_role(Role(id="list-user", project_id="webshop",
+                         runtime_id="listed", model="large"))
     response = client.post("/api/backends", json={
-        "id": "ladder", "models": [{"name": "small", "tier": "economy", "cost": 1}],
-    })
-    assert response.status_code == 400
-    assert "ladder-user" in response.json()["detail"]
+        "id": "listed", "name": "renamed", "models": ["small"]})
+    assert response.status_code == 200
+    assert response.json()["name"] == "renamed"                 # 其它字段照常可改
+    assert seeded.get_backend("listed").models == ["small", "large"]
+
+
+def test_legacy_model_ladder_migrates_to_names(seeded):
+    """旧记录的 [{name,tier,cost}] 阶梯读取时退化为模型名。"""
+    from missioncrew.core.models import Backend as B
+    b = B.from_dict({"id": "old", "name": "old", "adapter": "mock",
+                     "models": [{"name": "small", "tier": "economy", "cost": 1},
+                                {"name": "", "tier": "standard", "cost": 5}]})
+    assert b.models == ["small", ""]
+    assert [u.model for u in b.units()] == ["small", ""]
+    assert {u.tier for u in b.units()} == {b.tier}              # 档位一律取工具级
 
 
 # ---- 项目第一层级:隔离与初始化 ----
@@ -477,34 +488,34 @@ def test_project_role_form_can_import_global_template(client):
 
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----
 
-def test_backend_models_endpoint_merges_ladder_and_runtime(client, seeded, monkeypatch):
+def test_backend_models_endpoint_merges_own_list_and_runtime(client, seeded, monkeypatch):
     from missioncrew.runtime import adapters
     seeded.put_backend(Backend(
-        id="laddered", name="laddered", adapter="mock",
-        models=[{"name": "small", "tier": "economy", "cost": 1}]))
+        id="listed", name="listed", adapter="mock", models=["small"]))
     monkeypatch.setattr(adapters, "list_runtime_models",
                         lambda b, timeout=25: ["dyn/alpha", "dyn/beta"])
-    d = client.get("/api/backends/laddered/models").json()
-    assert {m["name"] for m in d["configured"]} == {"small"}   # 配置阶梯保留
-    assert d["discovered"] == ["dyn/alpha", "dyn/beta"]        # runtime 动态目录
+    d = client.get("/api/backends/listed/models").json()
+    assert d["configured"] == ["small"]                       # 工具自带清单
+    assert d["discovered"] == ["dyn/alpha", "dyn/beta"]       # runtime 动态目录
     assert client.get("/api/backends/ghost/models").status_code == 404
 
 
-def test_claude_catalog_lists_concrete_model_ids():
-    """claude 无枚举命令,静态目录须包含别名和具体型号(对齐 Multica)。"""
+def test_claude_splits_aliases_and_versioned_ids():
+    """claude 无枚举命令:别名进工具自带清单,带版本号的型号才归 runtime 目录。"""
     from missioncrew.runtime import adapters
-    models = adapters.list_runtime_models(
+    own = adapters.KNOWN_MODELS["claude_code"]
+    assert own == ["", "haiku", "sonnet", "opus", "fable"]     # CLI 默认排第一
+    catalog = adapters.list_runtime_models(
         Backend(id="c", name="c", adapter="claude_code"))
-    assert models[:4] == ["haiku", "sonnet", "opus", "fable"]  # 稳定别名在前
+    assert all(m.startswith("claude-") for m in catalog)       # 目录里没有别名
     assert {"claude-opus-5", "claude-sonnet-5", "claude-fable-5",
-            "claude-opus-4-8"} <= set(models)
+            "claude-opus-4-8"} <= set(catalog)
 
 
 def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch):
     from missioncrew.runtime import adapters
     seeded.put_backend(Backend(
-        id="laddered", name="laddered", adapter="mock",
-        models=[{"name": "small", "tier": "economy", "cost": 1}]))
+        id="laddered", name="laddered", adapter="mock", models=["small"]))
     monkeypatch.setattr(adapters, "list_runtime_models",
                         lambda b, timeout=25: ["dyn/alpha"])
     ok = client.post("/api/roles", json={

@@ -22,29 +22,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, "后端不存在")
         if body.tier is not None and body.tier not in TIER_ORDER:
             raise HTTPException(400, f"档位必须是 {TIER_ORDER} 之一")
-        if body.models is not None:
-            for m in body.models:
-                if m.get("tier") not in TIER_ORDER:
-                    raise HTTPException(400, f"模型 {m.get('name') or '(默认)'} 的档位必须是 {TIER_ORDER} 之一")
-                try:
-                    m["cost"] = float(m.get("cost", 1.0))
-                except (TypeError, ValueError):
-                    raise HTTPException(400, f"模型 {m.get('name') or '(默认)'} 的成本必须是数字")
-                m["name"] = str(m.get("name", ""))
-            model_names = {m["name"] for m in body.models}
-            invalid_roles = [r for r in store.list_roles()
-                             if r.runtime_id == b.id and model_names and r.model not in model_names]
-            invalid_templates = [r for r in store.list_role_templates()
-                                 if r.runtime_id == b.id and model_names
-                                 and r.model not in model_names]
-            if invalid_roles or invalid_templates:
-                names = ", ".join([
-                    *(f"{r.project_id}/@{r.id}" for r in invalid_roles),
-                    *(f"全局角色模板/@{r.id}" for r in invalid_templates),
-                ])
-                raise HTTPException(400, f"模型仍被角色使用,请先修改角色: {names}")
+        # models 不可编辑:工具自带清单由 KNOWN_MODELS 在检测时刷新,不接受写入。
         for field in ("name", "model", "tier", "cost_per_run", "security_level",
-                      "capabilities", "models", "enabled"):
+                      "capabilities", "enabled"):
             v = getattr(body, field)
             if v is not None:
                 setattr(b, field, v)
@@ -98,7 +78,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "enabled": b.enabled if b else False,
                 "version": (b.version if b else "") or "",
                 "path": (b.binary_path if b and b.binary_path else item["path"]),
-                "models": [m.get("name") or "(默认)" for m in (b.models if b else [])],
+                "models": [m or "(默认)" for m in (b.models if b else [])],
                 "updatable": bool(b and runtime_manager.update_plan(b)),
                 "operations": (runtime_manager.capabilities(b).to_dict() if b else {}),
                 **usage(item["id"]),
@@ -109,7 +89,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "binary": b.adapter, "adapter": b.adapter, "id": b.id,
                 "installed": True, "path": b.binary_path, "version": b.version,
                 "registered": True, "enabled": b.enabled,
-                "models": [m.get("name") or "(默认)" for m in b.models],
+                "models": [m or "(默认)" for m in b.models],
                 "updatable": bool(runtime_manager.update_plan(b)),
                 "operations": runtime_manager.capabilities(b).to_dict(),
                 **usage(b.id),
@@ -121,14 +101,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/backends/{backend_id}/models")
     def backend_models(backend_id: str, refresh: bool = False):
-        """runtime 可用模型:向工具本体动态查询(缓存 10 分钟),
-        configured 为工具的模型阶梯(带档位/成本),discovered 为 runtime 目录。"""
+        """runtime 可用模型:configured 为工具自带清单(别名,含 ""=CLI 默认),
+        discovered 为向工具本体查询的型号目录(缓存 10 分钟)。"""
         b = store.get_backend(backend_id)
         if b is None:
             raise HTTPException(404, "后端不存在")
         return {
-            "configured": [{"name": m.get("name", ""), "tier": m.get("tier", ""),
-                            "cost": m.get("cost")} for m in b.models],
+            "configured": list(b.models),
             "discovered": ctx.discovered_models(b, refresh=refresh),
         }
 
@@ -194,10 +173,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             if existing is None:
                 store.put_backend(b)
                 added.append(b.id)
-            else:  # 只刷新检测信息,保留用户的启停/配额/模型阶梯调整
+            else:  # 刷新检测信息与工具自带模型清单,保留用户的启停/配额调整
                 existing.binary_path, existing.version = b.binary_path, b.version
-                if not existing.models:
-                    existing.models = b.models
+                existing.models = b.models
                 store.put_backend(existing)
                 updated.append(b.id)
         seed_mod.ensure_role_templates(store)

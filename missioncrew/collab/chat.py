@@ -800,13 +800,8 @@ class ChatEngine:
         b = self.store.get_backend(role.runtime_id)
         if b is None or not b.enabled:
             return None, f"角色固定的 runtime {role.runtime_id} 不可用"
-        # 模型在工具阶梯里则带上对应档位/成本;只影响本次执行,不写回注册表。
-        spec = next((m for m in b.models if m.get("name", "") == role.model), None)
-        if spec:
-            b = replace(b, model=role.model, tier=spec.get("tier", b.tier),
-                        cost_per_run=float(spec.get("cost", b.cost_per_run)))
-        else:
-            b = replace(b, model=role.model)
+        # 模型只影响本次执行,不写回注册表;档位与成本始终取工具级取值。
+        b = replace(b, model=role.model)
         model = b.model or "(CLI 默认)"
         combo = f"{b.id}+{model}" + (f"+effort={role.effort}" if role.effort else "")
         return b, f"角色固定组合 {combo}"

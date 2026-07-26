@@ -53,34 +53,32 @@ def now() -> float:
 class Backend:
     """一个可调度的执行后端 = 本机的 Agent CLI 工具(一个工具一条记录)。
 
-    模型阶梯挂在工具下(models 列表,自动检测时填充,可编辑):
-    路由时按 工具×模型 展开成执行单元;models 为空则工具本身就是
-    单一执行单元(用 tier/cost_per_run 的默认值)。
+    模型清单挂在工具下(models 列表,检测时按 KNOWN_MODELS 填充,不可编辑):
+    只记模型名,档位与成本一律取工具级的 tier/cost_per_run——平台不跟踪
+    单个模型的档位与成本。models 为空则工具本身就是单一执行单元。
     """
 
     id: str
     name: str
     adapter: str                      # mock | claude_code | codex ...
     model: str = ""                   # 执行单元的模型(路由展开时填入;""=CLI 默认)
-    tier: str = "standard"            # 默认档位(models 为空时生效)
+    tier: str = "standard"            # 工具级档位(展开的执行单元一律继承)
     capabilities: list[str] = field(default_factory=lambda: ["coding"])
     security_level: int = 0           # 后端的安全许可:>= 任务密级才可承接
-    cost_per_run: float = 1.0         # 默认单次成本(models 为空时生效)
+    cost_per_run: float = 1.0         # 工具级单次成本(配额按它扣减)
     quota: Optional[float] = None     # 剩余配额(工具级),None 表示不限
     environments: list[str] = field(default_factory=list)
-    models: list[dict] = field(default_factory=list)  # [{name, tier, cost}],name=""=CLI 默认
+    models: list[str] = field(default_factory=list)   # 可选模型名,""=CLI 默认
     binary_path: str = ""             # 检测到的可执行文件路径
     version: str = ""                 # 检测到的 CLI 版本
     enabled: bool = True
 
     def units(self) -> list["Backend"]:
-        """展开为可路由的执行单元(工具×模型);模型属性覆盖默认档位与成本。"""
+        """展开为可路由的执行单元(工具×模型);档位与成本一律沿用工具级取值。"""
         if not self.models:
             return [self]
         from dataclasses import replace
-        return [replace(self, model=m.get("name", ""), tier=m.get("tier", self.tier),
-                        cost_per_run=float(m.get("cost", self.cost_per_run)))
-                for m in self.models]
+        return [replace(self, model=name) for name in self.models]
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -89,6 +87,10 @@ class Backend:
     def from_dict(cls, d: dict) -> "Backend":
         value = dict(d)
         value.pop("command", None)  # 兼容升级前持久化的自定义命令字段
+        # 兼容旧记录:模型清单曾是 [{name, tier, cost}] 的阶梯,现在只留模型名
+        if value.get("models"):
+            value["models"] = [m.get("name", "") if isinstance(m, dict) else str(m)
+                               for m in value["models"]]
         return cls(**value)
 
 

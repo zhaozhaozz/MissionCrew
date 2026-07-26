@@ -29,7 +29,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, f"runtime 不存在: {body.runtime_id}")
         if not backend.enabled:
             raise HTTPException(400, f"runtime {body.runtime_id} 已停用,请先在 Runtime 设置页启用")
-        known_models = {str(m.get("name", "")) for m in backend.models}
+        known_models = set(backend.models)
         # 空模型 = 显式使用 CLI 默认,总是合法;非空才校验归属。
         if body.model and known_models and body.model not in known_models:
             if body.model not in set(ctx.discovered_models(backend)):

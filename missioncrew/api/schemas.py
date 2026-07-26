@@ -205,5 +205,4 @@ class BackendInput(BaseModel):
     cost_per_run: Optional[float] = None
     security_level: Optional[int] = None
     capabilities: Optional[list[str]] = None
-    models: Optional[list[dict]] = None   # 模型阶梯 [{name, tier, cost}]
     enabled: Optional[bool] = None

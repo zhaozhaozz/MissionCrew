@@ -58,9 +58,9 @@ MissionCrew 是一个**多项目管理器**,项目之间互不相干(类似 Mult
 
 全局设置包含**新项目角色模板**和**运行时页(仿 Multica Runtime)**。角色模板可配置顺序、定位、能力、偏好以及固定 runtime/model/effort；创建项目时复制当前模板快照，首项作为默认主控，之后模板与已有项目角色互不联动。运行时页列出支持的工具矩阵、安装状态、版本、路径和启停开关，`mc backend detect` 自动扫描注册，**一个工具一条记录**；模型列表挂在工具下，供角色选择固定执行组合：
 
-| CLI | 适配器 | 接入方式 | 模型阶梯(自动填充) |
+| CLI | 适配器 | 接入方式 | 自带模型清单(自动填充,不可编辑) |
 |---|---|---|---|
-| `claude` (Claude Code) | `claude_code` | 打印模式 | haiku(经济)/ sonnet(标准)/ opus(专家)/ fable(专家) |
+| `claude` (Claude Code) | `claude_code` | 打印模式 | (CLI 默认)/ haiku / sonnet / opus / fable;带版本号的型号见「来自 runtime」 |
 | `codex` (OpenAI Codex) | `codex` | 打印模式(`codex exec` 工作区沙箱) | CLI 默认 |
 | `grok` (Grok Build) | `grok_build` | ACP stdio(`grok agent stdio`,结构化过程与会话复用) | CLI 默认 |
 | `opencode` | `opencode` | 打印模式 | CLI 默认 |
@@ -73,7 +73,7 @@ MissionCrew 是一个**多项目管理器**,项目之间互不相干(类似 Mult
 | `qodercli` (Qoder) | `qoder` | ACP stdio 协议 | CLI 默认 |
 | `traecli` (Trae) | `trae` | ACP stdio 协议 | CLI 默认 |
 
-角色配置:必须先选 runtime,模型下拉合并该工具的配置阶梯与向 runtime 动态查询的模型目录(空模型名表示明确使用 CLI 默认),再配置角色定位、能力与偏好。新项目从全局角色模板一次性复制并保存固定组合,之后不会因模板修改、成本、能力或历史成功率自动换 runtime/model。
+角色配置:必须先选 runtime,模型下拉先列该工具的自带清单((CLI 默认)与稳定别名),再把向 runtime 查询到的带版本号型号归入「来自 runtime」,再配置角色定位、能力与偏好。新项目从全局角色模板一次性复制并保存固定组合,之后不会因模板修改、成本、能力或历史成功率自动换 runtime/model。
 
 两类接入方式的差别:打印模式 CLI 通过内置命令模板传递 prompt，并用各工具的 session/resume 参数恢复会话；ACP 协议 CLI 作为长驻 JSON-RPC 服务挂在 stdio 上(`initialize → session/new|session/load → session/prompt`,平台自动应答其权限请求)。Runtime 启动命令由对应 provider 固定维护，不属于 Backend 配置。
 

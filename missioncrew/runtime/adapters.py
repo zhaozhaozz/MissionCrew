@@ -255,15 +255,12 @@ KNOWN_CLIS = [
 ]
 
 
-# 各工具已知的模型阶梯(检测时自动填充,可在全局设置中编辑);
-# name="" 表示 CLI 默认模型。模型属于工具,路由按 工具×模型 展开执行单元。
-KNOWN_MODELS: dict[str, list[dict]] = {
-    "claude_code": [
-        {"name": "haiku", "tier": "economy", "cost": 1.0},
-        {"name": "sonnet", "tier": "standard", "cost": 5.0},
-        {"name": "opus", "tier": "expert", "cost": 20.0},
-        {"name": "fable", "tier": "expert", "cost": 40.0},
-    ],
+# 各工具已知的模型清单(检测时自动填充,不可编辑);"" = CLI 默认模型,排在最前。
+# 只记模型名:平台不跟踪单个模型的档位与成本,配额一律按工具级 cost_per_run 扣减。
+# claude 无枚举命令,这里只列稳定别名——别名由 CLI 解析到当前最新版,不会过期;
+# 带版本号的具体型号走 CLAUDE_MODEL_CATALOG,在角色下拉的「来自 runtime」组里。
+KNOWN_MODELS: dict[str, list[str]] = {
+    "claude_code": ["", "haiku", "sonnet", "opus", "fable"],
 }
 
 
@@ -400,10 +397,10 @@ def detect_report(with_version: bool = True) -> list[dict]:
 
 
 def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
-    """按检测报告生成注册项:一个工具一条记录,模型阶梯自动挂在 models 下。
+    """按检测报告生成注册项:一个工具一条记录,自带模型清单挂在 models 下。
 
-    默认档位/成本/能力作为 Runtime 元数据自动填充；角色在创建时固定
-    runtime/model，执行时不再进行 Task 阶段路由。
+    档位/成本/能力作为工具级 Runtime 元数据自动填充,不按模型细分；角色在
+    创建时固定 runtime/model，执行时不再进行 Task 阶段路由。
     """
     by_adapter = {a: (caps, tier, cost) for _, a, caps, tier, cost in KNOWN_CLIS}
     found = []
@@ -1236,11 +1233,10 @@ def _trigger_from_prompt(prompt: str) -> str:
 
 # ---- 按 runtime 动态发现可用模型(仿 Multica 的 per-provider ListModels) ----
 
-# claude CLI 无模型枚举命令;此目录对齐 Multica 的 claudeStaticModels,
-# 反映 `claude --model` 实际接受的值:别名(自动跟随最新版)在前,具体型号按
-# 系列与新旧排列在后。别名列表以 `claude --help` 的 --model 说明为准。
+# claude CLI 无模型枚举命令;此目录对齐 Multica 的 claudeStaticModels,列出
+# `claude --model` 接受的具体型号(按系列与新旧排列)。稳定别名不在这里——它们
+# 是 KNOWN_MODELS 里的工具自带清单,两份合并后才是角色可选的全集。
 CLAUDE_MODEL_CATALOG = [
-    "haiku", "sonnet", "opus", "fable",
     "claude-fable-5",
     "claude-opus-5",
     "claude-opus-4-8",
@@ -1271,17 +1267,17 @@ def _parse_opencode_models(raw: str) -> list[str]:
 
 
 def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
-    """向 runtime 本体查询可用模型;查不到返回空(调用方回退到配置的阶梯)。
+    """向 runtime 本体查询可用模型;查不到返回空(调用方只剩工具自带清单)。
 
     - codex:`codex debug models --bundled`(JSON 目录)
     - opencode:`opencode models`(行式目录)
     - ACP 工具(grok/kimi/kiro/qoder/trae):一次性会话,session/new 返回目录
-    - claude:CLI 无枚举命令,返回静态目录(别名 + 具体型号,对齐 Multica);
-      mock:返回配置阶梯(测试/演示)
+    - claude:CLI 无枚举命令,返回静态型号目录(别名见 KNOWN_MODELS);
+      mock:返回工具自带清单(测试/演示)
     """
     adapter = backend.adapter
     if adapter == "mock":
-        return [str(m.get("name", "")) for m in backend.models if m.get("name")]
+        return [name for name in backend.models if name]
     if adapter == "claude_code":
         return list(CLAUDE_MODEL_CATALOG)
     binary = Path(backend.binary_path).name if backend.binary_path else None
