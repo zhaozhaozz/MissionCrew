@@ -87,6 +87,7 @@ class _CodexSession:
         self._turn_error = ""
         self._output: list[str] = []
         self._saw_text_delta = False
+        self._message_item_id = ""
         self._restarting_client = False
         self.created_at = time.time()
         self.last_activity = self.created_at
@@ -203,6 +204,7 @@ class _CodexSession:
             self._active_turn_id = ""
             self._output = []
             self._saw_text_delta = False
+            self._message_item_id = ""
             try:
                 self._ensure_client(config)
                 assert self.client
@@ -294,6 +296,11 @@ class _CodexSession:
         if method == "item/agentMessage/delta":
             delta = str(params.get("delta") or "")
             if delta:
+                item_id = str(params.get("itemId") or "")
+                if item_id != self._message_item_id:
+                    # 新的一条 agentMessage 开始:先给上一条补换行
+                    self._finish_message_line(emit)
+                    self._message_item_id = item_id
                 self._saw_text_delta = True
                 self._output.append(delta)
                 safe_emit(emit, "text", delta)
@@ -343,11 +350,18 @@ class _CodexSession:
                 self._turn_error = str(
                     error.get("message") if isinstance(error, dict) else error)
             if not self._output:
-                for item in turn.get("items") or []:
-                    if item.get("type") == "agentMessage" and item.get("text"):
-                        self._output.append(str(item["text"]))
+                # 兜底聚合 turn.items 时多条消息按行分隔,不拼在同一行
+                self._output.append("\n".join(
+                    str(item["text"]) for item in turn.get("items") or []
+                    if item.get("type") == "agentMessage" and item.get("text")))
             safe_emit(emit, "status", f"Codex turn {self._turn_status}\n")
             self._turn_done.set()
+
+    def _finish_message_line(self, emit) -> None:
+        """一条完整输出结束后补换行,下一条消息不与它拼在同一行。"""
+        if self._output and not self._output[-1].endswith("\n"):
+            self._output.append("\n")
+            safe_emit(emit, "text", "\n")
 
     def _emit_item(self, emit, item: dict, *, completed: bool) -> None:
         item_type = str(item.get("type") or "")
@@ -356,6 +370,8 @@ class _CodexSession:
             if completed and text and not self._saw_text_delta:
                 self._output.append(text)
                 safe_emit(emit, "text", text)
+            if completed:
+                self._finish_message_line(emit)
         elif item_type == "commandExecution":
             if completed:
                 safe_emit(emit, "status", f"命令结束 exit={item.get('exitCode')} status={item.get('status')}\n")

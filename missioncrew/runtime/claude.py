@@ -462,6 +462,12 @@ class _ClaudeSession:
             usage=message.get("usage") or {},
         )
 
+    def _finish_output_line(self) -> None:
+        """一条完整输出结束后补换行,避免多条消息在结果里拼成一行。"""
+        if self._output and not self._output[-1].endswith("\n"):
+            self._output.append("\n")
+            safe_emit(self._emit(), "text", "\n")
+
     def _handle_message(self, message: dict) -> None:
         message_type = message.get("type")
         if message_type == "stream_event":
@@ -501,6 +507,9 @@ class _ClaudeSession:
                     detail = json.dumps(block.get("input") or {}, ensure_ascii=False)
                     safe_emit(self._emit(), "tool",
                               f"{block.get('name', '?')} {detail[:800]}\n")
+            # 一条 assistant 消息结束(流式与整块两条路径都会收到该事件):
+            # 补换行,后续消息不与它拼在同一行
+            self._finish_output_line()
             return
         if message_type == "user":
             for block in (message.get("message") or {}).get("content") or []:

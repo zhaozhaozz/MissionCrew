@@ -137,6 +137,23 @@ def test_native_compact_event_marks_session_for_reinjection(
     ("claude_code", ClaudeRuntimeProvider),
     ("codex", CodexRuntimeProvider),
 ])
+def test_native_multiple_messages_join_with_newlines(
+        tmp_path, adapter, provider_cls):
+    """同一轮的多条完整消息在结果里按行分隔,不拼在同一行。"""
+    provider = provider_cls(_Fallback(), _fake_command(adapter))
+    try:
+        result = provider.start(
+            _config(tmp_path, adapter, "TWO_MESSAGES", {}, []))
+        assert result.success
+        assert result.output == "先说明进度。\n最终结论。"
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("adapter,provider_cls", [
+    ("claude_code", ClaudeRuntimeProvider),
+    ("codex", CodexRuntimeProvider),
+])
 def test_native_execution_accepts_no_deadline(tmp_path, adapter, provider_cls):
     provider = provider_cls(_Fallback(), _fake_command(adapter))
     config = _config(tmp_path, adapter, "NO DEADLINE", {}, [])
