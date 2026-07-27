@@ -765,7 +765,7 @@ def test_runtime_environment_syncs_pwd_and_scopes_opencode_external_dirs(tmp_pat
 # ---- 主控调度闭环:post_message / workdir / 布局保留 / 权限门 ----
 
 def test_orchestrator_dispatches_into_new_channel(seeded):
-    """主控建频道 + post_message 派工:被显式选择的角色在新频道真实执行。"""
+    """主控建频道 + post_message 派工:只有结构化 mentions 才真实触发角色。"""
     chat = ChatEngine(seeded)
     root = seeded.add_message("general", "human", "human", "@lead 开新任务", ["lead"])
     chat._apply_orchestrator_actions(
@@ -773,7 +773,8 @@ def test_orchestrator_dispatches_into_new_channel(seeded):
         '<missioncrew-action>{"action":"create_channel","id":"pay",'
         '"name":"支付任务","purpose":"支付重构"}</missioncrew-action>'
         '<missioncrew-action>{"action":"post_message","channel":"pay",'
-        '"content":"@[dev] 请实现支付重构,验收标准见频道用途。"}</missioncrew-action>',
+        '"content":"正文里的 @[dev] 只是文字。","mentions":["dev"]}'
+        '</missioncrew-action>',
         root_id=root, depth=0,
     )
     chat.wait_idle()
@@ -782,6 +783,35 @@ def test_orchestrator_dispatches_into_new_channel(seeded):
     assert ("lead", "agent") in authors            # 主控的开工简报落在新频道
     assert ("dev", "agent") in authors             # dev 被真实触发并回复
     assert all(m["root_id"] == root for m in msgs)  # 共享同一协作链预算
+    brief = next(m for m in msgs if m["author"] == "lead")
+    assert brief["content"].startswith("@dev\n\n")  # mentions 生成可见前缀与范围
+    assert json.loads(brief["mention_spans"]) == [
+        {"role_id": "dev", "start": 0, "end": 4}]
+    # 只发 run 一次:正文中的 @[dev] 字面文本没有第二次触发
+    dev_runs = [r for r in seeded._query("SELECT role_id FROM chat_runs")
+                if r["role_id"] == "dev"]
+    assert len(dev_runs) == 1
+
+
+def test_legacy_post_message_without_mentions_does_not_dispatch(seeded):
+    """旧文本块不带 mentions 时只发消息;正文 @[dev] 不再是派发语法。"""
+    chat = ChatEngine(seeded)
+    root = seeded.add_message("general", "human", "human", "@lead 开新任务", ["lead"])
+    chat._apply_orchestrator_actions(
+        seeded.get_project("webshop"), "lead",
+        '<missioncrew-action>{"action":"post_message","channel":"general",'
+        '"content":"@[dev] 请实现支付重构。"}</missioncrew-action>',
+        root_id=root, depth=0,
+    )
+    chat.wait_idle()
+    assert seeded._query("SELECT * FROM chat_runs") == []
+    hint, posted = seeded.list_messages("general")[-1], \
+        seeded.list_messages("general")[-2]
+    assert posted["author"] == "lead"
+    assert posted["content"] == "@[dev] 请实现支付重构。"
+    assert json.loads(posted["mentions"]) == []
+    # 平台对残留旧语法补提示,避免协作链无声死亡
+    assert hint["author_type"] == "platform" and "旧派发" in hint["content"]
 
 
 def test_post_message_rejects_foreign_channel(seeded):
@@ -881,7 +911,8 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
     assert "## 现有面板" in cfg.prompt and "quality" in cfg.prompt
     assert "协作链预算" in cfg.prompt and "message.publish" in cfg.prompt
     assert "missioncrew-action>" not in cfg.prompt
-    assert "@[角色ID]" in cfg.prompt and "普通 @角色ID 只是正文引用" in cfg.prompt
+    # 派发契约:mentions 是唯一通道,正文里的 @ 永不触发
+    assert "`mentions`" in cfg.prompt and "永不触发执行" in cfg.prompt
 
 
 def test_orchestrator_can_generate_project_config_and_documents(seeded):

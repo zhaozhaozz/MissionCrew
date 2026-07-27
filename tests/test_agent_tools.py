@@ -5,10 +5,12 @@ import base64
 import json
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from missioncrew import agent_tool
 from missioncrew.api import create_app
+from missioncrew.collab.agent_tools import AgentToolError
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import guideline_library_for, library_for
 from missioncrew.core.models import Channel
@@ -252,6 +254,50 @@ def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seed
         "SELECT role_id FROM chat_runs WHERE root_id=? ORDER BY id",
         (message["root_id"],))]
     assert "dev" in roles and "reviewer" not in roles
+    assert result["dispatched"] == ["dev"]
+    assert "not_dispatched" not in result
+
+
+def test_message_tool_reports_budget_dropped_dispatch(seeded):
+    """协作链预算耗尽时,派发被兜底丢弃必须反映在工具返回值里。"""
+    chat = ChatEngine(seeded)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(token)
+    project = seeded.get_project("webshop")
+    project.max_chain_runs = 1          # 链上已有 lead 自己这 1 次执行
+    seeded.put_project(project)
+
+    result = chat.agent_tools.execute(
+        identity, "message.publish", {
+            "channel": "general", "content": "继续。", "mentions": ["dev"],
+        }, run_id, "dispatch-over-budget")
+    chat.wait_idle()
+
+    assert result["dispatched"] == []
+    assert result["not_dispatched"] == ["dev"]
+    assert "未启动" in result["summary"]
+    assert not any(r["role_id"] == "dev" for r in
+                   seeded._query("SELECT role_id FROM chat_runs"))
+
+
+def test_message_tool_rejected_after_run_stopped(seeded):
+    """停止与派发原子互斥:发起 run 停止后,迟到的 message.publish 不落库不调度。"""
+    chat = ChatEngine(seeded)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(token)
+    before = len(seeded.list_messages("general"))
+    seeded.update_chat_run(run_id, "stopped")
+
+    with pytest.raises(AgentToolError) as excinfo:
+        chat.agent_tools.execute(
+            identity, "message.publish", {
+                "channel": "general", "content": "迟到的派发。",
+                "mentions": ["dev"],
+            }, run_id, "dispatch-after-stop")
+    assert excinfo.value.code == "run_inactive"
+    assert len(seeded.list_messages("general")) == before
+    assert not any(r["role_id"] == "dev" for r in
+                   seeded._query("SELECT role_id FROM chat_runs"))
 
 
 def test_agent_tool_task_update_uses_optimistic_version_and_run_scope(seeded):

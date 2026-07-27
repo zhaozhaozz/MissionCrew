@@ -1,13 +1,14 @@
 """聊天协作引擎。
 
 协作模型:
-- 人类在频道里通过角色选择器建立结构化提及;主控用 @[角色] 明确调度,
-  普通 @角色 只是正文;角色由固定 runtime/model 执行,
-  定位、能力与偏好用于协作方选人,不参与执行时路由;
+- 人类在频道里通过角色选择器建立结构化提及;主控派发角色只能执行显式命令
+  message.publish 并传 mentions 参数;Agent 消息正文里的任何 @ 都是普通文字,
+  角色由固定 runtime/model 执行,定位、能力与偏好用于协作方选人,不参与执行时路由;
 - 人类只选择一个角色时直接执行；同一消息选择多个角色时只启动主控，
   由主控根据保留在触发消息中的完整提及名单统一协调;
-- 只有项目主控能在回复中用 @[角色] 发起工作;执行角色看不到其他角色名册,
-  主控调度的结果自动交回主控，人类直接调度的结果只留在频道等待后续消息;
+- 只有项目主控能发起工作,且只能通过 message.publish 的 mentions 显式派发;
+  执行角色看不到其他角色名册,主控调度的结果自动交回主控，
+  人类直接调度的结果只留在频道等待后续消息;
 - 所有主控调度与执行结果都对人类完全可见,全程审计。
 
 防失控:项目可配置的单条协作链执行总数上限 + 不响应自己 @ 自己。
@@ -28,8 +29,8 @@ from typing import Optional
 
 from ..runtime import runtime_manager
 from ..core.config import mc_home
-from .agent_tools import (AgentActionService, AgentToolError,
-                          default_agent_tool_url)
+from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
+                          DispatchInactiveError, default_agent_tool_url)
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls)
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
@@ -155,11 +156,14 @@ ORCHESTRATOR_TEMPLATE = """\
   必须使用对应的 `guideline.save` / `skill.save` / `document.publish` 动作实际落库。
 - 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
   调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
-  最合适的角色，用 @[角色ID] 明确调度并写清任务简报。只有这种方括号语法
-  会触发执行；普通 @角色ID 只是正文引用，可用于描述已完成工作或其他角色。
+  最合适的角色，执行 `message.publish` 并把角色 id 写进 `mentions` 数组、
+  content 写清任务简报。这个显式命令是**唯一**的派发方式；你发出的任何消息
+  正文（包括最终回复）里的 @角色ID、@[角色ID] 都只是普通文字，永不触发执行，
+  可放心用于描述已完成工作或引用其他角色。
 - 当人类在同一条触发消息中选择多个角色时，平台只启动你，不会直接启动这些
   角色。触发消息 JSON 的 `mentions` 和 `mention_spans` 保留了用户选择的完整名单；
-  请理解整体目标后决定并行、顺序或调整人选，再用 @[角色ID] 分别写清任务并调度。
+  请理解整体目标后决定并行、顺序或调整人选，再用 `message.publish` 的
+  `mentions` 分别写清任务并派发。
 - 协作链预算：本项目单条协作链最多 {max_runs} 次 Agent 执行。这只是防止失控循环的
   总次数兜底，不限制调度层级；请在预算内自主拆解、分派、验收并推进任务。
 
@@ -239,12 +243,17 @@ class ChatEngine:
              runtime_id: Optional[str] = None, model: Optional[str] = None,
              effort: Optional[str] = None,
              mention_spans: Optional[list[dict]] = None,
-             context: Optional[dict] = None) -> int:
+             context: Optional[dict] = None,
+             origin_run_id: Optional[int] = None) -> int:
         """发布消息，并只按可信的结构化提及异步触发角色。
 
         Web 人类消息必须传选择器生成的 ``mention_spans``；省略该参数的
-        内部/CLI 调用可用 ``@[role]``。主控 Agent 也只能用此显式语法。
-        普通 ``@role`` 永远只是正文引用。
+        人类 CLI 调用可用 ``@[role]``。主控 Agent 的派发只能来自
+        message.publish 显式命令构造的结构化范围;Agent 消息正文里的
+        任何 ``@``（含 ``@[role]``）都只是普通文字，永不触发执行。
+
+        ``origin_run_id`` 是运行中 Agent 发布消息时的发起 run:在停止互斥
+        临界区内复查其活跃状态，保证"停止后不再发布回复、不再调度"。
         """
         channel = self.store.get_channel(channel_id)
         if channel is None:
@@ -265,13 +274,18 @@ class ChatEngine:
                 if author_type == "agent" else None)
 
         legal_spans: list[dict] = []
-        # 只有主控能用显式 @[role] 调度。执行角色无论写哪种 @，都只把
-        # 完整结果交回主控，避免横向看见或调用名册。
+        # Agent 派发只认 message.publish 显式命令传入的结构化范围;正文里的
+        # 任何 @（含 @[role] 旧语法）都是普通文字。执行角色无论写什么，
+        # 都只把完整结果交回主控，避免横向看见或调用名册。
         if author_type == "agent":
-            if author == orchestrator:
-                content, mentions, legal_spans = self._parse_explicit_mentions(
-                    content, channel.project_id or "", exclude=author)
-            elif orchestrator and self.store.get_role(
+            if author == orchestrator and mention_spans:
+                mentions, legal_spans = self._validate_mention_spans(
+                    content, mention_spans, channel.project_id or "")
+                if author in mentions:
+                    mentions = [item for item in mentions if item != author]
+                    legal_spans = [span for span in legal_spans
+                                   if span["role_id"] != author]
+            elif author != orchestrator and orchestrator and self.store.get_role(
                     channel.project_id or "", orchestrator
             ) and not self._is_direct_human_dispatch(reply_to, author):
                 mentions = [orchestrator]
@@ -282,11 +296,11 @@ class ChatEngine:
                 model = role.model if model is None else model
                 effort = role.effort if effort is None else effort
         else:
-            # Web 明确传空数组时，正文里的 @xxx 仍是普通文本；CLI/内部调用
+            # Web 明确传空数组时，正文里的 @xxx 仍是普通文本；人类 CLI 调用
             # 若省略结构化范围，可使用更明确的 @[role] 语法。
             if mention_spans is None:
                 content, mentions, legal_spans = self._parse_explicit_mentions(
-                    content, channel.project_id or "", exclude=None)
+                    content, channel.project_id or "")
             else:
                 mentions, legal_spans = self._validate_mention_spans(
                     content, mention_spans, channel.project_id or "")
@@ -302,12 +316,35 @@ class ChatEngine:
             # 但多人协作只启动主控，由主控决定顺序、并行方式和具体简报。
             dispatch_targets = [orchestrator]
         with self._run_state_lock:
+            # 停止与发布在同一临界区互斥:运行中 Agent 的消息(含派发)必须
+            # 复查发起 run 仍活跃,否则"停止"完成后迟到的 message.publish
+            # 会让协作链复活;这里插入的新 run 反之会被停止操作一并捕获。
             if channel_id in self._stopping_channels:
+                if origin_run_id is not None:
+                    raise DispatchInactiveError("频道正在停止 Agent,消息未发布")
                 raise ValueError("频道正在停止 Agent，请等待停止完成后再发送消息")
+            if (origin_run_id is not None
+                    and not self.store.chat_run_is_active(origin_run_id)):
+                raise DispatchInactiveError("发起运行已停止,消息未发布")
             msg_id = self.store.add_message(
                 channel_id, author, author_type, content, mentions, reply_to,
                 root_id, depth, runtime_id or "", model or "", effort or "",
                 mention_spans=legal_spans, context=context)
+            if (author_type == "agent" and author == orchestrator
+                    and not legal_spans):
+                # 旧契约的存量会话可能仍在正文里写 @[角色] 试图派发;
+                # 静默不触发会让协作链无声死亡,补一条平台提示。
+                known = {r.id for r in
+                         self.store.list_roles(channel.project_id or "")}
+                stale = [m.group(1) for m in EXPLICIT_MENTION_RE.finditer(content)
+                         if m.group(1) in known]
+                if stale:
+                    self.store.add_message(
+                        channel_id, "platform", "platform",
+                        f"正文中的 @[{'] @['.join(dict.fromkeys(stale))}] 是旧派发"
+                        "语法,已不再触发执行;派发请使用 message.publish 的"
+                        " mentions 参数。", [], msg_id,
+                        root_id if root_id is not None else msg_id, depth)
             self._write_channel_history(channel)
             root = root_id if root_id is not None else msg_id
             for role_id in dispatch_targets:
@@ -479,9 +516,13 @@ class ChatEngine:
         }
 
     # ---- 内部:可信提及、触发与执行 ----
-    def _parse_explicit_mentions(self, content: str, project_id: str,
-                                 exclude: Optional[str]) -> tuple[str, list[str], list[dict]]:
-        """把主控/CLI 的 ``@[role]`` 归一化成可见 ``@role`` 与精确范围。"""
+    def _parse_explicit_mentions(self, content: str,
+                                 project_id: str) -> tuple[str, list[str], list[dict]]:
+        """把人类 CLI 正文的 ``@[role]`` 归一化成可见 ``@role`` 与精确范围。
+
+        仅服务无选择器的人类 CLI 入口;Agent 消息不经过本函数——Agent 的
+        派发只能来自 message.publish 显式命令构造的结构化范围。
+        """
         known = {role.id for role in self.store.list_roles(project_id)}
         parts: list[str] = []
         targets: list[str] = []
@@ -502,11 +543,10 @@ class ChatEngine:
                 start = output_length
                 parts.append(visible)
                 output_length += len(visible)
-                if role_id != exclude:
-                    spans.append({"role_id": role_id, "start": start,
-                                  "end": output_length})
-                    if role_id not in targets:
-                        targets.append(role_id)
+                spans.append({"role_id": role_id, "start": start,
+                              "end": output_length})
+                if role_id not in targets:
+                    targets.append(role_id)
             cursor = match.end()
         parts.append(content[cursor:])
         return "".join(parts), targets, spans
@@ -734,7 +774,8 @@ class ChatEngine:
             # 运行中先实时展示模型输出；最终回复确定后，如果 text/stdout 与即将
             # 发布的 Agent 消息完全一致，就移除重复事件。部分输出或带进度的输出保留。
             self.store.remove_duplicate_reply_output(run_id, reply)
-            # 主控回复中的 @ 才会分派；执行结果是否返回主控取决于触发方。
+            # 最终回复永不派发(派发只发生在运行中的 message.publish 显式命令);
+            # 执行结果是否返回主控取决于触发方。
             self.post(channel.id, role_id, reply, author_type="agent",
                       reply_to=msg_id, root_id=root_id, depth=depth + 1,
                       runtime_id=backend.id, model=backend.model, effort=cfg.effort)
@@ -819,6 +860,7 @@ class ChatEngine:
         workspace = None
         env = {}
         allowed_dirs = []
+        agent_action = None
         if channel.project_id:
             project = self.store.get_project(channel.project_id)
             if project:
@@ -836,19 +878,33 @@ class ChatEngine:
                 env["MISSIONCREW_GUIDELINES_DIR"] = str(workspace.guidelines)
                 env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
-                token_file, _token_id = self.agent_tools.ensure_token_file(
+                token_file, token_id = self.agent_tools.ensure_token_file(
                     project, channel, role.id, workspace.root)
                 tool_url = default_agent_tool_url()
                 env["MISSIONCREW_AGENT_TOOL_URL"] = tool_url
                 env["MISSIONCREW_AGENT_TOKEN_FILE"] = str(token_file)
                 env["MISSIONCREW_AGENT_RUN_ID"] = str(run_id) if run_id else ""
                 env["MISSIONCREW_AGENT_TOOL_PYTHON"] = sys.executable
+                env["MISSIONCREW_CHANNEL_ID"] = channel.id
                 allowed_actions = self.agent_tools.allowed_actions(project, role.id)
+                # 进程内 Agent Tool 句柄:与 HTTP 入口同一鉴权/审计路径,供
+                # 无法起子进程调 CLI 的适配器(如 MockAdapter)执行显式命令。
+                identity = AgentIdentity(
+                    token_id=token_id, project_id=project.id,
+                    channel_id=channel.id, role_id=role.id,
+                    issued_scopes=tuple(allowed_actions))
+                agent_action = (
+                    (lambda action, arguments, _identity=identity:
+                        self.agent_tools.execute(
+                            _identity, action, arguments, run_id=run_id,
+                            request_id=f"inproc-{uuid.uuid4().hex}"))
+                    if run_id else None)
                 tool_section = (
                     "# MissionCrew Agent Tool\n"
                     "MissionCrew 平台写操作必须显式调用此工具；命令返回 JSON，失败时退出码非零，"
                     "请读取 error.code/error.message 并在当前回合修正后重试。不要通过最终回复中的"
-                    "特殊文本块请求平台操作，也不要直接写 documents/tasks 来绕过接口。\n"
+                    "特殊文本块请求平台操作，也不要直接写 documents/tasks 来绕过接口。"
+                    "消息正文里的任何 @ 都只是普通文字，不构成平台指令。\n"
                     f"Python：`{sys.executable}`\n"
                     f"API：`{tool_url}`\n"
                     f"Token 文件：`{token_file}`（不要读取、打印或发送其内容）\n"
@@ -900,16 +956,17 @@ class ChatEngine:
                 _tag(r) for r in self.store.list_roles(channel.project_id or "")
                 if r.id != role.id) or "(无其他角色)"
             collaboration_section = (
-                "- 只有你（项目主控）可以调度其他角色。调度必须使用 @[角色ID]；"
-                "普通 @角色ID 只是正文引用，不会触发执行。需要接手时，为对方写清"
-                "背景、要求和验收标准。\n"
-                "- 不需要协作就不要写 @[角色ID]；不要调度你自己，不要编造不存在的角色。\n"
+                "- 只有你（项目主控）可以调度其他角色。派发必须执行显式命令："
+                "`message.publish` 传 `mentions` 角色数组，content 写清背景、"
+                "要求和验收标准。消息正文里的 @角色ID、@[角色ID] 都只是普通文字，"
+                "永不触发执行。\n"
+                "- 不需要协作就不要传 mentions；不要调度你自己，不要编造不存在的角色。\n"
                 "- 角色名册（仅主控可见，各自定位供你选人参考）：\n" + roster
             )
         else:
             collaboration_section = (
-                "- 你不是项目主控，看不到其他执行角色名册，也不能使用 @[角色ID]"
-                "或调度其他角色。\n"
+                "- 你不是项目主控，看不到其他执行角色名册，也不能调度其他角色；"
+                "消息正文里写任何 @ 都只是普通文字。\n"
                 "- 只提交本次任务的完整结果。若本轮由项目主控派发，平台会把结果"
                 "自动交回主控；若由人类直接点名，结果只发布到频道，不会自动触发"
                 "主控，主控在后续被人类唤起时仍可读取完整记录。"
@@ -1009,6 +1066,7 @@ class ChatEngine:
             context_changed=bool(session_id and previous_context != context_version),
             load_session=_load_session,
             save_session=_save_session,
+            agent_action=agent_action,
         )
 
     @staticmethod
@@ -1076,6 +1134,9 @@ class ChatEngine:
                     return match.group(0)
                 return "[其他执行角色]"
 
+            # @[role] 旧语法不再触发执行,但作为字面文本仍可能泄漏角色名,
+            # 与普通 @role 同样脱敏。
+            content = EXPLICIT_MENTION_RE.sub(_visible_mention, content)
             content = MENTION_RE.sub(_visible_mention, content)
             # 脱敏替换会改变字符偏移；执行角色不需要渲染主控界面的提及样式。
             mention_spans = []

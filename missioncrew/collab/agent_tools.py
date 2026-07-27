@@ -66,6 +66,13 @@ class AgentToolError(Exception):
         }
 
 
+class DispatchInactiveError(RuntimeError):
+    """运行中 Agent 发布消息时,发起 run 已停止或频道正在停止。
+
+    与参数错误区分开:这是瞬态的停止互斥信号,不是调用方可修正的输入问题。
+    """
+
+
 @dataclass(frozen=True)
 class AgentIdentity:
     token_id: str
@@ -130,12 +137,12 @@ ACTION_DEFINITIONS = {
         "arguments": {"path": "文档库相对路径"},
     },
     "message.publish": {
-        "description": "向本项目频道发布消息，并用 mentions 显式调度角色",
+        "description": "向本项目频道发布消息；mentions 参数是唯一的角色派发通道",
         "orchestrator_only": True,
         "arguments": {
             "channel": "项目内频道短 id",
-            "content": "消息正文；正文里的 @ 不产生调度",
-            "mentions": "要显式调度的角色 id 数组",
+            "content": "消息正文；正文里的任何 @ 都不产生调度",
+            "mentions": "要显式调度的角色 id 数组；不传则只发消息不派发",
         },
     },
     "channel.create": {
@@ -208,9 +215,7 @@ ACTION_ARGUMENTS = {
         "path", "content", "content_base64", "overwrite", "message",
     },
     "document.delete": {"path"},
-    "message.publish": {
-        "channel", "content", "mentions", "_legacy_explicit_mentions",
-    },
+    "message.publish": {"channel", "content", "mentions"},
     "channel.create": {"id", "name", "purpose", "workdir"},
     "dashboard.save": {"id", "name", "description", "layout", "mode"},
     "dashboard.delete": {"id"},
@@ -400,8 +405,8 @@ class AgentActionService:
         arguments.pop("action", None)
         if legacy_kind in ("create_board", "update_board"):
             arguments["mode"] = "create" if legacy_kind == "create_board" else "update"
-        if legacy_kind == "post_message":
-            arguments["_legacy_explicit_mentions"] = True
+        # 旧 post_message 块与新契约一致:只有块里显式携带 mentions 数组才派发,
+        # 正文中的 @[role] 一律是普通文字。
         if legacy_kind == "write_document":
             arguments["overwrite"] = True
         root_message = self.store.get_message(root_id)
@@ -440,10 +445,6 @@ class AgentActionService:
         if unknown:
             raise AgentToolError(
                 "invalid_arguments", f"{action} 包含未知参数: {', '.join(sorted(unknown))}")
-        if ("_legacy_explicit_mentions" in arguments
-                and identity.token_id != "legacy"):
-            raise AgentToolError(
-                "invalid_arguments", "_legacy_explicit_mentions 不是公开参数")
         project = self._identity_project(identity)
         allowed = self.allowed_actions(project, identity.role_id)
         if action not in allowed or action not in identity.issued_scopes:
@@ -647,40 +648,62 @@ class AgentActionService:
         if channel is None or channel.project_id != project.id:
             raise AgentToolError(
                 "channel_not_found", f"频道不存在或不属于本项目: {raw_channel}", 404)
-        legacy_mentions = bool(arguments.get("_legacy_explicit_mentions", False))
-        if legacy_mentions:
-            publish_content = content.strip()
-        else:
-            mentions = arguments.get("mentions", [])
-            if (not isinstance(mentions, list)
-                    or not all(isinstance(item, str) for item in mentions)):
-                raise AgentToolError("invalid_arguments", "mentions 必须是角色 id 数组")
-            unique_mentions: list[str] = []
-            for role_id in mentions:
-                if role_id == identity.role_id:
-                    raise AgentToolError("invalid_arguments", "主控不能调度自己")
-                if self.store.get_role(project.id, role_id) is None:
-                    raise AgentToolError("role_not_found", f"角色不存在: {role_id}", 404)
-                if role_id not in unique_mentions:
-                    unique_mentions.append(role_id)
-            prefix = " ".join(f"@[{role_id}]" for role_id in unique_mentions)
-            publish_content = (prefix + ("\n\n" if prefix else "") + content.strip())
+        mentions = arguments.get("mentions", [])
+        if (not isinstance(mentions, list)
+                or not all(isinstance(item, str) for item in mentions)):
+            raise AgentToolError("invalid_arguments", "mentions 必须是角色 id 数组")
+        unique_mentions: list[str] = []
+        for role_id in mentions:
+            if role_id == identity.role_id:
+                raise AgentToolError("invalid_arguments", "主控不能调度自己")
+            if self.store.get_role(project.id, role_id) is None:
+                raise AgentToolError("role_not_found", f"角色不存在: {role_id}", 404)
+            if role_id not in unique_mentions:
+                unique_mentions.append(role_id)
+        # mentions 参数是唯一的派发通道:直接生成可见的 @role 前缀与结构化
+        # 范围,交给 post 校验后触发。正文里的任何 @(含 @[role])都是普通文字。
+        prefix = " ".join(f"@{role_id}" for role_id in unique_mentions)
+        publish_content = (prefix + ("\n\n" if prefix else "") + content.strip())
+        mention_spans: list[dict] = []
+        offset = 0
+        for role_id in unique_mentions:
+            mention_spans.append({"role_id": role_id, "start": offset,
+                                  "end": offset + len(role_id) + 1})
+            offset += len(role_id) + 2   # "@role" + 分隔空格
         publish_content = normalize_document_resource_urls(
             publish_content, project.id, [library_for(project.id).root])
-        message_id = self._post_message(
-            channel.id, identity.role_id, publish_content, author_type="agent",
-            root_id=context.root_id, depth=context.depth + 1,
-        )
+        try:
+            message_id = self._post_message(
+                channel.id, identity.role_id, publish_content, author_type="agent",
+                root_id=context.root_id, depth=context.depth + 1,
+                mention_spans=mention_spans,
+                origin_run_id=context.run_id or None,
+            )
+        except DispatchInactiveError as exc:
+            raise AgentToolError("run_inactive", str(exc), 409) from exc
         self.store.audit(
             f"role:{identity.role_id}", "agent_message_published",
             detail=(f"project={project.id} channel={channel.id} message={message_id} "
                     f"run={context.run_id}"),
         )
         url = channel_resource_url(project.id, channel.id)
-        return {
+        result = {
             "summary": f"已在 [#{channel.name}]({url}) 发布消息",
             "message_id": message_id, "resource_url": url,
         }
+        if unique_mentions:
+            # 派发可能被协作链预算兜底丢弃:回传实际启动名单,
+            # 避免主控误以为角色已开工。
+            started = {run["role_id"] for run in
+                       self.store.chat_runs_for_trigger(message_id)}
+            dropped = [r for r in unique_mentions if r not in started]
+            result["dispatched"] = [r for r in unique_mentions if r in started]
+            if dropped:
+                result["not_dispatched"] = dropped
+                result["summary"] += (
+                    "；注意:" + "、".join(f"@{r}" for r in dropped)
+                    + " 未启动(协作链执行数已达上限)")
+        return result
 
     def _create_channel(self, project: Project, identity: AgentIdentity,
                         arguments: dict, _context: AgentRunContext) -> dict:

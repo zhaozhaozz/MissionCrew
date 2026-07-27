@@ -71,7 +71,7 @@ Runtime
 
 `guideline.save` 与 Web 准则编辑器共用 Git 版本库。每次 Markdown 内容变更都返回 `revision`，记录为当前角色的操作；重命名会继续原文件的历史链。删除属于主控权限：文档、准则、Skill 和面板都会进入项目统一回收站，文档与准则删除同时形成新 Git 提交，历史不会被抹除。`recycle.restore` 在原标识已被占用时返回 `already_exists` 并保留回收项；`recycle.purge` 是不可撤销的永久删除，只应在用户明确要求时调用。工具响应不会暴露回收目录的本地路径。
 
-`message.publish` 的 `mentions` 是独立的角色 ID 数组。只有数组中的合法角色会被调度；正文里出现的 `@reviewer` 等文本只是普通内容。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。
+`message.publish` 的 `mentions` 是独立的角色 ID 数组，也是**唯一**的派发通道：只有数组中的合法角色会被调度；正文里出现的 `@reviewer`、`@[reviewer]` 等文本一律只是普通内容。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。
 
 ## 动作和并发规则
 
@@ -137,6 +137,6 @@ Runtime
 
 ## 兼容迁移
 
-历史 `missioncrew-action` 文本块仍可读取，避免旧的持久 Runtime 会话或历史测试立即失效；解析后只转发到同一个动作注册表，不再拥有独立写入逻辑。新上下文不会要求 Runtime 生成该格式，旧入口也无法像工具调用一样把错误返回给同一 Agent 回合，因此只作为迁移兼容，不应新增依赖。
+历史 `missioncrew-action` 文本块仍可读取，避免旧的持久 Runtime 会话或历史测试立即失效；解析后只转发到同一个动作注册表，不再拥有独立写入逻辑。其中 `post_message` 与 `message.publish` 同契约：只有块内显式携带 `mentions` 数组才会派发，正文里的 `@[角色ID]` 不再触发任何执行。新上下文不会要求 Runtime 生成该格式，旧入口也无法像工具调用一样把错误返回给同一 Agent 回合，因此只作为迁移兼容，不应新增依赖。
 
 聊天角色直接编辑 `.missioncrew/documents/` 的执行后同步仍属于兼容路径；新实现应调用 `document.publish`。`.missioncrew/tasks/` 只是只读快照，Task 只有在 Agent 显式调用 `task.create`、`task.update`、`task.brief` 或 `task.delete` 时才会改变。Task 处理统一进入 Channel 协作，不存在独立的任务阶段 Runtime。

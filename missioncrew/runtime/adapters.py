@@ -603,8 +603,9 @@ def _diagnostic_log_path(cfg: ExecutionConfig, adapter_name: str) -> Path:
 class MockAdapter:
     """确定性模拟后端：为 Channel 协作生成可级联的回复。
 
-    触发消息中出现"请 @某角色"时，回复会用显式 @[角色] 语法；
-    是否触发仍由 ChatEngine 按"只有项目主控可以调度"的规则决定。
+    触发消息中出现"请 @某角色"时，通过 cfg.agent_action 执行显式命令
+    message.publish（mentions 参数）发起协作——与真实主控同一条派发通道，
+    权限与预算仍由平台校验；回复正文里的 @ 只是普通文字，不会触发执行。
     """
 
     def run(self, cfg: ExecutionConfig) -> RunResult:
@@ -629,13 +630,26 @@ class MockAdapter:
         emit("input", prompt)
         emit("thinking", f"[mock] 理解触发消息({len(trigger)} 字符),对照角色定位准备回复。\n")
         emit("tool", "workspace.inspect .\n")
-        # 遵循触发消息中的协作指令:"请 @x ..." -> 回复中 @x 发起协作
+        # 遵循触发消息中的协作指令:"请 @x ..." -> 执行显式命令派发 @x。
+        # 平台照常校验权限(非主控会被拒)与协作链预算,和真实 Runtime 一致。
         asked = [m for m in re.findall(r"请\s*@([\w-]+)", trigger) if m != me]
         combo = cfg.backend.tier + (f"/effort={cfg.effort}" if cfg.effort else "")
         reply = (f"收到。我已在工作区完成相关处理(模拟执行,by {cfg.backend.id}/"
                  f"{combo})。")
         for r in dict.fromkeys(asked):
-            reply += f"\n@[{r}] 上面的工作已完成,交给你继续。"
+            if cfg.agent_action is None:
+                reply += f"\n(无 Agent Tool 句柄,未派发 @{r})"
+                continue
+            try:
+                cfg.agent_action("message.publish", {
+                    "channel": cfg.env.get("MISSIONCREW_CHANNEL_ID", ""),
+                    "content": "上面的工作已完成,交给你继续。",
+                    "mentions": [r],
+                })
+                emit("tool", f"message.publish mentions=[{r}]\n")
+                reply += f"\n已通过 message.publish 调度 @{r}。"
+            except Exception as exc:
+                reply += f"\n调度 @{r} 未执行: {exc}"
         # 回显触发消息中的平台控制动作块,模拟真实 Agent 按指示发出动作
         for block in re.findall(r"<missioncrew-action>.*?</missioncrew-action>",
                                 trigger, re.S):

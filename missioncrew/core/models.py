@@ -713,6 +713,10 @@ class ExecutionConfig:
     # 执行在 Runtime 自己的 session 锁后仍可能排队；真正启动 turn/进程前
     # 再检查一次，保证频道停止不会只中断当前轮、却放行同会话的下一轮。
     cancelled: Optional[Callable[[], bool]] = None
+    # 进程内 Agent Tool 调用 (action, arguments) -> 结果 dict,与 HTTP 入口
+    # 同一鉴权/审计路径。真实 CLI Runtime 走子进程 + HTTP,不用该回调;
+    # MockAdapter 用它执行 message.publish 等显式命令(如模拟主控派发)。
+    agent_action: Optional[Callable[[str, dict], dict]] = None
 
     def __post_init__(self):
         # 兼容旧的 allowed_dirs 构造入口；新代码只需提供统一策略。

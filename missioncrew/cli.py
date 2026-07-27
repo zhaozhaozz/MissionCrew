@@ -231,12 +231,15 @@ def _resolve_channel(store: Store, channel: str, project: Optional[str]) -> str:
 
 
 @chat_app.command("send")
-def chat_send(content: str = typer.Argument(..., help="消息内容；@[角色] 显式触发执行"),
+def chat_send(content: str = typer.Argument(..., help="消息内容；@[角色] 显式触发执行(人类 CLI 专用语法)"),
               channel: str = typer.Option("general", "-c", "--channel"),
               project: Optional[str] = typer.Option(None, "-p", "--project"),
               author: str = typer.Option("human", "--author"),
               wait: bool = typer.Option(True, help="等待所有触发的执行(含级联)结束")):
-    """向频道发消息；@[角色] 会执行工作，普通 @角色 只是正文。"""
+    """向频道发消息；@[角色] 会执行工作，普通 @角色 只是正文。
+
+    方括号语法仅对人类 CLI 消息有效;Agent 派发一律走 message.publish 显式命令。
+    """
     store = _store()
     cid = _resolve_channel(store, channel, project)
     chat = ChatEngine(store)

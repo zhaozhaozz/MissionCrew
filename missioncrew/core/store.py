@@ -881,6 +881,12 @@ class Store:
         rows = self._query("SELECT COUNT(*) AS n FROM chat_runs WHERE root_id=?", (root_id,))
         return rows[0]["n"]
 
+    def chat_runs_for_trigger(self, message_id: int) -> list[dict]:
+        """由某条消息直接触发的运行,用于回报派发实际启动情况。"""
+        rows = self._query(
+            "SELECT * FROM chat_runs WHERE trigger_message_id=?", (message_id,))
+        return [dict(row) for row in rows]
+
     # ---- 聊天:Runtime 持久会话 ----
     def get_chat_session(self, session_key: str) -> Optional[dict]:
         rows = self._query(

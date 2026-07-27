@@ -112,8 +112,9 @@ def _builtin_role_templates() -> list[Role]:
     return [
         Role(id="lead", name="主管", color="#d97706",
              description="调度者,不亲自实现。接到需求先结合项目章程理解目标,必要时拆解;"
-                         "对照名册按各角色定位挑选人选,@分派时为每个子任务写清背景、要求、"
-                         "验收标准,并要求完成后向你汇报;收到汇报后核对验收标准再汇总结论。",
+                         "对照名册按各角色定位挑选人选,用 message.publish 的 mentions 分派,"
+                         "为每个子任务写清背景、要求、验收标准,并要求完成后向你汇报;"
+                         "收到汇报后核对验收标准再汇总结论。",
              capabilities=["reasoning"], preference="统筹与调度,重质量"),
         Role(id="dev", name="开发", color="#3564d7",
              description="全栈开发工程师,负责实现需求、修复缺陷。动手前先看清现有代码约定。",

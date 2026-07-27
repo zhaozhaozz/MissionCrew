@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from missioncrew.api import create_app
+from missioncrew.collab.agent_tools import DispatchInactiveError
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
 from missioncrew.core.models import (Channel, DEFAULT_MAX_CHAIN_RUNS, Project,
@@ -173,13 +174,25 @@ def test_message_api_rejects_forged_picker_range(seeded):
     assert seeded.list_messages("general") == []
 
 
-def test_orchestrator_requires_explicit_bracket_syntax(chat, seeded):
+def test_orchestrator_text_mentions_never_dispatch(chat, seeded):
+    """主控消息正文里的 @ 与 @[ ] 都是普通文字;派发只认结构化范围。"""
     chat.post("general", "lead", "@scribe 请参考 @dev 的报告。", author_type="agent")
     chat.wait_idle()
     assert seeded._query("SELECT * FROM chat_runs") == []
 
-    root = chat.post("general", "lead", "@[scribe] 请参考 @dev 的报告。",
+    kept = chat.post("general", "lead", "@[scribe] 请参考 @dev 的报告。",
                      author_type="agent")
+    chat.wait_idle()
+    stored = seeded.get_message(kept)
+    assert stored["content"].startswith("@[scribe]")   # 旧语法保留为字面文本
+    assert json.loads(stored["mentions"]) == []
+    assert json.loads(stored["mention_spans"]) == []
+    assert seeded._query("SELECT * FROM chat_runs") == []
+
+    # message.publish 显式命令生成的结构化范围才会派发
+    root = chat.post("general", "lead", "@scribe\n\n请复核报告。",
+                     author_type="agent",
+                     mention_spans=[{"role_id": "scribe", "start": 0, "end": 7}])
     chat.wait_idle()
     stored = seeded.get_message(root)
     assert json.loads(stored["mentions"]) == ["scribe"]
@@ -314,8 +327,8 @@ def test_worker_failure_reason_is_delivered_to_orchestrator(
         return RunResult(True, "已处理失败", output="已看到 dev 的失败原因并调整安排。")
 
     monkeypatch.setattr(runtime_manager, "start", _start)
-    chat.post("general", "lead", "@[dev] 检查外部文档。",
-              author_type="agent")
+    chat.post("general", "lead", "@dev\n\n检查外部文档。", author_type="agent",
+              mention_spans=[{"role_id": "dev", "start": 0, "end": 4}])
     chat.wait_idle()
 
     platform = [m for m in _log(seeded) if m["author_type"] == "platform"]
@@ -346,7 +359,8 @@ def test_worker_exit_without_output_notifies_orchestrator(
         return RunResult(True, "已处理", output="已收到无输出告警并重新安排。")
 
     monkeypatch.setattr(runtime_manager, "start", _start)
-    chat.post("general", "lead", "@[dev] 执行检查。", author_type="agent")
+    chat.post("general", "lead", "@dev\n\n执行检查。", author_type="agent",
+              mention_spans=[{"role_id": "dev", "start": 0, "end": 4}])
     chat.wait_idle()
 
     platform = [m for m in _log(seeded) if m["author_type"] == "platform"]
@@ -431,8 +445,9 @@ def test_worker_cannot_dispatch_reviewer_and_returns_to_lead(chat, seeded):
 
 
 def test_only_orchestrator_agent_can_dispatch_other_roles(chat, seeded):
-    root = chat.post("general", "lead", "@[reviewer] 请复核金额计算。",
-                     author_type="agent")
+    root = chat.post("general", "lead", "@reviewer\n\n请复核金额计算。",
+                     author_type="agent",
+                     mention_spans=[{"role_id": "reviewer", "start": 0, "end": 9}])
     chat.wait_idle()
     msgs = _log(seeded)
     reviewer = next(m for m in msgs if m["author"] == "reviewer")
@@ -443,6 +458,76 @@ def test_only_orchestrator_agent_can_dispatch_other_roles(chat, seeded):
     assert json.loads(reviewer["mentions"]) == ["lead"]
     assert [r["role_id"] for r in seeded._query(
         "SELECT role_id FROM chat_runs ORDER BY id")] == ["reviewer", "lead"]
+
+
+def test_mock_orchestrator_dispatches_via_agent_action(chat, seeded):
+    """mock 主控经 cfg.agent_action 执行 message.publish 真实派发级联。"""
+    chat.post("general", "human", "帮忙,请 @dev 检查购物车。")
+    chat.wait_idle()
+    runs = [r["role_id"] for r in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")]
+    assert runs[0] == "lead" and "dev" in runs
+    brief = next(m for m in _log(seeded)
+                 if m["author"] == "lead" and m["content"].startswith("@dev"))
+    assert json.loads(brief["mention_spans"]) == [
+        {"role_id": "dev", "start": 0, "end": 4}]
+    # dev 结果自动回传主控:链尾又有一次 lead 执行
+    assert runs[-1] == "lead"
+
+
+def test_mock_worker_dispatch_attempt_is_denied(chat, seeded):
+    """非主控经 agent_action 尝试 message.publish 会被权限拒绝,不产生派发。"""
+    chat.post("general", "human", "@[dev] 检查,做完请 @lead 汇报。")
+    chat.wait_idle()
+    dev_msg = next(m for m in _log(seeded) if m["author"] == "dev")
+    assert "调度 @lead 未执行" in dev_msg["content"]
+    runs = [r["role_id"] for r in seeded._query(
+        "SELECT role_id FROM chat_runs ORDER BY id")]
+    assert runs == ["dev"]     # 人类直派:无 auto-return,也没有越权派发
+
+
+def test_agent_publish_rejected_when_origin_run_inactive(chat, seeded):
+    """post 的停止互斥守卫:发起 run 已停止时,消息不落库、不调度。"""
+    trigger = seeded.add_message("general", "human", "human", "go", ["lead"])
+    run_id = seeded.add_chat_run("general", "lead", trigger, trigger, 0)
+    seeded.update_chat_run(run_id, "running", backend_id="std-1")
+    seeded.update_chat_run(run_id, "stopped")
+    before = len(_log(seeded))
+    with pytest.raises(DispatchInactiveError):
+        chat.post("general", "lead", "@dev\n\n迟到的派发。", author_type="agent",
+                  mention_spans=[{"role_id": "dev", "start": 0, "end": 4}],
+                  origin_run_id=run_id)
+    assert len(_log(seeded)) == before
+    assert not any(r["role_id"] == "dev" for r in
+                   seeded._query("SELECT role_id FROM chat_runs"))
+
+
+def test_stale_bracket_syntax_gets_platform_hint(chat, seeded):
+    """主控正文残留 @[已知角色] 且无结构化派发时,平台提示旧语法已失效。"""
+    chat.post("general", "lead", "@[dev] 请实现支付。", author_type="agent")
+    chat.wait_idle()
+    hint = _log(seeded)[-1]
+    assert hint["author_type"] == "platform"
+    assert "旧派发" in hint["content"] and "@[dev]" in hint["content"]
+    assert seeded._query("SELECT * FROM chat_runs") == []
+
+    # 未知角色的 @[x] 不提示;带结构化派发的消息也不提示
+    chat.post("general", "lead", "@[nobody] 只是文字。", author_type="agent")
+    chat.wait_idle()
+    assert _log(seeded)[-1]["author_type"] == "agent"
+
+
+def test_worker_structured_spans_cannot_dispatch(chat, seeded):
+    """结构化范围只对主控生效;执行角色带范围发消息也只会回传主控。"""
+    root = seeded.add_message("general", "human", "human", "开始", [])
+    chat.post("general", "dev", "@reviewer\n\n请复核。", author_type="agent",
+              reply_to=root, root_id=root, depth=1,
+              mention_spans=[{"role_id": "reviewer", "start": 0, "end": 9}])
+    chat.wait_idle()
+    assert not any(r["role_id"] == "reviewer" for r in
+                   seeded._query("SELECT role_id FROM chat_runs"))
+    dev_msg = next(m for m in _log(seeded) if m["author"] == "dev")
+    assert json.loads(dev_msg["mentions"]) == ["lead"]
 
 
 def test_multiple_human_mentions_start_only_orchestrator(
@@ -556,6 +641,18 @@ def test_agent_failure_posted_to_channel(chat, seeded):
                if m["author_type"] == "platform")
     assert [r["role_id"] for r in seeded._query(
         "SELECT role_id FROM chat_runs ORDER BY id")] == ["vision"]
+
+
+def test_bracket_mention_text_is_redacted_for_workers(chat, seeded):
+    """字面 @[其他角色] 虽不再触发执行,但同样要对执行角色脱敏。"""
+    msg_id = seeded.add_message(
+        "general", "human", "human", "@dev 参考 @[expert] 的历史结论。", ["dev"])
+    cfg = chat._assemble(seeded.get_channel("general"),
+                         seeded.get_role("webshop", "dev"),
+                         seeded.get_backend("std-1"), msg_id)
+    worker_trigger = _prompt_json_section(
+        cfg.prompt, "触发消息(JSON,你的任务简报由发起者撰写)")
+    assert worker_trigger["content"] == "@dev 参考 [其他执行角色] 的历史结论。"
 
 
 def test_prompt_separates_worker_context_from_orchestrator_roster(chat, seeded):
@@ -781,8 +878,9 @@ def test_stop_channel_prevents_late_reply_and_queued_agent_start(
         lambda backend, session_key="": stopped.append(
             (backend.id, session_key)) or 1)
 
-    chat.post("general", "lead", "@[dev] @[expert] 同时执行",
-              author_type="agent")
+    chat.post("general", "lead", "@dev @expert\n\n同时执行", author_type="agent",
+              mention_spans=[{"role_id": "dev", "start": 0, "end": 4},
+                             {"role_id": "expert", "start": 5, "end": 12}])
     assert started.wait(5)
     result = chat.stop_channel_agents("general")
     release.set()
