@@ -423,7 +423,9 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                emit: Optional[Callable[[str, str], None]] = None,
                session_key: str = "", session_id: str = "",
                recovery_prompt: str = "",
-               save_session: Optional[Callable[[str, str], None]] = None,
+               save_session: Optional[Callable[..., None]] = None,
+               prompt_mode: str = "", recovery_mode: str = "recovery",
+               mode_labels: Optional[dict] = None,
                context_version: str = "", runtime_id: str = "",
                task_id: str = "", stage_name: str = "",
                project_id: str = "", role_id: str = "",
@@ -489,12 +491,23 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
             if cancelled and cancelled():
                 return False, "执行已停止"
             live.client.begin_turn(timeout, emit)
-            actual_prompt = prompt if recovered else (recovery_prompt or prompt)
+            if recovered:
+                actual_prompt, actual_mode = prompt, prompt_mode
+            else:
+                actual_prompt = recovery_prompt or prompt
+                actual_mode = recovery_mode if recovery_prompt else prompt_mode
+            label = (mode_labels or {}).get(actual_mode)
+            if label:
+                live.client.emit("status", f"公共上下文:{label}\n")
             reply = _prompt_turn(live.client, live.session_id, actual_prompt, model)
             live.last_used = time.time()
             if save_session:
                 try:
-                    save_session(live.session_id, context_version)
+                    save_session(live.session_id, context_version,
+                                 turn_mode=actual_mode,
+                                 turn_bytes=sum(
+                                     len(t.encode("utf-8", "ignore"))
+                                     for t in (actual_prompt, reply)))
                 except Exception:
                     live.client.emit("status", "Runtime 会话已继续，但持久化会话 id 失败。\n")
             return True, reply

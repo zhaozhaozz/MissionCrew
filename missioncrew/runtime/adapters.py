@@ -24,7 +24,7 @@ import uuid
 from collections import deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from . import acp
 from .base import RuntimeInstance
@@ -137,25 +137,98 @@ def close_active_executions() -> None:
 atexit.register(close_active_executions)
 
 
-def _session_input(cfg: ExecutionConfig, recovery: bool) -> str:
-    """每轮重注入公共上下文；仅新会话附带最近对话用于恢复。"""
+# 注入模式定义见 core.models.INJECTION_FULL_MODES;这里是用户可见标签。
+_INJECTION_LABELS = {
+    "first": "完整注入(新会话)",
+    "recovery": "完整注入(新建/恢复,附最近对话)",
+    "update": "完整注入(版本更新)",
+    "reinject": "完整注入(压缩或计数触发重注入)",
+    "lean": "增量回合(版本未变,沿用会话内公共上下文)",
+}
+
+LEAN_TURN_TEMPLATE = (
+    "# MissionCrew 增量回合\n"
+    "持久公共上下文版本 {context_version} 未变化,本轮不重发;会话中已注入的"
+    "公共上下文(角色、项目、权限、协作规则)继续有效。\n\n"
+)
+
+_REINJECT_BANNER = (
+    "# MissionCrew 公共上下文重注入\n"
+    "距上次完整注入较久或会话历史发生过压缩,现重发完整公共上下文;"
+    "以本区块为准刷新角色、项目、权限与协作规则。\n\n"
+)
+
+_UPDATE_BANNER = (
+    "# MissionCrew 公共上下文更新\n"
+    "本轮公共上下文版本已经变化。立即以新版本完整替换会话中的旧版本，"
+    "不要继续引用旧项目设置。\n\n"
+)
+
+
+def _injection_mode(cfg: ExecutionConfig, recovery: bool) -> str:
     if not cfg.common_prompt:
-        return cfg.prompt
+        return "raw"
+    if recovery:
+        return "recovery"
+    if not cfg.session_id:
+        return "first"
+    if cfg.context_changed:
+        return "update"
+    if cfg.reinject_due:
+        return "reinject"
+    return "lean"
+
+
+def _session_input(cfg: ExecutionConfig, recovery: bool,
+                   announce: bool = True) -> tuple[str, str]:
+    """按注入模式组装本轮输入,返回 (输入文本, 模式)。
+
+    完整模式重发 common_prompt;lean 增量回合只发版本引用头 + turn_prompt,
+    依赖原生会话中已注入且未被压缩的公共上下文(压缩由各 Runtime 事件或
+    计数兜底触发重注入)。announce=False 供调用方推迟到实际发送时再上报。
+    """
+    mode = _injection_mode(cfg, recovery)
+    if mode == "raw":
+        return cfg.prompt, mode
+    if announce and cfg.emit is not None:
+        try:
+            cfg.emit("status", f"公共上下文:{_INJECTION_LABELS[mode]}\n")
+        except Exception:
+            pass
     dynamic = cfg.recovery_prompt if recovery else cfg.turn_prompt
-    update = ""
-    if cfg.context_changed and not recovery:
-        update = (
-            "# MissionCrew 公共上下文更新\n"
-            "本轮公共上下文版本已经变化。立即以新版本完整替换会话中的旧版本，"
-            "不要继续引用旧项目设置。\n\n"
-        )
-    return cfg.common_prompt + "\n" + update + dynamic
+    if mode == "lean":
+        return (LEAN_TURN_TEMPLATE.format(context_version=cfg.context_version)
+                + dynamic), mode
+    banner = {"update": _UPDATE_BANNER, "reinject": _REINJECT_BANNER}.get(mode, "")
+    return cfg.common_prompt + "\n" + banner + dynamic, mode
 
 
-def _save_session(cfg: ExecutionConfig, session_id: str) -> None:
+def _turn_bytes(*texts: str) -> int:
+    """粗略统计一轮输入/输出体积(utf-8 字节),供重注入计数,不求精确。"""
+    return sum(len(t.encode("utf-8", "ignore")) for t in texts if t)
+
+
+def _mark_compact(cfg: ExecutionConfig) -> None:
+    """Runtime 报告上下文压缩:立即持久化重注入标记,下一轮重发完整上下文。"""
+    cfg.compact_detected = True
+    if cfg.mark_reinject:
+        try:
+            cfg.mark_reinject()
+        except Exception:
+            pass
+
+
+def _save_session(cfg: ExecutionConfig, session_id: str,
+                  turn_mode: str = "", turn_bytes: int = 0) -> None:
+    """持久化会话 id;轮末调用附带注入模式与体积以维护重注入计数。
+
+    turn_mode 为空表示轮内的 id 刷新(如连接事件),不影响计数。
+    """
     if cfg.save_session:
         try:
-            cfg.save_session(session_id, cfg.context_version)
+            cfg.save_session(session_id, cfg.context_version,
+                             turn_mode=turn_mode, turn_bytes=turn_bytes,
+                             compact_seen=cfg.compact_detected)
         except Exception:
             pass
 
@@ -173,12 +246,13 @@ def _refresh_session(cfg: ExecutionConfig) -> None:
     if not cfg.load_session:
         return
     try:
-        session_id, accepted_context = cfg.load_session()
+        session_id, accepted_context, reinject_due = cfg.load_session()
     except Exception:
         return
     cfg.session_id = session_id
     cfg.context_changed = bool(
         session_id and accepted_context != cfg.context_version)
+    cfg.reinject_due = bool(session_id) and reinject_due
 
 
 def _session_missing(text: str) -> bool:
@@ -621,9 +695,10 @@ class MockAdapter:
 
     def _chat(self, cfg: ExecutionConfig) -> RunResult:
         reused = bool(cfg.session_id)
-        prompt = _session_input(cfg, recovery=not reused)
+        prompt, injection_mode = _session_input(cfg, recovery=not reused)
         session_id = cfg.session_id or f"mock:{cfg.session_key}"
-        me = _role_from_prompt(prompt)
+        # 增量回合的输入不含角色区块,回退到公共上下文解析
+        me = _role_from_prompt(prompt) or _role_from_prompt(cfg.common_prompt)
         trigger = _trigger_from_prompt(prompt)
         # 模拟运行过程事件,让事件管道可测试/可演示
         emit = cfg.emit or (lambda kind, text: None)
@@ -661,7 +736,8 @@ class MockAdapter:
             reply += "\n已写入文档库 mock-note.md。"
         emit("text", reply)
         if cfg.session_key:
-            _save_session(cfg, session_id)
+            _save_session(cfg, session_id, injection_mode,
+                          _turn_bytes(prompt, reply))
         return RunResult(True, reply[:120], output=reply)
 
 
@@ -694,13 +770,18 @@ class AcpAdapter:
             except Exception:
                 pass
         _refresh_session(cfg)
-        current_prompt = _session_input(cfg, recovery=False)
-        recovery_prompt = _session_input(cfg, recovery=True)
+        # 实际用哪份输入(复用 or 恢复)由协议层决定,这里推迟到发送时再上报模式
+        current_prompt, current_mode = _session_input(
+            cfg, recovery=False, announce=False)
+        recovery_prompt, recovery_mode = _session_input(
+            cfg, recovery=True, announce=False)
         ok, text = acp.run_prompt(
             cmd, current_prompt, workdir, _runtime_env(cfg, self.adapter_name),
             model=cfg.backend.model, timeout=cfg.timeout, emit=cfg.emit,
             session_key=cfg.session_key, session_id=cfg.session_id,
             recovery_prompt=recovery_prompt, save_session=cfg.save_session,
+            prompt_mode=current_mode, recovery_mode=recovery_mode,
+            mode_labels=_INJECTION_LABELS,
             context_version=cfg.context_version, runtime_id=cfg.backend.id,
             task_id=cfg.task_id, stage_name=cfg.stage_name,
             project_id=cfg.project_id, role_id=cfg.role_id,
@@ -737,13 +818,17 @@ def _summarize_tool_result(content) -> str:
     return " ".join(str(content).split())[:400]
 
 
-def _claude_stream_event(line: str, emit) -> Optional[str]:
+def _claude_stream_event(line: str, emit,
+                         on_compact: Optional[Callable[[], None]] = None
+                         ) -> Optional[str]:
     """解析 claude stream-json 的一行事件并上报运行过程。
 
     事件形态(实测 claude 2.x):assistant 事件的 message.content 里是
     thinking/text/tool_use 块;user 事件携带 tool_result;result 事件的
     result 字段是最终回复文本。返回最终回复,其余情况返回 None。
-    hook/thinking_tokens/rate_limit 等 system 子事件不进过程流。
+    compact_boundary/microcompact_boundary 表示上下文已压缩,回调 on_compact
+    触发下一轮公共上下文重注入;hook/thinking_tokens/rate_limit 等其余
+    system 子事件不进过程流。
     """
     try:
         d = json.loads(line)
@@ -771,6 +856,11 @@ def _claude_stream_event(line: str, emit) -> Optional[str]:
         return str(d.get("result") or "")
     elif t == "system" and d.get("subtype") == "init":
         emit("status", f"会话启动 model={d.get('model', '')}\n")
+    elif t == "system" and d.get("subtype") in ("compact_boundary",
+                                                "microcompact_boundary"):
+        if on_compact is not None:
+            on_compact()
+        emit("status", "检测到上下文压缩;下一轮将重新注入完整公共上下文\n")
     return None
 
 
@@ -973,11 +1063,11 @@ def _new_session_id() -> str:
 
 
 def _prepare_cli_session(adapter_name: str,
-                         cfg: ExecutionConfig) -> tuple[str, str, bool]:
-    """返回 (本轮输入,原生会话 id,是否恢复既有会话)。"""
+                         cfg: ExecutionConfig) -> tuple[str, str, bool, str]:
+    """返回 (本轮输入,原生会话 id,是否恢复既有会话,注入模式)。"""
     supported = bool(cfg.session_key and adapter_name in _CLI_SESSION_ADAPTERS)
     if not supported:
-        return cfg.prompt, "", False
+        return cfg.prompt, "", False, "raw"
     reused = bool(cfg.session_id)
     if adapter_name in _FIXED_ID_SESSIONS:
         session_id = cfg.session_id or _new_session_id()
@@ -986,7 +1076,8 @@ def _prepare_cli_session(adapter_name: str,
         session_id = cfg.session_id or f"pi-dir:{mc_home() / 'runtime-sessions' / 'pi' / digest}"
     else:
         session_id = cfg.session_id
-    return _session_input(cfg, recovery=not reused), session_id, reused
+    prompt, mode = _session_input(cfg, recovery=not reused)
+    return prompt, session_id, reused, mode
 
 
 def _apply_cli_session_args(adapter_name: str, cmd: list[str], session_id: str,
@@ -1053,8 +1144,8 @@ class CliAdapter:
             return RunResult(False, f"适配器 {self.adapter_name} 未配置命令模板")
         workdir = str(Path(cfg.workdir).expanduser().resolve())
         extra_dirs = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
-        input_prompt, native_session_id, reused = _prepare_cli_session(
-            self.adapter_name, cfg)
+        input_prompt, native_session_id, reused, injection_mode = \
+            _prepare_cli_session(self.adapter_name, cfg)
         cmd = render_command(
             template, input_prompt, cfg.backend.model,
             cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", ""), cfg.effort,
@@ -1138,7 +1229,8 @@ class CliAdapter:
                 elif kind == "stderr":
                     err_full.append(line)
                 if kind == "stdout" and stream_json:
-                    final = _claude_stream_event(line, parse_emit)
+                    final = _claude_stream_event(
+                        line, parse_emit, on_compact=lambda: _mark_compact(cfg))
                     if final is not None:
                         final_box.append(final)
                 elif kind == "stdout" and structured_json:
@@ -1204,7 +1296,8 @@ class CliAdapter:
             saved_id = native_session_id or (
                 captured_sessions[-1] if captured_sessions else "")
             if saved_id:
-                _save_session(cfg, saved_id)
+                _save_session(cfg, saved_id, injection_mode,
+                              _turn_bytes(input_prompt, out))
             else:
                 emit("status", "Runtime 未返回可恢复的会话 id；下一轮将使用恢复上下文新建会话。\n")
         elif reused and _session_missing(out + "\n" + "\n".join(err_full)):

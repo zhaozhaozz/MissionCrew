@@ -130,8 +130,8 @@ def _chat_cfg(tmp_path, saved, emit=None):
         session_key="channel::role", session_id=saved.get("id", ""),
         common_prompt="公共上下文", turn_prompt="当前任务",
         recovery_prompt="最近对话\n当前任务", context_version="v1",
-        save_session=lambda session_id, context: saved.update(
-            id=session_id, context=context), emit=emit,
+        save_session=lambda session_id, context, **stats: saved.update(
+            id=session_id, context=context, **stats), emit=emit,
     )
 
 
@@ -156,9 +156,12 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
                       lambda kind, text: second_events.append((kind, text))))
         assert second.success
         assert "轮次=2;new=1;load=0" in second.output
-        assert ("input", "公共上下文\n当前任务") in second_events
-        assert all("最近对话" not in text for kind, text in second_events
-                   if kind == "input")
+        lean_input = (adapters.LEAN_TURN_TEMPLATE.format(context_version="v1")
+                      + "当前任务")
+        assert ("input", lean_input) in second_events
+        assert saved["turn_mode"] == "lean" and saved["turn_bytes"] > 0
+        assert all("最近对话" not in text and "公共上下文\n" not in text
+                   for kind, text in second_events if kind == "input")
     finally:
         acp.close_sessions()
 
@@ -189,7 +192,9 @@ def test_acp_loads_persisted_session_after_process_restart(tmp_path):
                       lambda kind, text: events.append((kind, text))))
         assert second.success
         assert "轮次=1;new=0;load=1" in second.output
-        assert ("input", "公共上下文\n当前任务") in events
+        # session/load 恢复了包含公共上下文的完整会话,版本未变仍走增量回合
+        assert ("input", adapters.LEAN_TURN_TEMPLATE.format(context_version="v1")
+                + "当前任务") in events
     finally:
         acp.close_sessions()
 

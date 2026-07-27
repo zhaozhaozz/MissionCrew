@@ -194,7 +194,8 @@ class _CodexSession:
             self.last_project_id = config.project_id
             self.last_role_id = config.role_id
             self.last_model = config.backend.model
-            prompt = adapters._session_input(config, recovery=not bool(config.session_id))
+            prompt, injection_mode = adapters._session_input(
+                config, recovery=not bool(config.session_id))
             adapters._emit_execution_start(config.emit, [*self.command], prompt)
             self._turn_done.clear()
             self._turn_status = ""
@@ -245,6 +246,10 @@ class _CodexSession:
                     return RunResult(False, f"执行超时({config.timeout}s)")
                 output = "".join(self._output).strip()
                 success = self._turn_status == "completed"
+                if success and self.thread_id:
+                    adapters._save_session(
+                        config, self.thread_id, injection_mode,
+                        adapters._turn_bytes(prompt, output))
                 summary = self._turn_error or (
                     "Codex turn completed" if success else
                     f"Codex turn {self._turn_status or 'failed'}")
@@ -314,6 +319,11 @@ class _CodexSession:
                       "turn/diff/updated"):
             value = params.get("delta") or params.get("patch") or params.get("diff")
             safe_emit(emit, "file_change", str(value or ""))
+            return
+        if method in ("thread/compacted", "thread/compact/start"):
+            adapters._mark_compact(config)
+            safe_emit(emit, "status",
+                      "检测到上下文压缩;下一轮将重新注入完整公共上下文\n")
             return
         if method == "thread/tokenUsage/updated":
             emit_json(emit, "usage", params.get("tokenUsage") or {})

@@ -13,26 +13,51 @@ def _cfg(session_id=""):
         prompt="公共\n最近对话\n当前任务", workdir="/workspace",
         session_key="channel::role", session_id=session_id,
         common_prompt="公共", turn_prompt="当前任务",
-        recovery_prompt="最近对话\n当前任务",
+        recovery_prompt="最近对话\n当前任务", context_version="v1",
     )
 
 
 def test_fixed_id_cli_creates_then_resumes_same_session():
     cfg = _cfg()
-    prompt, session_id, reused = adapters._prepare_cli_session(
+    prompt, session_id, reused, mode = adapters._prepare_cli_session(
         "claude_code", cfg)
     assert session_id and not reused and "最近对话" in prompt
+    assert mode == "recovery"
     initial, _ = adapters._apply_cli_session_args(
         "claude_code", ["claude", "-p", prompt], session_id, reused)
     assert initial[-2:] == ["--session-id", session_id]
 
     cfg.session_id = session_id
-    prompt, resumed_id, reused = adapters._prepare_cli_session(
+    prompt, resumed_id, reused, mode = adapters._prepare_cli_session(
         "claude_code", cfg)
-    assert reused and resumed_id == session_id and prompt == "公共\n当前任务"
+    assert reused and resumed_id == session_id and mode == "lean"
+    assert prompt == (adapters.LEAN_TURN_TEMPLATE.format(context_version="v1")
+                      + "当前任务")
     resumed, _ = adapters._apply_cli_session_args(
         "claude_code", ["claude", "-p", prompt], resumed_id, reused)
     assert resumed[-2:] == ["--resume", session_id]
+
+
+def test_session_input_modes_cover_update_reinject_and_lean():
+    reused = _cfg(session_id="s1")
+    lean, mode = adapters._session_input(reused, recovery=False)
+    assert mode == "lean" and "公共\n" not in lean and "当前任务" in lean
+
+    changed = _cfg(session_id="s1")
+    changed.context_changed = True
+    full, mode = adapters._session_input(changed, recovery=False)
+    assert mode == "update"
+    assert full.startswith("公共\n") and "# MissionCrew 公共上下文更新" in full
+
+    due = _cfg(session_id="s1")
+    due.reinject_due = True
+    full, mode = adapters._session_input(due, recovery=False)
+    assert mode == "reinject"
+    assert full.startswith("公共\n") and "# MissionCrew 公共上下文重注入" in full
+
+    fresh = _cfg()
+    full, mode = adapters._session_input(fresh, recovery=True)
+    assert mode == "recovery" and full == "公共\n最近对话\n当前任务"
 
 
 def test_captured_and_directory_session_arguments(tmp_path):

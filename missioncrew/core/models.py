@@ -19,6 +19,10 @@ TIER_ORDER = ["economy", "standard", "expert"]
 DEFAULT_MAX_CHAIN_RUNS = 100
 TASK_STATUSES = ("open", "in_progress", "blocked", "done")
 
+# 聊天公共上下文的注入模式:完整模式重发全部 common_prompt 并清零增量回合
+# 计数;lean(增量回合)只发版本引用头;raw 是非聊天路径的原始 prompt。
+INJECTION_FULL_MODES = frozenset({"first", "recovery", "update", "reinject"})
+
 # 能力约定(自由字符串,以下为内置约定):
 #   coding / reasoning / review / multimodal / web_search / sub_agents / security
 CAP_REVIEW = "review"
@@ -690,9 +694,10 @@ class ExecutionConfig:
     timeout: Optional[float] = None
     effort: str = ""      # 推理力度，由角色绑定的 Runtime 配置填入
     routing_trace: list[str] = field(default_factory=list)
-    # 聊天 Runtime 会话按 channel×role 复用。common_prompt 每轮重注入，确保
-    # Runtime 压缩历史时仍拿到最新 MissionCrew 公共输入；recovery_prompt 只在
-    # 新建/无法恢复原生会话时使用，包含最近消息用于恢复上下文。
+    # 聊天 Runtime 会话按 channel×role 复用。common_prompt 只在新会话、版本
+    # 变化、恢复和重注入触发时完整发送;复用会话且版本未变的增量回合只发
+    # 版本引用头 + turn_prompt。recovery_prompt 只在新建/无法恢复原生会话时
+    # 使用，包含最近消息用于恢复上下文。
     session_key: str = ""
     session_id: str = ""
     common_prompt: str = ""
@@ -700,10 +705,20 @@ class ExecutionConfig:
     recovery_prompt: str = ""
     context_version: str = ""
     context_changed: bool = False
+    # 距上次完整注入的增量回合数/体积超过阈值,或此前检测到压缩:本轮强制
+    # 重注入完整公共上下文(注入模式集合见 INJECTION_FULL_MODES)。
+    reinject_due: bool = False
+    # 本轮执行期间 Runtime 报告了上下文压缩;保存会话时据此保留重注入标记。
+    compact_detected: bool = False
     # 执行可能在线程池中排队；真正拿到会话锁后重读一次，避免两个连续触发都
     # 使用装配时看到的空 id 而各自新建会话。
-    load_session: Optional[Callable[[], tuple[str, str]]] = None
-    save_session: Optional[Callable[[str, str], None]] = None
+    load_session: Optional[Callable[[], tuple[str, str, bool]]] = None
+    # save_session(session_id, context_version, turn_mode=, turn_bytes=,
+    # compact_seen=):轮末携带注入模式与本轮体积,维护增量回合计数。
+    save_session: Optional[Callable[..., None]] = None
+    # Runtime 检测到上下文压缩时立即持久化重注入标记(独立于轮末保存,
+    # 保证本轮异常中断也不丢信号)。
+    mark_reinject: Optional[Callable[[], None]] = None
     # 运行过程回调 (kind, text):适配器在执行期间实时上报思考/工具/输出等
     # 事件；None 表示调用方不关心运行过程。
     emit: Optional[Callable[[str, str], None]] = None

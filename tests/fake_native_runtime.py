@@ -111,6 +111,10 @@ def run_codex() -> None:
                                          {"label": "A", "description": "first"},
                                          {"label": "B", "description": "second"},
                                      ]}]}})
+            elif "TRIGGER_COMPACT" in prompt:
+                send({"method": "thread/compacted", "params": {
+                    "threadId": thread_id, "turnId": turn_id}})
+                codex_finish(thread_id, turn_id, f"codex answer {turn_number}")
             else:
                 codex_finish(thread_id, turn_id, f"codex answer {turn_number}")
         elif method == "turn/interrupt":
@@ -247,6 +251,13 @@ def run_claude() -> None:
                     target=claude_background_agent,
                     args=(session_id, task_id, tool_use_id, turn_number),
                     daemon=True).start()
+            elif "TRIGGER_COMPACT" in prompt:
+                send({"type": "system", "subtype": "compact_boundary",
+                      "session_id": session_id,
+                      "compact_metadata": {"trigger": "auto",
+                                           "pre_tokens": 160000}})
+                claude_finish(session_id, turn_number,
+                              f"claude answer {turn_number}")
             else:
                 claude_finish(session_id, turn_number,
                               f"claude answer {turn_number}")

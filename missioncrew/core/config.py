@@ -63,3 +63,33 @@ def chat_max_workers() -> int:
     except ValueError:
         return DEFAULT_CHAT_MAX_WORKERS
     return max(1, value)
+
+
+DEFAULT_CONTEXT_REINJECT_BYTES = 200_000
+DEFAULT_CONTEXT_REINJECT_TURNS = 5
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+
+
+def context_reinject_bytes() -> int:
+    """增量回合累计输入/输出体积超过该字节数后强制重注入完整公共上下文。
+
+    统计是粗略的(utf-8 字节,不折算 token);<=0 关闭按体积触发。
+    环境变量 MISSIONCREW_CONTEXT_REINJECT_BYTES 覆盖。
+    """
+    return _int_env("MISSIONCREW_CONTEXT_REINJECT_BYTES",
+                    DEFAULT_CONTEXT_REINJECT_BYTES)
+
+
+def context_reinject_turns() -> int:
+    """连续增量回合达到该轮数后强制重注入完整公共上下文;<=0 关闭按轮数触发。
+
+    环境变量 MISSIONCREW_CONTEXT_REINJECT_TURNS 覆盖。
+    """
+    return _int_env("MISSIONCREW_CONTEXT_REINJECT_TURNS",
+                    DEFAULT_CONTEXT_REINJECT_TURNS)

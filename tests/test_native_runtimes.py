@@ -47,10 +47,10 @@ def _config(tmp_path, adapter: str, prompt: str, saved: dict,
                       model="test-model")
 
     def load():
-        return saved.get("id", ""), saved.get("context", "")
+        return saved.get("id", ""), saved.get("context", ""), False
 
-    def save(session_id, context):
-        saved.update(id=session_id, context=context)
+    def save(session_id, context, **stats):
+        saved.update(id=session_id, context=context, **stats)
 
     return ExecutionConfig(
         task_id="chat", stage_name="chat", backend=backend,
@@ -102,6 +102,33 @@ def test_native_provider_reuses_process_and_session(
         assert {"status", "thinking", "tool", "text"} <= kinds
         if adapter == "codex":
             assert {"tool_result", "usage"} <= kinds
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("adapter,provider_cls", [
+    ("claude_code", ClaudeRuntimeProvider),
+    ("codex", CodexRuntimeProvider),
+])
+def test_native_compact_event_marks_session_for_reinjection(
+        tmp_path, adapter, provider_cls):
+    """Runtime 报告压缩后:立即持久化重注入标记,轮末保存携带 compact_seen。"""
+    provider = provider_cls(_Fallback(), _fake_command(adapter))
+    saved: dict = {}
+    events: list[tuple[str, str]] = []
+    try:
+        assert provider.start(
+            _config(tmp_path, adapter, "FIRST", saved, events)).success
+        assert saved.get("turn_mode") == "recovery"
+        config = _config(tmp_path, adapter, "TRIGGER_COMPACT", saved, events)
+        config.mark_reinject = lambda: saved.update(marked=True)
+        assert provider.start(config).success
+        assert saved.get("marked") is True
+        assert config.compact_detected
+        assert saved.get("turn_mode") == "lean" and saved.get("turn_bytes", 0) > 0
+        assert saved.get("compact_seen") is True
+        assert any(kind == "status" and "上下文压缩" in text
+                   for kind, text in events)
     finally:
         provider.shutdown()
 

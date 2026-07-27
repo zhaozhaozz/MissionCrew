@@ -28,7 +28,8 @@ from pathlib import Path
 from typing import Optional
 
 from ..runtime import runtime_manager
-from ..core.config import chat_max_workers, mc_home
+from ..core.config import (chat_max_workers, context_reinject_bytes,
+                           context_reinject_turns, mc_home)
 from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
                           DispatchInactiveError, default_agent_tool_url)
 from .documents import (document_resource_url, library_for,
@@ -38,8 +39,8 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             skill_resource_url)
 from .workspace import (chat_workspace_dir, platform_history_dir,
                         prepare_agent_workspace, write_task_files)
-from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, Channel, ExecutionConfig,
-                           Role, RuntimePolicy)
+from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, INJECTION_FULL_MODES,
+                           Channel, ExecutionConfig, Role, RuntimePolicy)
 from .project_context import project_allowed_dirs, render_project_context
 from ..core.store import Store
 
@@ -47,6 +48,20 @@ MENTION_RE = re.compile(r"@([\w-]+)")
 EXPLICIT_MENTION_RE = re.compile(r"@\[([\w-]+)\]")
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
 ACTION_RE = re.compile(r"<missioncrew-action>(.*?)</missioncrew-action>", re.S)
+
+
+def _reinject_due(session_row: Optional[dict]) -> bool:
+    """会话是否该重注入完整公共上下文:压缩标记或增量回合计数达到阈值。"""
+    if not session_row:
+        return False
+    if session_row.get("needs_reinject"):
+        return True
+    turns_limit = context_reinject_turns()
+    if turns_limit > 0 and int(session_row.get("lean_turns") or 0) >= turns_limit:
+        return True
+    bytes_limit = context_reinject_bytes()
+    return bool(bytes_limit > 0
+                and int(session_row.get("lean_bytes") or 0) >= bytes_limit)
 
 @dataclass
 class _PendingInteraction:
@@ -1031,24 +1046,32 @@ class ChatEngine:
         previous_context = (saved_session["context_version"]
                             if saved_session and compatible else "")
 
-        def _load_session() -> tuple[str, str]:
+        def _load_session() -> tuple[str, str, bool]:
             latest = self.store.get_chat_session(session_key)
             if not _compatible_session(latest):
                 if latest:
                     self.store.delete_chat_session(session_key)
-                return "", ""
+                return "", "", False
             assert latest is not None
             return (str(latest["runtime_session_id"]),
-                    str(latest["context_version"]))
+                    str(latest["context_version"]),
+                    _reinject_due(latest))
 
-        def _save_session(runtime_session_id: str, accepted_context: str) -> None:
+        def _save_session(runtime_session_id: str, accepted_context: str,
+                          turn_mode: str = "", turn_bytes: int = 0,
+                          compact_seen: bool = False) -> None:
             if not runtime_session_id:
                 self.store.delete_chat_session(session_key)
                 return
+            # 完整注入清零重注入状态;本轮又检测到压缩时保留标记,
+            # 下一轮再次完整注入
             self.store.put_chat_session(
                 session_key, channel.id, role.id, backend.id, backend.adapter,
                 str(workdir.resolve()), runtime_session_id,
                 accepted_context or previous_context,
+                turn_mode=turn_mode, turn_bytes=turn_bytes,
+                clear_reinject=(turn_mode in INJECTION_FULL_MODES
+                                and not compact_seen),
             )
 
         env["MISSIONCREW_SESSION_KEY"] = session_key
@@ -1067,8 +1090,11 @@ class ChatEngine:
             common_prompt=common_prompt, turn_prompt=turn_prompt,
             recovery_prompt=recovery_prompt, context_version=context_version,
             context_changed=bool(session_id and previous_context != context_version),
+            reinject_due=bool(session_id) and _reinject_due(saved_session),
             load_session=_load_session,
             save_session=_save_session,
+            mark_reinject=lambda: self.store.mark_chat_session_reinject(
+                session_key),
             agent_action=agent_action,
         )
 

@@ -974,6 +974,87 @@ def test_project_context_update_replaces_context_in_existing_session(chat, seede
         == second.context_version
 
 
+def test_lean_turns_accumulate_and_counter_forces_reinjection(
+        chat, seeded, monkeypatch):
+    """复用会话版本未变走增量回合;计数达到阈值后强制完整重注入并清零。"""
+    channel = seeded.get_channel("general")
+    role = seeded.get_role("webshop", "dev")
+    backend = seeded.get_backend("std-1")
+
+    first_message = seeded.add_message(
+        "general", "human", "human", "@dev 第一轮", ["dev"])
+    assert adapters.get_adapter("mock").run(
+        chat._assemble(channel, role, backend, first_message)).success
+    row = seeded.get_chat_session("general::dev")
+    assert (row["lean_turns"], row["lean_bytes"]) == (0, 0)
+
+    second_message = seeded.add_message(
+        "general", "human", "human", "@dev 第二轮", ["dev"])
+    second = chat._assemble(channel, role, backend, second_message)
+    events = []
+    second.emit = lambda kind, text: events.append((kind, text))
+    assert not second.reinject_due
+    assert adapters.get_adapter("mock").run(second).success
+    sent = dict(events)["input"]
+    assert "# MissionCrew 增量回合" in sent
+    assert second.context_version in sent
+    assert "# MissionCrew 持久公共上下文" not in sent
+    row = seeded.get_chat_session("general::dev")
+    assert row["lean_turns"] == 1 and row["lean_bytes"] > 0
+    assert any(kind == "status" and "增量回合" in text
+               for kind, text in events)
+
+    monkeypatch.setenv("MISSIONCREW_CONTEXT_REINJECT_TURNS", "1")
+    third_message = seeded.add_message(
+        "general", "human", "human", "@dev 第三轮", ["dev"])
+    third = chat._assemble(channel, role, backend, third_message)
+    events = []
+    third.emit = lambda kind, text: events.append((kind, text))
+    assert third.reinject_due
+    assert adapters.get_adapter("mock").run(third).success
+    sent = dict(events)["input"]
+    assert "# MissionCrew 公共上下文重注入" in sent
+    assert "# MissionCrew 持久公共上下文" in sent
+    row = seeded.get_chat_session("general::dev")
+    assert (row["needs_reinject"], row["lean_turns"], row["lean_bytes"]) \
+        == (0, 0, 0)
+
+
+def test_compact_mark_forces_reinjection_and_survives_full_turn(chat, seeded):
+    """压缩标记触发下一轮完整注入;完整轮中再次压缩时标记保留。"""
+    channel = seeded.get_channel("general")
+    role = seeded.get_role("webshop", "dev")
+    backend = seeded.get_backend("std-1")
+
+    first_message = seeded.add_message(
+        "general", "human", "human", "@dev 建会话", ["dev"])
+    first = chat._assemble(channel, role, backend, first_message)
+    assert adapters.get_adapter("mock").run(first).success
+
+    # 模拟 Runtime 在上一轮报告 compact
+    seeded.mark_chat_session_reinject("general::dev")
+    second_message = seeded.add_message(
+        "general", "human", "human", "@dev 压缩后继续", ["dev"])
+    second = chat._assemble(channel, role, backend, second_message)
+    events = []
+    second.emit = lambda kind, text: events.append((kind, text))
+    assert second.reinject_due
+    # 完整重注入轮中 Runtime 又检测到压缩:标记不能被轮末保存清掉
+    second.compact_detected = True
+    assert adapters.get_adapter("mock").run(second).success
+    assert "# MissionCrew 公共上下文重注入" in dict(events)["input"]
+    assert seeded.get_chat_session("general::dev")["needs_reinject"] == 1
+
+    third_message = seeded.add_message(
+        "general", "human", "human", "@dev 再来一轮", ["dev"])
+    third = chat._assemble(channel, role, backend, third_message)
+    events = []
+    third.emit = lambda kind, text: events.append((kind, text))
+    assert third.reinject_due
+    assert adapters.get_adapter("mock").run(third).success
+    assert seeded.get_chat_session("general::dev")["needs_reinject"] == 0
+
+
 def test_queued_turn_refreshes_session_created_by_previous_turn(chat, seeded):
     """两个配置都在首轮完成前装配，第二轮执行时仍应重读并复用首轮 id。"""
     original = seeded.get_channel("general")

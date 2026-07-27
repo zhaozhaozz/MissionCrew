@@ -259,7 +259,8 @@ class _ClaudeSession:
                 self.close()
                 self.session_id = ""
             recovery = not bool(config.session_id or self.session_id)
-            prompt = adapters._session_input(config, recovery=recovery)
+            prompt, injection_mode = adapters._session_input(
+                config, recovery=recovery)
             self._active_config = config
             self.last_activity = time.time()
             self.last_task_id = config.task_id
@@ -305,7 +306,9 @@ class _ClaudeSession:
                     result.get("subtype") or "success") == "success"
                 if result.get("session_id"):
                     self.session_id = str(result["session_id"])
-                    adapters._save_session(config, self.session_id)
+                    adapters._save_session(
+                        config, self.session_id, injection_mode,
+                        adapters._turn_bytes(prompt, output))
                 failure_detail = "\n".join((
                     output, str(result.get("error") or ""),
                     "".join(self._stderr_tail),
@@ -532,6 +535,13 @@ class _ClaudeSession:
                         adapters._save_session(config, native_id)
                 safe_emit(self._emit(), "status",
                           f"Claude 会话已连接 session={native_id} model={message.get('model', '')}\n")
+                return
+            if subtype in ("compact_boundary", "microcompact_boundary"):
+                config = self._active_config
+                if config is not None:
+                    adapters._mark_compact(config)
+                safe_emit(self._emit(), "status",
+                          "检测到上下文压缩;下一轮将重新注入完整公共上下文\n")
                 return
             if subtype == "task_started":
                 task_type = str(message.get("task_type") or "")

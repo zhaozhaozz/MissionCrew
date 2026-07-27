@@ -58,7 +58,9 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   channel TEXT NOT NULL, role_id TEXT NOT NULL,
   backend_id TEXT NOT NULL, adapter TEXT NOT NULL,
   workdir TEXT NOT NULL, runtime_session_id TEXT DEFAULT '',
-  context_version TEXT DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL
+  context_version TEXT DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL,
+  needs_reinject INTEGER DEFAULT 0,
+  lean_turns INTEGER DEFAULT 0, lean_bytes INTEGER DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS agent_tokens (
   token_hash TEXT PRIMARY KEY,
@@ -110,6 +112,7 @@ class Store:
         self._migrate_backend_commands()
         self._migrate_chat_messages()
         self._migrate_runtime_usage()
+        self._migrate_chat_sessions()
         self._migrate_tasks_to_issues()
         self._conn.commit()
 
@@ -259,6 +262,15 @@ class Store:
             if name not in columns:
                 self._conn.execute(
                     f"ALTER TABLE runtime_usage ADD COLUMN {name} TEXT DEFAULT ''")
+
+    def _migrate_chat_sessions(self) -> None:
+        """为已有会话记录补齐公共上下文重注入的标记与计数列。"""
+        columns = {row["name"] for row in self._conn.execute(
+            "PRAGMA table_info(chat_sessions)").fetchall()}
+        for name in ("needs_reinject", "lean_turns", "lean_bytes"):
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE chat_sessions ADD COLUMN {name} INTEGER DEFAULT 0")
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
         """写操作,返回 lastrowid。"""
@@ -895,19 +907,46 @@ class Store:
 
     def put_chat_session(self, session_key: str, channel: str, role_id: str,
                          backend_id: str, adapter: str, workdir: str,
-                         runtime_session_id: str, context_version: str) -> None:
+                         runtime_session_id: str, context_version: str, *,
+                         turn_mode: str = "", turn_bytes: int = 0,
+                         clear_reinject: bool = False) -> None:
+        """保存会话 id 与公共上下文重注入状态。
+
+        turn_mode="lean" 累加增量回合计数;完整注入轮传 clear_reinject=True
+        清零计数与压缩标记(本轮又检测到压缩时调用方不传 clear);turn_mode
+        为空表示轮内的 id/版本刷新,不动计数。
+        """
         now = time.time()
+        if turn_mode == "lean":
+            counters = (",lean_turns=chat_sessions.lean_turns+1"
+                        ",lean_bytes=chat_sessions.lean_bytes+excluded.lean_bytes")
+            initial = (0, 1, max(0, turn_bytes))
+        elif turn_mode:
+            counters = ",lean_turns=0,lean_bytes=0" + (
+                ",needs_reinject=0" if clear_reinject else "")
+            initial = (0, 0, 0)
+        else:
+            counters = ""
+            initial = (0, 0, 0)
         self._execute(
             "INSERT INTO chat_sessions(session_key,channel,role_id,backend_id,adapter,"
-            "workdir,runtime_session_id,context_version,created_at,updated_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_key) DO UPDATE SET "
+            "workdir,runtime_session_id,context_version,created_at,updated_at,"
+            "needs_reinject,lean_turns,lean_bytes) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_key) DO UPDATE SET "
             "channel=excluded.channel,role_id=excluded.role_id,"
             "backend_id=excluded.backend_id,adapter=excluded.adapter,"
             "workdir=excluded.workdir,runtime_session_id=excluded.runtime_session_id,"
-            "context_version=excluded.context_version,updated_at=excluded.updated_at",
+            "context_version=excluded.context_version,updated_at=excluded.updated_at"
+            + counters,
             (session_key, channel, role_id, backend_id, adapter, workdir,
-             runtime_session_id, context_version, now, now),
+             runtime_session_id, context_version, now, now, *initial),
         )
+
+    def mark_chat_session_reinject(self, session_key: str) -> None:
+        """Runtime 报告上下文压缩:下一轮强制重注入完整公共上下文。"""
+        self._execute(
+            "UPDATE chat_sessions SET needs_reinject=1, updated_at=? "
+            "WHERE session_key=?", (time.time(), session_key))
 
     def delete_chat_session(self, session_key: str) -> None:
         self._execute("DELETE FROM chat_sessions WHERE session_key=?", (session_key,))
