@@ -460,6 +460,19 @@ def test_only_orchestrator_agent_can_dispatch_other_roles(chat, seeded):
         "SELECT role_id FROM chat_runs ORDER BY id")] == ["reviewer", "lead"]
 
 
+def test_chat_pool_size_is_configurable(seeded, monkeypatch):
+    """并发上限读 MISSIONCREW_CHAT_MAX_WORKERS;非法回落默认,显式传参优先。"""
+    monkeypatch.setenv("MISSIONCREW_CHAT_MAX_WORKERS", "9")
+    assert ChatEngine(seeded)._pool._max_workers == 9
+    monkeypatch.setenv("MISSIONCREW_CHAT_MAX_WORKERS", "0")
+    assert ChatEngine(seeded)._pool._max_workers == 1      # 下限钳制
+    monkeypatch.setenv("MISSIONCREW_CHAT_MAX_WORKERS", "abc")
+    assert ChatEngine(seeded)._pool._max_workers == 16     # 非法值回落默认
+    monkeypatch.delenv("MISSIONCREW_CHAT_MAX_WORKERS")
+    assert ChatEngine(seeded)._pool._max_workers == 16
+    assert ChatEngine(seeded, max_workers=2)._pool._max_workers == 2
+
+
 def test_mock_orchestrator_dispatches_via_agent_action(chat, seeded):
     """mock 主控经 cfg.agent_action 执行 message.publish 真实派发级联。"""
     chat.post("general", "human", "帮忙,请 @dev 检查购物车。")

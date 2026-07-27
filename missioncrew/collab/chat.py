@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..runtime import runtime_manager
-from ..core.config import mc_home
+from ..core.config import chat_max_workers, mc_home
 from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
                           DispatchInactiveError, default_agent_tool_url)
 from .documents import (document_resource_url, library_for,
@@ -188,10 +188,13 @@ ORCHESTRATOR_TEMPLATE = """\
 
 
 class ChatEngine:
-    def __init__(self, store: Store, max_workers: int = 4):
+    def __init__(self, store: Store, max_workers: Optional[int] = None):
         self.store = store
-        self._pool = ThreadPoolExecutor(max_workers=max_workers,
-                                        thread_name_prefix="chat-run")
+        # 并发上限默认读全局配置(env MISSIONCREW_CHAT_MAX_WORKERS);
+        # 显式传参供测试与特殊调用方使用。
+        self._pool = ThreadPoolExecutor(
+            max_workers=chat_max_workers() if max_workers is None else max_workers,
+            thread_name_prefix="chat-run")
         self._futures: list[Future] = []
         self._futures_lock = threading.Lock()
         self._history_lock = threading.Lock()

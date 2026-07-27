@@ -99,13 +99,20 @@ def demo(run: bool = typer.Option(True, help="是否顺带演示 Channel 派发"
 
 
 @app.command()
-def serve(host: str = DEFAULT_SERVE_HOST, port: int = DEFAULT_SERVE_PORT):
-    """启动 Web 服务(REST API + 看板)。"""
+def serve(host: str = DEFAULT_SERVE_HOST, port: int = DEFAULT_SERVE_PORT,
+          chat_workers: Optional[int] = None):
+    """启动 Web 服务(REST API + 看板)。
+
+    --chat-workers 设定聊天执行并发上限(默认 16,亦可用环境变量
+    MISSIONCREW_CHAT_MAX_WORKERS 配置);同频道同角色仍按会话串行。
+    """
     import uvicorn
     from .api import create_app
     # Runtime 总是经本机回环访问 Agent Tool API；监听地址可继续面向所有网卡。
     os.environ["MISSIONCREW_AGENT_TOOL_URL"] = (
         f"http://127.0.0.1:{port}/api/agent/v1")
+    if chat_workers is not None:
+        os.environ["MISSIONCREW_CHAT_MAX_WORKERS"] = str(chat_workers)
     typer.echo(f"MissionCrew 看板: http://{host}:{port}")
     uvicorn.run(create_app(), host=host, port=port, log_level="warning")
 

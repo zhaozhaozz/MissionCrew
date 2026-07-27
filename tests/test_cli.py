@@ -29,3 +29,15 @@ def test_serve_listens_on_all_ipv4_interfaces_by_default(monkeypatch):
 
     assert called["host"] == "0.0.0.0"
     assert called["port"] == 8321
+
+
+def test_serve_chat_workers_flag_sets_env(monkeypatch):
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: None)
+    monkeypatch.delenv("MISSIONCREW_CHAT_MAX_WORKERS", raising=False)
+
+    cli.serve(chat_workers=9)
+    assert cli.os.environ["MISSIONCREW_CHAT_MAX_WORKERS"] == "9"
+    monkeypatch.delenv("MISSIONCREW_CHAT_MAX_WORKERS")
+
+    cli.serve()
+    assert "MISSIONCREW_CHAT_MAX_WORKERS" not in cli.os.environ

@@ -46,3 +46,20 @@ def projects_dir() -> Path:
 
 def secrets_path() -> Path:
     return mc_home() / "secrets.yaml"
+
+
+DEFAULT_CHAT_MAX_WORKERS = 16
+
+
+def chat_max_workers() -> int:
+    """聊天执行线程池大小:全部项目/频道/角色共享的并发执行上限。
+
+    环境变量 MISSIONCREW_CHAT_MAX_WORKERS 覆盖,非法值回落默认;
+    同频道同角色仍按会话锁串行,该值只决定不同会话间的并行度。
+    """
+    raw = os.environ.get("MISSIONCREW_CHAT_MAX_WORKERS", "")
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CHAT_MAX_WORKERS
+    return max(1, value)
