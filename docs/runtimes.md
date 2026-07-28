@@ -95,7 +95,7 @@ Runtime 启动命令由 provider 固定维护，不允许通过 Backend 数据�
 
 Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json 的 `task_started`、`task_progress`、`task_updated` 与 `task_notification`，以 `task_type=local_agent|remote_agent` 和 `task_id` 跟踪同一轮里的后台 subagent；其中 `task_updated` 只更新任务记录，`task_notification` 才是父 Agent 可消费结果的终止边界。顶层 `result` 若仍有 Agent 运行，只作为阶段性结果写入过程流；MissionCrew 保持该 chat run、stdout reader、权限回调和 session 锁继续有效，直到后台 Agent 全部终止且 Claude 随后发出新的顶层 `result`，才发布最终频道回复。`Agent|Task` 工具返回的异步启动文本仅用于兼容缺少 `task_started` 的旧 CLI，不能作为主要完成判断。后台 Agent 的启动、进度、等待和完成状态作为结构化 `backend_agent` 事件显示在聊天运行卡中。
 
-`can_use_tool` control request 不由 Claude 终端自行决定，而是交给 MissionCrew。`AskUserQuestion`、`ask_user_question` 和 `request_user_input` 会生成聊天交互卡，用户回答后 provider 把 answers 写回原 control request，同一个 turn 继续执行。文件写入和联网工具会先经过统一策略硬检查，再进入 `auto|prompt|deny` 审批。非 `full-access` 模式同时通过临时 `--settings` 启用 Claude 的 OS 级 Bash sandbox，强制关闭 unsandboxed escape hatch；sandbox 不可用时执行失败，不降级成无隔离命令。用户停止执行时通过 control request 发送 interrupt，必要时再清理进程组。
+`can_use_tool` control request 不由 Claude 终端自行决定，而是交给 MissionCrew。`AskUserQuestion`、`ask_user_question` 和 `request_user_input` 会生成聊天交互卡，用户回答后 provider 把 answers 写回原 control request，同一个 turn 继续执行。文件写入和联网工具会先经过统一策略硬检查，再进入 `auto|prompt|deny` 审批。非 `full-access` 模式同时通过临时 `--settings` 启用 Claude 的 OS 级 Bash sandbox，强制关闭 unsandboxed escape hatch；sandbox 不可用时执行失败，不降级成无隔离命令。sandbox 网络默认拒绝所有域名且 localhost 没有豁免，因此 `--settings` 同时把 Agent Tool API 的回环地址（以及 `MISSIONCREW_AGENT_TOOL_URL` 中的实际 host）写入 `sandbox.network.allowedDomains`，保证角色能在 Bash 沙箱内执行 `missioncrew-tool` 显式命令；其他域名仍走 Claude 自身的域名审批。用户停止执行时通过 control request 发送 interrupt，必要时再清理进程组。
 
 ### Codex app-server
 

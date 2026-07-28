@@ -10,7 +10,7 @@ import pytest
 from missioncrew.core.models import (Backend, ExecutionConfig, RunResult,
                                      RuntimePermissions, RuntimePolicy)
 from missioncrew.runtime.base import RuntimeCapabilities, RuntimeProvider
-from missioncrew.runtime.claude import ClaudeRuntimeProvider
+from missioncrew.runtime.claude import ClaudeRuntimeProvider, _sandbox_settings
 from missioncrew.runtime.codex import CodexRuntimeProvider
 
 FAKE_NATIVE = str(Path(__file__).with_name("fake_native_runtime.py"))
@@ -330,6 +330,22 @@ def test_claude_auto_approval_still_enforces_hard_policy(
         assert audits[-1]["reason"]
     finally:
         provider.shutdown()
+
+
+def test_claude_sandbox_network_allows_agent_tool_api(tmp_path):
+    # 沙箱网络默认拒绝全部域名且 localhost 无豁免;必须放行 Agent Tool
+    # API 的回环地址与实际配置 host,显式命令才能在 Bash 沙箱内调通。
+    events: list[tuple[str, str]] = []
+    cfg = _config(tmp_path, "claude_code", "任务", {}, events)
+    cfg.env["MISSIONCREW_AGENT_TOOL_URL"] = "http://192.168.8.2:9000/api/agent/v1"
+    sandbox = _sandbox_settings(cfg)["sandbox"]
+    assert sandbox["enabled"] is True
+    assert sandbox["network"]["allowedDomains"] == [
+        "127.0.0.1", "localhost", "192.168.8.2"]
+
+    full = _config(tmp_path, "claude_code", "任务", {}, events,
+                   filesystem="full-access")
+    assert _sandbox_settings(full) == {"sandbox": {"enabled": False}}
 
 
 def test_codex_model_catalog_comes_from_app_server(tmp_path, monkeypatch):
