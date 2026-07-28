@@ -332,16 +332,17 @@ def test_claude_auto_approval_still_enforces_hard_policy(
         provider.shutdown()
 
 
-def test_claude_sandbox_network_allows_agent_tool_api(tmp_path):
-    # 沙箱网络默认拒绝全部域名且 localhost 无豁免;必须放行 Agent Tool
-    # API 的回环地址与实际配置 host,显式命令才能在 Bash 沙箱内调通。
+def test_claude_sandbox_excludes_agent_tool_cli(tmp_path):
+    # 沙箱网络命名空间对宿主回环/私网一律不可达(实测 allowedDomains 无效),
+    # Agent Tool CLI 必须列入 excludedCommands 在沙箱外执行才能连上控制面;
+    # 两种文档调用形式(missioncrew-tool 与 python -m)都要覆盖。
     events: list[tuple[str, str]] = []
-    cfg = _config(tmp_path, "claude_code", "任务", {}, events)
-    cfg.env["MISSIONCREW_AGENT_TOOL_URL"] = "http://192.168.8.2:9000/api/agent/v1"
-    sandbox = _sandbox_settings(cfg)["sandbox"]
+    sandbox = _sandbox_settings(
+        _config(tmp_path, "claude_code", "任务", {}, events))["sandbox"]
     assert sandbox["enabled"] is True
-    assert sandbox["network"]["allowedDomains"] == [
-        "127.0.0.1", "localhost", "192.168.8.2"]
+    assert "* -m missioncrew.agent_tool *" in sandbox["excludedCommands"]
+    assert "missioncrew-tool *" in sandbox["excludedCommands"]
+    assert "network" not in sandbox
 
     full = _config(tmp_path, "claude_code", "任务", {}, events,
                    filesystem="full-access")

@@ -2,14 +2,12 @@
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlsplit
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
@@ -73,17 +71,6 @@ def _policy_denial(tool_name: str, tool_input: dict,
     return ""
 
 
-def _agent_tool_hosts(config: ExecutionConfig) -> list[str]:
-    """Agent Tool API 的沙箱网络白名单:回环地址加上实际配置的 host。"""
-    hosts = ["127.0.0.1", "localhost"]
-    url = str(config.env.get("MISSIONCREW_AGENT_TOOL_URL")
-              or os.environ.get("MISSIONCREW_AGENT_TOOL_URL") or "")
-    host = urlsplit(url).hostname if url else ""
-    if host and host not in hosts:
-        hosts.append(host)
-    return hosts
-
-
 def _sandbox_settings(config: ExecutionConfig) -> dict:
     """把统一文件系统策略映射为 Claude 的 OS 级 Bash sandbox。"""
     permissions = config.runtime_policy.permissions
@@ -98,9 +85,14 @@ def _sandbox_settings(config: ExecutionConfig) -> dict:
             "allowWrite": [str(Path(path).expanduser().resolve())
                            for path in config.runtime_policy.writable_paths],
         },
-        # 沙箱网络默认拒绝所有域名且 localhost 无豁免;不放行 Agent Tool
-        # API 地址,角色在 Bash 里执行 missioncrew-tool 显式命令会直接失败。
-        "network": {"allowedDomains": _agent_tool_hosts(config)},
+        # 沙箱把 Bash 放进隔离网络命名空间,宿主回环与私网段(NO_PROXY 同样
+        # 排除)一律不可达,network.allowedDomains 救不了 Agent Tool API;
+        # 唯一可靠通路是把该 CLI 排除出沙箱:命令仍经平台 can_use_tool 审批,
+        # 批准后在宿主侧执行。通配前缀是为了同时匹配 missioncrew-tool 与
+        # `"$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool` 两种
+        # 调用形式;代价是含该片段的复合命令也会脱离沙箱,由审批层兜底。
+        "excludedCommands": ["* -m missioncrew.agent_tool *",
+                             "missioncrew-tool *"],
     }
     if permissions.filesystem == "read-only":
         sandbox["filesystem"]["denyWrite"] = [
