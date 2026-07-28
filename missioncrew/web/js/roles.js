@@ -114,7 +114,7 @@ function editRole(id, templateId = "") {
     <div class="row">
       <div><label>角色 id(@ 提及名)</label><input type="text" id="rf-id" value="${esc(r.id)}" ${id ? "disabled" : ""}></div>
       <div><label>显示名</label><input type="text" id="rf-name" value="${esc(r.name)}"></div>
-      <div><label>标识色</label><input type="text" id="rf-color" value="${esc(r.color)}"></div>
+      <div><label>标识色</label>${colorFieldHtml("rf-color", r.color)}</div>
     </div>
     <div class="row">
       <div><label>Runtime(定义角色时固定,必选)</label>
@@ -124,12 +124,12 @@ function editRole(id, templateId = "") {
       <div><label>Effort(推理力度,仅部分 runtime 支持)</label>
         <select id="rf-effort"></select></div>
     </div>
-    <label>角色定位/人格(专长画像,供调度选人;自由文本,平台原样装配、不改写;任务由 @ 消息提供)</label>
+    <label>角色定位/人格(给角色本人与主控看:写清"是谁、怎么工作"的专长画像;平台原样装配、不改写,任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
-    <label>角色能力(固定选项;在名册中展示,供主控按能力选人)</label>
-    <div class="chips" id="rf-caps">${abilityChips}</div>
-    <label>角色偏好(自由文本:风格/领域,如"前端"、"后端,偏好 Go";供主控选人参考)</label>
-    <input type="text" id="rf-pref" value="${esc(r.preference || "")}">`,
+    <label>角色偏好(给主控选人看:何时该选它的领域/风格短标签,顿号分隔,如"前端"、"只审不改";名册中与能力并列展示)</label>
+    <input type="text" id="rf-pref" value="${esc(r.preference || "")}">
+    <label>角色能力(固定选项,同样给主控选人看;名册中与偏好并列展示为标签)</label>
+    <div class="chips" id="rf-caps">${abilityChips}</div>`,
     `<button class="action" onclick="saveRole()">保存</button>
      <button class="ghost" onclick="fdlg.close()">取消</button>
      ${id ? `<button class="danger" onclick="deleteRole('${id}')">删除角色</button>` : ""}`);

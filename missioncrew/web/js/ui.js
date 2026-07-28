@@ -65,6 +65,26 @@ function openFormDialog(title, bodyHtml, actionsHtml) {
 }
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+/* ---- 角色标识色:原生取色器 + 预设色板(与内置角色模板同色系) ---- */
+const ROLE_COLOR_PRESETS = ["#d97706", "#3564d7", "#2e9e5b", "#8b5cf6",
+                            "#c98a1b", "#c94b3c", "#0e9488", "#64748b"];
+
+function normalizeHexColor(value, fallback = "#3564d7") {
+  const v = String(value || "").trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(v))   // #abc -> #aabbcc(原生取色器只认 6 位)
+    return ("#" + [...v.slice(1)].map(c => c + c).join("")).toLowerCase();
+  return fallback;
+}
+
+function colorFieldHtml(id, value) {
+  const swatches = ROLE_COLOR_PRESETS.map(c =>
+    `<span class="swatch" style="background:${c}" title="${c}"
+       onclick="document.getElementById('${id}').value='${c}'"></span>`).join("");
+  return `<span class="color-field">
+    <input type="color" id="${id}" value="${normalizeHexColor(value)}">${swatches}</span>`;
+}
+
 /* ---- 主题:明/暗切换,选择跨会话记忆;缺省跟随系统 ---- */
 function isDarkTheme() {
   const t = document.documentElement.dataset.theme;

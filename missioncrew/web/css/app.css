@@ -560,6 +560,15 @@
   .form .row { display: flex; gap: 12px; }
   .form .row > div { flex: 1; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  /* 角色标识色:取色器与预设色板同排,高度对齐同行的文本输入框 */
+  .color-field { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .color-field input[type=color] { width: 42px; height: 35px; padding: 2px 3px;
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    cursor: pointer; flex: none; }
+  .color-field .swatch { width: 14px; height: 14px; border-radius: 50%;
+    cursor: pointer; border: 1px solid var(--line-strong); flex: none;
+    transition: transform .15s; }
+  .color-field .swatch:hover { transform: scale(1.2); }
   .chip { border: 1px solid var(--line); border-radius: 999px; padding: 3px 12px;
           cursor: pointer; font-size: 12.5px; color: var(--muted); user-select: none;
           transition: all .15s; }

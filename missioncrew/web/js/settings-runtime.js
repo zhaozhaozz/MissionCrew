@@ -98,7 +98,7 @@ function editGlobalRoleTemplate(id) {
     <div class="row">
       <div><label>角色 id(@ 提及名)</label><input type="text" id="rf-id" value="${esc(role.id)}" ${id ? "disabled" : ""}></div>
       <div><label>显示名</label><input type="text" id="rf-name" value="${esc(role.name)}"></div>
-      <div><label>标识色</label><input type="text" id="rf-color" value="${esc(role.color)}"></div>
+      <div><label>标识色</label>${colorFieldHtml("rf-color", role.color)}</div>
     </div>
     <div class="row">
       <div><label>Runtime(复制到新项目后固定)</label>
@@ -106,10 +106,12 @@ function editGlobalRoleTemplate(id) {
       <div><label>模型(清单来自 runtime)</label><select id="rf-model"></select></div>
       <div><label>Effort(推理力度)</label><select id="rf-effort"></select></div>
     </div>
-    <label>角色定位/人格</label>
+    <label>角色定位/人格(给角色本人与主控看:写清"是谁、怎么工作"的专长画像;平台原样装配、不改写,任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(role.description)}</textarea>
-    <label>角色能力</label><div class="chips" id="rf-caps">${abilityChips}</div>
-    <label>角色偏好</label><input type="text" id="rf-pref" value="${esc(role.preference || "")}">`,
+    <label>角色偏好(给主控选人看:何时该选它的领域/风格短标签,顿号分隔,如"前端"、"只审不改";名册中与能力并列展示)</label>
+    <input type="text" id="rf-pref" value="${esc(role.preference || "")}">
+    <label>角色能力(固定选项,同样给主控选人看;名册中与偏好并列展示为标签)</label>
+    <div class="chips" id="rf-caps">${abilityChips}</div>`,
     `<button class="action" onclick="saveGlobalRoleTemplate()">保存</button>
      <button class="ghost" onclick="fdlg.close()">取消</button>
      ${id ? `<button class="danger" onclick="deleteGlobalRoleTemplate('${id}')">删除模板</button>` : ""}`);
