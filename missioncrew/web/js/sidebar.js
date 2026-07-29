@@ -386,12 +386,16 @@ function appendMessagesToSurface(list, surface) {
     }
     const isAgent = m.author_type === "agent";
     const isHuman = m.author_type === "human";
+    const isToolReceipt = m.author_type === "platform" && m.kind === "agent_tool";
     const color = isAgent ? (roleColor[m.author] || "#888")
                 : isHuman ? "var(--accent)" : "var(--muted)";
-    const name = isAgent ? "@" + m.author : m.author_type === "platform" ? "系统" : m.author;
+    const name = isAgent ? "@" + m.author
+      : isToolReceipt ? "MissionCrew Tool"
+      : m.author_type === "platform" ? "系统" : m.author;
     const initial = isAgent || isHuman ? (m.author[0] || "?").toUpperCase() : "⚙";
     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const longReply = isAgent && m.content.length > MESSAGE_FOLD_AT;
+    const renderMarkdown = isAgent || isToolReceipt;
     const div = document.createElement("div");
     div.className = `msg ${m.author_type}`;
     div.dataset.msgId = m.id;   // 运行过程卡片按触发消息内联定位
@@ -399,7 +403,7 @@ function appendMessagesToSurface(list, surface) {
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${isAgent ? color : "var(--text)"}">${esc(name)}</span>
           ${isAgent ? `<span class="via">${esc(agentExecutionLabel(m))}</span>` : ""}<span class="time">${time}</span></div>
-        <div class="body${isAgent ? " markdown-body" : ""}${longReply ? " folded" : ""}">${fmtBody(m.content, isAgent, m.mention_spans)}</div>
+        <div class="body${renderMarkdown ? " markdown-body" : ""}${longReply ? " folded" : ""}">${fmtBody(m.content, renderMarkdown, m.mention_spans)}</div>
         ${longReply ? `<button type="button" class="message-fold-toggle" data-size="${m.content.length}"
           aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;

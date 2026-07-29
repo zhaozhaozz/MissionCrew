@@ -154,6 +154,45 @@ def test_orchestrator_guideline_tool_records_role_version(seeded):
         .endswith("\n# 新版本\n")
 
 
+def test_writable_agent_tools_append_conversation_receipts(seeded):
+    chat = ChatEngine(seeded)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(token)
+    before = len(seeded.list_messages("general"))
+
+    channel = chat.agent_tools.execute(
+        identity, "channel.create", {
+            "id": "tool-created", "name": "工具创建", "purpose": "验证可见回执",
+        }, run_id, "create-channel-receipt")
+    document = chat.agent_tools.execute(
+        identity, "document.publish", {
+            "path": "reports/receipt.md", "content": "# 回执\n",
+        }, run_id, "publish-document-receipt")
+    chat.agent_tools.execute(
+        identity, "recycle.list", {}, run_id, "read-recycle-no-receipt")
+    with pytest.raises(AgentToolError):
+        chat.agent_tools.execute(
+            identity, "document.publish", {
+                "path": "reports/receipt.md", "content": "重复",
+            }, run_id, "failed-write-no-receipt")
+
+    appended = seeded.list_messages("general")[before:]
+    assert len(appended) == 2
+    assert all(item["author_type"] == "platform" for item in appended)
+    assert all(item["kind"] == "agent_tool" for item in appended)
+    assert channel["summary"] in appended[0]["content"]
+    assert document["summary"] in appended[1]["content"]
+    assert "`channel.create`" in appended[0]["content"]
+    assert "`document.publish`" in appended[1]["content"]
+    assert all("@lead 使用 MissionCrew Tool" in item["content"]
+               for item in appended)
+    assert [json.loads(item["context"])["agent_tool"]["action"]
+            for item in appended] == ["channel.create", "document.publish"]
+    assert all(item["root_id"] == seeded.get_chat_run(run_id)["root_id"]
+               for item in appended)
+    assert len(seeded._query("SELECT * FROM chat_runs")) == 1
+
+
 def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
     chat = ChatEngine(seeded)
     config, run_id, token = _run_config(seeded, chat, "lead")

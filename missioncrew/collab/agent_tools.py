@@ -233,6 +233,12 @@ ACTION_ARGUMENTS = {
     "recycle.purge": {"id"},
 }
 
+# 成功的写操作要在发起调用的会话中留下可见回执。message.publish 本身已经
+# 生成聊天消息；recycle.list 是当前唯一只读动作，两者都不额外插入回执。
+CONVERSATION_RECEIPT_ACTIONS = (
+    frozenset(ACTION_DEFINITIONS) - {"message.publish", "recycle.list"}
+)
+
 
 class AgentActionService:
     """统一执行 Agent 可请求的 MissionCrew 平台动作。"""
@@ -385,6 +391,7 @@ class AgentActionService:
             self._audit_call(identity, action, request_id, run_id, "failed", error.code)
             raise error from exc
         self._audit_call(identity, action, request_id, run_id, "success", "")
+        self._record_conversation_receipt(identity, action, result, context)
         return result
 
     def execute_legacy(self, project: Project, role_id: str, action: dict,
@@ -429,6 +436,37 @@ class AgentActionService:
             raise
         self._audit_call(identity, canonical, "legacy", 0, "success", "legacy_block")
         return result
+
+    def _record_conversation_receipt(
+            self, identity: AgentIdentity, action: str, result: dict,
+            context: AgentRunContext) -> None:
+        """把成功的 Agent 写操作作为平台消息展示，不让回执影响动作结果。"""
+        if action not in CONVERSATION_RECEIPT_ACTIONS:
+            return
+        summary = str(result.get("summary") or f"已完成 {action}")
+        content = (
+            f"@{identity.role_id} 使用 MissionCrew Tool · `{action}`：{summary}"
+        )
+        try:
+            self._post_message(
+                context.channel_id, "platform", content, author_type="platform",
+                root_id=context.root_id, depth=context.depth + 1,
+                mention_spans=[], context={
+                    "agent_tool": {
+                        "action": action,
+                        "role_id": identity.role_id,
+                        "run_id": context.run_id,
+                    },
+                }, kind="agent_tool",
+            )
+        except Exception:
+            # 资源写入已经成功，回执异常不能把成功动作伪装成失败并诱导 Agent
+            # 重试；保留错误日志供平台排查。
+            LOGGER.exception(
+                "Failed to record Agent Tool conversation receipt: "
+                "action=%s run=%s role=%s",
+                action, context.run_id, identity.role_id,
+            )
 
     def _identity_project(self, identity: AgentIdentity) -> Project:
         project = self.store.get_project(identity.project_id)

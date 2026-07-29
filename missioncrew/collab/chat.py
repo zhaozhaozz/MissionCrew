@@ -271,7 +271,8 @@ class ChatEngine:
              effort: Optional[str] = None,
              mention_spans: Optional[list[dict]] = None,
              context: Optional[dict] = None,
-             origin_run_id: Optional[int] = None) -> int:
+             origin_run_id: Optional[int] = None,
+             kind: str = "message") -> int:
         """发布消息，并只按可信的结构化提及异步触发角色。
 
         Web 人类消息必须传选择器生成的 ``mention_spans``；省略该参数的
@@ -327,7 +328,7 @@ class ChatEngine:
                 runtime_id = role.runtime_id if runtime_id is None else runtime_id
                 model = role.model if model is None else model
                 effort = role.effort if effort is None else effort
-        else:
+        elif author_type == "human":
             # Web 明确传空数组时，正文里的 @xxx 仍是普通文本；人类 CLI 调用
             # 若省略结构化范围，可使用更明确的 @[role] 语法。
             if mention_spans is None:
@@ -336,6 +337,9 @@ class ChatEngine:
             else:
                 mentions, legal_spans = self._validate_mention_spans(
                     content, mention_spans, channel.project_id or "")
+        else:
+            # 平台消息只用于展示状态和操作回执，不解析提及，也不触发角色。
+            mentions = []
         if not mentions and author_type == "human" and channel.project_id:
             if orchestrator_available and author != orchestrator:
                 mentions = [orchestrator]
@@ -359,7 +363,7 @@ class ChatEngine:
             msg_id = self.store.add_message(
                 channel_id, author, author_type, content, mentions, reply_to,
                 root_id, depth, runtime_id or "", model or "", effort or "",
-                mention_spans=legal_spans, context=context)
+                kind=kind, mention_spans=legal_spans, context=context)
             if (author_type == "agent" and author == orchestrator
                     and not legal_spans):
                 # 旧契约的存量会话可能仍在正文里写 @[角色] 试图派发;
