@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -71,10 +72,22 @@ def _policy_denial(tool_name: str, tool_input: dict,
     return ""
 
 
+def _os_sandbox_requested() -> bool:
+    """Claude OS 级 Bash 沙箱默认关闭,MISSIONCREW_CLAUDE_SANDBOX=on 启用。
+
+    默认关闭的原因:该沙箱的网络命名空间连宿主回环/私网都不可达、域名默认
+    全部拒绝,对纯本地协作限制过强;平台其余 Runtime(ACP yolo 系)本就无
+    OS 沙箱,codex 也有审批升级逃生门。关闭后文件写入边界仍由 _policy_denial
+    的应用层硬检查约束。
+    """
+    return os.environ.get(
+        "MISSIONCREW_CLAUDE_SANDBOX", "").strip().lower() in ("1", "on", "true")
+
+
 def _sandbox_settings(config: ExecutionConfig) -> dict:
     """把统一文件系统策略映射为 Claude 的 OS 级 Bash sandbox。"""
     permissions = config.runtime_policy.permissions
-    if permissions.filesystem == "full-access":
+    if permissions.filesystem == "full-access" or not _os_sandbox_requested():
         return {"sandbox": {"enabled": False}}
     sandbox: dict = {
         "enabled": True,

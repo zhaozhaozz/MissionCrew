@@ -332,13 +332,18 @@ def test_claude_auto_approval_still_enforces_hard_policy(
         provider.shutdown()
 
 
-def test_claude_sandbox_excludes_agent_tool_cli(tmp_path):
-    # 沙箱网络命名空间对宿主回环/私网一律不可达(实测 allowedDomains 无效),
-    # Agent Tool CLI 必须列入 excludedCommands 在沙箱外执行才能连上控制面;
+def test_claude_os_sandbox_default_off_and_opt_in(tmp_path, monkeypatch):
+    # OS 沙箱默认关闭(其网络命名空间连宿主回环都不可达,对本地协作限制过强);
+    # MISSIONCREW_CLAUDE_SANDBOX=on 显式启用时,Agent Tool CLI 必须列入
+    # excludedCommands 在沙箱外执行才能连上控制面(实测 allowedDomains 无效),
     # 两种文档调用形式(missioncrew-tool 与 python -m)都要覆盖。
     events: list[tuple[str, str]] = []
-    sandbox = _sandbox_settings(
-        _config(tmp_path, "claude_code", "任务", {}, events))["sandbox"]
+    monkeypatch.delenv("MISSIONCREW_CLAUDE_SANDBOX", raising=False)
+    cfg = _config(tmp_path, "claude_code", "任务", {}, events)
+    assert _sandbox_settings(cfg) == {"sandbox": {"enabled": False}}
+
+    monkeypatch.setenv("MISSIONCREW_CLAUDE_SANDBOX", "on")
+    sandbox = _sandbox_settings(cfg)["sandbox"]
     assert sandbox["enabled"] is True
     assert "* -m missioncrew.agent_tool *" in sandbox["excludedCommands"]
     assert "missioncrew-tool *" in sandbox["excludedCommands"]
