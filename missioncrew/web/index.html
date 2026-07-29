@@ -8,6 +8,8 @@
 </head>
 <body>
 <header>
+  <button class="theme-btn sidebar-toggle" id="sidebar-toggle" onclick="toggleMobileSidebar()"
+    title="显示/隐藏侧栏" aria-label="显示/隐藏侧栏" aria-expanded="false">☰</button>
   <div class="logo">M</div>
   <h1>MissionCrew</h1>
   <span class="hint">输入 @ 后从列表选择角色；单个角色直接执行，多个角色交给主控协调</span>
@@ -112,6 +114,7 @@
       <div class="side-nav" id="nav-settings" onclick="switchTab('settings')">⚙ 全局设置</div>
     </div>
   </aside>
+  <div id="sidebar-backdrop" hidden onclick="closeMobileSidebar()"></div>
   <div id="side-resizer" title="拖动调整宽度,双击恢复默认"></div>
 
   <div id="views">

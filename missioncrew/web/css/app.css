@@ -79,6 +79,7 @@
                background: transparent; border: 1px solid var(--line); color: var(--muted);
                font-size: 15px; line-height: 1; transition: all .15s; }
   .theme-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .sidebar-toggle { display: none; }
   @media (max-width: 860px) { header .hint { display: none; } }
 
   /* ---- 布局:持久左侧栏(承载全部导航)+ 视图区 ---- */
@@ -934,3 +935,41 @@
   .toast.success { border-left-color: var(--ok); }
   .toast.error { border-left-color: var(--bad); }
   .toast.out { animation: toastOut .18s ease forwards; }
+
+  /* ---- 移动端适配:侧栏改抽屉,角色栏单行横滚,其余布局收紧 ---- */
+  #sidebar-backdrop { display: none; }
+  @media (max-width: 820px) {
+    .sidebar-toggle { display: block; }
+    header { padding: 0 12px; gap: 10px; }
+    header h1 { margin-right: auto; }
+    #side-resizer { display: none; }
+    /* 覆盖 JS 记忆的桌面宽度(内联 style),抽屉宽度固定 */
+    #sidebar { position: fixed; z-index: 60; top: 54px; bottom: 0; left: 0;
+               width: min(82vw, 300px) !important; box-shadow: var(--shadow-lg);
+               transform: translateX(-105%); transition: transform .22s ease; }
+    #sidebar.open { transform: translateX(0); }
+    #sidebar-backdrop { position: fixed; z-index: 55; inset: 54px 0 0;
+                        background: rgba(12, 16, 24, .45); display: block; }
+    #sidebar-backdrop[hidden] { display: none; }
+
+    /* 角色选择独占一行,横向滚动;操作按钮换到下一行靠右 */
+    #chat-composer-head { flex-direction: column; align-items: stretch; gap: 6px; }
+    #role-bar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 3px;
+                -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
+    #role-bar button { flex: none; white-space: nowrap; }
+    .chat-composer-actions { justify-content: flex-end; }
+
+    #msgs { padding: 14px 12px 8px; }
+    #composer { padding: 10px 12px 12px; }
+    .run-card { margin-left: 20px; }
+    .msg.human .body { max-width: 88%; }
+    .send { padding: 0 16px; }
+    .page { padding: 14px; }
+    .subnav { top: -14px; }
+    .task-channel-options { grid-template-columns: 1fr; }
+    .form .row { flex-direction: column; gap: 0; }
+    dialog { width: 96vw; }
+  }
+  @media (max-width: 640px) {
+    main.board { grid-template-columns: 1fr; padding: 12px 14px; }
+  }
