@@ -570,7 +570,7 @@ class ChatEngine:
                 parts.append(raw)
                 output_length += len(raw)
             elif not role.enabled:
-                raise ValueError(f"角色 @{role_id} 已停用，请先启用")
+                raise ValueError(f"角色不存在或不可用: @{role_id}")
             else:
                 visible = f"@{role_id}"
                 start = output_length
@@ -595,9 +595,7 @@ class ChatEngine:
             role_id = item.get("role_id")
             start, end = item.get("start"), item.get("end")
             role = known.get(role_id) if isinstance(role_id, str) else None
-            if role is not None and not role.enabled:
-                raise ValueError(f"角色 @{role_id} 已停用，请先启用")
-            if (not isinstance(role_id, str) or role is None
+            if (not isinstance(role_id, str) or role is None or not role.enabled
                     or type(start) is not int or type(end) is not int
                     or start < 0 or end <= start or end > len(content)
                     or content[start:end] != f"@{role_id}"):
@@ -621,7 +619,7 @@ class ChatEngine:
         if role is not None and not role.enabled:
             self.store.add_message(
                 channel.id, "platform", "platform",
-                f"@{role_id} 已停用，本次不触发执行。请先在项目角色设置中启用。",
+                f"@{role_id} 不存在，本次不触发执行。",
                 [], msg_id, root_id, depth,
             )
             self._write_channel_history(channel)

@@ -660,11 +660,8 @@ class AgentActionService:
             if role_id == identity.role_id:
                 raise AgentToolError("invalid_arguments", "主控不能调度自己")
             target_role = self.store.get_role(project.id, role_id)
-            if target_role is None:
+            if target_role is None or not target_role.enabled:
                 raise AgentToolError("role_not_found", f"角色不存在: {role_id}", 404)
-            if not target_role.enabled:
-                raise AgentToolError(
-                    "role_disabled", f"角色已停用，请先启用: {role_id}", 409)
             if role_id not in unique_mentions:
                 unique_mentions.append(role_id)
         # mentions 参数是唯一的派发通道:直接生成可见的 @role 前缀与结构化

@@ -168,9 +168,9 @@ def test_disabled_role_cannot_be_selected_or_dispatched(chat, seeded):
     role.enabled = False
     seeded.put_role(role)
 
-    with pytest.raises(ValueError, match="角色 @dev 已停用"):
+    with pytest.raises(ValueError, match="角色不存在或不可用: @dev"):
         chat.post("general", "human", "@[dev] 检查")
-    with pytest.raises(ValueError, match="角色 @dev 已停用"):
+    with pytest.raises(ValueError, match="提及范围无效"):
         chat.post("general", "human", "@dev 检查", mention_spans=[
             {"role_id": "dev", "start": 0, "end": len("@dev")},
         ])
@@ -183,7 +183,8 @@ def test_disabled_role_cannot_be_selected_or_dispatched(chat, seeded):
         seeded.get_channel("general"), "dev", trigger, trigger, 0)
     chat.wait_idle()
     assert seeded._query("SELECT * FROM chat_runs") == []
-    assert "已停用，本次不触发执行" in _log(seeded)[-1]["content"]
+    assert _log(seeded)[-1]["content"] == "@dev 不存在，本次不触发执行。"
+    assert "停用" not in _log(seeded)[-1]["content"]
 
 
 def test_disabled_role_is_absent_from_orchestrator_roster(seeded):

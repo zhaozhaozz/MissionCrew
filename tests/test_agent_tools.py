@@ -304,8 +304,9 @@ def test_message_tool_rejects_disabled_role_before_publishing(seeded):
             identity, "message.publish", {
                 "channel": "general", "content": "请执行。", "mentions": ["dev"],
             }, run_id, "dispatch-disabled")
-    assert excinfo.value.code == "role_disabled"
-    assert excinfo.value.status_code == 409
+    assert excinfo.value.code == "role_not_found"
+    assert excinfo.value.status_code == 404
+    assert "停用" not in excinfo.value.message
     assert len(seeded.list_messages("general")) == before
     assert not any(row["role_id"] == "dev" for row in
                    seeded._query("SELECT role_id FROM chat_runs"))
