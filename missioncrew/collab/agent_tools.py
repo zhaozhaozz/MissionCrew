@@ -704,7 +704,8 @@ class AgentActionService:
             if result["dispatched"]:
                 result["handoff"] = "end_turn"
                 result["resume"] = (
-                    "MissionCrew 会在已派发角色完成或失败后自动启动新的主控 turn"
+                    "不要向仍在执行的角色追问中间状态；MissionCrew 会在已派发角色"
+                    "完成或失败后自动启动新的主控 turn"
                 )
             if dropped:
                 result["not_dispatched"] = dropped

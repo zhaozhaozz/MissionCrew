@@ -916,6 +916,8 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
     # 生命周期契约:实际派发后结束本轮,等待平台用新主控 turn 交回结果
     assert "返回非空 `dispatched` 时" in cfg.prompt
     assert "不要使用 `sleep`" in cfg.prompt
+    assert "不要向仍在执行的角色再次 `message.publish` 追问" in cfg.prompt
+    assert "不能提供实时进度" in cfg.prompt
     assert "自动启动新的主控 turn" in cfg.prompt
 
 

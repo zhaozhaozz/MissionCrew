@@ -43,6 +43,8 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert "message.publish" in lead.common_prompt
     assert "返回非空 `dispatched` 时" in lead.common_prompt
     assert "不要使用 `sleep`" in lead.common_prompt
+    assert "不要向仍在执行的角色再次 `message.publish` 追问" in lead.common_prompt
+    assert "不能提供实时进度" in lead.common_prompt
     assert "立即用简短消息说明已派发并结束当前 turn" in lead.common_prompt
     assert "document.publish" in dev.common_prompt
     assert "message.publish" not in dev.common_prompt
@@ -260,6 +262,7 @@ def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seed
     assert "dev" in roles and "reviewer" not in roles
     assert result["dispatched"] == ["dev"]
     assert result["handoff"] == "end_turn"
+    assert "不要向仍在执行的角色追问中间状态" in result["resume"]
     assert "自动启动新的主控 turn" in result["resume"]
     assert "not_dispatched" not in result
 
