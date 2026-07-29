@@ -913,6 +913,10 @@ def test_orchestrator_prompt_lists_channels_boards_and_budget(seeded):
     assert "missioncrew-action>" not in cfg.prompt
     # 派发契约:mentions 是唯一通道,正文里的 @ 永不触发
     assert "`mentions`" in cfg.prompt and "永不触发执行" in cfg.prompt
+    # 生命周期契约:实际派发后结束本轮,等待平台用新主控 turn 交回结果
+    assert "返回非空 `dispatched` 时" in cfg.prompt
+    assert "不要使用 `sleep`" in cfg.prompt
+    assert "自动启动新的主控 turn" in cfg.prompt
 
 
 def test_orchestrator_can_generate_project_config_and_documents(seeded):

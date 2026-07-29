@@ -41,8 +41,12 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert reused_lead_token == lead_token
     assert "# MissionCrew Agent Tool" in lead.common_prompt
     assert "message.publish" in lead.common_prompt
+    assert "返回非空 `dispatched` 时" in lead.common_prompt
+    assert "不要使用 `sleep`" in lead.common_prompt
+    assert "立即用简短消息说明已派发并结束当前 turn" in lead.common_prompt
     assert "document.publish" in dev.common_prompt
     assert "message.publish" not in dev.common_prompt
+    assert "返回非空 `dispatched` 时" not in dev.common_prompt
     assert "missioncrew-action>" not in lead.common_prompt
     assert f"--run-id {lead_run}" in lead.turn_prompt
     assert lead_token not in lead.prompt and dev_token not in dev.prompt
@@ -255,6 +259,8 @@ def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seed
         (message["root_id"],))]
     assert "dev" in roles and "reviewer" not in roles
     assert result["dispatched"] == ["dev"]
+    assert result["handoff"] == "end_turn"
+    assert "自动启动新的主控 turn" in result["resume"]
     assert "not_dispatched" not in result
 
 
@@ -275,6 +281,7 @@ def test_message_tool_reports_budget_dropped_dispatch(seeded):
 
     assert result["dispatched"] == []
     assert result["not_dispatched"] == ["dev"]
+    assert "handoff" not in result and "resume" not in result
     assert "未启动" in result["summary"]
     assert not any(r["role_id"] == "dev" for r in
                    seeded._query("SELECT role_id FROM chat_runs"))

@@ -137,7 +137,10 @@ ACTION_DEFINITIONS = {
         "arguments": {"path": "文档库相对路径"},
     },
     "message.publish": {
-        "description": "向本项目频道发布消息；mentions 参数是唯一的角色派发通道",
+        "description": (
+            "向本项目频道发布消息；mentions 参数是唯一的角色派发通道；"
+            "实际派发成功后按返回的 handoff 结束当前 turn"
+        ),
         "orchestrator_only": True,
         "arguments": {
             "channel": "项目内频道短 id",
@@ -698,6 +701,11 @@ class AgentActionService:
                        self.store.chat_runs_for_trigger(message_id)}
             dropped = [r for r in unique_mentions if r not in started]
             result["dispatched"] = [r for r in unique_mentions if r in started]
+            if result["dispatched"]:
+                result["handoff"] = "end_turn"
+                result["resume"] = (
+                    "MissionCrew 会在已派发角色完成或失败后自动启动新的主控 turn"
+                )
             if dropped:
                 result["not_dispatched"] = dropped
                 result["summary"] += (
