@@ -302,9 +302,13 @@ def role_list(project: Optional[str] = typer.Option(None, "-p", "--project")):
         fixed = f" runtime={r.runtime_id or '(未配置)'}/{model}"
         if r.effort:
             fixed += f"/effort={r.effort}"
+        state = " 状态=启用" if r.enabled else " 状态=停用"
         traits = f" 偏好={r.preference}" if r.preference else ""
         caps = f" 能力=[{','.join(r.capabilities)}]" if r.capabilities else ""
-        typer.echo(f"[{r.project_id}] @{r.id:<10} {r.name:<6}{traits}{caps}{fixed}  {r.description}")
+        typer.echo(
+            f"[{r.project_id}] @{r.id:<10} {r.name:<6}{state}{traits}{caps}"
+            f"{fixed}  {r.description}"
+        )
 
 
 @role_app.command("add")
@@ -318,8 +322,11 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
         if project:
             d["project_id"] = project
         r = Role.from_dict(d)   # 经迁移入口,示例 YAML 的旧版 traits 等字段可直接用
-        if not r.project_id or store.get_project(r.project_id) is None:
+        project_config = store.get_project(r.project_id) if r.project_id else None
+        if project_config is None:
             raise typer.BadParameter(f"@{r.id} 缺少有效的 project_id(角色按项目隔离)")
+        if not r.enabled and project_config.orchestrator_role_id == r.id:
+            raise typer.BadParameter("不能停用项目主控角色；请先为项目选择其他已启用主控")
         backend = store.get_backend(r.runtime_id)
         if backend is None:
             raise typer.BadParameter(f"@{r.id} 缺少有效的 runtime_id")

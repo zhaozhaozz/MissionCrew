@@ -154,12 +154,14 @@ function roleInfo(id) {
 
 function legalMentionTitle(id) {
   const role = roleInfo(id);
+  if (role?.enabled === false)
+    return `角色已停用：@${id}${role.name ? `（${role.name}）` : ""}，不会触发新执行`;
   return `已确认提及：单选会触发 @${id}${role?.name ? `（${role.name}）` : ""}，多选由主控协调`;
 }
 
 function createComposerMention(id) {
   const role = roleInfo(id);
-  if (!role) return null;
+  if (!role || role.enabled === false) return null;
   const span = document.createElement("span");
   span.className = "mention legal-mention mention-compose";
   span.contentEditable = "false";
@@ -223,7 +225,7 @@ function hideMentionPicker() {
 
 function renderMentionPicker(query) {
   const picker = document.getElementById("mention-picker");
-  mentionPickerRoles = projRoles().filter(role => !query
+  mentionPickerRoles = activeProjRoles().filter(role => !query
     || role.id.toLowerCase().includes(query)
     || String(role.name || "").toLowerCase().includes(query));
   if (!mentionPickerRoles.length) { hideMentionPicker(); return; }
@@ -295,6 +297,10 @@ function chooseComposerMention(id) {
 }
 
 function insertMention(id) {
+  if (roleInfo(id)?.enabled === false) {
+    toast(`@${id} 已停用，请先在项目设置中启用`, "error");
+    return;
+  }
   if (projChannels().find(channel => channel.id === currentChan)?.archived) {
     toast("频道已归档，请先恢复后再发送消息", "error");
     return;

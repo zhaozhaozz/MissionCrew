@@ -297,6 +297,12 @@ class ChatEngine:
             )
         project = self.store.get_project(channel.project_id or "")
         orchestrator = project.orchestrator_role_id if project else ""
+        orchestrator_role = (
+            self.store.get_role(channel.project_id or "", orchestrator)
+            if orchestrator else None
+        )
+        orchestrator_available = bool(
+            orchestrator_role and orchestrator_role.enabled)
         role = (self.store.get_role(channel.project_id or "", author)
                 if author_type == "agent" else None)
 
@@ -312,9 +318,8 @@ class ChatEngine:
                     mentions = [item for item in mentions if item != author]
                     legal_spans = [span for span in legal_spans
                                    if span["role_id"] != author]
-            elif author != orchestrator and orchestrator and self.store.get_role(
-                    channel.project_id or "", orchestrator
-            ) and not self._is_direct_human_dispatch(reply_to, author):
+            elif (author != orchestrator and orchestrator_available
+                  and not self._is_direct_human_dispatch(reply_to, author)):
                 mentions = [orchestrator]
             else:
                 mentions = []
@@ -332,13 +337,11 @@ class ChatEngine:
                 mentions, legal_spans = self._validate_mention_spans(
                     content, mention_spans, channel.project_id or "")
         if not mentions and author_type == "human" and channel.project_id:
-            if (orchestrator and author != orchestrator
-                    and self.store.get_role(channel.project_id, orchestrator)):
+            if orchestrator_available and author != orchestrator:
                 mentions = [orchestrator]
         dispatch_targets = list(mentions)
         if (author_type == "human" and len(mentions) > 1
-                and orchestrator and author != orchestrator
-                and self.store.get_role(channel.project_id or "", orchestrator)):
+                and orchestrator_available and author != orchestrator):
             # 保留原始 mentions/mention_spans 供主控理解用户指定的角色，
             # 但多人协作只启动主控，由主控决定顺序、并行方式和具体简报。
             dispatch_targets = [orchestrator]
@@ -550,7 +553,7 @@ class ChatEngine:
         仅服务无选择器的人类 CLI 入口;Agent 消息不经过本函数——Agent 的
         派发只能来自 message.publish 显式命令构造的结构化范围。
         """
-        known = {role.id for role in self.store.list_roles(project_id)}
+        known = {role.id: role for role in self.store.list_roles(project_id)}
         parts: list[str] = []
         targets: list[str] = []
         spans: list[dict] = []
@@ -561,10 +564,13 @@ class ChatEngine:
             parts.append(prefix)
             output_length += len(prefix)
             role_id = match.group(1)
-            if role_id not in known:
+            role = known.get(role_id)
+            if role is None:
                 raw = match.group(0)
                 parts.append(raw)
                 output_length += len(raw)
+            elif not role.enabled:
+                raise ValueError(f"角色 @{role_id} 已停用，请先启用")
             else:
                 visible = f"@{role_id}"
                 start = output_length
@@ -581,14 +587,17 @@ class ChatEngine:
     def _validate_mention_spans(self, content: str, requested: list[dict],
                                 project_id: str) -> tuple[list[str], list[dict]]:
         """验证 UI 选择器给出的 Unicode code-point 范围，不从正文猜目标。"""
-        known = {role.id for role in self.store.list_roles(project_id)}
+        known = {role.id: role for role in self.store.list_roles(project_id)}
         normalized: list[dict] = []
         for item in requested:
             if not isinstance(item, dict):
                 raise ValueError("提及必须由角色选择器生成")
             role_id = item.get("role_id")
             start, end = item.get("start"), item.get("end")
-            if (not isinstance(role_id, str) or role_id not in known
+            role = known.get(role_id) if isinstance(role_id, str) else None
+            if role is not None and not role.enabled:
+                raise ValueError(f"角色 @{role_id} 已停用，请先启用")
+            if (not isinstance(role_id, str) or role is None
                     or type(start) is not int or type(end) is not int
                     or start < 0 or end <= start or end > len(content)
                     or content[start:end] != f"@{role_id}"):
@@ -608,6 +617,15 @@ class ChatEngine:
 
     def _trigger(self, channel: Channel, role_id: str, msg_id: int,
                  root_id: int, depth: int) -> None:
+        role = self.store.get_role(channel.project_id or "", role_id)
+        if role is not None and not role.enabled:
+            self.store.add_message(
+                channel.id, "platform", "platform",
+                f"@{role_id} 已停用，本次不触发执行。请先在项目角色设置中启用。",
+                [], msg_id, root_id, depth,
+            )
+            self._write_channel_history(channel)
+            return
         project = self.store.get_project(channel.project_id or "")
         max_runs = project.max_chain_runs if project else DEFAULT_MAX_CHAIN_RUNS
         # count + insert 必须串行，否则并行分支可能同时看到剩余额度并突破上限。
@@ -662,8 +680,12 @@ class ChatEngine:
             result_depth)
         self._write_channel_history(channel)
         orchestrator = project.orchestrator_role_id if project else ""
-        if (orchestrator and role_id != orchestrator
-                and self.store.get_role(channel.project_id or "", orchestrator)
+        orchestrator_role = (
+            self.store.get_role(channel.project_id or "", orchestrator)
+            if orchestrator else None
+        )
+        if (orchestrator_role and orchestrator_role.enabled
+                and role_id != orchestrator
                 and not self._is_direct_human_dispatch(msg_id, role_id)):
             self._trigger(channel, orchestrator, failure_id, root_id, result_depth)
 
@@ -981,7 +1003,7 @@ class ChatEngine:
         if is_orchestrator:
             roster = "\n".join(
                 _tag(r) for r in self.store.list_roles(channel.project_id or "")
-                if r.id != role.id) or "(无其他角色)"
+                if r.id != role.id and r.enabled) or "(无其他已启用角色)"
             collaboration_section = (
                 "- 只有你（项目主控）可以调度其他角色。派发必须执行显式命令："
                 "`message.publish` 传 `mentions` 角色数组，content 写清背景、"

@@ -750,6 +750,7 @@
                    box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: left .18s; }
   .switch.on { background: var(--ok); }
   .switch.on::after { left: 19px; }
+  .role-chip[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
   .muted { color: var(--muted); font-size: 12px; }
 
   /* ---- 文档库:目录树在应用侧栏,主区只呈现当前文档 ---- */

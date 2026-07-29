@@ -19,6 +19,7 @@ def test_abilities_fixed_and_preference_free_text():
     legacy = Role.from_dict({"id": "y", "project_id": "p", "runtime_id": "std-1",
                              "model": "", "traits": ["deep", "quality"]})
     assert legacy.preference == "深度攻坚、高质量"
+    assert legacy.enabled is True
 
 
 def test_default_roles_are_bound_once_to_runtime_and_model(seeded):
@@ -78,8 +79,74 @@ def test_role_crud_api(client):
     assert roles["writer"]["runtime_id"] == "std-1"
     assert roles["writer"]["model"] == "pro"
     assert roles["writer"]["description"] == "自由文本人格"
+    assert roles["writer"]["enabled"] is True
     assert client.delete("/api/roles/writer?project_id=webshop").status_code == 200
     assert "writer" not in {r["id"] for r in client.get("/api/roles").json()}
+
+
+def test_role_can_be_temporarily_disabled_without_stopping_existing_run(
+        client, seeded):
+    role = seeded.get_role("webshop", "dev")
+    original = role.to_dict()
+    message_id = seeded.add_message(
+        "general", "human", "human", "@dev 已接受的任务", ["dev"])
+    run_id = seeded.add_chat_run(
+        "general", "dev", message_id, message_id, 0)
+
+    disabled = client.post("/api/roles/dev/enabled", json={
+        "project_id": "webshop", "enabled": False,
+    })
+    assert disabled.status_code == 200
+    assert disabled.json()["enabled"] is False
+    stored = seeded.get_role("webshop", "dev")
+    assert stored.enabled is False
+    assert {key: stored.to_dict()[key] for key in original if key != "enabled"} == {
+        key: value for key, value in original.items() if key != "enabled"}
+    assert seeded.get_chat_run(run_id)["status"] == "queued"
+    overview = client.get("/api/overview").json()
+    assert next(role for role in overview["roles"]
+                if role["project_id"] == "webshop"
+                and role["id"] == "dev")["enabled"] is False
+
+    stale_form = {**original, "name": "开发者新名称", "enabled": True}
+    edited = client.post("/api/roles", json=stale_form)
+    assert edited.status_code == 200
+    assert edited.json()["name"] == "开发者新名称"
+    assert edited.json()["enabled"] is False
+
+    enabled = client.post("/api/roles/dev/enabled", json={
+        "project_id": "webshop", "enabled": True,
+    })
+    assert enabled.status_code == 200
+    assert seeded.get_role("webshop", "dev").enabled is True
+    assert any(event["action"] == "role_enabled_changed"
+               for event in seeded.list_audit(limit=10))
+
+
+def test_current_orchestrator_cannot_be_disabled_or_selected_while_disabled(
+        client, seeded):
+    denied = client.post("/api/roles/lead/enabled", json={
+        "project_id": "webshop", "enabled": False,
+    })
+    assert denied.status_code == 409
+    assert "先为项目选择其他已启用主控" in denied.json()["detail"]
+    assert seeded.get_role("webshop", "lead").enabled is True
+
+    lead = seeded.get_role("webshop", "lead").to_dict()
+    lead["enabled"] = False
+    bypass = client.post("/api/roles", json=lead)
+    assert bypass.status_code == 200
+    assert bypass.json()["enabled"] is True
+    assert seeded.get_role("webshop", "lead").enabled is True
+
+    assert client.post("/api/roles/expert/enabled", json={
+        "project_id": "webshop", "enabled": False,
+    }).status_code == 200
+    project = seeded.get_project("webshop").to_dict()
+    project["orchestrator_role_id"] = "expert"
+    selected = client.post("/api/projects", json=project)
+    assert selected.status_code == 400
+    assert "主控角色已停用" in selected.json()["detail"]
 
 
 def test_global_role_templates_seed_new_projects_and_first_is_default(client, seeded):
@@ -477,13 +544,22 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
 def test_project_role_form_can_import_global_template(client):
     html = client.get("/").text
     js = client.get("/assets/js/roles.js").text
+    router = client.get("/assets/js/router.js").text
+    sidebar = client.get("/assets/js/sidebar.js").text
+    ui = client.get("/assets/js/ui.js").text
     assert "新增角色时可从全局角色模板导入" in html
+    assert "启停开关只控制新任务" in html
     assert "从全局角色模板导入（可选）" in js
     assert "importGlobalRoleTemplate" in js
     assert "globalRoleTemplates().find" in js
     assert "项目中已存在角色" in js
     assert "确认覆盖角色" in js
     assert "角色已覆盖" in js
+    assert "/api/roles/${encodeURIComponent(id)}/enabled" in js
+    assert "已在运行的任务不会中断" in js
+    assert "activeProjRoles().map" in router
+    assert "activeProjRoles().filter" in sidebar
+    assert "const activeProjRoles" in ui
 
 
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----

@@ -105,6 +105,11 @@ class RoleReorder(BaseModel):
     ids: list[str]                 # 项目全部角色 id,按目标显示顺序排列
 
 
+class RoleEnabledInput(BaseModel):
+    project_id: str
+    enabled: bool
+
+
 class RoleTemplateReorder(BaseModel):
     ids: list[str]                 # 全部全局角色模板 id,按目标显示顺序排列
 

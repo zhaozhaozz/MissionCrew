@@ -173,6 +173,7 @@ if (!CHANNEL_FILTERS.has(channelFilter)) channelFilter = "active";
 
 // 项目是第一层级:聊天、看板、角色、频道都只看当前项目
 const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);
+const activeProjRoles = () => projRoles().filter(role => role.enabled !== false);
 const globalRoleTemplates = () => overview.role_templates || [];
 const channelIsGeneral = channel => channel.id === "general" || channel.id.endsWith(":general");
 const channelIsContent = channel => Boolean(channel.content_kind && channel.content_key);

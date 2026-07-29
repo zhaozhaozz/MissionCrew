@@ -148,8 +148,11 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
     if project is None:
         raise ValueError("项目不存在")
     lead_id = project.orchestrator_role_id
-    if store.get_role(project.id, lead_id) is None:
+    lead = store.get_role(project.id, lead_id)
+    if lead is None:
         raise ValueError(f"项目主控角色不存在: @{lead_id}")
+    if not lead.enabled:
+        raise ValueError(f"项目主控角色已停用，请先启用: @{lead_id}")
     channels = task_channels(store, task.project_id, task.channel_ids)
     task.channel_ids = [channel.id for channel in channels]
     extra = message.strip()

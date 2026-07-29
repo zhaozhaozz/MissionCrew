@@ -7,7 +7,7 @@ from ..collab.recycle_bin import recycle_role
 from ..core.models import ROLE_ABILITIES, Role
 from ..runtime import runtime_manager
 from .context import MENTION_ID_RE, ApiContext
-from .schemas import (RoleInput, RoleReorder, RoleTemplateInput,
+from .schemas import (RoleEnabledInput, RoleInput, RoleReorder, RoleTemplateInput,
                       RoleTemplateReorder)
 
 
@@ -49,16 +49,36 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.post("/api/roles")
     def save_role(body: RoleInput):
         validate_config(body)
-        if store.get_project(body.project_id) is None:
+        project = store.get_project(body.project_id)
+        if project is None:
             raise HTTPException(400, f"项目不存在: {body.project_id}")
         data = body.model_dump()
+        existing = store.get_role(body.project_id, body.id)
+        # 临时启停只允许走独立端点；编辑名称、模型等字段时保留实时状态，
+        # 避免旧表单保存时覆盖另一个页面刚完成的开关操作。
+        data["enabled"] = existing.enabled if existing else True
         if data["sort_order"] is None:   # 编辑保留现有顺序;新角色排到项目末尾
-            existing = store.get_role(body.project_id, body.id)
             data["sort_order"] = existing.sort_order if existing else 10 + max(
                 (r.sort_order for r in store.list_roles(body.project_id)), default=0)
         role = Role(**data)
         store.put_role(role)
         store.audit("human", "role_saved", detail=f"project={role.project_id} role={role.id}")
+        return role.to_dict()
+
+    @app.post("/api/roles/{role_id}/enabled")
+    def set_role_enabled(role_id: str, body: RoleEnabledInput):
+        project = ctx.must_project(body.project_id)
+        role = store.get_role(project.id, role_id)
+        if role is None:
+            raise HTTPException(404, "角色不存在")
+        if not body.enabled and project.orchestrator_role_id == role.id:
+            raise HTTPException(409, "不能停用项目主控角色；请先为项目选择其他已启用主控")
+        role.enabled = body.enabled
+        store.put_role(role)
+        store.audit(
+            "human", "role_enabled_changed",
+            detail=f"project={project.id} role={role.id} enabled={str(role.enabled).lower()}",
+        )
         return role.to_dict()
 
     @app.post("/api/roles/reorder")

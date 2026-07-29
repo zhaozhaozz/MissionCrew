@@ -163,6 +163,47 @@ def test_invalid_picker_range_is_rejected(chat, seeded):
     assert _log(seeded) == []
 
 
+def test_disabled_role_cannot_be_selected_or_dispatched(chat, seeded):
+    role = seeded.get_role("webshop", "dev")
+    role.enabled = False
+    seeded.put_role(role)
+
+    with pytest.raises(ValueError, match="角色 @dev 已停用"):
+        chat.post("general", "human", "@[dev] 检查")
+    with pytest.raises(ValueError, match="角色 @dev 已停用"):
+        chat.post("general", "human", "@dev 检查", mention_spans=[
+            {"role_id": "dev", "start": 0, "end": len("@dev")},
+        ])
+    assert _log(seeded) == []
+    assert seeded._query("SELECT * FROM chat_runs") == []
+
+    trigger = seeded.add_message(
+        "general", "human", "human", "内部入口防御", [])
+    chat._trigger(
+        seeded.get_channel("general"), "dev", trigger, trigger, 0)
+    chat.wait_idle()
+    assert seeded._query("SELECT * FROM chat_runs") == []
+    assert "已停用，本次不触发执行" in _log(seeded)[-1]["content"]
+
+
+def test_disabled_role_is_absent_from_orchestrator_roster(seeded):
+    role = seeded.get_role("webshop", "dev")
+    role.enabled = False
+    seeded.put_role(role)
+    message_id = seeded.add_message(
+        "general", "human", "human", "请选择合适角色", [])
+    chat = ChatEngine(seeded)
+    cfg = chat._assemble(
+        seeded.get_channel("general"),
+        seeded.get_role("webshop", "lead"),
+        seeded.get_backend("std-1"),
+        message_id,
+    )
+    assert "@dev(" not in cfg.common_prompt
+    assert "@reviewer(" in cfg.common_prompt
+    assert "无其他已启用角色" not in cfg.common_prompt
+
+
 def test_message_api_rejects_forged_picker_range(seeded):
     client = TestClient(create_app())
     response = client.post("/api/chat/general/messages", json={

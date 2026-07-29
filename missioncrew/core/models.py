@@ -507,6 +507,7 @@ class Role:
 
     id: str                       # @ 提及名,如 dev、reviewer(项目内唯一)
     project_id: str = ""          # 所属项目:角色按项目隔离,不跨项目共享
+    enabled: bool = True          # 临时停用只阻止新派发,不删除配置、历史或会话
     name: str = ""                # 显示名
     description: str = ""         # 人格与领域上下文(自由文本,不锁定)
     runtime_id: str = ""             # 固定 runtime(后端注册表 id)

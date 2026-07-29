@@ -7,6 +7,8 @@ function abilityPills(role) {
 function renderRoleTable() {
   const project = overview.projects.find(p => p.id === currentProject);
   const rows = projRoles().map(r => {   // 已按 sort_order 排好(服务端顺序)
+    const enabled = r.enabled !== false;
+    const isOrchestrator = r.id === project?.orchestrator_role_id;
     const exec = r.runtime_id
       ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}` +
         (r.effort ? ` / effort ${esc(r.effort)}` : "")
@@ -15,17 +17,43 @@ function renderRoleTable() {
       <td class="drag-handle" draggable="true" title="拖动排序"
           ondragstart="roleDragStart(event)" ondragend="roleDragEnd()">⠿</td>
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
-          <b>@${esc(r.id)}</b> ${esc(r.name)} ${r.id === project?.orchestrator_role_id ? `<span class="pill">主控</span>` : ""}</td>
+          <b>@${esc(r.id)}</b> ${esc(r.name)}
+          ${isOrchestrator ? `<span class="pill">主控</span>` : ""}
+          ${enabled ? "" : `<span class="pill">停用</span>`}</td>
       <td class="muted">${esc(r.preference || "—")}</td>
       <td>${abilityPills(r) || "—"}</td>
       <td class="muted">${exec}</td>
+      <td><span class="switch ${enabled ? "on" : ""}" role="switch"
+          aria-checked="${enabled}" aria-disabled="${isOrchestrator}"
+          title="${isOrchestrator ? "项目主控不能直接停用，请先切换主控" :
+            (enabled ? "已启用，点击临时停用；不会中断当前运行" : "已停用，点击重新启用")}"
+          onclick="toggleRoleEnabled(event,'${r.id}',${!enabled})"></span></td>
       <td><button class="ghost" onclick="editRole('${r.id}')">编辑</button></td></tr>`;
   }).join("");
   const table = document.getElementById("role-table");
   table.innerHTML =
-    `<tr><th></th><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th></th></tr>` + rows;
+    `<tr><th></th><th>角色</th><th>偏好</th><th>能力</th><th>Runtime / 模型</th><th>启用</th><th></th></tr>` + rows;
   table.ondragover = roleDragOver;              // 插入点判定放在表级,行随拖动实时移位
   table.ondrop = e => e.preventDefault();       // 阻止浏览器对放置数据的默认处理
+}
+
+async function toggleRoleEnabled(event, id, enabled) {
+  event.stopPropagation();
+  const project = overview.projects.find(item => item.id === currentProject);
+  if (!enabled && project?.orchestrator_role_id === id) {
+    uiAlert("项目主控不能直接停用，请先在项目信息中选择另一个已启用角色作为主控。");
+    return;
+  }
+  await api("POST", `/api/roles/${encodeURIComponent(id)}/enabled`, {
+    project_id: currentProject, enabled,
+  });
+  await loadOverview();
+  renderRoleTable();
+  refreshProjectOrchestratorOptions();
+  toast(
+    enabled ? `已启用 @${id}` : `已停用 @${id}；已在运行的任务不会中断`,
+    "success",
+  );
 }
 
 // 拖动排序:拖手柄实时移动整行,松手后提交项目全部角色 id 的新顺序,
@@ -83,7 +111,7 @@ function editRole(id, templateId = "") {
   }
   const r = projRoles().find(x => x.id === id) || template || {
     id: "", name: "", description: "", capabilities: [], preference: "",
-    runtime_id: "", model: "", effort: "", color: "#3564d7" };
+    runtime_id: "", model: "", effort: "", color: "#3564d7", enabled: true };
   const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
     `<span class="chip ${(r.capabilities || []).includes(k) ? "on" : ""}" data-cap="${k}"
        onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");

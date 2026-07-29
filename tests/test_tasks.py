@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from fastapi.testclient import TestClient
 
 from missioncrew.api import create_app
@@ -170,6 +171,21 @@ def test_processing_task_posts_to_each_bound_channel_and_triggers_lead(seeded):
             (item["message_id"],),
         )
         assert [row["role_id"] for row in runs] == ["lead"]
+
+
+def test_processing_task_rejects_disabled_orchestrator(seeded):
+    lead = seeded.get_role("webshop", "lead")
+    lead.enabled = False
+    seeded.put_role(lead)
+    task = create_task(
+        seeded, "webshop", title="无法调度", channel_ids=["general"])
+    chat = ChatEngine(seeded)
+
+    with pytest.raises(ValueError, match="项目主控角色已停用"):
+        dispatch_task(seeded, chat, task)
+    assert seeded.get_task(task.id).status == "open"
+    assert seeded.list_messages("general") == []
+    assert seeded._query("SELECT * FROM chat_runs") == []
 
 
 def test_task_edit_empty_channel_list_falls_back_to_general(seeded):

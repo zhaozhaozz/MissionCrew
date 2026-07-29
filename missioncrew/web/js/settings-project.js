@@ -2,6 +2,23 @@
 
 function projObj() { return overview.projects.find(project => project.id === currentProject); }
 
+function projectOrchestratorOptions(project, selectedId = project.orchestrator_role_id) {
+  return activeProjRoles().map(role =>
+    `<option value="${esc(role.id)}" ${role.id === selectedId ? "selected" : ""}>` +
+    `@${esc(role.id)} — ${esc(role.name)} · ` +
+    `${esc(role.runtime_id)}/${esc(role.model || "CLI 默认")}</option>`
+  ).join("");
+}
+
+function refreshProjectOrchestratorOptions() {
+  const project = projObj();
+  const select = document.getElementById("pf-orchestrator");
+  if (!project || !select) return;
+  const selected = activeProjRoles().some(role => role.id === select.value)
+    ? select.value : project.orchestrator_role_id;
+  select.innerHTML = projectOrchestratorOptions(project, selected);
+}
+
 async function renderProjSettings() {
   await ensureTraits();
   const label = `— 项目「${esc(currentProject || "无")}」`;
@@ -15,10 +32,7 @@ async function renderProjSettings() {
     form.innerHTML = `<div class="empty">暂无项目,点击侧栏 ＋ 新建。</div>`;
     return;
   }
-  const orchestratorOptions = projRoles().map(role =>
-    `<option value="${esc(role.id)}" ${role.id === project.orchestrator_role_id ? "selected" : ""}>` +
-    `@${esc(role.id)} — ${esc(role.name)} · ${esc(role.runtime_id)}/${esc(role.model || "CLI 默认")}</option>`
-  ).join("");
+  const orchestratorOptions = projectOrchestratorOptions(project);
   form.innerHTML = `
     <div class="row">
       <div><label>项目 id</label><input type="text" value="${esc(project.id)}" disabled></div>

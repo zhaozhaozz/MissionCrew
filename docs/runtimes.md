@@ -169,6 +169,10 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 - **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并按 `KNOWN_MODELS` 刷新工具自带模型清单(目前只有 claude 预置:`""`(CLI 默认)/haiku/sonnet/opus/fable);
 - Runtime 管理页只呈现工具、版本与安装状态;每条记录有启用开关,停用的 runtime 不能被角色绑定(保存时 400),已绑定角色的执行会明确报"不可用"。
 
+## 角色临时启停
+
+项目角色的 `enabled` 开关只控制新执行入口：停用后，聊天角色栏和提及选择器不再提供该角色，Web 结构化提及、CLI `@[role]`、主控 `message.publish` 和 Task 主控派发都会在后端拒绝或跳过。停用不会删除角色配置、历史消息、Agent Tool 身份或持久 Runtime 会话，也不会中断已经接受的 turn；重新启用后仍可复用原上下文。为保证项目始终有调度入口，当前 `orchestrator_role_id` 不能直接停用，必须先切换到另一个已启用角色。
+
 ## 模型清单
 
 角色编辑器的模型下拉合并两个来源:

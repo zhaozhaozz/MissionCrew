@@ -290,6 +290,27 @@ def test_message_tool_reports_budget_dropped_dispatch(seeded):
                    seeded._query("SELECT role_id FROM chat_runs"))
 
 
+def test_message_tool_rejects_disabled_role_before_publishing(seeded):
+    chat = ChatEngine(seeded)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(token)
+    role = seeded.get_role("webshop", "dev")
+    role.enabled = False
+    seeded.put_role(role)
+    before = len(seeded.list_messages("general"))
+
+    with pytest.raises(AgentToolError) as excinfo:
+        chat.agent_tools.execute(
+            identity, "message.publish", {
+                "channel": "general", "content": "请执行。", "mentions": ["dev"],
+            }, run_id, "dispatch-disabled")
+    assert excinfo.value.code == "role_disabled"
+    assert excinfo.value.status_code == 409
+    assert len(seeded.list_messages("general")) == before
+    assert not any(row["role_id"] == "dev" for row in
+                   seeded._query("SELECT role_id FROM chat_runs"))
+
+
 def test_message_tool_rejected_after_run_stopped(seeded):
     """停止与派发原子互斥:发起 run 停止后,迟到的 message.publish 不落库不调度。"""
     chat = ChatEngine(seeded)
