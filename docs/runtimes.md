@@ -145,6 +145,8 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 - 其余未知的 agent→client 请求返回空结果,避免阻塞;
 - 整轮共享一个截止时间,进程 EOF 时让所有等待方立刻失败,不悬挂。
 
+ACP v1 把 `session/prompt` 响应定义为完整 prompt turn 的终止边界：Agent 只能在没有待处理工具调用时返回，取消后的残余 update 也必须先于响应发出；协议没有“响应已经返回、detached task 仍在后台运行并于稍后自动开启新 turn”的统一生命周期。Kimi 当前会在标准工具事件的开放字段中附带 `rawInput.run_in_background=true`，并在 `rawOutput` 返回 `task_id`、`status: running` 与 `automatic_notification`。MissionCrew 识别这一扩展形态后会登记后台任务；若阶段性 `session/prompt` 响应到达时任务仍在运行，平台保持原 chat run、ACP session 锁和事件接收器有效，并在同一原生 session 中发起内部续接 turn，要求 Runtime 使用自身的阻塞等待工具消费任务终态和最终结果。其他 ACP Runtime 若暴露相同开放字段也能复用该兼容路径；未暴露时不能从 ACP v1 推断 detached 生命周期，仍以标准 `session/prompt` 响应为完成边界。
+
 聊天场景中，同一“频道 × 角色”的 ACP serve 进程和 `sessionId` 会在 MissionCrew 服务进程内长驻复用；空闲 30 分钟后回收。MissionCrew 重启或进程退出后，平台读取 SQLite 中的会话 id，并且仅当 `initialize.agentCapabilities.loadSession=true` 时调用 `session/load`。Runtime 不支持或无法恢复时，平台明确降级为 `session/new`，并把格式化最近对话随新会话首轮输入补回。
 
 ### Agent Tool、公共上下文与压缩

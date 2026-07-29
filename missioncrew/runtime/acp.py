@@ -19,13 +19,50 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .base import RuntimeInstance
 
 
 class AcpError(Exception):
     pass
+
+
+_DETACHED_TERMINAL_STATUSES = {
+    "cancelled", "completed", "failed", "killed", "lost", "stopped", "timed_out",
+}
+_DETACHED_FOLLOWUP_LIMIT = 3
+
+
+def _task_fields(value: Any) -> tuple[str, str]:
+    """从 Runtime 开放的 rawOutput 中提取后台任务 id 和状态。
+
+    ACP v1 只规定 rawOutput 是开放对象，并没有 detached task 类型。Kimi
+    当前会返回换行分隔的 ``task_id/status`` 文本；同时兼容其他 Runtime
+    直接返回对象以及后台 subagent 使用 ``agent_id`` 的形态。
+    """
+    if isinstance(value, dict):
+        task_id = next(
+            (str(value[key]) for key in ("task_id", "taskId", "agent_id", "agentId")
+             if value.get(key)),
+            "",
+        )
+        status = str(value.get("status") or "")
+        return task_id, status.lower()
+    if not isinstance(value, str):
+        return "", ""
+
+    fields: dict[str, str] = {}
+    for line in value.splitlines():
+        key, separator, raw_value = line.partition(":")
+        if separator:
+            fields[key.strip()] = raw_value.strip()
+    task_id = next(
+        (fields[key] for key in ("task_id", "taskId", "agent_id", "agentId")
+         if fields.get(key)),
+        "",
+    )
+    return task_id, fields.get("status", "").lower()
 
 
 class _AcpClient:
@@ -60,6 +97,10 @@ class _AcpClient:
         self._next_id = 0
         self._pending: dict[int, queue.Queue] = {}
         self._write_lock = threading.Lock()
+        self._detached_lock = threading.Lock()
+        self._tool_inputs: dict[str, dict] = {}
+        self._detached_launchers: set[str] = set()
+        self._detached_tasks: dict[str, str] = {}
         threading.Thread(target=self._read_loop, daemon=True).start()
         threading.Thread(target=self._stderr_loop, daemon=True).start()
 
@@ -69,6 +110,10 @@ class _AcpClient:
         self.deadline = time.time() + timeout if timeout is not None else None
         self.chunks = []
         self._raw_emit = emit or (lambda kind, text: None)
+        with self._detached_lock:
+            self._tool_inputs = {}
+            self._detached_launchers = set()
+            self._detached_tasks = {}
 
     # ---- 读循环:响应 / agent 请求 / 通知 ----
     def _read_loop(self) -> None:
@@ -111,10 +156,67 @@ class _AcpClient:
                 if content.get("type") == "text":
                     self.emit("thinking", content.get("text", ""))
             elif kind in ("tool_call", "tool_call_update"):
+                self._record_tool_update(update)
                 label = update.get("title") or update.get("toolCallId") or ""
                 status = update.get("status") or ""
                 if label or status:
                     self.emit("tool", f"{label} {status}".strip() + "\n")
+
+    def _record_tool_update(self, update: dict) -> None:
+        """跟踪 Runtime 通过 ACP 开放字段暴露的 detached task 生命周期。"""
+        tool_call_id = str(update.get("toolCallId") or "")
+        if not tool_call_id:
+            return
+
+        raw_input = update.get("rawInput")
+        raw_output = update.get("rawOutput")
+        output_task_id, output_status = _task_fields(raw_output)
+        new_task = ""
+        terminal_task = ""
+        with self._detached_lock:
+            if isinstance(raw_input, dict):
+                self._tool_inputs[tool_call_id] = raw_input
+            tool_input = self._tool_inputs.get(tool_call_id) or {}
+            if tool_input.get("run_in_background") is True:
+                self._detached_launchers.add(tool_call_id)
+
+            referenced_task_id = next(
+                (str(tool_input[key])
+                 for key in ("task_id", "taskId", "agent_id", "agentId")
+                 if tool_input.get(key)),
+                "",
+            )
+            if tool_call_id in self._detached_launchers:
+                task_id = output_task_id or referenced_task_id
+                if task_id:
+                    status = output_status or "running"
+                    if task_id not in self._detached_tasks:
+                        new_task = task_id
+                    self._detached_tasks[task_id] = status
+            else:
+                task_id = output_task_id or referenced_task_id
+                if task_id in self._detached_tasks and output_status:
+                    previous = self._detached_tasks[task_id]
+                    self._detached_tasks[task_id] = output_status
+                    if (previous not in _DETACHED_TERMINAL_STATUSES
+                            and output_status in _DETACHED_TERMINAL_STATUSES):
+                        terminal_task = task_id
+
+        if new_task:
+            self.emit("status", f"ACP 后台任务已纳入跟踪: {new_task}\n")
+        if terminal_task:
+            self.emit(
+                "status",
+                f"ACP 后台任务已结束: {terminal_task} ({output_status})\n",
+            )
+
+    def pending_detached_tasks(self) -> dict[str, str]:
+        with self._detached_lock:
+            return {
+                task_id: status
+                for task_id, status in self._detached_tasks.items()
+                if status not in _DETACHED_TERMINAL_STATUSES
+            }
 
     def _handle_agent_request(self, msg: dict) -> None:
         """应答 agent -> client 方向的请求,平台是无头的,权限自动决策。"""
@@ -391,6 +493,39 @@ def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
         "sessionId": session_id,
         "prompt": [{"type": "text", "text": prompt}],
     })
+    for attempt in range(1, _DETACHED_FOLLOWUP_LIMIT + 1):
+        pending = client.pending_detached_tasks()
+        if not pending:
+            break
+        task_ids = ", ".join(sorted(pending))
+        client.emit(
+            "status",
+            f"ACP 返回了阶段性回复，继续等待后台任务: {task_ids}"
+            f" ({attempt}/{_DETACHED_FOLLOWUP_LIMIT})\n",
+        )
+        if client.chunks and not client.chunks[-1].endswith(("\n", " ")):
+            client.chunks.append("\n\n")
+        continuation = (
+            "MissionCrew ACP detached-work continuation. The previous ACP turn "
+            f"reported these background task IDs as still active: {task_ids}. "
+            "Keep this response active until every listed task reaches a terminal "
+            "state. Use this Runtime's supported task-output or task-wait tool with "
+            "blocking enabled and a sufficiently long timeout; if a wait times out "
+            "while a task is still running, wait again. Then inspect the completed "
+            "results, finish the original user request, and provide the final reply. "
+            "Do not launch replacement background tasks."
+        )
+        client.request("session/prompt", {
+            "sessionId": session_id,
+            "prompt": [{"type": "text", "text": continuation}],
+        })
+    pending = client.pending_detached_tasks()
+    if pending:
+        task_ids = ", ".join(sorted(pending))
+        raise AcpError(
+            "ACP Runtime 返回后后台任务仍未结束，无法安全地把本轮标记为完成: "
+            f"{task_ids}"
+        )
     return "".join(client.chunks).strip() or "(无输出)"
 
 

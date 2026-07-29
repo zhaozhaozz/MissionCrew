@@ -51,6 +51,43 @@ def test_acp_execution_has_no_default_deadline(tmp_path):
     assert result.success and "ACP 收到任务" in result.output
 
 
+def test_acp_keeps_run_active_until_detached_task_finishes(tmp_path):
+    """Runtime 把后台任务藏在 rawInput/rawOutput 时，阶段性响应不能结束 run。"""
+    saved = {}
+    events = []
+    continuation_started = threading.Event()
+    result = {}
+
+    def emit(kind, text):
+        events.append((kind, text))
+        if kind == "status" and "继续等待后台任务" in text:
+            continuation_started.set()
+
+    def run():
+        result["value"] = _adapter("kimi", "detached").run(
+            _chat_cfg(tmp_path, saved, emit))
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert continuation_started.wait(timeout=10)
+        instances = acp.active_instances("kimi")
+        assert len(instances) == 1
+        assert instances[0].state == "running"
+    finally:
+        worker.join(timeout=10)
+        acp.close_sessions()
+
+    execution = result["value"]
+    assert execution.success, execution.summary
+    assert "后台任务已启动" in execution.output
+    assert "后台任务结果=completed" in execution.output
+    assert any(kind == "status" and "fake-background-1" in text
+               for kind, text in events)
+    # 兼容续接是 Runtime 内部生命周期，不伪装成第二条用户输入事件。
+    assert len([event for event in events if event[0] == "input"]) == 1
+
+
 def test_acp_process_start_failure_is_reported(tmp_path):
     backend = Backend(id="trae", name="t", adapter="trae")
     result = adapters.AcpAdapter(

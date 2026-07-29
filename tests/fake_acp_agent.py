@@ -73,6 +73,75 @@ def main():
             if shape == "slow":
                 time.sleep(1)
             text = msg["params"]["prompt"][0]["text"]
+            if shape == "detached":
+                if prompt_count == 1:
+                    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "s-test",
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "background-launch",
+                            "title": "Bash",
+                            "kind": "execute",
+                            "status": "pending",
+                        }}})
+                    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "s-test",
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "background-launch",
+                            "title": "Start background process",
+                            "kind": "execute",
+                            "status": "in_progress",
+                            "rawInput": {
+                                "command": "long-running-check",
+                                "run_in_background": True,
+                            },
+                        }}})
+                    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "s-test",
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "background-launch",
+                            "status": "completed",
+                            "rawOutput": (
+                                "task_id: fake-background-1\n"
+                                "status: running\n"
+                                "automatic_notification: true"
+                            ),
+                        }}})
+                    chunk("后台任务已启动")
+                else:
+                    assert "fake-background-1" in text
+                    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "s-test",
+                        "update": {
+                            "sessionUpdate": "tool_call",
+                            "toolCallId": "background-wait",
+                            "title": "TaskOutput",
+                            "kind": "execute",
+                            "status": "in_progress",
+                            "rawInput": {
+                                "task_id": "fake-background-1",
+                                "block": True,
+                            },
+                        }}})
+                    time.sleep(0.3)
+                    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": "s-test",
+                        "update": {
+                            "sessionUpdate": "tool_call_update",
+                            "toolCallId": "background-wait",
+                            "status": "completed",
+                            "rawOutput": (
+                                "retrieval_status: success\n"
+                                "task_id: fake-background-1\n"
+                                "status: completed"
+                            ),
+                        }}})
+                    chunk(";后台任务结果=completed")
+                send({"jsonrpc": "2.0", "id": mid,
+                      "result": {"stopReason": "end_turn"}})
+                continue
             # 思考与工具调用通知:验证客户端把运行过程实时上报
             send({"jsonrpc": "2.0", "method": "session/update", "params": {
                 "sessionId": "s-test",
