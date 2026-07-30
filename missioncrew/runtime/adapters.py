@@ -968,7 +968,7 @@ def _extract_session_id(line: str) -> str:
 
 def _generic_json_event(line: str, emit,
                         state: Optional[_GenericJsonState] = None) -> Optional[str]:
-    """解析 OpenCode/Cursor 的 JSON 输出，返回明确的最终回复（若有）。"""
+    """解析 OpenCode/Cursor JSON，并上报阶段级过程与明确最终回复。"""
     try:
         data = json.loads(line)
     except json.JSONDecodeError:
@@ -980,26 +980,50 @@ def _generic_json_event(line: str, emit,
     part = data.get("part") if isinstance(data.get("part"), dict) else {}
     part_type = str(part.get("type") or "")
 
-    if state is not None and (
-            kind in ("tool_use", "tool-use") or part_type == "tool"):
-        state.last_tool_index = state.event_index
-        state.terminal_texts.clear()
-        state.last_tool_name = str(part.get("tool") or data.get("tool") or "")
+    is_tool = kind in ("tool_use", "tool-use") or part_type == "tool"
+    if is_tool:
+        tool_name = str(part.get("tool") or data.get("tool") or "?")
         tool_state = part.get("state")
         tool_state = tool_state if isinstance(tool_state, dict) else {}
-        state.last_tool_status = str(tool_state.get("status") or "")
-        state.last_tool_error = str(tool_state.get("error") or "")
+        tool_status = str(tool_state.get("status") or "")
+        tool_error = str(tool_state.get("error") or "")
         tool_input = tool_state.get("input")
         tool_input = tool_input if isinstance(tool_input, dict) else {}
-        state.last_tool_target = str(
-            tool_input.get("filePath") or tool_input.get("path")
-            or tool_input.get("url") or "")
+        if state is not None:
+            state.last_tool_index = state.event_index
+            state.terminal_texts.clear()
+            state.last_tool_name = tool_name
+            state.last_tool_status = tool_status
+            state.last_tool_error = tool_error
+            state.last_tool_target = str(
+                tool_input.get("filePath") or tool_input.get("path")
+                or tool_input.get("url") or "")
 
-    if state is not None and (
-            kind in ("step_finish", "step-finish")
-            or part_type in ("step_finish", "step-finish")):
-        state.last_step_reason = str(
-            part.get("reason") or data.get("reason") or "")
+        args = json.dumps(tool_input, ensure_ascii=False)
+        emit("tool", f"{tool_name} {args[:300]}\n")
+        output = tool_error or tool_state.get("output")
+        if output not in (None, ""):
+            mark = "✗ " if tool_error or tool_status == "error" else ""
+            emit("tool_result", f"{mark}{_summarize_tool_result(output)}\n")
+
+    if kind in ("step_start", "step-start") or part_type in (
+            "step_start", "step-start"):
+        emit("status", "OpenCode 步骤开始\n")
+
+    if kind in ("step_finish", "step-finish") or part_type in (
+            "step_finish", "step-finish"):
+        reason = str(part.get("reason") or data.get("reason") or "")
+        if state is not None:
+            state.last_step_reason = reason
+        suffix = f" reason={reason}" if reason else ""
+        emit("status", f"OpenCode 步骤结束{suffix}\n")
+
+    if kind == "reasoning" or part_type == "reasoning":
+        reasoning = part.get("text")
+        if not isinstance(reasoning, str):
+            reasoning = data.get("text") if isinstance(data.get("text"), str) else ""
+        if reasoning:
+            emit("thinking", reasoning + ("" if reasoning.endswith("\n") else "\n"))
 
     final = data.get("result") or data.get("output")
     if isinstance(final, str) and (not kind or kind in ("result", "final", "completed")):
@@ -1096,7 +1120,7 @@ def _apply_cli_session_args(adapter_name: str, cmd: list[str], session_id: str,
         # codex 全局参数区，再调用 `exec resume ID PROMPT`。
         return [cmd[0], *cmd[2:-1], "exec", "resume", session_id, cmd[-1]], False
     if adapter_name == "opencode":
-        args = ["--format", "json"]
+        args = ["--format", "json", "--thinking"]
         if reused:
             args += ["--session", session_id]
         return [*cmd[:-1], *args, cmd[-1]], True

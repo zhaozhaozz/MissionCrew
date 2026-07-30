@@ -213,6 +213,11 @@ def test_opencode_tool_denial_without_final_text_is_failure(tmp_path):
     assert "external_directory (/vault/Daily/*)" in result.summary
     assert "auto-rejecting" in result.summary
     assert "我先开始检查" not in result.output
+    assert any(kind == "tool" and "read" in text for kind, text in events)
+    assert any(kind == "tool_result" and text.startswith("✗ ")
+               for kind, text in events)
+    assert any(kind == "status" and "reason=tool-calls" in text
+               for kind, text in events)
 
 
 def test_opencode_uses_text_after_last_tool_as_final_reply(tmp_path):
@@ -229,6 +234,30 @@ def test_opencode_uses_text_after_last_tool_as_final_reply(tmp_path):
     assert result.success
     assert result.output == "已跳过无权限目录，核心任务完成。"
     assert "我先开始检查" not in result.output
+
+
+def test_opencode_emits_reasoning_tool_and_step_progress(tmp_path):
+    """OpenCode JSON 的已完成阶段应实时映射到现有运行过程事件。"""
+    events, emit = _collect()
+    backend = Backend(id="oc", name="OpenCode", adapter="opencode")
+    cfg = _cfg(tmp_path, backend, emit)
+    cfg.session_key = "project:channel:reviewer"
+    result = adapters.CliAdapter(
+        "opencode",
+        [sys.executable, FAKE_STREAM, "opencode-progress", "{prompt}"],
+    ).run(cfg)
+
+    assert result.success and result.output == "检查完成。"
+    command = next(text for kind, text in events if kind == "command")
+    assert "--format json --thinking" in command
+    assert ("thinking", "先定位相关实现。\n") in events
+    assert any(kind == "tool" and 'bash {\"command\":' in text
+               for kind, text in events)
+    assert ("tool_result", "one two\n") in events
+    statuses = "".join(text for kind, text in events if kind == "status")
+    assert "OpenCode 步骤开始" in statuses
+    assert "OpenCode 步骤结束 reason=tool-calls" in statuses
+    assert "OpenCode 步骤结束 reason=stop" in statuses
 
 
 def test_cli_adapter_reaps_pipe_holding_grandchildren(tmp_path):

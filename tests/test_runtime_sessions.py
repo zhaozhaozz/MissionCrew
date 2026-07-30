@@ -63,8 +63,8 @@ def test_session_input_modes_cover_update_reinject_and_lean():
 def test_captured_and_directory_session_arguments(tmp_path):
     opencode, structured = adapters._apply_cli_session_args(
         "opencode", ["opencode", "run", "任务"], "ses_123456", True)
-    assert structured and opencode[-5:] == [
-        "--format", "json", "--session", "ses_123456", "任务"]
+    assert structured and opencode[-6:] == [
+        "--format", "json", "--thinking", "--session", "ses_123456", "任务"]
     assert adapters._extract_session_id(
         '{"type":"start","sessionID":"ses_123456"}') == "ses_123456"
 

@@ -69,6 +69,24 @@ def main():
         line({"type": "step_finish", "part": {
             "type": "step-finish", "reason": "stop"}})
         return
+    if "opencode-progress" in sys.argv:
+        line({"type": "step_start", "part": {"type": "step-start"}})
+        line({"type": "reasoning", "part": {
+            "type": "reasoning", "text": "先定位相关实现。"}})
+        line({"type": "tool_use", "part": {
+            "type": "tool", "tool": "bash", "state": {
+                "status": "completed",
+                "input": {"command": "printf 'one\\ntwo\\n'"},
+                "output": "one\ntwo\n",
+            }}})
+        line({"type": "step_finish", "part": {
+            "type": "step-finish", "reason": "tool-calls"}})
+        line({"type": "step_start", "part": {"type": "step-start"}})
+        line({"type": "text", "part": {
+            "type": "text", "text": "检查完成。"}})
+        line({"type": "step_finish", "part": {
+            "type": "step-finish", "reason": "stop"}})
+        return
     if "codex" in sys.argv:
         # 模仿 codex exec:过程日志全走 stderr(实测 0.144 分节格式),
         # stdout 只有最终回复
