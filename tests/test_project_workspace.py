@@ -698,6 +698,8 @@ def test_all_project_directories_are_assembled_for_chat(seeded, tmp_path):
     assert chat_cfg.timeout is None
     assert chat_cfg.allowed_dirs == [
         *shared, chat_workspace, guideline_view, skill_view, skill_root]
+    assert chat_cfg.runtime_policy.readable_paths == chat_cfg.allowed_dirs
+    assert chat_cfg.runtime_policy.writable_paths == chat_cfg.allowed_dirs
     assert all(path in chat_cfg.prompt for path in shared)
     assert chat_workspace in chat_cfg.prompt
 
@@ -756,10 +758,25 @@ def test_runtime_environment_syncs_pwd_and_scopes_opencode_external_dirs(tmp_pat
 
     config = json.loads(adapters._runtime_env(cfg, "opencode")["OPENCODE_CONFIG_CONTENT"])
     assert config["permission"]["bash"] == "ask"
+    assert config["permission"]["read"] == "allow"
+    assert config["permission"]["edit"] == "allow"
     rules = config["permission"]["external_directory"]
     assert rules["*"] == "deny"
     assert rules[f"{external.resolve()}/**"] == "allow"
     assert f"{workspace.resolve()}/**" not in rules
+
+
+def test_opencode_grants_read_write_for_workdir_without_external_dirs(tmp_path):
+    backend = Backend(id="oc", name="OpenCode", adapter="opencode")
+    cfg = ExecutionConfig(
+        task_id="t", stage_name="chat", backend=backend, prompt="work",
+        workdir=str(tmp_path), allowed_dirs=[str(tmp_path)],
+    )
+
+    config = json.loads(
+        adapters._runtime_env(cfg, "opencode")["OPENCODE_CONFIG_CONTENT"])
+    assert config["permission"] == {
+        "read": "allow", "edit": "allow", "external_directory": {}}
 
 
 # ---- 主控调度闭环:post_message / workdir / 布局保留 / 权限门 ----

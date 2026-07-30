@@ -624,9 +624,6 @@ def _runtime_env(cfg: ExecutionConfig, adapter_name: str) -> dict:
     if adapter_name != "opencode":
         return env
 
-    external = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
-    if not external:
-        return env
     config = {}
     try:
         parsed = json.loads(env.get("OPENCODE_CONFIG_CONTENT", "{}"))
@@ -636,7 +633,21 @@ def _runtime_env(cfg: ExecutionConfig, adapter_name: str) -> dict:
         # 无效的既有 inline 配置本就无法被 OpenCode 使用；本次生成最小有效配置。
         pass
     permission = config.get("permission")
-    permission = dict(permission) if isinstance(permission, dict) else {}
+    if isinstance(permission, dict):
+        permission = dict(permission)
+    elif isinstance(permission, str):
+        permission = {"*": permission}
+    else:
+        permission = {}
+
+    # MissionCrew 项目资源是受信任的读写工作区。OpenCode 自带的 *.env
+    # 读取询问规则会覆盖普通 read=allow；在无头模式下询问会被自动拒绝，
+    # 因此必须为已授权资源显式补上 read/edit 规则。外部路径仍由下方的
+    # external_directory 精确白名单约束。
+    permission.setdefault("read", "allow")
+    permission.setdefault("edit", "allow")
+
+    external = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
     current = permission.get("external_directory")
     if isinstance(current, dict):
         rules = dict(current)

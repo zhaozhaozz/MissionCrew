@@ -130,7 +130,7 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 - `{allowed_dirs}` — 当前项目全部本地资源目录与文档库；会展开为重复的 `--add-dir <path>`；
 - `{workdir}` — 本次主工作目录，用于需要显式工作根参数的 CLI。
 
-打印模板统一带各 CLI 的非交互参数，保证无头执行不阻塞在终端确认提示上。Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确规则并显式传入主工作目录，同时使用 `--format json --thinking`，把已完成的 reasoning block、工具调用/结果和步骤边界映射为运行过程事件。OpenCode CLI 不提供这些内容的逐 token delta，因此这里显示的是阶段级进度。Cursor print 模式带 `--force`。Claude/Codex 始终使用各自的原生双向 provider。诊断输出尾部落盘到独立 harness 工作区 `.missioncrew/runtime/last-output-<adapter>.log` 便于回查，不在业务代码仓生成日志；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
+打印模板统一带各 CLI 的非交互参数，保证无头执行不阻塞在终端确认提示上。Copilot、CodeBuddy 会逐个传入额外目录；OpenCode 通过 `OPENCODE_CONFIG_CONTENT.permission.external_directory` 注入精确目录规则，并为 MissionCrew 已授权的项目资源显式设置 `read` / `edit` 为 `allow`，避免其内置的 `.env` 读取询问在无头模式下被自动拒绝。OpenCode 同时显式接收主工作目录，并使用 `--format json --thinking`，把已完成的 reasoning block、工具调用/结果和步骤边界映射为运行过程事件。OpenCode CLI 不提供这些内容的逐 token delta，因此这里显示的是阶段级进度。Cursor print 模式带 `--force`。Claude/Codex 始终使用各自的原生双向 provider。诊断输出尾部落盘到独立 harness 工作区 `.missioncrew/runtime/last-output-<adapter>.log` 便于回查，不在业务代码仓生成日志；频道消息保存 Runtime 返回的完整最终回复，超长内容只在 Web 端视觉折叠。
 
 ### ACP stdio(`AcpAdapter`,Grok / kimi / kiro / qoder / trae)
 
