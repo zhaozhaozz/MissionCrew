@@ -522,6 +522,8 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
     assert "refreshRuntimeIndicators" in js
     assert '["starting", "running"].includes(instance.state)' in js
     assert "function pollRuntimeStatus() {\n  renderRuntimeStatus();" in js
+    assert "if (force) refreshes.push(renderRuntimeUsage(true));" in js
+    assert "renderRuntimeUsage(force)" not in js
     assert 'data-runtime-role="${esc(r.id)}"' in router
     assert "Claude stream-json" in js and "Codex app-server" in js
     assert "ACP stdio" in js and "命令行执行" in js

@@ -272,10 +272,10 @@ async function renderRuntimeStatus(force = false) {
     refreshRuntimeIndicators(data);
     if (currentTab === "runtime-status" || force) {
       renderRuntimeStatusPayload(data);
-      await Promise.all([
-        renderRuntimeHistory(force),
-        renderRuntimeUsage(force),
-      ]);
+      const refreshes = [renderRuntimeHistory(force)];
+      // 账户限额只在进入页面或手动刷新时读取，不跟随 10 秒状态轮询。
+      if (force) refreshes.push(renderRuntimeUsage(true));
+      await Promise.all(refreshes);
     }
   } catch (_) {
     const updated = document.getElementById("runtime-status-updated");
