@@ -6,6 +6,7 @@ from missioncrew.core import seed as seed_mod
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.core.models import Backend, Project, Role
 from missioncrew.api import create_app
+from missioncrew.runtime import runtime_manager
 
 
 # ---- 角色元数据 + 固定执行组合 ----
@@ -499,7 +500,8 @@ def test_global_settings_exposes_new_project_role_templates(client):
     assert "editGlobalRoleTemplate" in js
 
 
-def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, seeded):
+def test_system_runtime_status_page_and_api_cover_all_instance_modes(
+        client, seeded, monkeypatch):
     data = client.get("/api/runtime/status").json()
     assert {row["id"] for row in data["backends"]} == {
         backend.id for backend in seeded.list_backends()}
@@ -512,14 +514,29 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(client, see
     assert 'id="nav-runtime-status"' in html
     assert 'id="runtime-running-count"' in html
     assert 'id="runtime-status-view"' in html
+    assert 'id="runtime-usage-cards"' in html
     assert '"runtime-status"' in router
     assert "/api/runtime/status" in js
+    assert "/api/runtime/usage" in js
+    assert "runtimeUsageCard" in js
     assert "refreshRuntimeIndicators" in js
     assert '["starting", "running"].includes(instance.state)' in js
     assert "function pollRuntimeStatus() {\n  renderRuntimeStatus();" in js
     assert 'data-runtime-role="${esc(r.id)}"' in router
     assert "Claude stream-json" in js and "Codex app-server" in js
     assert "ACP stdio" in js and "命令行执行" in js
+    monkeypatch.setattr(runtime_manager, "account_usage", lambda backends, refresh=False: {
+        "generated_at": 1,
+        "cache_ttl_seconds": 60,
+        "summary": {"supported": 1, "available": 1, "unavailable": 0},
+        "usage": [{
+            "backend_id": "codex", "backend_name": "Codex", "adapter": "codex",
+            "status": "ok", "source": "codex_app_server", "fetched_at": 1,
+            "plan": "pro", "windows": [], "metrics": [], "message": "",
+        }],
+    })
+    account_usage = client.get("/api/runtime/usage?refresh=true").json()
+    assert account_usage["summary"]["available"] == 1
     usage_id = seeded.start_runtime_usage(
         backend_id="codex", adapter="codex", mode="persistent",
         transport="codex-app-server", task_id="chat:42", stage_name="chat",

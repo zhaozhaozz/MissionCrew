@@ -73,3 +73,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             "generated_at": time.time(),
             "history": store.list_runtime_usage(limit, backend_id),
         }
+
+    @app.get("/api/runtime/usage")
+    def runtime_account_usage(refresh: bool = False):
+        """读取本机已登录 Runtime 账户的限额窗口；凭据不会离开服务进程。"""
+        return runtime_manager.account_usage(
+            store.list_backends(), refresh=refresh)

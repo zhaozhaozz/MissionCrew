@@ -11,7 +11,8 @@ from typing import Optional
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
-                   RuntimeProvider)
+                   RuntimeProvider, RuntimeUsageMetric, RuntimeUsageSnapshot,
+                   RuntimeUsageWindow)
 from .native import (JsonLineProcess, RuntimeProtocolError, emit_json,
                      safe_emit)
 
@@ -25,6 +26,82 @@ def _unique_paths(paths: list[str]) -> list[str]:
         if value not in found:
             found.append(value)
     return found
+
+
+def _codex_usage_window(
+        key: str, label_prefix: str, payload: dict) -> RuntimeUsageWindow | None:
+    try:
+        used = round(max(0.0, min(100.0, float(payload["usedPercent"]))), 2)
+    except (KeyError, TypeError, ValueError):
+        return None
+    try:
+        duration = int(payload.get("windowDurationMins"))
+    except (TypeError, ValueError):
+        duration = None
+    label = (
+        "5 小时" if duration == 300 else
+        "本周" if duration == 10080 else
+        f"{duration} 分钟" if duration else "当前周期"
+    )
+    if label_prefix:
+        label = f"{label} · {label_prefix}"
+    try:
+        resets_at = float(payload.get("resetsAt"))
+    except (TypeError, ValueError):
+        resets_at = None
+    return RuntimeUsageWindow(
+        key=key, label=label, used_percent=used,
+        resets_at=resets_at, duration_minutes=duration)
+
+
+def parse_codex_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
+    """把 Codex app-server 的多限额桶规范化为统一账户快照。"""
+    windows: list[RuntimeUsageWindow] = []
+    by_limit_id = payload.get("rateLimitsByLimitId")
+    if isinstance(by_limit_id, dict) and by_limit_id:
+        groups = sorted(
+            ((str(limit_id), snapshot)
+             for limit_id, snapshot in by_limit_id.items()),
+            key=lambda item: (item[0].lower() != "codex", item[0].lower()),
+        )
+    else:
+        groups = [("", payload.get("rateLimits") or payload)]
+    for limit_id, snapshot in groups:
+        if not isinstance(snapshot, dict):
+            continue
+        display_id = limit_id.replace("_", " ").replace("-", " ").title()
+        for bucket_name, bucket in (
+            ("primary", snapshot.get("primary")),
+            ("secondary", snapshot.get("secondary")),
+        ):
+            if not isinstance(bucket, dict):
+                continue
+            window = _codex_usage_window(
+                f"{limit_id or 'default'}-{bucket_name}",
+                display_id, bucket)
+            if window:
+                windows.append(window)
+
+    rate_limits = payload.get("rateLimits")
+    rate_limits = rate_limits if isinstance(rate_limits, dict) else {}
+    plan = str(payload.get("planType") or rate_limits.get("planType") or "")
+    credits = payload.get("credits")
+    credits = credits if isinstance(credits, dict) else rate_limits.get("credits")
+    metrics: list[RuntimeUsageMetric] = []
+    if isinstance(credits, dict):
+        balance = credits.get("balance")
+        if credits.get("hasCredits") and balance is not None:
+            metrics.append(RuntimeUsageMetric("Credits 余额", str(balance)))
+        if credits.get("unlimited"):
+            metrics.append(RuntimeUsageMetric("Credits", "不限"))
+    return RuntimeUsageSnapshot(
+        backend_id=backend.id, backend_name=backend.name,
+        adapter=backend.adapter,
+        status="ok" if windows else "unavailable",
+        source="codex_app_server", plan=plan,
+        windows=tuple(windows), metrics=tuple(metrics),
+        message="" if windows else "Codex 未返回可识别的限额窗口",
+    )
 
 
 def _approval_policy(config: ExecutionConfig) -> str:
@@ -535,7 +612,8 @@ class CodexRuntimeProvider(RuntimeProvider):
     def capabilities(self, backend: Backend) -> RuntimeCapabilities:
         return RuntimeCapabilities(
             session_reuse=True, structured_events=True,
-            user_interaction=True, permission_control=True, interrupt=True)
+            user_interaction=True, permission_control=True, interrupt=True,
+            account_usage=True)
 
     def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
         return RuntimeExecutionInfo(
@@ -585,6 +663,37 @@ class CodexRuntimeProvider(RuntimeProvider):
                     return models
         except Exception:
             return self.fallback.list_models(backend, timeout)
+        finally:
+            client.close()
+
+    def account_usage(self, backend: Backend,
+                      timeout: int = 15) -> RuntimeUsageSnapshot:
+        client = JsonLineProcess(
+            self._command(backend), cwd=str(Path.cwd()), env=dict(os.environ),
+            notification_handler=lambda _method, _params: None,
+            request_handler=lambda _method, _params: {},
+        )
+        try:
+            client.connect()
+            client.request("initialize", {
+                "clientInfo": {
+                    "name": "missioncrew", "title": "MissionCrew",
+                    "version": "0.2.0",
+                },
+                "capabilities": {"experimentalApi": True},
+            }, timeout=min(timeout, 30))
+            client.notify("initialized")
+            result = client.request(
+                "account/rateLimits/read", {}, timeout=min(timeout, 30))
+            return parse_codex_usage(
+                backend, result if isinstance(result, dict) else {})
+        except Exception:
+            return RuntimeUsageSnapshot(
+                backend_id=backend.id, backend_name=backend.name,
+                adapter=backend.adapter, status="unavailable",
+                source="codex_app_server",
+                message="Codex app-server 限额接口暂时不可用",
+            )
         finally:
             client.close()
 

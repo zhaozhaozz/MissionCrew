@@ -106,6 +106,19 @@ def test_native_provider_reuses_process_and_session(
         provider.shutdown()
 
 
+def test_codex_provider_reads_account_rate_limits_from_app_server():
+    provider = CodexRuntimeProvider(_Fallback(), _fake_command("codex"))
+    try:
+        snapshot = provider.account_usage(
+            Backend(id="codex", name="Codex", adapter="codex"))
+        assert snapshot.status == "ok" and snapshot.plan == "test-plan"
+        assert [(window.label, window.used_percent) for window in snapshot.windows] == [
+            ("5 小时 · Codex", 42), ("本周 · Codex", 18)]
+        assert snapshot.metrics[0].value == "12"
+    finally:
+        provider.shutdown()
+
+
 @pytest.mark.parametrize("adapter,provider_cls", [
     ("claude_code", ClaudeRuntimeProvider),
     ("codex", CodexRuntimeProvider),

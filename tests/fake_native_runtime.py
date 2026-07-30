@@ -84,6 +84,25 @@ def run_codex() -> None:
                 "data": [{"id": "gpt-test", "model": "gpt-test", "hidden": False}],
                 "nextCursor": None,
             }})
+        elif method == "account/rateLimits/read":
+            send({"id": request_id, "result": {
+                "planType": "test-plan",
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "primary": {
+                            "usedPercent": 42,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1893456000,
+                        },
+                        "secondary": {
+                            "usedPercent": 18,
+                            "windowDurationMins": 10080,
+                            "resetsAt": 1893974400,
+                        },
+                    },
+                },
+                "credits": {"hasCredits": True, "balance": 12},
+            }})
         elif method == "turn/start":
             turn_number += 1
             turn_id = f"turn-{turn_number}"

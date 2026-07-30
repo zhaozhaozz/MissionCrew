@@ -13,8 +13,9 @@ from typing import Optional
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
-                   RuntimeProvider)
+                   RuntimeProvider, RuntimeUsageSnapshot)
 from .native import RuntimeProtocolError, emit_json, safe_emit
+from .usage import probe_claude_usage
 
 
 _QUESTION_TOOLS = {
@@ -810,7 +811,8 @@ class ClaudeRuntimeProvider(RuntimeProvider):
     def capabilities(self, backend: Backend) -> RuntimeCapabilities:
         return RuntimeCapabilities(
             session_reuse=True, structured_events=True,
-            user_interaction=True, permission_control=True, interrupt=True)
+            user_interaction=True, permission_control=True, interrupt=True,
+            account_usage=True)
 
     def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
         return RuntimeExecutionInfo(
@@ -835,6 +837,10 @@ class ClaudeRuntimeProvider(RuntimeProvider):
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return self.fallback.list_models(backend, timeout)
+
+    def account_usage(self, backend: Backend,
+                      timeout: int = 15) -> RuntimeUsageSnapshot:
+        return probe_claude_usage(backend, self._command(backend), timeout)
 
     def instances(self, backend: Backend) -> list[RuntimeInstance]:
         with self._guard:

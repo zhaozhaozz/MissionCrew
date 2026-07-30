@@ -613,9 +613,80 @@
   .runtime-path { display: block; max-width: 300px; overflow: hidden; text-overflow: ellipsis;
                   white-space: nowrap; }
   .runtime-empty { text-align: center; padding: 28px 12px !important; }
+  .runtime-section-head { display: flex; align-items: flex-start; justify-content: space-between;
+                          gap: 16px; margin-bottom: 12px; }
+  .runtime-section-head h2 { margin: 0 0 3px; font-size: 14.5px; }
+  .runtime-section-head p { margin: 0; max-width: 820px; }
+  .runtime-section-head > span { flex: none; padding-top: 2px; }
+  .runtime-usage-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr));
+                        gap: 14px; }
+  .runtime-usage-loading { grid-column: 1 / -1; padding: 34px 18px; text-align: center;
+                           color: var(--muted); border: 1px dashed var(--line-strong);
+                           border-radius: 12px; background: var(--bg-soft); }
+  .runtime-usage-card { --runtime-color: var(--accent); position: relative; overflow: hidden;
+                        display: flex; flex-direction: column; gap: 15px; min-height: 190px;
+                        padding: 16px 17px; border: 1px solid var(--line); border-radius: 13px;
+                        background: var(--card); box-shadow: var(--shadow-sm); }
+  .runtime-usage-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
+                                background: var(--runtime-color); }
+  .runtime-usage-card.adapter-claude_code { --runtime-color: #d97757; }
+  .runtime-usage-card.adapter-codex { --runtime-color: #10a37f; }
+  .runtime-usage-card.adapter-kimi { --runtime-color: #5d70f4; }
+  .runtime-usage-card.adapter-grok_build { --runtime-color: #7c8799; }
+  .runtime-usage-card > header { display: flex; justify-content: space-between; align-items: center;
+                                 gap: 12px; }
+  .runtime-usage-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .runtime-usage-mark { display: grid; place-items: center; width: 34px; height: 34px; flex: none;
+                        border-radius: 10px; color: var(--runtime-color); font-size: 15px;
+                        font-weight: 750; background: color-mix(in srgb, var(--runtime-color) 12%, var(--card));
+                        border: 1px solid color-mix(in srgb, var(--runtime-color) 25%, var(--line)); }
+  .runtime-usage-identity h3 { margin: 0; font-size: 14.5px; }
+  .runtime-usage-identity small { color: var(--muted); }
+  .runtime-usage-meta { display: flex; align-items: center; justify-content: flex-end;
+                        gap: 6px; flex-wrap: wrap; }
+  .runtime-usage-plan { max-width: 130px; overflow: hidden; text-overflow: ellipsis;
+                        padding: 2px 7px; border-radius: 999px; color: var(--text);
+                        background: var(--bg-soft); font-size: 10.5px; white-space: nowrap; }
+  .runtime-usage-status { display: inline-flex; align-items: center; gap: 5px;
+                          color: var(--muted); font-size: 10.5px; white-space: nowrap; }
+  .runtime-usage-status i { width: 6px; height: 6px; border-radius: 50%;
+                            background: currentColor; }
+  .runtime-usage-status.ok { color: var(--ok); }
+  .runtime-usage-status.auth_required, .runtime-usage-status.unavailable { color: var(--warn); }
+  .runtime-usage-status.disabled { color: var(--bad); }
+  .runtime-usage-windows { display: grid; gap: 12px; }
+  .runtime-usage-window { display: grid; gap: 6px; }
+  .runtime-usage-window-head, .runtime-usage-window-foot {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  }
+  .runtime-usage-window-head { font-size: 12px; }
+  .runtime-usage-window-head strong { font-size: 13px; }
+  .runtime-usage-window-foot { color: var(--muted); font-size: 10.5px; }
+  .runtime-usage-track { height: 7px; overflow: hidden; border-radius: 999px;
+                         background: var(--bg-soft); border: 1px solid var(--line); }
+  .runtime-usage-track i { display: block; height: 100%; border-radius: inherit;
+                           background: var(--ok); transition: width .35s ease; }
+  .runtime-usage-window.warning .runtime-usage-track i { background: var(--warn); }
+  .runtime-usage-window.critical .runtime-usage-track i { background: var(--bad); }
+  .runtime-usage-window.warning .runtime-usage-window-head strong { color: var(--warn); }
+  .runtime-usage-window.critical .runtime-usage-window-head strong { color: var(--bad); }
+  .runtime-usage-empty { flex: 1; display: flex; align-items: center; justify-content: center;
+                         gap: 8px; min-height: 70px; padding: 12px; color: var(--muted);
+                         text-align: center; border: 1px dashed var(--line);
+                         border-radius: 9px; background: var(--bg-soft); font-size: 12px; }
+  .runtime-usage-empty i { width: 7px; height: 7px; flex: none; border-radius: 50%;
+                           background: var(--warn); }
+  .runtime-usage-metrics { display: flex; gap: 7px; flex-wrap: wrap; margin-top: auto; }
+  .runtime-usage-metrics > span { display: inline-flex; align-items: baseline; gap: 5px;
+                                  padding: 4px 8px; border-radius: 7px;
+                                  background: var(--bg-soft); }
+  .runtime-usage-metrics small { color: var(--muted); }
+  .runtime-usage-metrics b { font-size: 11.5px; }
   @media (max-width: 900px) {
     .runtime-status-cards { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
     .runtime-status-head { flex-direction: column; }
+    .runtime-usage-grid { grid-template-columns: 1fr; }
+    .runtime-section-head { flex-direction: column; }
   }
   .content-topbar-actions { flex: 0 1 auto; display: flex;
                             justify-content: flex-end; flex-wrap: wrap; gap: 6px; }

@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import asdict, dataclass
+import time
+from dataclasses import asdict, dataclass, field
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 
@@ -22,6 +23,7 @@ class RuntimeCapabilities:
     user_interaction: bool = False
     permission_control: bool = False
     interrupt: bool = False
+    account_usage: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -62,6 +64,55 @@ class RuntimeExecutionInfo:
     transport: str = "runtime"   # 原生协议、ACP stdio 或 CLI 命令
 
 
+@dataclass(frozen=True)
+class RuntimeUsageWindow:
+    """一个可比较的账户限额时间窗口。"""
+
+    key: str
+    label: str
+    used_percent: float
+    resets_at: float | None = None
+    duration_minutes: int | None = None
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["remaining_percent"] = round(max(0.0, 100.0 - self.used_percent), 2)
+        return data
+
+
+@dataclass(frozen=True)
+class RuntimeUsageMetric:
+    """限额卡片上的补充账户指标，不包含凭据或身份信息。"""
+
+    label: str
+    value: str
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RuntimeUsageSnapshot:
+    """一个 Runtime 账户当前限额的统一、安全快照。"""
+
+    backend_id: str
+    backend_name: str
+    adapter: str
+    status: str
+    source: str
+    fetched_at: float = field(default_factory=time.time)
+    plan: str = ""
+    windows: tuple[RuntimeUsageWindow, ...] = ()
+    metrics: tuple[RuntimeUsageMetric, ...] = ()
+    message: str = ""
+
+    def to_dict(self) -> dict:
+        data = asdict(self)
+        data["windows"] = [window.to_dict() for window in self.windows]
+        data["metrics"] = [metric.to_dict() for metric in self.metrics]
+        return data
+
+
 class RuntimeProvider(ABC):
     """Runtime provider 契约；后端原生协议只在此边界之后可见。"""
 
@@ -95,3 +146,12 @@ class RuntimeProvider(ABC):
     def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
         """描述本次调用的形态，供统一使用历史记录；provider 可覆盖。"""
         return RuntimeExecutionInfo()
+
+    def account_usage(self, backend: Backend,
+                      timeout: int = 15) -> RuntimeUsageSnapshot:
+        """读取 Runtime 账户限额；默认明确声明不支持。"""
+        return RuntimeUsageSnapshot(
+            backend_id=backend.id, backend_name=backend.name,
+            adapter=backend.adapter, status="unsupported",
+            source="unsupported", message="该 Runtime 暂不支持账户限额读取",
+        )

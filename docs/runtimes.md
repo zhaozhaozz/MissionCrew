@@ -37,6 +37,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `supports_session()` / `capabilities()`：查询实际会话复用和生命周期能力，聊天层不再猜测后端类型。
 - 原生 provider 还声明 `structured_events`、`user_interaction`、`permission_control` 和 `interrupt`，前端只按能力呈现操作，不判断 Claude/Codex 名称。
 - `list_models()`、`effort_options()`：统一模型和推理力度管理。
+- `account_usage()`：读取本机已登录账户的限额窗口；provider 只返回统一快照，不暴露凭据或上游原始响应。
 - `detect_report()`、`detect_backends()`、`update()`、`refresh_installation()`：统一发现、注册、升级和版本探测。
 - `register(adapter, provider)`：为新 Runtime 或插件注册实现，不修改聊天、任务、API 或 CLI 调用链。
 
@@ -56,6 +57,25 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `one_shot`：打印模式和无 session key 的 ACP 调用。子进程存在时显示 `running`，退出后立即从状态页移除。
 
 每个实例统一提供 backend、adapter、transport、PID、session key、原生 session/thread id、项目、角色、模型、工作目录、启动时间和最近活动时间。打印模式通过活动进程注册表上报；ACP 同时上报长驻池与一次性 client；Claude/Codex 原生 provider 直接上报其会话对象。页面的后端概览始终列出全部已注册 Runtime，即使当前没有进程，也会明确显示未运行或已停用。
+
+### 账户用量与限额
+
+运行状态页顶部的「账户用量」来自 `GET /api/runtime/usage`，目前支持 Codex、Claude、Kimi 和 Grok。这里的“用量”是本机 CLI 当前登录账户的订阅或信用额度窗口，不是 MissionCrew 自己估算的调用成本，也不是下方 SQLite 中的调用历史。所有 provider 都把原始结果转换为 `RuntimeUsageSnapshot`：每个窗口只包含名称、已用百分比、剩余百分比、窗口时长和重置时间，另可附带套餐名与余额、并发上限等非敏感指标。页面据此统一绘制进度条，不解析任何厂商字段。
+
+`RuntimeManager.account_usage()` 并行探测支持该能力的 Runtime，并在服务内按 backend 缓存 60 秒。页面的 10 秒常规轮询会命中缓存；点击“立即刷新”时请求 `GET /api/runtime/usage?refresh=true`，强制重新读取。探测失败只让对应卡片显示“需要登录”或“暂不可用”，不会影响运行状态、聊天执行或其他 Runtime 的限额。限额快照只保存在内存，不写入 SQLite；API 不返回 access token、refresh token、用户标识、凭据路径或上游错误正文。
+
+四种 Runtime 的读取机制如下：
+
+| Runtime | 限额来源 | 本机登录态与刷新 | 统一字段映射 |
+|---|---|---|---|
+| Codex | 启动已安装的 `codex app-server`，以 `capabilities.experimentalApi=true` 完成 `initialize/initialized`，再调用官方 `account/rateLimits/read` | app-server 自己读取 Codex CLI 当前账户；MissionCrew 不直接读取 Codex 凭据 | `rateLimitsByLimitId` 下每个 limit id 的 `primary` / `secondary` 桶映射为独立窗口；读取 `usedPercent`、`windowDurationMins`、`resetsAt`，并显示 `planType` 与非敏感 credits 余额。协议字段见 [Codex App Server 文档](https://developers.openai.com/codex/app-server/) |
+| Claude | 执行 `claude -p "/usage" --output-format json`，只解析 JSON `result` 中形如 `Current week …: 53% used · resets …` 的 `/usage` 文本 | Claude Code 命令自己使用当前登录态；该命令不启动模型推理。MissionCrew 不读取 Claude 凭据 | `Current session` 映射为 5 小时窗口，`Current week (all models)` 与模型专项周限额映射为周窗口。重置时间可能省略年份或分钟，解析时补当前年份并处理跨年 |
+| Kimi | 对 Kimi managed provider 的 `${base_url}/usages` 发起只读 GET；默认 `base_url=https://api.kimi.com/coding/v1`，支持 `KIMI_CODE_BASE_URL` 与 `~/.kimi-code/config.toml` 的 `providers."managed:kimi-code".base_url` | 默认从 `$KIMI_CODE_HOME/credentials/kimi-code.json`（未设置时 `$KIMI_CODE_HOME=~/.kimi-code`）读取 OAuth token；只接受无 group/other 权限的凭据文件。access token 过期时，按 Kimi CLI 相同的 `~/.kimi-code/oauth/kimi-code.lock` 跨进程锁约定，通过 `$KIMI_CODE_OAUTH_HOST/api/oauth/token` 刷新并以 `0600` 原子替换凭据，避免 refresh token 轮换竞争 | 顶层 `usage` 映射为周限额，`limits[].detail` 映射为短窗口；用 `limit`、`used` 或 `remaining` 计算百分比，用 `window.duration/timeUnit` 识别 5 小时等窗口，读取 `resetTime`。可显示 membership level、并发上限和 Booster 余额 |
+| Grok | 使用 Grok CLI 当前的 chat proxy base URL，请求 `${GROK_CLI_CHAT_PROXY_BASE_URL:-https://cli-chat-proxy.grok.com/v1}/billing?format=credits`，请求头带 `x-grok-client-mode: grok-build` | 从 `${GROK_AUTH_FILE:-~/.grok/auth.json}` 选择未过期的 Bearer token；只接受无 group/other 权限的凭据文件。401 时执行不推理的 `grok models`，让 Grok CLI 按自身流程刷新登录态，再重新读取一次 | `config.creditUsagePercent` 和 `config.currentPeriod` 映射为当前额度窗口；显示 prepaid balance、on-demand used/cap 与 `productUsage` 分布 |
+
+Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构化契约。Claude 官方提供 `/usage`，但当前 CLI 只通过人类可读文本返回，因此解析器对文案变化采用“无法识别即暂不可用”，不会猜测百分比。Kimi 的 `/usages` 与 OAuth 协议来自 CLI 自带 managed-provider 实现。Grok 的 billing 路径由 Grok CLI 内部使用，并不是 ACP v1 的公开方法；上游若变更路径或响应结构，对应卡片会安全降级，聊天 Runtime 仍可继续工作。
+
+凭据读取遵循最小权限：只读当前服务用户的 CLI 登录文件，只把 token 放进目标域名的 `Authorization` 请求头；不会写日志、进入异常消息、返回前端或持久化到数据库。Kimi OAuth 刷新是唯一会直接更新凭据文件的路径，更新采用同目录临时文件、`fsync`、原子替换和 `0600` 权限；Grok 刷新完全委托给 `grok models`。若凭据不存在、JSON 损坏或权限比 `0600` 更宽，MissionCrew 不使用它，并提示需要登录。
 
 页面下方的「使用历史」来自独立的 `GET /api/runtime/history`，记录的是每次 `RuntimeManager.start()` 调用，而不是进程实例生命周期。`RuntimeProvider.execution_info()` 声明该次调用的 `persistent` / `one_shot` 形态与 transport；统一管理器在调用 provider 前写入 `running`，返回后更新为 `succeeded` 或 `failed`。记录包含 Runtime、项目、角色、session key、模型、effort、工作目录、起止时间和耗时，保存在平台 SQLite 中，因此服务重启后仍保留。
 
@@ -218,9 +238,9 @@ effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 
 
 ## 接入新工具
 
-1. 实现 `RuntimeProvider` 的 `start`、`stop`、`capabilities` 和 `list_models`，通过 `runtime_manager.register(adapter, provider)` 注册。长驻 provider 还应实现 `shutdown`。业务层不增加 adapter 条件分支。
+1. 实现 `RuntimeProvider` 的 `start`、`stop`、`capabilities` 和 `list_models`，通过 `runtime_manager.register(adapter, provider)` 注册。长驻 provider 还应实现 `shutdown`。若支持账户限额，令 `capabilities().account_usage=true` 并实现 `account_usage()`；provider 必须返回统一快照，不得把凭据、用户身份或上游错误正文放进 `message`。业务层不增加 adapter 条件分支。
 2. 如果复用内置打印模式或 ACP executor，只在 Runtime 包内部补充命令模板、会话参数和权限翻译；原始 executor 不对主程序导出。
 3. 在 Runtime manager 内补充二进制发现、模型目录和升级策略；模型、effort 与 capability 均通过统一查询接口暴露。
 4. 双向协议统一通过 `ExecutionConfig.emit` 输出过程事件，通过 `ExecutionConfig.interact` 请求权限或用户输入；provider 不得直接依赖 Store、FastAPI 或 Web 数据结构。
-5. 为 provider 增加契约测试，并保留“`missioncrew/runtime` 之外不得导入原始执行器”的架构边界测试。测试使用确定性协议进程，不能依赖真实模型额度。
+5. 为 provider 增加契约测试，并保留“`missioncrew/runtime` 之外不得导入原始执行器”的架构边界测试。账户限额测试使用脱敏 fixture 和确定性协议进程，不能依赖真实账号或实时额度。
 6. Runtime 启动命令属于 provider 实现，不进入 Backend 数据模型；新增工具时同时实现固定命令、权限翻译、会话复用和对应测试。

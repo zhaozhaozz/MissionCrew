@@ -7,14 +7,16 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Optional
 
 from . import adapters as _executors
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
-                   RuntimeProvider)
+                   RuntimeProvider, RuntimeUsageSnapshot)
 from ..core.models import Backend, ExecutionConfig, RunResult
 
 
@@ -36,6 +38,7 @@ class _BuiltinProvider(RuntimeProvider):
             session_reuse=_executors.supports_native_session(backend),
             structured_events=is_acp,
             permission_control=is_acp,
+            account_usage=backend.adapter in {"kimi", "grok_build"},
         )
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
@@ -56,13 +59,27 @@ class _BuiltinProvider(RuntimeProvider):
             )
         return RuntimeExecutionInfo(mode="one_shot", transport="cli-command")
 
+    def account_usage(self, backend: Backend,
+                      timeout: int = 15) -> RuntimeUsageSnapshot:
+        from .usage import probe_grok_usage, probe_kimi_usage
+        if backend.adapter == "kimi":
+            return probe_kimi_usage(backend, timeout)
+        if backend.adapter == "grok_build":
+            return probe_grok_usage(
+                backend, [backend.binary_path or "grok"], timeout)
+        return super().account_usage(backend, timeout)
+
 
 class RuntimeManager:
     """主程序唯一可见的 Runtime 控制面。"""
 
+    ACCOUNT_USAGE_CACHE_TTL = 60
+
     def __init__(self):
         self._providers: dict[str, RuntimeProvider] = {}
         self._usage_store = None
+        self._account_usage_cache: dict[str, tuple[float, RuntimeUsageSnapshot]] = {}
+        self._account_usage_guard = threading.Lock()
         self._builtin = _BuiltinProvider()
         # 延迟导入避免 provider 与 manager 初始化互相依赖。业务层只会看到
         # RuntimeManager，Claude/Codex 原生协议类不会越过 runtime 包边界。
@@ -175,6 +192,8 @@ class RuntimeManager:
             provider.shutdown()
         _executors.close_active_executions()
         _executors.acp.close_sessions()
+        with self._account_usage_guard:
+            self._account_usage_cache.clear()
 
     def capabilities(self, backend: Backend) -> RuntimeCapabilities:
         return self.provider_for(backend).capabilities(backend)
@@ -239,6 +258,68 @@ class RuntimeManager:
             },
             "backends": backend_rows,
             "instances": [instance.to_dict() for instance in all_instances],
+        }
+
+    def _read_account_usage(
+            self, backend: Backend, refresh: bool,
+            timeout: int) -> RuntimeUsageSnapshot:
+        now = time.time()
+        with self._account_usage_guard:
+            cached = self._account_usage_cache.get(backend.id)
+            if (cached and not refresh
+                    and cached[1].adapter == backend.adapter
+                    and now - cached[0] < self.ACCOUNT_USAGE_CACHE_TTL):
+                return cached[1]
+        if not backend.enabled:
+            snapshot = RuntimeUsageSnapshot(
+                backend_id=backend.id, backend_name=backend.name,
+                adapter=backend.adapter, status="disabled", source="disabled",
+                message="该 Runtime 已停用",
+            )
+        else:
+            provider = self.provider_for(backend)
+            try:
+                snapshot = provider.account_usage(backend, timeout)
+            except Exception:
+                snapshot = RuntimeUsageSnapshot(
+                    backend_id=backend.id, backend_name=backend.name,
+                    adapter=backend.adapter, status="unavailable",
+                    source="runtime_provider",
+                    message="账户限额探测暂时不可用",
+                )
+        with self._account_usage_guard:
+            self._account_usage_cache[backend.id] = (time.time(), snapshot)
+        return snapshot
+
+    def account_usage(
+            self, backends: list[Backend], refresh: bool = False,
+            timeout: int = 15) -> dict:
+        """并行读取已支持 Runtime 的账户限额并返回统一快照。"""
+        supported = [
+            backend for backend in backends
+            if self.capabilities(backend).account_usage
+        ]
+        if supported:
+            with ThreadPoolExecutor(max_workers=min(4, len(supported))) as executor:
+                snapshots = list(executor.map(
+                    lambda backend: self._read_account_usage(
+                        backend, refresh, timeout),
+                    supported,
+                ))
+        else:
+            snapshots = []
+        status_counts: dict[str, int] = {}
+        for snapshot in snapshots:
+            status_counts[snapshot.status] = status_counts.get(snapshot.status, 0) + 1
+        return {
+            "generated_at": time.time(),
+            "cache_ttl_seconds": self.ACCOUNT_USAGE_CACHE_TTL,
+            "summary": {
+                "supported": len(snapshots),
+                "available": status_counts.get("ok", 0),
+                "unavailable": len(snapshots) - status_counts.get("ok", 0),
+            },
+            "usage": [snapshot.to_dict() for snapshot in snapshots],
         }
 
     def effort_options(self, backend: Backend) -> list[str]:

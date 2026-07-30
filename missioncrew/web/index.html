@@ -295,6 +295,18 @@
         </div>
       </div>
       <div class="runtime-status-cards" id="runtime-status-cards"></div>
+      <div class="section runtime-usage-section">
+        <div class="runtime-section-head">
+          <div>
+            <h2>账户用量 <span class="count" id="runtime-usage-count"></span></h2>
+            <p class="muted">读取本机已登录的 Codex、Claude、Kimi 与 Grok 账户限额；常规轮询复用短时缓存，点击“立即刷新”会重新读取。</p>
+          </div>
+          <span class="muted" id="runtime-usage-updated">尚未读取</span>
+        </div>
+        <div class="runtime-usage-grid" id="runtime-usage-cards">
+          <div class="runtime-usage-loading">正在读取账户限额…</div>
+        </div>
+      </div>
       <div class="section">
         <h2>后端概览</h2>
         <div class="runtime-table-wrap"><table class="mgr" id="runtime-status-backends"></table></div>

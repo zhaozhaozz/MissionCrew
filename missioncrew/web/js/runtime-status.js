@@ -1,6 +1,7 @@
 /* ---- 系统全局 Runtime 实时状态 ---- */
 let runtimeStatusLoading = false;
 let runtimeHistoryLoadedAt = 0;
+let runtimeUsageLoadedAt = 0;
 let runtimeStatusSnapshot = null;
 
 const RUNTIME_STATE_LABELS = {
@@ -13,6 +14,16 @@ const RUNTIME_TRANSPORT_LABELS = {
   "codex-app-server": "Codex app-server",
   "acp-stdio": "ACP stdio",
   "cli-command": "命令行执行",
+};
+const RUNTIME_USAGE_STATUS_LABELS = {
+  ok: "已连接", unavailable: "暂不可用", auth_required: "需要登录",
+  disabled: "已停用", unsupported: "不支持",
+};
+const RUNTIME_USAGE_SOURCE_LABELS = {
+  codex_app_server: "Codex app-server",
+  claude_usage_command: "Claude /usage",
+  kimi_usage_api: "Kimi usage API",
+  grok_billing_api: "Grok billing API",
 };
 
 function runtimeStateBadge(state) {
@@ -143,12 +154,112 @@ function renderRuntimeHistoryPayload(data) {
       `<tr><td colspan="8" class="empty runtime-empty">尚无 Runtime 使用记录。</td></tr>`);
 }
 
+function runtimeUsageReset(timestamp, generatedAt) {
+  if (!timestamp) return "重置时间未知";
+  const seconds = Math.max(0, Math.round(timestamp - generatedAt));
+  const absolute = new Date(timestamp * 1000).toLocaleString();
+  if (seconds === 0) return `<span title="${esc(absolute)}">即将重置</span>`;
+  if (seconds < 3600) {
+    return `<span title="${esc(absolute)}">${Math.max(1, Math.ceil(seconds / 60))} 分钟后重置</span>`;
+  }
+  if (seconds < 86400) {
+    return `<span title="${esc(absolute)}">${Math.ceil(seconds / 3600)} 小时后重置</span>`;
+  }
+  return `<span title="${esc(absolute)}">${Math.ceil(seconds / 86400)} 天后重置</span>`;
+}
+
+function runtimeUsageTone(percent) {
+  if (percent >= 90) return "critical";
+  if (percent >= 70) return "warning";
+  return "healthy";
+}
+
+function runtimeUsagePlan(plan) {
+  const cleaned = String(plan || "").replace(/^(LEVEL|TYPE)_/, "").replaceAll("_", " ");
+  if (!cleaned) return "";
+  if (cleaned.toLowerCase() === "prolite") return "Pro Lite";
+  return cleaned === cleaned.toUpperCase()
+    ? cleaned.toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase())
+    : cleaned;
+}
+
+function runtimeUsageCard(item, generatedAt) {
+  const status = item.status || "unavailable";
+  const windows = item.windows || [];
+  const source = RUNTIME_USAGE_SOURCE_LABELS[item.source] || item.source || "Runtime";
+  const planLabel = runtimeUsagePlan(item.plan);
+  const adapterClass = String(item.adapter || "runtime").replace(/[^\w-]/g, "");
+  const plan = planLabel
+    ? `<span class="runtime-usage-plan">${esc(planLabel)}</span>` : "";
+  const body = status === "ok" && windows.length
+    ? `<div class="runtime-usage-windows">${windows.map(window => {
+      const used = Math.max(0, Math.min(100, Number(window.used_percent) || 0));
+      const remaining = Math.max(0, 100 - used);
+      const tone = runtimeUsageTone(used);
+      return `<div class="runtime-usage-window ${tone}">
+        <div class="runtime-usage-window-head">
+          <span>${esc(window.label || "当前周期")}</span>
+          <strong>${used.toFixed(used % 1 ? 1 : 0)}%</strong>
+        </div>
+        <div class="runtime-usage-track" role="progressbar" aria-label="${esc(window.label || "当前周期")}"
+          aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}">
+          <i style="width:${used}%"></i>
+        </div>
+        <div class="runtime-usage-window-foot">
+          <span>${remaining.toFixed(remaining % 1 ? 1 : 0)}% 可用</span>
+          ${runtimeUsageReset(window.resets_at, generatedAt)}
+        </div>
+      </div>`;
+    }).join("")}</div>`
+    : `<div class="runtime-usage-empty">
+        <i></i><span>${esc(item.message || "暂时无法读取账户限额")}</span>
+      </div>`;
+  const metrics = (item.metrics || []).length
+    ? `<div class="runtime-usage-metrics">${item.metrics.map(metric =>
+      `<span><small>${esc(metric.label)}</small><b>${esc(metric.value)}</b></span>`).join("")}</div>`
+    : "";
+  return `<article class="runtime-usage-card adapter-${adapterClass}">
+    <header>
+      <div class="runtime-usage-identity">
+        <span class="runtime-usage-mark">${esc((item.backend_name || item.backend_id || "?").slice(0, 1))}</span>
+        <div><h3>${esc(item.backend_name || item.backend_id)}</h3>
+          <small title="数据源：${esc(source)}">${esc(item.adapter || source)}</small></div>
+      </div>
+      <div class="runtime-usage-meta">${plan}
+        <span class="runtime-usage-status ${esc(status)}"><i></i>${esc(RUNTIME_USAGE_STATUS_LABELS[status] || status)}</span>
+      </div>
+    </header>
+    ${body}${metrics}
+  </article>`;
+}
+
+function renderRuntimeUsagePayload(data) {
+  const usage = data.usage || [];
+  const available = usage.filter(item => item.status === "ok").length;
+  document.getElementById("runtime-usage-count").textContent =
+    `${available}/${usage.length} 可用`;
+  document.getElementById("runtime-usage-cards").innerHTML =
+    usage.map(item => runtimeUsageCard(item, data.generated_at || Date.now() / 1000)).join("") ||
+    `<div class="runtime-usage-loading">当前没有支持账户限额读取的 Runtime。</div>`;
+  document.getElementById("runtime-usage-updated").textContent =
+    `读取于 ${new Date((data.generated_at || Date.now() / 1000) * 1000).toLocaleTimeString()}`;
+}
+
 async function renderRuntimeHistory(force = false) {
   if (!force && Date.now() - runtimeHistoryLoadedAt < 3000) return;
   const response = await fetch("/api/runtime/history?limit=100", { cache: "no-store" });
   if (!response.ok) return;
   renderRuntimeHistoryPayload(await response.json());
   runtimeHistoryLoadedAt = Date.now();
+}
+
+async function renderRuntimeUsage(force = false) {
+  if (!force && Date.now() - runtimeUsageLoadedAt < 3000) return;
+  const query = force ? "?refresh=true" : "";
+  const response = await fetch(`/api/runtime/usage${query}`, { cache: "no-store" });
+  if (!response.ok) return;
+  renderRuntimeUsagePayload(await response.json());
+  runtimeUsageLoadedAt = Date.now();
 }
 
 async function renderRuntimeStatus(force = false) {
@@ -161,7 +272,10 @@ async function renderRuntimeStatus(force = false) {
     refreshRuntimeIndicators(data);
     if (currentTab === "runtime-status" || force) {
       renderRuntimeStatusPayload(data);
-      await renderRuntimeHistory(force);
+      await Promise.all([
+        renderRuntimeHistory(force),
+        renderRuntimeUsage(force),
+      ]);
     }
   } catch (_) {
     const updated = document.getElementById("runtime-status-updated");
