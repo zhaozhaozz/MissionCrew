@@ -453,21 +453,6 @@ const RUN_EVENT_META = {
   stderr:      { label: "日志", cls: "re-log" },
   status:      { label: "状态", cls: "re-status" },
 };
-function mergeRunInputEvents(events) {
-  // 存储层会把超 8000 字符的输入分段；展示时重新合并，避免一个 prompt
-  // 出现多个「输入」块，也让折叠/展开控制的是完整原文。
-  const merged = [];
-  for (const event of events) {
-    const previous = merged[merged.length - 1];
-    if (event.kind === "input" && previous?.kind === "input") {
-      previous.content += event.content;
-    } else {
-      merged.push({ ...event });
-    }
-  }
-  return merged;
-}
-
 function runSummary(run) {
   const st = { queued: "排队中", running: "运行中", waiting_user: "等待用户",
                done: "已完成", failed: "失败", stopped: "已停止" }[run.status] || run.status;
@@ -628,7 +613,7 @@ async function renderRunEvents(run, card, pane = document.getElementById("msgs")
     const body = card.el.querySelector(".rc-events");
     const innerNear = !body.childElementCount ||
       body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-    const events = mergeRunInputEvents(d.events);
+    const events = d.events;
     const latestEventId = events.length ? String(events[events.length - 1].id) : "";
     const newItem = latestEventId && latestEventId !== card.latestEventId;
     const openEventId = newItem ? latestEventId

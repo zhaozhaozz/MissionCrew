@@ -38,13 +38,26 @@ def test_run_event_coalescing(store):
     # 超过单行上限后另起新行,不无限膨胀
     store.append_run_event(8, "stdout", "x" * store.RUN_EVENT_MAX)
     store.append_run_event(8, "stdout", "y")
-    assert len(store.run_events(8)) == 2
-    # 长输入完整分段保存，不能因单行上限只留下前 8000 字符。
+    assert len(store._query(
+        "SELECT id FROM run_events WHERE run_id=?", (8,))) == 2
+    assert store.run_events(8)[0]["content"] == "x" * store.RUN_EVENT_MAX + "y"
+    # 长文本仍按物理行分段保存，但读取时恢复为一个完整逻辑事件。
     long_input = "输" * (store.RUN_EVENT_MAX + 17)
     store.append_run_event(9, "input", long_input)
+    stored_rows = store._query(
+        "SELECT id, content FROM run_events WHERE run_id=? ORDER BY id", (9,))
+    assert len(stored_rows) == 2
     saved = store.run_events(9)
-    assert len(saved) == 2
-    assert "".join(e["content"] for e in saved) == long_input
+    assert len(saved) == 1
+    assert saved[0]["content"] == long_input
+    assert saved[0]["id"] == stored_rows[-1]["id"]
+
+    # file_change 也不能因 8000 字符边界产生从路径中间开始的新日志卡片。
+    long_diff = "diff --git a/file b/file\n" + "x" * store.RUN_EVENT_MAX
+    store.append_run_event(13, "file_change", long_diff)
+    saved_diff = store.run_events(13)
+    assert len(saved_diff) == 1
+    assert saved_diff[0]["content"] == long_diff
     # 后台 Agent 生命周期是逐条 JSON 事件，不能像普通文本流一样拼接。
     store.append_run_event(12, "backend_agent", '{"status":"running"}')
     store.append_run_event(12, "backend_agent", '{"status":"completed"}')

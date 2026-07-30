@@ -965,15 +965,17 @@ class Store:
 
     # ---- 聊天:执行过程事件(实时运行输出) ----
     # 同类连续事件合并进同一行(追加文本),避免逐 chunk/逐行插入把表撑爆;
-    # 换 kind 或单行超过上限时另起新行。前端按"行"整体重渲染,无需增量游标。
+    # 换 kind 或单行超过上限时另起物理行,读取时再恢复为逻辑事件。
     RUN_EVENT_MAX = 8000
+    RUN_EVENT_STRUCTURED_KINDS = frozenset({
+        "permission_request", "user_input_request", "usage", "backend_agent",
+    })
 
     def append_run_event(self, run_id: int, kind: str, text: str) -> Optional[int]:
         if not text:
             return None
         # JSON 事件必须保持一行一个对象；相邻权限/用量事件不能字符串拼接。
-        if kind in {"permission_request", "user_input_request", "usage",
-                    "backend_agent"}:
+        if kind in self.RUN_EVENT_STRUCTURED_KINDS:
             return self._execute(
                 "INSERT INTO run_events(run_id, kind, content, created_at) "
                 "VALUES(?,?,?,?)", (run_id, kind, text, time.time()))
@@ -1025,7 +1027,19 @@ class Store:
         rows = self._query(
             "SELECT id, kind, content, created_at FROM run_events "
             "WHERE run_id=? ORDER BY id DESC LIMIT ?", (run_id, limit))
-        return [dict(r) for r in reversed(rows)]
+        events: list[dict] = []
+        for row in reversed(rows):
+            event = dict(row)
+            previous = events[-1] if events else None
+            if (previous and previous["kind"] == event["kind"]
+                    and event["kind"] not in self.RUN_EVENT_STRUCTURED_KINDS):
+                # RUN_EVENT_MAX 只是物理存储边界，不应在任意字符处制造新的
+                # 用户可见日志。保留最新行 id，让前端仍能识别实时更新。
+                previous["content"] += event["content"]
+                previous["id"] = event["id"]
+            else:
+                events.append(event)
+        return events
 
     def rewrite_run_events(self, run_id: int, transform: Callable[[str], str],
                            kinds: set[str]) -> int:
