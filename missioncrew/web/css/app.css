@@ -624,7 +624,7 @@
                            color: var(--muted); border: 1px dashed var(--line-strong);
                            border-radius: 12px; background: var(--bg-soft); }
   .runtime-usage-card { --runtime-color: var(--accent); position: relative; overflow: hidden;
-                        display: flex; flex-direction: column; gap: 15px; min-height: 190px;
+                        display: flex; flex-direction: column; gap: 12px; min-height: 150px;
                         padding: 16px 17px; border: 1px solid var(--line); border-radius: 13px;
                         background: var(--card); box-shadow: var(--shadow-sm); }
   .runtime-usage-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px;
@@ -642,6 +642,16 @@
                         border: 1px solid color-mix(in srgb, var(--runtime-color) 25%, var(--line)); }
   .runtime-usage-identity h3 { margin: 0; font-size: 14.5px; }
   .runtime-usage-identity small { color: var(--muted); }
+  .runtime-usage-identity-copy { min-width: 0; }
+  .runtime-usage-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .runtime-usage-title-metrics { display: inline-flex; align-items: center; gap: 4px;
+                                 flex-wrap: wrap; }
+  .runtime-usage-title-metrics > span { display: inline-flex; align-items: baseline; gap: 3px;
+                                        padding: 1px 5px; border-radius: 999px;
+                                        color: var(--text); background: var(--bg-soft);
+                                        font-size: 9.5px; white-space: nowrap; }
+  .runtime-usage-title-metrics small { font-size: inherit; }
+  .runtime-usage-title-metrics b { font-size: inherit; }
   .runtime-usage-meta { display: flex; align-items: center; justify-content: flex-end;
                         gap: 6px; flex-wrap: wrap; }
   .runtime-usage-plan { max-width: 130px; overflow: hidden; text-overflow: ellipsis;
@@ -654,18 +664,25 @@
   .runtime-usage-status.ok { color: var(--ok); }
   .runtime-usage-status.auth_required, .runtime-usage-status.unavailable { color: var(--warn); }
   .runtime-usage-status.disabled { color: var(--bad); }
-  .runtime-usage-windows { display: grid; gap: 12px; }
-  .runtime-usage-window { display: grid; gap: 6px; }
-  .runtime-usage-window-head, .runtime-usage-window-foot {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  }
+  .runtime-usage-windows { display: grid; gap: 10px; }
+  .runtime-usage-window { display: grid; gap: 5px; cursor: help; }
+  .runtime-usage-window-head { display: flex; align-items: center;
+                               justify-content: space-between; gap: 10px; }
   .runtime-usage-window-head { font-size: 12px; }
-  .runtime-usage-window-head strong { font-size: 13px; }
-  .runtime-usage-window-foot { color: var(--muted); font-size: 10.5px; }
+  .runtime-usage-values { display: inline-flex; align-items: baseline; gap: 5px;
+                          white-space: nowrap; }
+  .runtime-usage-values strong { font-size: 13px; }
+  .runtime-usage-values small { color: var(--muted); font-size: 9.5px; }
+  .runtime-usage-composite { position: relative; padding-bottom: 6px; }
   .runtime-usage-track { height: 7px; overflow: hidden; border-radius: 999px;
                          background: var(--bg-soft); border: 1px solid var(--line); }
   .runtime-usage-track i { display: block; height: 100%; border-radius: inherit;
                            background: var(--ok); transition: width .35s ease; }
+  .runtime-usage-time-marker { position: absolute; top: 9px; width: 0; height: 0;
+                               border-right: 4px solid transparent;
+                               border-bottom: 5px solid var(--muted);
+                               border-left: 4px solid transparent;
+                               transform: translateX(-50%); }
   .runtime-usage-window.warning .runtime-usage-track i { background: var(--warn); }
   .runtime-usage-window.critical .runtime-usage-track i { background: var(--bad); }
   .runtime-usage-window.warning .runtime-usage-window-head strong { color: var(--warn); }
@@ -676,12 +693,6 @@
                          border-radius: 9px; background: var(--bg-soft); font-size: 12px; }
   .runtime-usage-empty i { width: 7px; height: 7px; flex: none; border-radius: 50%;
                            background: var(--warn); }
-  .runtime-usage-metrics { display: flex; gap: 7px; flex-wrap: wrap; margin-top: auto; }
-  .runtime-usage-metrics > span { display: inline-flex; align-items: baseline; gap: 5px;
-                                  padding: 4px 8px; border-radius: 7px;
-                                  background: var(--bg-soft); }
-  .runtime-usage-metrics small { color: var(--muted); }
-  .runtime-usage-metrics b { font-size: 11.5px; }
   @media (max-width: 900px) {
     .runtime-status-cards { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
     .runtime-status-head { flex-direction: column; }

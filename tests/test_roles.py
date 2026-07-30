@@ -519,6 +519,9 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
     assert "/api/runtime/status" in js
     assert "/api/runtime/usage" in js
     assert "runtimeUsageCard" in js
+    assert "runtimeUsageTimeProgress" in js
+    assert "runtime-usage-time-marker" in js
+    assert "runtime-usage-title-metrics" in js
     assert "refreshRuntimeIndicators" in js
     assert '["starting", "running"].includes(instance.state)' in js
     assert "function pollRuntimeStatus() {\n  renderRuntimeStatus();" in js

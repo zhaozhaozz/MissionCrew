@@ -60,7 +60,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 ### 账户用量与限额
 
-运行状态页顶部的「账户用量」来自 `GET /api/runtime/usage`，目前支持 Codex、Claude、Kimi 和 Grok。这里的“用量”是本机 CLI 当前登录账户的订阅或信用额度窗口，不是 MissionCrew 自己估算的调用成本，也不是下方 SQLite 中的调用历史。所有 provider 都把原始结果转换为 `RuntimeUsageSnapshot`：每个窗口只包含名称、已用百分比、剩余百分比、窗口时长和重置时间，另可附带套餐名与余额、并发上限等非敏感指标。页面据此统一绘制进度条，不解析任何厂商字段。
+运行状态页顶部的「账户用量」来自 `GET /api/runtime/usage`，目前支持 Codex、Claude、Kimi 和 Grok。这里的“用量”是本机 CLI 当前登录账户的订阅或信用额度窗口，不是 MissionCrew 自己估算的调用成本，也不是下方 SQLite 中的调用历史。所有 provider 都把原始结果转换为 `RuntimeUsageSnapshot`：每个窗口只包含名称、已用百分比、剩余百分比、窗口时长和重置时间，另可附带套餐名与余额、并发上限等非敏感指标。页面用进度条主体显示额度使用比例，用下方三角显示根据窗口时长和重置时间计算出的时间进度；补充指标紧跟 Runtime 标题显示，悬浮窗口可查看完整额度、周期进度与重置时间。
 
 `RuntimeManager.account_usage()` 并行探测支持该能力的 Runtime，并在服务内按 backend 缓存 60 秒。账户用量只在进入运行状态页或点击“立即刷新”时请求 `GET /api/runtime/usage?refresh=true` 并强制重新读取；页面停留期间的 10 秒常规轮询只更新 Runtime 状态和调用历史，不请求账户用量。探测失败只让对应卡片显示“需要登录”或“暂不可用”，不会影响运行状态、聊天执行或其他 Runtime 的限额。限额快照只保存在内存，不写入 SQLite；API 不返回 access token、refresh token、用户标识、凭据路径或上游错误正文。
 

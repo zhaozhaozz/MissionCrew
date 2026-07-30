@@ -85,7 +85,7 @@ def test_kimi_usage_parser_maps_weekly_and_five_hour_limits():
     assert snapshot.plan == "LEVEL_INTERMEDIATE"
     assert [(window.label, window.used_percent, window.duration_minutes)
             for window in snapshot.windows] == [
-        ("本周", 93, None), ("5 小时", 0, 300)]
+        ("本周", 93, 10080), ("5 小时", 0, 300)]
     assert snapshot.metrics[0].to_dict() == {"label": "并发上限", "value": "20"}
 
 

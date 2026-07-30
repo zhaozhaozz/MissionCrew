@@ -154,18 +154,33 @@ function renderRuntimeHistoryPayload(data) {
       `<tr><td colspan="8" class="empty runtime-empty">尚无 Runtime 使用记录。</td></tr>`);
 }
 
-function runtimeUsageReset(timestamp, generatedAt) {
-  if (!timestamp) return "重置时间未知";
-  const seconds = Math.max(0, Math.round(timestamp - generatedAt));
-  const absolute = new Date(timestamp * 1000).toLocaleString();
-  if (seconds === 0) return `<span title="${esc(absolute)}">即将重置</span>`;
-  if (seconds < 3600) {
-    return `<span title="${esc(absolute)}">${Math.max(1, Math.ceil(seconds / 60))} 分钟后重置</span>`;
+function runtimeUsageTimeProgress(window, generatedAt) {
+  const durationSeconds = Number(window.duration_minutes) * 60;
+  const resetsAt = Number(window.resets_at);
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0
+      || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
+  const startsAt = resetsAt - durationSeconds;
+  return Math.max(0, Math.min(100,
+    (generatedAt - startsAt) / durationSeconds * 100));
+}
+
+function runtimeUsagePercent(value) {
+  return value.toFixed(value % 1 ? 1 : 0);
+}
+
+function runtimeUsageWindowTitle(window, generatedAt, used, remaining, elapsed) {
+  const details = [
+    window.label || "当前周期",
+    `额度已用 ${runtimeUsagePercent(used)}%`,
+    `额度剩余 ${runtimeUsagePercent(remaining)}%`,
+  ];
+  if (elapsed !== null) {
+    details.push(`周期已过去 ${runtimeUsagePercent(elapsed)}%`);
   }
-  if (seconds < 86400) {
-    return `<span title="${esc(absolute)}">${Math.ceil(seconds / 3600)} 小时后重置</span>`;
+  if (window.resets_at) {
+    details.push(`重置时间 ${new Date(window.resets_at * 1000).toLocaleString()}`);
   }
-  return `<span title="${esc(absolute)}">${Math.ceil(seconds / 86400)} 天后重置</span>`;
+  return details.join(" · ");
 }
 
 function runtimeUsageTone(percent) {
@@ -191,45 +206,56 @@ function runtimeUsageCard(item, generatedAt) {
   const adapterClass = String(item.adapter || "runtime").replace(/[^\w-]/g, "");
   const plan = planLabel
     ? `<span class="runtime-usage-plan">${esc(planLabel)}</span>` : "";
+  const metrics = (item.metrics || []).length
+    ? `<span class="runtime-usage-title-metrics">${item.metrics.map(metric =>
+      `<span title="${esc(`${metric.label}：${metric.value}`)}">` +
+        `<small>${esc(metric.label)}</small><b>${esc(metric.value)}</b></span>`).join("")}</span>`
+    : "";
   const body = status === "ok" && windows.length
     ? `<div class="runtime-usage-windows">${windows.map(window => {
       const used = Math.max(0, Math.min(100, Number(window.used_percent) || 0));
       const remaining = Math.max(0, 100 - used);
+      const elapsed = runtimeUsageTimeProgress(window, generatedAt);
       const tone = runtimeUsageTone(used);
-      return `<div class="runtime-usage-window ${tone}">
+      const title = runtimeUsageWindowTitle(
+        window, generatedAt, used, remaining, elapsed);
+      const marker = elapsed === null ? "" :
+        `<span class="runtime-usage-time-marker" style="left:${elapsed}%"></span>`;
+      return `<div class="runtime-usage-window ${tone}" title="${esc(title)}">
         <div class="runtime-usage-window-head">
           <span>${esc(window.label || "当前周期")}</span>
-          <strong>${used.toFixed(used % 1 ? 1 : 0)}%</strong>
+          <span class="runtime-usage-values">
+            <strong>${runtimeUsagePercent(used)}%</strong>
+            <small>已用 · ${runtimeUsagePercent(remaining)}% 可用</small>
+          </span>
         </div>
-        <div class="runtime-usage-track" role="progressbar" aria-label="${esc(window.label || "当前周期")}"
-          aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}">
-          <i style="width:${used}%"></i>
-        </div>
-        <div class="runtime-usage-window-foot">
-          <span>${remaining.toFixed(remaining % 1 ? 1 : 0)}% 可用</span>
-          ${runtimeUsageReset(window.resets_at, generatedAt)}
+        <div class="runtime-usage-composite">
+          <div class="runtime-usage-track" role="progressbar" aria-label="${esc(title)}"
+            aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}">
+            <i style="width:${used}%"></i>
+          </div>
+          ${marker}
         </div>
       </div>`;
     }).join("")}</div>`
     : `<div class="runtime-usage-empty">
         <i></i><span>${esc(item.message || "暂时无法读取账户限额")}</span>
       </div>`;
-  const metrics = (item.metrics || []).length
-    ? `<div class="runtime-usage-metrics">${item.metrics.map(metric =>
-      `<span><small>${esc(metric.label)}</small><b>${esc(metric.value)}</b></span>`).join("")}</div>`
-    : "";
   return `<article class="runtime-usage-card adapter-${adapterClass}">
     <header>
       <div class="runtime-usage-identity">
         <span class="runtime-usage-mark">${esc((item.backend_name || item.backend_id || "?").slice(0, 1))}</span>
-        <div><h3>${esc(item.backend_name || item.backend_id)}</h3>
+        <div class="runtime-usage-identity-copy">
+          <div class="runtime-usage-title-row">
+            <h3>${esc(item.backend_name || item.backend_id)}</h3>${metrics}
+          </div>
           <small title="数据源：${esc(source)}">${esc(item.adapter || source)}</small></div>
       </div>
       <div class="runtime-usage-meta">${plan}
         <span class="runtime-usage-status ${esc(status)}"><i></i>${esc(RUNTIME_USAGE_STATUS_LABELS[status] || status)}</span>
       </div>
     </header>
-    ${body}${metrics}
+    ${body}
   </article>`;
 }
 

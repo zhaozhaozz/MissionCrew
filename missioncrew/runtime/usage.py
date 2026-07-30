@@ -273,8 +273,11 @@ def parse_kimi_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
         except (TypeError, ValueError):
             duration = None
         unit = str(_first(window, "timeUnit", "time_unit", "unit") or "")
-        fallback = "本周" if index == 0 and isinstance(summary, dict) else f"限额 {index + 1}"
+        is_summary = index == 0 and isinstance(summary, dict)
+        fallback = "本周" if is_summary else f"限额 {index + 1}"
         label, duration_minutes = _window_label(duration, unit, fallback)
+        if is_summary and duration_minutes is None:
+            duration_minutes = 7 * 24 * 60
         percent = _percent(_first(
             detail, "usedPercent", "used_percent", "usagePercent",
             "usage_percent", "percentage"))
@@ -285,7 +288,6 @@ def parse_kimi_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
                 _first(detail, "remaining", "left"))
         if percent is None:
             continue
-        is_summary = index == 0 and isinstance(summary, dict)
         key = ("weekly" if is_summary or duration_minutes == 10080 else
                "five-hour" if duration_minutes == 300 else
                str(_first(item, "id", "type", "name") or f"window-{index + 1}"))
