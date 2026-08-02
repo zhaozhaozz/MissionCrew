@@ -572,16 +572,28 @@ def probe_kimi_usage(
 def parse_grok_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
     config = payload.get("config")
     config = config if isinstance(config, dict) else payload
-    percent = _percent(_first(
-        config, "creditUsagePercent", "credit_usage_percent"))
-    period = config.get("currentPeriod")
+    percent_value = _first(
+        config, "creditUsagePercent", "credit_usage_percent")
+    if percent_value is None and config is not payload:
+        percent_value = _first(
+            payload, "creditUsagePercent", "credit_usage_percent")
+    period = config.get("currentPeriod") or payload.get("currentPeriod")
     period = period if isinstance(period, dict) else {}
-    start = _timestamp(_first(period, "start", "startTime", "start_time"))
-    reset = _timestamp(_first(period, "end", "endTime", "end_time"))
+    start = _timestamp(
+        _first(period, "start", "startTime", "start_time") or
+        _first(config, "billingPeriodStart", "billing_period_start"))
+    reset = _timestamp(
+        _first(period, "end", "endTime", "end_time") or
+        _first(config, "billingPeriodEnd", "billing_period_end"))
     period_type = str(_first(period, "type", "periodType") or "").lower()
     duration_minutes = (
         round((reset - start) / 60) if start and reset and reset >= start else
         10080 if "weekly" in period_type else None)
+    # Grok 的 protobuf JSON 会省略默认值为 0 的标量。新周期已有完整
+    # start/end、但尚无用量时，creditUsagePercent 因此不会出现在响应中。
+    percent = _percent(percent_value)
+    if percent_value is None and start is not None and reset is not None:
+        percent = 0.0
     label = "本周" if "weekly" in period_type or duration_minutes == 10080 else "当前周期"
     windows = ([RuntimeUsageWindow(
         key="credits", label=label, used_percent=percent,
@@ -600,6 +612,8 @@ def parse_grok_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
         if value is not None:
             metrics.append(RuntimeUsageMetric(label, str(value)))
     product_usage = config.get("productUsage")
+    if not isinstance(product_usage, list) and config is not payload:
+        product_usage = payload.get("productUsage")
     if isinstance(product_usage, list):
         for item in product_usage:
             if not isinstance(item, dict) or item.get("usagePercent") is None:
@@ -610,7 +624,9 @@ def parse_grok_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
             metrics.append(RuntimeUsageMetric(
                 str(item.get("product") or "产品用量"),
                 f"{usage_percent:g}%"))
-    plan = str(_first(config, "subscription_tier", "subscriptionTier") or "")
+    plan = str(
+        _first(config, "subscription_tier", "subscriptionTier") or
+        _first(payload, "subscription_tier", "subscriptionTier") or "")
     if not windows:
         return _snapshot(
             backend, "unavailable", "grok_billing_api",

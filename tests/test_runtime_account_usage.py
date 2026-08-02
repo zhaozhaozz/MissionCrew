@@ -117,6 +117,38 @@ def test_grok_usage_parser_maps_credit_period_and_product_breakdown():
     }
 
 
+def test_grok_usage_parser_treats_omitted_default_percent_as_zero():
+    snapshot = parse_grok_usage(_backend("grok_build"), {
+        "config": {
+            "currentPeriod": {
+                "type": "USAGE_PERIOD_TYPE_WEEKLY",
+                "start": "2026-07-30T15:46:06Z",
+                "end": "2026-08-06T15:46:06Z",
+            },
+            "onDemandCap": {"val": 0},
+            "onDemandUsed": {"val": 0},
+            "prepaidBalance": {"val": 0},
+        },
+        "subscriptionTier": "SuperGrok",
+    })
+
+    assert snapshot.status == "ok"
+    assert snapshot.plan == "SuperGrok"
+    assert snapshot.windows[0].label == "本周"
+    assert snapshot.windows[0].used_percent == 0
+    assert snapshot.windows[0].duration_minutes == 10080
+
+
+def test_grok_usage_parser_does_not_invent_zero_without_period():
+    snapshot = parse_grok_usage(_backend("grok_build"), {
+        "config": {"prepaidBalance": {"val": 0}},
+        "subscriptionTier": "SuperGrok",
+    })
+
+    assert snapshot.status == "unavailable"
+    assert not snapshot.windows
+
+
 class _UsageProvider(RuntimeProvider):
     def __init__(self):
         self.calls = 0
