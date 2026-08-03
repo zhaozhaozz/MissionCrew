@@ -693,6 +693,33 @@
                          border-radius: 9px; background: var(--bg-soft); font-size: 12px; }
   .runtime-usage-empty i { width: 7px; height: 7px; flex: none; border-radius: 50%;
                            background: var(--warn); }
+  .runtime-usage-tip { position: fixed; z-index: 60; width: 252px; padding: 10px 12px;
+                       pointer-events: none; background: var(--card);
+                       border: 1px solid var(--line); border-radius: 10px;
+                       box-shadow: var(--shadow-md); font-size: 11.5px; line-height: 1.5;
+                       animation: usageTipIn .12s ease; }
+  .runtime-usage-tip[hidden] { display: none; }
+  .runtime-usage-tip > header { display: flex; justify-content: space-between;
+                                align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  .runtime-usage-tip > header strong { font-size: 13px; }
+  .runtime-usage-tip-bar { height: 5px; margin-bottom: 8px; border-radius: 999px;
+                           overflow: hidden; background: var(--bg-soft);
+                           border: 1px solid var(--line); }
+  .runtime-usage-tip-bar i { display: block; height: 100%; border-radius: inherit;
+                             background: var(--ok); }
+  .runtime-usage-tip-bar.warning i { background: var(--warn); }
+  .runtime-usage-tip-bar.critical i { background: var(--bad); }
+  .runtime-usage-tip dl { display: grid; gap: 3px; margin: 0; }
+  .runtime-usage-tip dl > div { display: flex; justify-content: space-between; gap: 12px; }
+  .runtime-usage-tip dt { color: var(--muted); }
+  .runtime-usage-tip dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .runtime-usage-tip-reset { display: flex; justify-content: space-between;
+                             align-items: baseline; gap: 12px; margin-top: 8px;
+                             padding-top: 7px; border-top: 1px dashed var(--line); }
+  .runtime-usage-tip-reset span { color: var(--muted); }
+  .runtime-usage-tip-reset strong { color: var(--accent);
+                                    font-variant-numeric: tabular-nums; }
+  @keyframes usageTipIn { from { opacity: 0; transform: translateY(3px); } }
   @media (max-width: 900px) {
     .runtime-status-cards { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
     .runtime-status-head { flex-direction: column; }

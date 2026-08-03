@@ -221,7 +221,10 @@ function runtimeUsageCard(item, generatedAt) {
         window, generatedAt, used, remaining, elapsed);
       const marker = elapsed === null ? "" :
         `<span class="runtime-usage-time-marker" style="left:${elapsed}%"></span>`;
-      return `<div class="runtime-usage-window ${tone}" title="${esc(title)}">
+      const resetsAt = Number(window.resets_at) > 0 ? Number(window.resets_at) : "";
+      return `<div class="runtime-usage-window ${tone}"
+        data-tip-label="${esc(window.label || "当前周期")}" data-tip-used="${used}"
+        data-tip-elapsed="${elapsed === null ? "" : elapsed}" data-tip-resets="${resetsAt}">
         <div class="runtime-usage-window-head">
           <span>${esc(window.label || "当前周期")}</span>
           <span class="runtime-usage-values">
@@ -259,7 +262,114 @@ function runtimeUsageCard(item, generatedAt) {
   </article>`;
 }
 
+/* ---- 用量悬浮弹层:替代原生 title,悬浮即出的 HTML 提示,含额度重置倒计时 ---- */
+const RUNTIME_USAGE_TIP_DELAY = 80;
+let runtimeUsageTipEl = null;
+let runtimeUsageTipShowTimer = 0;
+let runtimeUsageTipCountdownTimer = 0;
+let runtimeUsageTipTarget = null;
+
+function runtimeUsageCountdown(resetsAt) {
+  const total = Math.floor(resetsAt - Date.now() / 1000);
+  if (total <= 0) return "已到重置时间";
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const seconds = total % 60;
+  if (days) return `${days} 天 ${hours} 小时 ${minutes} 分`;
+  if (hours) return `${hours} 小时 ${minutes} 分 ${seconds} 秒`;
+  return `${minutes} 分 ${seconds} 秒`;
+}
+
+function ensureRuntimeUsageTip() {
+  if (!runtimeUsageTipEl) {
+    runtimeUsageTipEl = document.createElement("div");
+    runtimeUsageTipEl.className = "runtime-usage-tip";
+    runtimeUsageTipEl.setAttribute("role", "tooltip");
+    runtimeUsageTipEl.hidden = true;
+    document.body.appendChild(runtimeUsageTipEl);
+  }
+  return runtimeUsageTipEl;
+}
+
+function runtimeUsageTipHtml(dataset) {
+  const used = Math.max(0, Math.min(100, Number(dataset.tipUsed) || 0));
+  const rows = [["额度剩余", `${runtimeUsagePercent(Math.max(0, 100 - used))}%`]];
+  if (dataset.tipElapsed !== "") {
+    const elapsed = Math.max(0, Math.min(100, Number(dataset.tipElapsed) || 0));
+    rows.push(["周期已过去", `${runtimeUsagePercent(elapsed)}%`]);
+  }
+  const resetsAt = Number(dataset.tipResets) || 0;
+  if (resetsAt) {
+    rows.push(["重置时间", new Date(resetsAt * 1000).toLocaleString()]);
+  }
+  const countdown = resetsAt
+    ? `<div class="runtime-usage-tip-reset"><span>距额度重置</span>
+        <strong data-countdown="${resetsAt}">${esc(runtimeUsageCountdown(resetsAt))}</strong></div>`
+    : "";
+  return `<header>
+      <span>${esc(dataset.tipLabel || "当前周期")}</span>
+      <strong>${runtimeUsagePercent(used)}% 已用</strong>
+    </header>
+    <div class="runtime-usage-tip-bar ${runtimeUsageTone(used)}"><i style="width:${used}%"></i></div>
+    <dl>${rows.map(row =>
+      `<div><dt>${esc(row[0])}</dt><dd>${esc(row[1])}</dd></div>`).join("")}</dl>
+    ${countdown}`;
+}
+
+function positionRuntimeUsageTip(target) {
+  const tip = ensureRuntimeUsageTip();
+  const rect = target.getBoundingClientRect();
+  const left = Math.max(8, Math.min(rect.left + rect.width / 2 - tip.offsetWidth / 2,
+    window.innerWidth - tip.offsetWidth - 8));
+  const top = rect.top - tip.offsetHeight - 8;
+  tip.style.left = `${left}px`;
+  tip.style.top = `${top < 8 ? rect.bottom + 8 : top}px`;
+}
+
+function showRuntimeUsageTip(target) {
+  const tip = ensureRuntimeUsageTip();
+  runtimeUsageTipTarget = target;
+  tip.innerHTML = runtimeUsageTipHtml(target.dataset);
+  tip.hidden = false;
+  positionRuntimeUsageTip(target);
+  clearInterval(runtimeUsageTipCountdownTimer);
+  const countdownEl = tip.querySelector("[data-countdown]");
+  if (countdownEl) {
+    runtimeUsageTipCountdownTimer = setInterval(() => {
+      countdownEl.textContent =
+        runtimeUsageCountdown(Number(countdownEl.dataset.countdown));
+    }, 1000);
+  }
+}
+
+function hideRuntimeUsageTip() {
+  if (!runtimeUsageTipTarget && !runtimeUsageTipShowTimer) return;
+  clearTimeout(runtimeUsageTipShowTimer);
+  clearInterval(runtimeUsageTipCountdownTimer);
+  runtimeUsageTipShowTimer = 0;
+  runtimeUsageTipCountdownTimer = 0;
+  runtimeUsageTipTarget = null;
+  if (runtimeUsageTipEl) runtimeUsageTipEl.hidden = true;
+}
+
+// 事件委托:用量卡片会整体重渲染,监听放在 document 上保持有效。
+document.addEventListener("mouseover", event => {
+  const target = event.target.closest?.(".runtime-usage-window[data-tip-label]");
+  if (!target || target === runtimeUsageTipTarget) return;
+  hideRuntimeUsageTip();
+  runtimeUsageTipShowTimer = setTimeout(
+    () => showRuntimeUsageTip(target), RUNTIME_USAGE_TIP_DELAY);
+});
+document.addEventListener("mouseout", event => {
+  const target = event.target.closest?.(".runtime-usage-window[data-tip-label]");
+  if (target && !target.contains(event.relatedTarget)) hideRuntimeUsageTip();
+});
+// 弹层为 fixed 定位,页面滚动时直接收起,避免位置漂移。
+document.addEventListener("scroll", hideRuntimeUsageTip, true);
+
 function renderRuntimeUsagePayload(data) {
+  hideRuntimeUsageTip();
   const usage = data.usage || [];
   const available = usage.filter(item => item.status === "ok").length;
   document.getElementById("runtime-usage-count").textContent =
