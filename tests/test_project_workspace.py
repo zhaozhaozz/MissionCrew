@@ -427,6 +427,9 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "/resources/webshop/dashboards/<面板 id>" in chat_cfg.prompt
     assert "最终回复引用项目文档时必须写成" in chat_cfg.prompt
     assert "不得输出内部读写目录" in chat_cfg.prompt
+    assert "# 路径访问失败处理" in chat_cfg.prompt
+    assert "不要改为搜索共同父目录" in chat_cfg.prompt
+    assert "$MISSIONCREW_DOCUMENTS_DIR/<相对路径>" in chat_cfg.prompt
     guideline_dir = Path(chat_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
     dev_guideline = guideline_dir / "dev-guide.md"
     tester_guideline = guideline_dir / "tester-guide.md"
@@ -1261,6 +1264,8 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert "快照对当前执行只读" in cfg.prompt
     assert "包括 `/tmp`、`/var/tmp`" in cfg.prompt
     assert str(workspace / "temp") in cfg.prompt
+    assert "# 路径访问失败处理" in cfg.prompt
+    assert "不要猜测或搜索 `.missioncrew` 的物理位置" in cfg.prompt
     assert "MissionCrew 注入的项目 Skill 是额外能力" in cfg.prompt
     assert "不要把 `MISSIONCREW_SKILLS_DIR` 当作唯一 Skill 来源" in cfg.prompt
     assert "`.agent/skills`、`.agents/skills`、`.claude/skills`" in cfg.prompt

@@ -215,6 +215,9 @@ def test_opencode_tool_denial_without_final_text_is_failure(tmp_path):
     backend = Backend(id="oc", name="OpenCode", adapter="opencode")
     cfg = _cfg(tmp_path, backend, emit)
     cfg.session_key = "project:channel:tester"
+    authorized = tmp_path / "authorized"
+    authorized.mkdir()
+    cfg.allowed_dirs = [str(tmp_path), str(authorized)]
     result = adapters.CliAdapter(
         "opencode",
         [sys.executable, FAKE_STREAM, "opencode-tool-denied", "{prompt}"],
@@ -225,6 +228,10 @@ def test_opencode_tool_denial_without_final_text_is_failure(tmp_path):
     assert "最后工具 read（/vault/Daily/today.md）失败" in result.summary
     assert "external_directory (/vault/Daily/*)" in result.summary
     assert "auto-rejecting" in result.summary
+    assert "本轮已授权根目录" in result.summary
+    assert str(tmp_path.resolve()) in result.summary
+    assert str(authorized.resolve()) in result.summary
+    assert "不得改为搜索共同父目录" in result.summary
     assert "我先开始检查" not in result.output
     assert any(kind == "tool" and "read" in text for kind, text in events)
     assert any(kind == "tool_result" and text.startswith("✗ ")

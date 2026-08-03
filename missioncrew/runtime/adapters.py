@@ -1065,8 +1065,23 @@ def _generic_json_event(line: str, emit,
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
+def _authorized_roots(workdir: str, allowed_dirs: list[str]) -> list[str]:
+    """返回可直接交给 Runtime/主控的去重授权根目录。"""
+    found: list[str] = []
+    seen: set[str] = set()
+    for raw in [workdir, *allowed_dirs]:
+        if not raw:
+            continue
+        value = str(Path(raw).expanduser().resolve())
+        if value not in seen:
+            seen.add(value)
+            found.append(value)
+    return found
+
+
 def _opencode_incomplete_error(
-        state: _GenericJsonState, stderr_lines: list[str]) -> str:
+        state: _GenericJsonState, stderr_lines: list[str], *,
+        workdir: str = "", allowed_dirs: Optional[list[str]] = None) -> str:
     """把 OpenCode 的非终态正常退出转换为可交给主控的失败原因。"""
     if state.last_step_reason != "tool-calls" and state.terminal_texts:
         return ""
@@ -1088,11 +1103,21 @@ def _opencode_incomplete_error(
             tool += f"状态：{state.last_tool_status}"
         details.append(tool)
 
+    permission_error = False
     for raw in reversed(stderr_lines):
         clean = _ANSI_ESCAPE_RE.sub("", raw).strip()
         if "permission requested:" in clean or "auto-rejecting" in clean:
             details.append(f"权限信息：{clean}")
+            permission_error = True
             break
+    if permission_error:
+        roots = _authorized_roots(workdir, allowed_dirs or [])
+        if roots:
+            details.append("本轮已授权根目录：" + "、".join(roots))
+        details.append(
+            "恢复建议：仅在上述根目录中使用精确路径重试；不得改为搜索共同父目录。"
+            "若材料确实位于边界外，请主控或人类把材料移入授权目录后重新派发"
+        )
     return "；".join([reason, *details])
 
 
@@ -1327,7 +1352,8 @@ class CliAdapter:
         if (structured_json and self.adapter_name == "opencode"
                 and not final_box):
             completion_error = _opencode_incomplete_error(
-                generic_state, err_full)
+                generic_state, err_full, workdir=cfg.workdir,
+                allowed_dirs=cfg.allowed_dirs)
             if completion_error:
                 out = completion_error
         if proc.returncode == 0 and cfg.session_key:

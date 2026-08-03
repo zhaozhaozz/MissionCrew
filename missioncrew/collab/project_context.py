@@ -221,6 +221,16 @@ def render_project_context(project: Project, library: DocumentLibrary,
            f"没有项目约定时使用 `{temp_dir}`，并在任务完成后清理。"
            if temp_dir is not None else
            "临时文件必须放在当前工作目录内符合项目约定的位置，并在任务完成后清理。"),
+        "# 路径访问失败处理\n"
+        "上面的可读写目录清单就是本轮完整授权边界。若工具报告 `external_directory`、"
+        "`permission denied` 或其他硬路径拒绝：\n"
+        "- 不要改为搜索共同父目录、兄弟目录或其他未列出的路径，也不要重复提交同一越界请求；\n"
+        "- 先把目标路径与清单逐项对照，再改用清单内的精确绝对路径继续；不要为了定位文件而"
+        "对清单外的父目录执行递归 glob；\n"
+        "- 文档资源 URL `/resources/<项目>/documents/<相对路径>` 直接映射为"
+        " `$MISSIONCREW_DOCUMENTS_DIR/<相对路径>`；不要猜测或搜索 `.missioncrew` 的物理位置；\n"
+        "- 若完成任务确实依赖清单外的材料，停止该项访问并在结果中写明被拒绝的精确路径和"
+        "已经尝试的授权根目录，交由主控或人类调整材料位置。",
         "# 项目 Skills\n"
         "MissionCrew 注入的项目 Skill 是额外能力，不替代当前代码仓原有的 Agent 配置"
         "或 Skill。代码仓内的 `AGENTS.md`、`CLAUDE.md` 以及 Runtime 原生支持的目录"
