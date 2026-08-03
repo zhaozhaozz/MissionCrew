@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -13,7 +15,8 @@ from missioncrew.api import create_app
 from missioncrew.collab.agent_tools import AgentToolError
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import guideline_library_for, library_for
-from missioncrew.core.models import Channel
+from missioncrew.core.models import Channel, RunResult
+from missioncrew.runtime import runtime_manager
 
 
 def _run_config(store, chat: ChatEngine, role_id: str):
@@ -34,11 +37,11 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     chat = ChatEngine(seeded)
     lead, lead_run, lead_token = _run_config(seeded, chat, "lead")
     dev, dev_run, dev_token = _run_config(seeded, chat, "dev")
-    _lead_again, _lead_run_again, reused_lead_token = _run_config(
+    _lead_again, lead_run_again, next_lead_token = _run_config(
         seeded, chat, "lead")
 
     assert lead_run != dev_run and lead_token != dev_token
-    assert reused_lead_token == lead_token
+    assert lead_run_again != lead_run and next_lead_token != lead_token
     assert "# MissionCrew Agent Tool" in lead.common_prompt
     assert "message.publish" in lead.common_prompt
     assert "返回非空 `dispatched` 时" in lead.common_prompt
@@ -50,14 +53,66 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert "message.publish" not in dev.common_prompt
     assert "返回非空 `dispatched` 时" not in dev.common_prompt
     assert "missioncrew-action>" not in lead.common_prompt
-    assert f"--run-id {lead_run}" in lead.turn_prompt
+    assert "不要传 `--run-id`" in lead.turn_prompt
+    assert "MISSIONCREW_AGENT_RUN_ID" not in lead.env
     assert lead_token not in lead.prompt and dev_token not in dev.prompt
     assert Path(lead.env["MISSIONCREW_AGENT_TOKEN_FILE"]).stat().st_mode & 0o777 == 0o600
 
     stored = seeded._query(
-        "SELECT token_hash, token_id, project_id, channel, role_id FROM agent_tokens")
-    assert len(stored) == 2
+        "SELECT token_hash, token_id, project_id, channel,role_id,run_id "
+        "FROM agent_tokens")
+    assert len(stored) == 3
+    assert {row["run_id"] for row in stored} == {
+        lead_run, dev_run, lead_run_again}
     assert all(row["token_hash"] not in {lead_token, dev_token} for row in stored)
+
+
+def test_same_role_runs_rotate_bound_token_only_after_execution_lock(
+        seeded, monkeypatch):
+    chat = ChatEngine(seeded, max_workers=2)
+    first_started = threading.Event()
+    release_first = threading.Event()
+    guard = threading.Lock()
+    started_run_ids = []
+    active = 0
+    max_active = 0
+    token_file = None
+
+    def fake_start(config):
+        nonlocal active, max_active, token_file
+        token_file = Path(config.env["MISSIONCREW_AGENT_TOKEN_FILE"])
+        token = token_file.read_text(encoding="utf-8").strip()
+        identity = chat.agent_tools.authenticate(token)
+        with guard:
+            started_run_ids.append(identity.run_id)
+            active += 1
+            max_active = max(max_active, active)
+            first = len(started_run_ids) == 1
+        if first:
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        with guard:
+            active -= 1
+        return RunResult(True, "ok", output="done")
+
+    monkeypatch.setattr(runtime_manager, "start", fake_start)
+    chat.post("general", "human", "@[dev] 第一轮")
+    assert first_started.wait(timeout=5)
+    chat.post("general", "human", "@[dev] 第二轮")
+    time.sleep(0.1)
+    assert len(started_run_ids) == 1
+    release_first.set()
+    chat.wait_idle()
+
+    runs = seeded._query(
+        "SELECT id FROM chat_runs WHERE role_id='dev' ORDER BY id")
+    assert started_run_ids == [row["id"] for row in runs]
+    assert max_active == 1
+    assert token_file is not None and not token_file.exists()
+    token_rows = seeded._query(
+        "SELECT run_id,revoked_at FROM agent_tokens WHERE role_id='dev' ORDER BY created_at")
+    assert [row["run_id"] for row in token_rows] == started_run_ids
+    assert all(row["revoked_at"] is not None for row in token_rows)
 
 
 def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded):
@@ -73,7 +128,6 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
 
     published = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "document.publish",
-        "run_id": dev_run,
         "request_id": "publish-1",
         "arguments": {
             "path": "reports/tool-result.bin",
@@ -463,13 +517,13 @@ def test_agent_tool_cli_encodes_file_and_preserves_structured_error(
 
     monkeypatch.setattr(agent_tool, "_request_json", fake_request)
     exit_code = agent_tool.main([
-        "publish-file", "--run-id", "7", "--source", str(source),
+        "publish-file", "--source", str(source),
         "--path", "reports/evidence.bin",
     ])
     output = json.loads(capsys.readouterr().out)
     assert exit_code == 1 and output["error"]["code"] == "already_exists"
     assert captured["method"] == "POST"
     assert captured["payload"]["action"] == "document.publish"
-    assert captured["payload"]["run_id"] == 7
+    assert "run_id" not in captured["payload"]
     encoded = captured["payload"]["arguments"]["content_base64"]
     assert base64.b64decode(encoded) == b"evidence\x00"

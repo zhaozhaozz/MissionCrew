@@ -45,7 +45,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 `ExecutionConfig.runtime_policy` 是后端无关的执行策略，包含 `readable_paths`、`writable_paths`、`skill_paths` 和 `RuntimePermissions`。权限目前统一表达为审批模式 `auto|prompt|deny`、文件系统模式 `read-only|workspace-write|full-access`、网络模式 `inherit|allow|deny`。Runtime manager 会生成 `MISSIONCREW_READABLE_DIRS`、`MISSIONCREW_WRITABLE_DIRS`、`MISSIONCREW_SKILL_DIRS`、`MISSIONCREW_RUNTIME_PERMISSIONS`，provider 再把可支持的策略翻译为命令参数或 ACP 权限响应。`allowed_dirs` 仅作为旧构造入口的兼容字段。
 
-项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。聊天角色对 MissionCrew 的写操作同样不进入原始执行器：统一注入 Agent Tool URL、角色令牌文件和当前 `run_id`，Claude、Codex、ACP 与打印模式都调用相同 HTTP/CLI 契约。删除动作进入项目统一回收站，主控通过 `recycle.list`、`recycle.restore` 和 `recycle.purge` 管理回收项，Runtime 不直接读写其内部存储。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。具体动作、权限与错误结构见 [MissionCrew Agent Tool API](agent-tool-api.md)。
+项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。聊天角色对 MissionCrew 的写操作同样不进入原始执行器：统一注入 Agent Tool URL 和路径稳定的逐 Run capability 文件，Claude、Codex、ACP 与打印模式都调用相同 HTTP/CLI 契约。删除动作进入项目统一回收站，主控通过 `recycle.list`、`recycle.restore` 和 `recycle.purge` 管理回收项，Runtime 不直接读写其内部存储。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。具体动作、权限与错误结构见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
 ## 实时运行状态
 
@@ -93,7 +93,7 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 |---|---|---|---|
 | Claude / `claude_code` | 启动双向 stream-json 进程，从 `system/init` 保存原生 session id | 服务存活时把下一条 user message 写入同一进程；进程或服务重启后以 `--resume <id>` 恢复 | Runtime 返回 ID；一个 `channel::role` 对应一个长驻进程。模型、effort、目录或环境变化时重启进程，但恢复同一 session |
 | Codex / `codex` | 启动 `codex app-server`，调用 `initialize → thread/start` | 同一进程、同一 thread 调用 `turn/start`；进程或服务重启后先 `thread/resume` | app-server 返回 thread id；一个 `channel::role` 对应一个长驻进程。恢复失败会明确结束本轮，不会静默创建新 thread |
-| Grok / `grok_build` | `session/new` 创建会话，并在服务进程内保留 `grok agent stdio` | 同一服务进程直接续轮；重启后通过 `session/load` 恢复 | ACP session id；按 channel × role 长驻复用 |
+| Grok / `grok_build` | `session/new` 创建会话，并在服务进程内保留 `grok agent stdio` | 同一服务进程直接续轮；重启后通过带 `_meta.noReplay=true` 的 `session/load` 恢复 | ACP session id；按 channel × role 长驻复用，恢复历史不进入当前 Run |
 | OpenCode / `opencode` | 使用 `--format json` 启动，并从 JSON 事件捕获 session id | 新进程使用 `--session <id>`，继续保持 JSON 输出 | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | GitHub Copilot / `copilot` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程继续传同一个 `--session-id <id>` | 固定 ID；每轮一个 CLI 进程 |
 | Cursor / `cursor` | 使用 `--output-format json` 启动，并从 JSON 结果捕获 session/chat id | 新进程使用 `--resume <id>` | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
@@ -167,7 +167,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 
 ACP v1 把 `session/prompt` 响应定义为完整 prompt turn 的终止边界：Agent 只能在没有待处理工具调用时返回，取消后的残余 update 也必须先于响应发出；协议没有“响应已经返回、detached task 仍在后台运行并于稍后自动开启新 turn”的统一生命周期。Kimi 当前会在标准工具事件的开放字段中附带 `rawInput.run_in_background=true`，并在 `rawOutput` 返回 `task_id`、`status: running` 与 `automatic_notification`。MissionCrew 识别这一扩展形态后会登记后台任务；若阶段性 `session/prompt` 响应到达时任务仍在运行，平台保持原 chat run、ACP session 锁和事件接收器有效，并在同一原生 session 中发起内部续接 turn，要求 Runtime 使用自身的阻塞等待工具消费任务终态和最终结果。其他 ACP Runtime 若暴露相同开放字段也能复用该兼容路径；未暴露时不能从 ACP v1 推断 detached 生命周期，仍以标准 `session/prompt` 响应为完成边界。
 
-聊天场景中，同一“频道 × 角色”的 ACP serve 进程和 `sessionId` 会在 MissionCrew 服务进程内长驻复用；空闲 30 分钟后回收。MissionCrew 重启或进程退出后，平台读取 SQLite 中的会话 id，并且仅当 `initialize.agentCapabilities.loadSession=true` 时调用 `session/load`。Runtime 不支持或无法恢复时，平台明确降级为 `session/new`，并把格式化最近对话随新会话首轮输入补回。
+聊天场景中，同一“频道 × 角色”的 ACP serve 进程和 `sessionId` 会在 MissionCrew 服务进程内长驻复用；空闲 30 分钟后回收。MissionCrew 重启或进程退出后，平台读取 SQLite 中的会话 id，并且仅当 `initialize.agentCapabilities.loadSession=true` 时调用 `session/load`。Grok 的 load 请求额外传入 `_meta.noReplay=true`，因为 MissionCrew 已持有频道历史，不应把 Grok 保存的旧 `session/update` 重放进当前 Run；接收端还会丢弃 `_meta.isReplay=true` 的历史通知作为防御。Runtime 不支持或无法恢复时，平台明确降级为 `session/new`，并把格式化最近对话随新会话首轮输入补回。
 
 ### Agent Tool、公共上下文与压缩
 
@@ -175,7 +175,7 @@ ACP v1 把 `session/prompt` 响应定义为完整 prompt turn 的终止边界：
 
 公共区块并非每轮重发。完整注入只发生在：新会话或恢复降级（附最近对话）、版本变化（附替换旧版本提示）、重注入触发（附刷新提示）。其余复用轮次为增量回合，只发送版本引用头和本轮任务输入。重注入触发有两类：Claude 的 `compact_boundary`/`microcompact_boundary` 事件与 Codex app-server 的 `thread/compacted` 通知会立即持久化压缩标记；对没有压缩信号的 Runtime（ACP、其余打印模式），按增量回合的累计输入/输出字节数与轮数计数兜底，默认约 200k 字节或 5 轮后强制完整重注入，`MISSIONCREW_CONTEXT_REINJECT_BYTES` / `MISSIONCREW_CONTEXT_REINJECT_TURNS` 可覆盖（<=0 关闭对应触发）。每轮的注入模式（完整/增量及原因）作为状态事件上报，便于核对实际发送内容。
 
-Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。每轮任务输入另给出最新 `run_id`；持久 Runtime 必须显式传这个值，不能使用进程启动时遗留的 `MISSIONCREW_AGENT_RUN_ID`。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
+Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。同一 `channel × role` 的 Run 串行获得执行锁；平台随后在稳定令牌路径原子写入绑定该 Run 的 capability，CLI 不提交 `run_id`，API 从已认证 token 确定归属。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
 
 最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和 Task 分别位于 `MISSIONCREW_WORKSPACE` 下，并提供对应环境变量。聊天角色新建、修改或删除文档、Task 时使用 `document.publish`、`task.create`、`task.update`、`task.brief` 或 `task.delete`；文档执行后扫描只作为迁移兼容，Task 快照不会反向同步。
 

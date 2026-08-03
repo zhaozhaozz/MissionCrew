@@ -145,7 +145,13 @@ class _AcpClient:
         elif "id" in msg and "method" in msg:
             self._handle_agent_request(msg)
         elif msg.get("method") in ("session/update", "session/notification"):
-            update = (msg.get("params") or {}).get("update") or {}
+            params = msg.get("params") or {}
+            meta = params.get("_meta") or {}
+            # Grok 在恢复时会标记历史通知。即使 provider 忽略了 noReplay，
+            # 历史事件也不能进入当前 Run 的输出和工具生命周期。
+            if isinstance(meta, dict) and meta.get("isReplay") is True:
+                return
+            update = params.get("update") or {}
             kind = update.get("sessionUpdate")
             content = update.get("content") or {}
             if kind == "agent_message_chunk":
@@ -324,10 +330,12 @@ def _session_lock(session_key: str) -> threading.Lock:
 
 def _client_signature(cmd: list[str], workdir: str, env: dict) -> tuple:
     # ACP serve 进程启动后不能更新环境；项目目录权限已渲染进 cmd，其余平台
-    # 环境只比较 MISSIONCREW_*，避免 PATH 等无关变化打断会话。
+    # 环境只比较稳定的 MISSIONCREW_*。旧调用方可能仍传逐轮 run id；它由
+    # Agent Tool 的 run-scoped token 取代，不能因此打断长驻会话。
     platform_env = tuple(sorted(
         (key, str(value)) for key, value in env.items()
         if key.startswith("MISSIONCREW_")
+        and key != "MISSIONCREW_AGENT_RUN_ID"
     ))
     return tuple(cmd), workdir, platform_env
 
@@ -457,18 +465,22 @@ def _initialize(client: _AcpClient) -> dict:
 
 def _new_or_load_session(client: _AcpClient, workdir: str,
                          requested_session_id: str,
-                         initialize_result: dict) -> tuple[str, bool]:
+                         initialize_result: dict,
+                         load_meta: Optional[dict] = None) -> tuple[str, bool]:
     """返回 (会话 id, 是否成功恢复)。不支持/无法 load 时创建新会话。"""
     capabilities = initialize_result.get("agentCapabilities") or {}
     can_load = bool(isinstance(capabilities, dict)
                     and capabilities.get("loadSession") is True)
     if requested_session_id and can_load:
         try:
-            result = client.request("session/load", {
+            params = {
                 "sessionId": requested_session_id,
                 "cwd": workdir,
                 "mcpServers": [],
-            })
+            }
+            if load_meta:
+                params["_meta"] = dict(load_meta)
+            result = client.request("session/load", params)
             return (result.get("sessionId") or result.get("session_id")
                     or requested_session_id), True
         except AcpError as exc:
@@ -564,7 +576,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                context_version: str = "", runtime_id: str = "",
                task_id: str = "", stage_name: str = "",
                project_id: str = "", role_id: str = "",
-               cancelled: Optional[Callable[[], bool]] = None) -> tuple[bool, str]:
+               cancelled: Optional[Callable[[], bool]] = None,
+               load_session_meta: Optional[dict] = None) -> tuple[bool, str]:
     """完成一轮 ACP prompt，并按 channel×role 复用长驻原生会话。
 
     无 ``session_key`` 时保持一次性调用。长驻进程不存在（包括服务重启）时，
@@ -600,7 +613,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                 try:
                     initialize_result = _initialize(client)
                     runtime_session_id, recovered = _new_or_load_session(
-                        client, workdir, session_id, initialize_result)
+                        client, workdir, session_id, initialize_result,
+                        load_session_meta)
                 except Exception:
                     client.close()
                     raise

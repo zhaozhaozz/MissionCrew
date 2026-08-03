@@ -80,6 +80,7 @@ class AgentIdentity:
     channel_id: str
     role_id: str
     issued_scopes: tuple[str, ...]
+    run_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -259,8 +260,9 @@ class AgentActionService:
         ]
 
     def ensure_token_file(self, project: Project, channel: Channel, role_id: str,
-                          workspace_root: Path) -> tuple[Path, str]:
-        """为 channel×role 工作区准备可复用令牌文件，数据库只保存哈希。"""
+                          workspace_root: Path,
+                          run_id: int = 0) -> tuple[Path, str]:
+        """准备稳定路径的令牌文件；写操作令牌与一个 Run 确定绑定。"""
         token_file = workspace_root / ".agent-tool-token"
         now = time.time()
         try:
@@ -272,6 +274,7 @@ class AgentActionService:
             expected_scopes = self.allowed_actions(project, role_id)
             if (row and row["project_id"] == project.id
                     and row["channel"] == channel.id and row["role_id"] == role_id
+                    and int(row.get("run_id") or 0) == run_id
                     and row["revoked_at"] is None
                     and row["expires_at"] > now + TOKEN_RENEWAL_WINDOW_SECONDS
                     and row["scopes"] == expected_scopes):
@@ -289,7 +292,8 @@ class AgentActionService:
         self.store.put_agent_token(
             token_hash=self._hash_token(token), token_id=token_id,
             project_id=project.id, channel=channel.id, role_id=role_id,
-            scopes=scopes, expires_at=now + TOKEN_LIFETIME_SECONDS,
+            run_id=run_id, scopes=scopes,
+            expires_at=now + TOKEN_LIFETIME_SECONDS,
         )
         workspace_root.mkdir(parents=True, exist_ok=True)
         temporary: Optional[Path] = None
@@ -307,9 +311,38 @@ class AgentActionService:
         self.store.audit(
             f"role:{role_id}", "agent_tool_token_issued",
             detail=(f"project={project.id} channel={channel.id} role={role_id} "
-                    f"token={token_id} scopes={','.join(scopes)}"),
+                    f"run={run_id} token={token_id} scopes={','.join(scopes)}"),
         )
         return token_file, token_id
+
+    def deactivate_run_token(self, project_id: str, channel_id: str,
+                             role_id: str, workspace_root: Path,
+                             run_id: int) -> None:
+        """撤销本轮 capability，并仅在文件仍指向本轮时删除稳定入口。"""
+        if run_id <= 0:
+            return
+        token_file = workspace_root / ".agent-tool-token"
+        try:
+            current = token_file.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError, UnicodeError):
+            current = ""
+        current_row = (
+            self.store.get_agent_token(self._hash_token(current))
+            if current else None
+        )
+        self.store.revoke_agent_tokens(
+            project_id=project_id, channel=channel_id, role_id=role_id,
+            run_id=run_id)
+        if (current_row and int(current_row.get("run_id") or 0) == run_id
+                and current_row.get("project_id") == project_id
+                and current_row.get("channel") == channel_id
+                and current_row.get("role_id") == role_id):
+            try:
+                token_file.unlink(missing_ok=True)
+            except OSError:
+                LOGGER.warning(
+                    "Failed to remove expired Agent Tool token file: %s",
+                    token_file, exc_info=True)
 
     def authenticate(self, token: str) -> AgentIdentity:
         if not token:
@@ -332,6 +365,7 @@ class AgentActionService:
             token_id=str(row["token_id"]), project_id=project.id,
             channel_id=channel.id, role_id=role.id,
             issued_scopes=tuple(str(item) for item in row["scopes"]),
+            run_id=int(row.get("run_id") or 0),
         )
 
     def capabilities(self, identity: AgentIdentity) -> dict:
@@ -350,11 +384,25 @@ class AgentActionService:
         }
 
     def execute(self, identity: AgentIdentity, action: str, arguments: dict,
-                run_id: int, request_id: str) -> dict:
+                run_id: Optional[int], request_id: str) -> dict:
         if not REQUEST_ID_RE.fullmatch(request_id):
             raise AgentToolError(
                 "invalid_request_id", "request_id 只能包含字母、数字、下划线、连字符",
             )
+        bound_run_id = identity.run_id
+        if bound_run_id <= 0:
+            error = AgentToolError(
+                "run_unbound", "当前 Agent Tool capability 未绑定活动 Run", 409)
+            self._audit_call(identity, action, request_id, 0, "failed", error.code)
+            raise error
+        if run_id is not None and run_id != bound_run_id:
+            error = AgentToolError(
+                "run_mismatch", "客户端 run_id 与当前 capability 绑定的 Run 不一致",
+                403)
+            self._audit_call(
+                identity, action, request_id, bound_run_id, "denied", error.code)
+            raise error
+        run_id = bound_run_id
         run = self.store.get_chat_run(run_id)
         if (not run or run["channel"] != identity.channel_id
                 or run["role_id"] != identity.role_id):

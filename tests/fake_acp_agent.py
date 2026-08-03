@@ -18,11 +18,14 @@ def send(obj):
     sys.stdout.flush()
 
 
-def chunk(text):
-    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+def chunk(text, meta=None):
+    params = {
         "sessionId": "s-test",
         "update": {"sessionUpdate": "agent_message_chunk",
-                   "content": {"type": "text", "text": text}}}})
+                   "content": {"type": "text", "text": text}}}
+    if meta:
+        params["_meta"] = meta
+    send({"jsonrpc": "2.0", "method": "session/update", "params": params})
 
 
 def _session_new_result(shape):
@@ -45,6 +48,7 @@ def main():
     model = ""
     new_count = 0
     load_count = 0
+    load_no_replay = False
     prompt_count = 0
     for line in sys.stdin:
         line = line.strip()
@@ -63,6 +67,10 @@ def main():
                   "result": _session_new_result(shape)})
         elif method == "session/load":
             load_count += 1
+            load_no_replay = bool(
+                (msg["params"].get("_meta") or {}).get("noReplay"))
+            if shape == "replay" and not load_no_replay:
+                chunk("不应进入当前回合的历史", {"isReplay": True})
             send({"jsonrpc": "2.0", "id": mid,
                   "result": {"sessionId": msg["params"]["sessionId"]}})
         elif method == "session/set_model":
@@ -152,7 +160,8 @@ def main():
                 "update": {"sessionUpdate": "tool_call", "toolCallId": "t1",
                            "title": "read_file", "status": "completed"}}})
             chunk(f"ACP 收到任务({len(text)} 字符);轮次={prompt_count};"
-                  f"new={new_count};load={load_count}")
+                  f"new={new_count};load={load_count};"
+                  f"noReplay={int(load_no_replay)}")
             # 反向权限请求:客户端必须从 options 里选安全项,否则本进程会卡住
             send({"jsonrpc": "2.0", "id": 900, "method": "session/request_permission",
                   "params": {"sessionId": "s-test", "options": [

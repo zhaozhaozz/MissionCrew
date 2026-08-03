@@ -223,6 +223,8 @@ class ChatEngine:
         self._futures_lock = threading.Lock()
         self._history_lock = threading.Lock()
         self._chain_run_lock = threading.Lock()
+        self._agent_execution_locks_guard = threading.Lock()
+        self._agent_execution_locks: dict[tuple[str, str], threading.Lock] = {}
         # 频道停止与运行发布共用同一把锁：停止先赢时禁止迟到回复和后续调度，
         # 回复先赢时停止操作会连同刚产生的后续运行一起捕获。
         self._run_state_lock = threading.RLock()
@@ -240,6 +242,13 @@ class ChatEngine:
         if channel.context_start_message_id:
             return f"{base}::context-{channel.context_start_message_id}"
         return base
+
+    def _agent_execution_lock(self, channel_id: str,
+                              role_id: str) -> threading.Lock:
+        """同一 channel×role 只允许一个 Run 装配并持有 Agent Tool capability。"""
+        key = (channel_id, role_id)
+        with self._agent_execution_locks_guard:
+            return self._agent_execution_locks.setdefault(key, threading.Lock())
 
     def respond_interaction(self, run_id: int, request_id: str,
                             response: dict) -> None:
@@ -693,6 +702,20 @@ class ChatEngine:
 
     def _execute_inner(self, run_id: int, channel: Channel, role_id: str,
                        msg_id: int, root_id: int, depth: int) -> None:
+        with self._agent_execution_lock(channel.id, role_id):
+            try:
+                self._execute_inner_serialized(
+                    run_id, channel, role_id, msg_id, root_id, depth)
+            finally:
+                if channel.project_id:
+                    self.agent_tools.deactivate_run_token(
+                        channel.project_id, channel.id, role_id,
+                        chat_workspace_dir(channel.project_id, channel.id, role_id),
+                        run_id)
+
+    def _execute_inner_serialized(self, run_id: int, channel: Channel,
+                                  role_id: str, msg_id: int,
+                                  root_id: int, depth: int) -> None:
         role = self.store.get_role(channel.project_id or "", role_id)
         if role is None:
             with self._run_state_lock:
@@ -930,11 +953,10 @@ class ChatEngine:
                 env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
                 token_file, token_id = self.agent_tools.ensure_token_file(
-                    project, channel, role.id, workspace.root)
+                    project, channel, role.id, workspace.root, run_id=run_id)
                 tool_url = default_agent_tool_url()
                 env["MISSIONCREW_AGENT_TOOL_URL"] = tool_url
                 env["MISSIONCREW_AGENT_TOKEN_FILE"] = str(token_file)
-                env["MISSIONCREW_AGENT_RUN_ID"] = str(run_id) if run_id else ""
                 env["MISSIONCREW_AGENT_TOOL_PYTHON"] = sys.executable
                 env["MISSIONCREW_CHANNEL_ID"] = channel.id
                 allowed_actions = self.agent_tools.allowed_actions(project, role.id)
@@ -943,7 +965,7 @@ class ChatEngine:
                 identity = AgentIdentity(
                     token_id=token_id, project_id=project.id,
                     channel_id=channel.id, role_id=role.id,
-                    issued_scopes=tuple(allowed_actions))
+                    issued_scopes=tuple(allowed_actions), run_id=run_id)
                 agent_action = (
                     (lambda action, arguments, _identity=identity:
                         self.agent_tools.execute(
@@ -962,10 +984,10 @@ class ChatEngine:
                     "查看能力：`\"$MISSIONCREW_AGENT_TOOL_PYTHON\" -m "
                     "missioncrew.agent_tool actions`\n"
                     "调用格式：`\"$MISSIONCREW_AGENT_TOOL_PYTHON\" -m "
-                    "missioncrew.agent_tool call <action> --run-id <本轮 run_id> "
+                    "missioncrew.agent_tool call <action> "
                     "--arguments '<JSON 对象>'`\n"
                     "发布文件：`\"$MISSIONCREW_AGENT_TOOL_PYTHON\" -m "
-                    "missioncrew.agent_tool publish-file --run-id <本轮 run_id> "
+                    "missioncrew.agent_tool publish-file "
                     "--source <本地文件> --path <文档库相对路径>`\n"
                     "可用动作：" + ", ".join(allowed_actions)
                 )
@@ -1041,9 +1063,9 @@ class ChatEngine:
         common_prompt = DURABLE_CONTEXT_TEMPLATE.format(
             context_version=context_version, common_body=common_body)
         tool_context = (
-            f"本轮 run_id：`{run_id}`。所有写调用必须显式传 `--run-id {run_id}`；"
-            "不要依赖持久 Runtime 进程继承的旧环境变量。"
-            if run_id else "本次仅装配上下文，未分配可执行的 run_id。")
+            "本轮 Agent Tool capability 已由平台确定绑定到当前 Run；"
+            "调用工具时不要传 `--run-id`，平台会从凭证确定归属。"
+            if run_id else "本次仅装配上下文，未分配可执行的 Agent Tool capability。")
         turn_prompt = TURN_PROMPT.format(
             tool_context=tool_context,
             trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2))

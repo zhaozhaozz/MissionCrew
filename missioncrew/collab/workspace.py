@@ -339,8 +339,8 @@ def _render_workspace_readme(workspace: AgentWorkspace, project_id: str,
 回收站；主控可列出、恢复或永久删除回收项。工具会在当前回合返回结构化错误并记录角色
 审计。`documents/` 和 `tasks/` 中的直接写入同步只用于旧会话兼容。
 
-不要读取或打印 `.agent-tool-token`；使用 Agent Tool CLI，它会自行读取令牌文件。每次
-写调用都显式传入最新 Prompt 给出的 `run_id`。
+不要读取或打印 `.agent-tool-token`；使用 Agent Tool CLI，它会自行读取令牌文件。
+平台会把该短期 capability 确定绑定到当前 Run，调用时不要传 `--run-id`。
 """
         if has_history else ""
     )

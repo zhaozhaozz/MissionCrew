@@ -11,7 +11,7 @@ Runtime
   └─ missioncrew-tool / python -m missioncrew.agent_tool
        └─ Authorization: Bearer <channel×role token>
             └─ POST /api/agent/v1/actions
-                 └─ 身份、scope、run_id、参数与资源边界校验
+                 └─ 身份、scope、token 绑定 Run、参数与资源边界校验
                       └─ 统一动作注册表
                            ├─ 平台状态或文档版本写入
                            ├─ 资源 URL 结果
@@ -23,8 +23,7 @@ Runtime
 | 环境变量 | 含义 |
 | --- | --- |
 | `MISSIONCREW_AGENT_TOOL_URL` | 当前服务的 Agent Tool API 根地址，默认是 `http://127.0.0.1:8321/api/agent/v1` |
-| `MISSIONCREW_AGENT_TOKEN_FILE` | 当前频道和角色的令牌文件；CLI 自行读取，Agent 不应打印或发布内容 |
-| `MISSIONCREW_AGENT_RUN_ID` | 启动进程时的回合 ID，仅作 CLI 默认值；持久会话必须使用最新 Prompt 中的 `run_id` |
+| `MISSIONCREW_AGENT_TOKEN_FILE` | 稳定路径的逐 Run capability 文件；CLI 自行读取，Agent 不应打印或发布内容 |
 | `MISSIONCREW_AGENT_TOOL_PYTHON` | 可以导入当前 MissionCrew 包的 Python 解释器 |
 
 先查看当前角色获准执行的动作：
@@ -33,15 +32,13 @@ Runtime
 "$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool actions
 ```
 
-再显式传入当前 Prompt 给出的 `run_id`：
+写调用不传 `run_id`；服务端从 Bearer token 确定当前 Run：
 
 ```bash
 "$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool call task.create \
-  --run-id 42 \
   --arguments '{"title":"补齐接口测试","summary":"覆盖错误返回","channel_ids":["demo:general"],"labels":["api"]}'
 
 "$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool publish-file \
-  --run-id 42 \
   --source reports/result.md \
   --path reports/result.md
 ```
@@ -50,9 +47,9 @@ Runtime
 
 ## 身份、权限与生命周期
 
-令牌按 `project × channel × role` 分配，而不是按 Runtime 分配，所以角色更换 Claude、Codex 或 ACP 后仍遵循同一权限。明文只写入该角色隔离工作区的 `.agent-tool-token`，文件权限为 `0600`；SQLite 只保存 SHA-256 哈希、随机 `token_id`、作用域、签发时间、过期时间和最后使用时间。
+令牌按 `project × channel × role × run` 分配，而不是按 Runtime 分配，所以角色更换 Claude、Codex 或 ACP 后仍遵循同一权限。明文只写入该角色隔离工作区中路径稳定的 `.agent-tool-token`，文件权限为 `0600`；每个 Run 获得执行锁后原子替换文件内容。SQLite 只保存 SHA-256 哈希、随机 `token_id`、绑定的 `run_id`、作用域、签发时间、过期时间和最后使用时间。
 
-令牌默认有效七天，在距离过期不足一天时自动轮换。角色删除、频道删除、权限作用域变化或主控角色变化后，旧令牌会被撤销或在下一轮装配时轮换。每次调用还必须携带活动的 `run_id`；服务端确认该回合属于令牌中的频道和角色，并且状态仍是 `queued`、`running` 或 `waiting_user`。因此仅获得旧令牌不足以在已结束回合中继续写入。
+令牌最多有效七天，但正常情况下会在对应 Run 结束时立即撤销并删除文件；下一 Run 在同一路径写入新的 capability。服务端从令牌直接得到 `run_id`，并确认该回合属于令牌中的频道和角色且状态仍是 `queued`、`running` 或 `waiting_user`。旧客户端提交的 `run_id` 只作为兼容校验字段，不能改变令牌绑定的 Run。因此获得旧令牌不足以在已结束回合中继续写入。
 
 当前权限策略如下：
 
@@ -82,7 +79,6 @@ Runtime
 ```json
 {
   "action": "document.publish",
-  "run_id": 42,
   "request_id": "publish-report-1",
   "arguments": {
     "path": "reports/result.md",

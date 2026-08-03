@@ -123,8 +123,7 @@ Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其�
 | `MISSIONCREW_CHANNEL_HISTORY` | 当前角色可见的频道历史文件；仅聊天执行 |
 | `MISSIONCREW_ALLOWED_DIRS` | 本次明确授权的项目资源和 harness 目录列表 |
 | `MISSIONCREW_AGENT_TOOL_URL` | 统一 Agent Tool API 根地址；仅聊天执行 |
-| `MISSIONCREW_AGENT_TOKEN_FILE` | 当前频道和角色的 Bearer token 文件；仅聊天执行 |
-| `MISSIONCREW_AGENT_RUN_ID` | 进程启动时的回合 ID；持久会话应使用最新 Prompt 中显式给出的值 |
+| `MISSIONCREW_AGENT_TOKEN_FILE` | 路径稳定、内容按 Run 原子轮换的 Bearer capability 文件；仅聊天执行 |
 | `MISSIONCREW_AGENT_TOOL_PYTHON` | 可执行 Agent Tool CLI 模块的 Python 解释器 |
 
 Runtime 的实际 `PWD` 仍是 `workdir`。支持原生多目录授权的适配器会把允许目录转换为相应命令行参数；其他 Runtime 也能从环境变量和提示上下文获知这些路径。Agent Tool 的身份、scope、动作和错误契约见 [MissionCrew Agent Tool API](agent-tool-api.md)。

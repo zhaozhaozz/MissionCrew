@@ -797,6 +797,9 @@ class AcpAdapter:
             task_id=cfg.task_id, stage_name=cfg.stage_name,
             project_id=cfg.project_id, role_id=cfg.role_id,
             cancelled=cfg.cancelled,
+            load_session_meta=(
+                {"noReplay": True}
+                if self.adapter_name == "grok_build" else None),
         )
         try:
             _diagnostic_log_path(cfg, self.adapter_name).write_text(text)

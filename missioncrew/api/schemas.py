@@ -63,7 +63,8 @@ class RuntimeInteractionInput(BaseModel):
 class AgentToolCallInput(BaseModel):
     action: str = Field(min_length=1, max_length=100, pattern=r"^[\w.-]+$")
     arguments: dict = Field(default_factory=dict)
-    run_id: int = Field(gt=0)
+    # 旧客户端可继续发送；服务端以 Bearer token 的逐 Run 绑定为事实源。
+    run_id: Optional[int] = Field(None, gt=0)
     request_id: Optional[str] = Field(
         None, min_length=1, max_length=100, pattern=r"^[\w-]+$")
 

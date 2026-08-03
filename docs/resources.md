@@ -189,8 +189,7 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 | `MISSIONCREW_SKILLS_DIR` | 已启用 Skill 的完整目录视图 |
 | `MISSIONCREW_CHANNEL_HISTORY` | 当前角色可见的频道历史 JSON；仅聊天执行 |
 | `MISSIONCREW_AGENT_TOOL_URL` | 聊天角色调用统一平台动作的 API 根地址 |
-| `MISSIONCREW_AGENT_TOKEN_FILE` | 当前频道和角色的 Agent Tool 令牌文件 |
-| `MISSIONCREW_AGENT_RUN_ID` | 进程启动时的回合 ID；实际调用以最新 Prompt 为准 |
+| `MISSIONCREW_AGENT_TOKEN_FILE` | 路径稳定、内容按 Run 原子轮换的 Agent Tool capability 文件 |
 
 完整目录权限、同步和隔离边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
 

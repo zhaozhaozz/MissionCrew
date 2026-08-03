@@ -76,28 +76,17 @@ def _request_json(method: str, payload: Optional[dict] = None) -> tuple[int, dic
         }
 
 
-def _default_run_id() -> Optional[int]:
-    value = os.environ.get("MISSIONCREW_AGENT_RUN_ID", "").strip()
-    try:
-        return int(value) if value else None
-    except ValueError:
-        return None
-
-
-def _require_run_id(value: Optional[int]) -> int:
-    if value is None or value <= 0:
-        raise ValueError("必须通过 --run-id 显式提供当前 Prompt 中的 run_id")
-    return value
-
-
 def _request_payload(action: str, arguments: dict,
                      run_id: Optional[int]) -> dict:
-    return {
+    payload = {
         "action": action,
         "arguments": arguments,
-        "run_id": _require_run_id(run_id),
         "request_id": uuid.uuid4().hex,
     }
+    # 兼容旧调用方；服务端始终以 Bearer token 绑定的 Run 为准。
+    if run_id is not None:
+        payload["run_id"] = run_id
+    return payload
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -109,17 +98,20 @@ def _build_parser() -> argparse.ArgumentParser:
 
     call = subparsers.add_parser("call", help="Call a canonical MissionCrew action.")
     call.add_argument("action")
-    call.add_argument("--run-id", type=int, default=_default_run_id())
+    call.add_argument("--run-id", type=int, default=None,
+                      help=argparse.SUPPRESS)
     call.add_argument("--arguments", default="{}", help="JSON object")
 
     message = subparsers.add_parser("publish-message", help="Publish a channel message.")
-    message.add_argument("--run-id", type=int, default=_default_run_id())
+    message.add_argument("--run-id", type=int, default=None,
+                         help=argparse.SUPPRESS)
     message.add_argument("--channel", required=True)
     message.add_argument("--content", required=True)
     message.add_argument("--mention", action="append", default=[])
 
     document = subparsers.add_parser("publish-file", help="Publish a local file.")
-    document.add_argument("--run-id", type=int, default=_default_run_id())
+    document.add_argument("--run-id", type=int, default=None,
+                          help=argparse.SUPPRESS)
     document.add_argument("--source", type=Path, required=True)
     document.add_argument("--path", required=True)
     document.add_argument("--message", default="")

@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS agent_tokens (
   project_id TEXT NOT NULL,
   channel TEXT NOT NULL,
   role_id TEXT NOT NULL,
+  run_id INTEGER NOT NULL DEFAULT 0,
   scopes TEXT NOT NULL DEFAULT '[]',
   created_at REAL NOT NULL,
   expires_at REAL NOT NULL,
@@ -113,6 +114,7 @@ class Store:
         self._migrate_chat_messages()
         self._migrate_runtime_usage()
         self._migrate_chat_sessions()
+        self._migrate_agent_tokens()
         self._migrate_tasks_to_issues()
         self._conn.commit()
 
@@ -253,6 +255,16 @@ class Store:
                 changed += 1
         self._conn.commit()
         return changed
+
+    def _migrate_agent_tokens(self) -> int:
+        """为旧的 channel×role 令牌补充逐 Run 绑定字段。"""
+        columns = {row["name"] for row in self._conn.execute(
+            "PRAGMA table_info(agent_tokens)").fetchall()}
+        if "run_id" in columns:
+            return 0
+        self._conn.execute(
+            "ALTER TABLE agent_tokens ADD COLUMN run_id INTEGER NOT NULL DEFAULT 0")
+        return 1
 
     def _migrate_runtime_usage(self) -> None:
         """为已有使用历史补齐项目与角色归属列。"""
@@ -626,11 +638,12 @@ class Store:
     # ---- Agent Tool 身份令牌 ----
     def put_agent_token(self, *, token_hash: str, token_id: str,
                         project_id: str, channel: str, role_id: str,
-                        scopes: list[str], expires_at: float) -> None:
+                        scopes: list[str], expires_at: float,
+                        run_id: int = 0) -> None:
         self._execute(
             "INSERT INTO agent_tokens(token_hash,token_id,project_id,channel,role_id,"
-            "scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
-            (token_hash, token_id, project_id, channel, role_id,
+            "run_id,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
+            (token_hash, token_id, project_id, channel, role_id, run_id,
              json.dumps(scopes, ensure_ascii=False), time.time(), expires_at),
         )
 
@@ -653,7 +666,8 @@ class Store:
         )
 
     def revoke_agent_tokens(self, *, project_id: str = "", channel: str = "",
-                            role_id: str = "") -> int:
+                            role_id: str = "",
+                            run_id: Optional[int] = None) -> int:
         clauses = ["revoked_at IS NULL"]
         params: list[object] = []
         for column, value in (("project_id", project_id), ("channel", channel),
@@ -661,6 +675,9 @@ class Store:
             if value:
                 clauses.append(f"{column}=?")
                 params.append(value)
+        if run_id is not None:
+            clauses.append("run_id=?")
+            params.append(run_id)
         if len(clauses) == 1:
             return 0
         with self._lock:

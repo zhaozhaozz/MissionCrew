@@ -203,6 +203,41 @@ def test_acp_reuses_one_live_session_for_multiple_turns(tmp_path):
         acp.close_sessions()
 
 
+def test_acp_signature_ignores_legacy_per_run_environment(tmp_path):
+    first = {"MISSIONCREW_AGENT_RUN_ID": "41",
+             "MISSIONCREW_AGENT_TOKEN_FILE": "/stable/token"}
+    second = {"MISSIONCREW_AGENT_RUN_ID": "42",
+              "MISSIONCREW_AGENT_TOKEN_FILE": "/stable/token"}
+    changed_path = {**second, "MISSIONCREW_AGENT_TOKEN_FILE": "/other/token"}
+
+    assert acp._client_signature(["agent"], str(tmp_path), first) == \
+        acp._client_signature(["agent"], str(tmp_path), second)
+    assert acp._client_signature(["agent"], str(tmp_path), second) != \
+        acp._client_signature(["agent"], str(tmp_path), changed_path)
+
+
+def test_acp_drops_provider_marked_replay_notifications():
+    client = object.__new__(acp._AcpClient)
+    client.chunks = []
+    events = []
+    client.emit = lambda kind, text: events.append((kind, text))
+
+    client._handle({
+        "jsonrpc": "2.0",
+        "method": "session/update",
+        "params": {
+            "sessionId": "persisted",
+            "_meta": {"isReplay": True, "eventId": "old-event"},
+            "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "historical"},
+            },
+        },
+    })
+
+    assert client.chunks == [] and events == []
+
+
 def test_runtime_manager_stops_acp_live_session(tmp_path, monkeypatch):
     saved = {}
     backend = Backend(id="kimi-stop", name="k", adapter="kimi")
@@ -232,6 +267,22 @@ def test_acp_loads_persisted_session_after_process_restart(tmp_path):
         # session/load 恢复了包含公共上下文的完整会话,版本未变仍走增量回合
         assert ("input", adapters.LEAN_TURN_TEMPLATE.format(context_version="v1")
                 + "当前任务") in events
+    finally:
+        acp.close_sessions()
+
+
+def test_grok_load_disables_historical_replay(tmp_path):
+    saved = {"id": "persisted-session", "context": "v1"}
+    config = _chat_cfg(tmp_path, saved)
+    config.backend = Backend(id="grok", name="g", adapter="grok_build")
+    events = []
+    config.emit = lambda kind, text: events.append((kind, text))
+    try:
+        result = _adapter("grok_build", "replay").run(config)
+        assert result.success
+        assert "load=1;noReplay=1" in result.output
+        assert all("不应进入当前回合的历史" not in text
+                   for _kind, text in events)
     finally:
         acp.close_sessions()
 
