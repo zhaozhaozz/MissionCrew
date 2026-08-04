@@ -112,7 +112,9 @@ function renderRuntimeStatusPayload(data) {
       <td><b>${esc(instance.backend_id)}</b><br><span class="muted">` +
         `${esc(RUNTIME_TRANSPORT_LABELS[instance.transport] || instance.transport)}</span></td>
       <td><span class="pill">${instance.mode === "persistent" ? "持久实例" : "单次执行"}</span>` +
-        `<br><span class="muted">${esc(instance.executable || "—")}</span></td>
+        `<br><span class="muted">${esc(instance.executable || "—")}</span>` +
+        `${instance.background_tasks ? `<br><span class="muted" title="回收或重启该实例会终止这些后台命令">` +
+          `⏳ ${instance.background_tasks} 个后台命令</span>` : ""}</td>
       <td><code>${instance.pid || "—"}</code></td>
       <td>${esc(instance.project_id || "—")}` +
         `${instance.role_id ? `<br><span class="muted">@${esc(instance.role_id)}</span>` : ""}</td>

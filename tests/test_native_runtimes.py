@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -372,3 +373,76 @@ def test_codex_model_catalog_comes_from_app_server(tmp_path, monkeypatch):
     provider = CodexRuntimeProvider(_Fallback(), _fake_command("codex"))
     backend = Backend(id="codex", name="Codex", adapter="codex")
     assert provider.list_models(backend) == ["gpt-test"]
+
+
+def test_claude_background_bash_tracked_and_wake_turn_dispatched(tmp_path):
+    """后台命令跨 turn 存活；空闲时的自唤醒 turn 缓冲后交给 wake handler。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    session.last_project_id = "webshop"
+    session.last_role_id = "dev2"
+    woken: list[dict] = []
+    claude_mod.set_wake_handler(woken.append)
+    try:
+        # turn 内启动后台命令并结束 turn：不阻塞 result,任务仍被跟踪
+        session._handle_message({
+            "type": "system", "subtype": "task_started", "task_id": "bg1",
+            "task_type": "local_bash", "description": "sleep 25 && deploy"})
+        assert "bg1" in session._background_tasks
+        assert session.snapshot().background_tasks == 1
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "started"})
+        assert session._result_ready.is_set()
+
+        # 任务结束(空闲):记为唤醒原因,随后 CLI 自发开启汇报 turn
+        session._result_ready.clear()
+        session._handle_message({
+            "type": "system", "subtype": "task_notification", "task_id": "bg1",
+            "status": "completed", "summary": "exit 0"})
+        assert session._background_tasks == {}
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-2"})
+        session._handle_message({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "部署已完成，服务健康。"}]}})
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "部署已完成，服务健康。"})
+
+        deadline = time.time() + 5
+        while not woken and time.time() < deadline:
+            time.sleep(0.01)
+        assert woken, "wake handler 未被调用"
+        payload = woken[0]
+        assert payload["session_key"] == "general::dev2"
+        assert payload["role_id"] == "dev2"
+        assert payload["output"] == "部署已完成，服务健康。"
+        assert [task["task_id"] for task in payload["tasks"]] == ["bg1"]
+        assert any(kind == "text" for kind, _ in payload["events"])
+        # 自唤醒 turn 不污染运行 turn 的 result 状态机
+        assert not session._result_ready.is_set()
+        assert session._wake_sink is None
+    finally:
+        claude_mod.set_wake_handler(None)
+
+
+def test_claude_background_task_finishing_inside_turn_is_not_wake_reason(tmp_path):
+    """运行 turn 内结束的后台任务由 CLI 直接喂给当前回合,不再触发唤醒。"""
+    from types import SimpleNamespace
+
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    session._handle_message({
+        "type": "system", "subtype": "task_started", "task_id": "bg2",
+        "task_type": "local_bash", "description": "quick job"})
+    session._active_config = SimpleNamespace(emit=None)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "task_notification", "task_id": "bg2",
+            "status": "completed", "summary": ""})
+        assert session._wake_reasons == []
+        assert session._background_tasks == {}
+    finally:
+        session._active_config = None

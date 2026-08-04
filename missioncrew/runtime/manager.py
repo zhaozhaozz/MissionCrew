@@ -104,6 +104,14 @@ class RuntimeManager:
             raise ValueError("Runtime adapter 不能为空")
         self._providers[adapter] = provider
 
+    def set_wake_handler(self, handler) -> None:
+        """注册 Runtime 自唤醒回调(目前只有 Claude 的后台任务汇报 turn)。
+
+        业务层不感知具体协议:回调收到统一 payload(session_key/输出/
+        触发任务),由 ChatEngine 落成频道内的新运行。"""
+        from . import claude
+        claude.set_wake_handler(handler)
+
     def provider_for(self, backend: Backend) -> RuntimeProvider:
         return self._providers.get(backend.adapter, self._builtin)
 

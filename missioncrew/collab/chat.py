@@ -235,6 +235,9 @@ class ChatEngine:
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
+        # Claude 后台命令结束后 CLI 会自发唤醒模型汇报;平台把这类 turn
+        # 落成频道里的新运行,汇报按常规回路交回主控验收
+        runtime_manager.set_wake_handler(self._handle_runtime_wake)
 
     @staticmethod
     def _session_key(channel: Channel, role_id: str) -> str:
@@ -699,6 +702,95 @@ class ChatEngine:
                 and role_id != orchestrator
                 and not self._is_direct_human_dispatch(msg_id, role_id)):
             self._trigger(channel, orchestrator, failure_id, root_id, result_depth)
+
+    def _handle_runtime_wake(self, payload: dict) -> None:
+        """Runtime 协议线程的回调:移交执行池处理,不阻塞 stdout 读取。"""
+        try:
+            self._pool.submit(self._process_runtime_wake, payload)
+        except RuntimeError:
+            pass   # 引擎已关闭,丢弃迟到的唤醒
+
+    def _process_runtime_wake(self, payload: dict) -> None:
+        """把 Runtime 自唤醒 turn(后台命令结束后的自动汇报)落成新运行。
+
+        会话按 channel×role 复用,session_key 能唯一定位汇报应落入的频道
+        与角色;运行以一条平台消息为触发锚点,汇报走常规 Agent 回复回路
+        (非主控的结果自动交回主控)。"""
+        session_key = str(payload.get("session_key") or "")
+        session = (self.store.get_chat_session(session_key)
+                   if session_key else None)
+        if not session:
+            return
+        channel = self.store.get_channel(str(session["channel"]))
+        if channel is None or channel.archived:
+            return
+        role_id = str(session["role_id"])
+        role = self.store.get_role(channel.project_id or "", role_id)
+        if role is None or not role.enabled:
+            return
+        output = str(payload.get("output") or "").strip()
+        if not output:
+            return
+        backend_id = str(payload.get("backend_id")
+                         or session["backend_id"] or "")
+        backend = self.store.get_backend(backend_id)
+        tasks = [task for task in payload.get("tasks") or []
+                 if isinstance(task, dict)]
+        described = "、".join(f"`{task['description']}`" for task in tasks
+                             if task.get("description"))
+        trigger_text = (f"@{role_id} 的后台命令已结束"
+                        + (f"：{described}" if described else "")
+                        + "，以下是其自动汇报。")
+        with self._run_state_lock:
+            if channel.id in self._stopping_channels:
+                return
+            trigger_id = self.store.add_message(
+                channel.id, "platform", "platform", trigger_text, [])
+            run_id = self.store.add_chat_run(
+                channel.id, role_id, trigger_id, trigger_id, 0)
+            self.store.update_chat_run(run_id, "running",
+                                       backend_id=backend_id)
+        self._write_channel_history(channel)
+        project = self.store.get_project(channel.project_id or "")
+        document_roots = [library_for(channel.project_id or "").root]
+
+        def _normalized(text: str) -> str:
+            if project and ".missioncrew" in text:
+                return normalize_document_resource_urls(
+                    text, project.id, document_roots)
+            return text
+
+        # 回放自唤醒 turn 缓冲的过程事件,运行卡片与常规运行一致
+        for item in payload.get("events") or []:
+            try:
+                kind, text = item
+            except (TypeError, ValueError):
+                continue
+            self.store.append_run_event(run_id, str(kind), _normalized(str(text)))
+
+        reply = output
+        if project and role.id == project.orchestrator_role_id:
+            reply = self._apply_orchestrator_actions(
+                project, role.id, reply, root_id=trigger_id, depth=0)
+        elif ACTION_RE.search(reply):
+            reply = ACTION_RE.sub("", reply).strip()
+            reply += "\n\n(检测到平台控制动作,但只有项目主控可以执行,未生效)"
+        if project:
+            reply = normalize_document_resource_urls(
+                reply, project.id, document_roots)
+        with self._run_state_lock:
+            if not self.store.chat_run_is_active(run_id):
+                return
+            self.store.remove_duplicate_reply_output(run_id, reply)
+            self.post(channel.id, role_id, reply, author_type="agent",
+                      reply_to=trigger_id, root_id=trigger_id, depth=1,
+                      runtime_id=backend_id,
+                      model=backend.model if backend else None,
+                      effort=role.effort or None)
+            self.store.update_chat_run(run_id, "done", backend_id=backend_id)
+        self.store.audit("platform", "chat_wake",
+                         detail=f"channel={channel.id} role={role_id} "
+                                f"backend={backend_id} tasks={len(tasks)}")
 
     def _execute_inner(self, run_id: int, channel: Channel, role_id: str,
                        msg_id: int, root_id: int, depth: int) -> None:

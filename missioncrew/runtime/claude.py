@@ -7,8 +7,9 @@ import subprocess
 import threading
 import time
 import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
@@ -16,6 +17,26 @@ from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageSnapshot)
 from .native import RuntimeProtocolError, emit_json, safe_emit
 from .usage import probe_claude_usage
+
+# 后台任务结束后 Claude CLI 会自发开启新 turn(无用户输入)汇报结果。
+# 平台层(ChatEngine)注册该回调,把这类"自唤醒 turn"落成频道里的新运行。
+_WAKE_HANDLER: Optional[Callable[[dict], None]] = None
+
+
+def set_wake_handler(handler: Optional[Callable[[dict], None]]) -> None:
+    global _WAKE_HANDLER
+    _WAKE_HANDLER = handler
+
+
+@dataclass
+class _TurnSink:
+    """一个 turn 的输出汇聚点。运行 turn 落到 config.emit;自唤醒 turn
+    没有对应运行,事件先缓冲,turn 结束后整体交给 wake handler 回放。"""
+    emit: Optional[Callable[[str, str], None]] = None
+    output: list[str] = field(default_factory=list)
+    saw_partial_text: bool = False
+    saw_partial_thinking: bool = False
+    events: list[tuple[str, str]] = field(default_factory=list)
 
 
 _QUESTION_TOOLS = {
@@ -170,9 +191,12 @@ class _ClaudeSession:
         self._result_ready = threading.Event()
         self._active_config: Optional[ExecutionConfig] = None
         self._result: dict = {}
-        self._output: list[str] = []
-        self._saw_partial_text = False
-        self._saw_partial_thinking = False
+        self._run_sink = _TurnSink()
+        # 后台命令(run_in_background 的 local_bash 等)跨 turn 存活;
+        # 结束时 CLI 自发唤醒模型,输出经 _wake_sink 缓冲后交给 wake handler
+        self._background_tasks: dict[str, dict] = {}
+        self._wake_sink: Optional[_TurnSink] = None
+        self._wake_reasons: list[dict] = []
         # Claude 的后台 Agent 会跨越一次或多次顶层 result。task lifecycle
         # 消息是权威状态；tool id 只用于兼容尚未发送 task_started 的旧版本。
         self._native_agents: dict[str, dict] = {}
@@ -291,9 +315,7 @@ class _ClaudeSession:
             self.last_role_id = config.role_id
             self.last_model = config.backend.model
             self._result = {}
-            self._output = []
-            self._saw_partial_text = False
-            self._saw_partial_thinking = False
+            self._run_sink = _TurnSink(emit=config.emit)
             self._native_agents = {}
             self._pending_native_agents = set()
             self._agent_tool_calls = {}
@@ -323,7 +345,7 @@ class _ClaudeSession:
                 result = self._result
                 output = str(result.get("result") or "").strip()
                 if not output:
-                    output = "".join(self._output).strip()
+                    output = "".join(self._run_sink.output).strip()
                 success = not bool(result.get("is_error")) and str(
                     result.get("subtype") or "success") == "success"
                 if result.get("session_id"):
@@ -370,6 +392,7 @@ class _ClaudeSession:
             project_id=self.last_project_id, role_id=self.last_role_id,
             model=self.last_model, executable=Path(self.command[0]).name,
             started_at=self.created_at, last_activity=self.last_activity,
+            background_tasks=len(self._background_tasks),
         )
 
     def _read_stdout(self) -> None:
@@ -419,7 +442,79 @@ class _ClaudeSession:
             safe_emit(self._emit(), "stderr", line)
 
     def _emit(self):
-        return self._active_config.emit if self._active_config else None
+        sink = self._current_sink()
+        return sink.emit if sink else None
+
+    def _register_background_task(self, message: dict) -> None:
+        task_id = str(message.get("task_id") or "")
+        if not task_id or task_id in self._background_tasks:
+            return
+        meta = {
+            "task_id": task_id,
+            "task_type": str(message.get("task_type") or "local_bash"),
+            "description": str(message.get("description") or "后台命令"),
+            "started_at": time.time(),
+        }
+        self._background_tasks[task_id] = meta
+        emit_json(self._emit(), "backend_agent", {
+            "runtime": "claude", "status": "running",
+            "task_id": task_id, "task_type": meta["task_type"],
+            "description": f"后台命令：{meta['description']}",
+        })
+
+    def _finish_background_task(self, message: dict, status: str) -> None:
+        task_id = str(message.get("task_id") or "")
+        meta = self._background_tasks.pop(task_id, None)
+        if meta is None:
+            return
+        summary = str(message.get("summary") or "")
+        emit_json(self._emit(), "backend_agent", {
+            "runtime": "claude", "status": status,
+            "task_id": task_id, "task_type": meta["task_type"],
+            "description": f"后台命令：{meta['description']}",
+            "summary": summary,
+        })
+        # 运行 turn 内结束的任务由 CLI 直接把结果喂给当前回合;只有空闲
+        # 或自唤醒场景需要记为唤醒原因,供 wake handler 说明这轮因何而起。
+        if self._active_config is None or self._wake_sink is not None:
+            self._wake_reasons.append({
+                **meta, "status": status, "summary": summary,
+                "output_file": str(message.get("output_file") or ""),
+            })
+            del self._wake_reasons[:-10]
+
+    def _finish_wake_turn(self, result: dict) -> None:
+        sink = self._wake_sink
+        self._wake_sink = None
+        reasons = self._wake_reasons
+        self._wake_reasons = []
+        if sink is None:
+            return
+        if result.get("session_id"):
+            self.session_id = str(result["session_id"])
+        self.last_activity = time.time()
+        output = (str(result.get("result") or "").strip()
+                  or "".join(sink.output).strip())
+        success = (not bool(result.get("is_error"))
+                   and str(result.get("subtype") or "success") == "success")
+        handler = _WAKE_HANDLER
+        if handler is None or not output or not self.persistent:
+            return
+        payload = {
+            "runtime": "claude",
+            "backend_id": self.backend_id,
+            "session_key": self.session_key,
+            "workdir": self.workdir,
+            "project_id": self.last_project_id,
+            "role_id": self.last_role_id,
+            "success": success,
+            "output": output,
+            "events": list(sink.events),
+            "tasks": reasons,
+        }
+        # 平台回调可能发消息/落库,不能阻塞 stdout 读取线程
+        threading.Thread(target=handler, args=(payload,),
+                         daemon=True, name="claude-wake").start()
 
     def _emit_native_agent(self, status: str, meta: dict, **extra) -> None:
         payload = {
@@ -484,37 +579,63 @@ class _ClaudeSession:
             usage=message.get("usage") or {},
         )
 
-    def _finish_output_line(self) -> None:
+    def _finish_output_line(self, sink: _TurnSink) -> None:
         """一条完整输出结束后补换行,避免多条消息在结果里拼成一行。"""
-        if self._output and not self._output[-1].endswith("\n"):
-            self._output.append("\n")
-            safe_emit(self._emit(), "text", "\n")
+        if sink.output and not sink.output[-1].endswith("\n"):
+            sink.output.append("\n")
+            safe_emit(sink.emit, "text", "\n")
+
+    def _current_sink(self, begin_wake: bool = False) -> Optional[_TurnSink]:
+        """事件归属:自唤醒 turn 进行中时优先归它——即使新运行已把用户消息
+        排入队列,CLI 也会先送完自唤醒 turn 的事件与 result 再处理排队消息。"""
+        if self._wake_sink is not None:
+            return self._wake_sink
+        if self._active_config is not None:
+            return self._run_sink
+        if begin_wake and self.persistent:
+            sink = _TurnSink()
+            sink.emit = lambda kind, text: sink.events.append((kind, text))
+            self._wake_sink = sink
+            return sink
+        return None
 
     def _handle_message(self, message: dict) -> None:
         message_type = message.get("type")
+        # 空闲时收到模型活动 => CLI 的自唤醒 turn(后台任务结束后自动汇报)。
+        # 裸 result 不开启唤醒:真正的自唤醒 turn 一定先有 init/assistant
+        # 事件;超时后迟到的运行 result 不能被误包装成唤醒汇报。
+        begin_wake = (message_type in ("stream_event", "assistant", "user")
+                      or (message_type == "system"
+                          and str(message.get("subtype") or "") == "init"))
+        sink = self._current_sink(begin_wake=begin_wake)
+        emit = sink.emit if sink else None
         if message_type == "stream_event":
+            if sink is None:
+                return
             event = message.get("event") or {}
             if event.get("type") != "content_block_delta":
                 return
             delta = event.get("delta") or {}
             if delta.get("type") == "text_delta":
                 text = str(delta.get("text") or "")
-                self._saw_partial_text = True
-                self._output.append(text)
-                safe_emit(self._emit(), "text", text)
+                sink.saw_partial_text = True
+                sink.output.append(text)
+                safe_emit(emit, "text", text)
             elif delta.get("type") == "thinking_delta":
-                self._saw_partial_thinking = True
-                safe_emit(self._emit(), "thinking", str(delta.get("thinking") or ""))
+                sink.saw_partial_thinking = True
+                safe_emit(emit, "thinking", str(delta.get("thinking") or ""))
             return
         if message_type == "assistant":
+            if sink is None:
+                return
             for block in (message.get("message") or {}).get("content") or []:
                 block_type = block.get("type")
-                if block_type == "text" and not self._saw_partial_text:
+                if block_type == "text" and not sink.saw_partial_text:
                     text = str(block.get("text") or "")
-                    self._output.append(text)
-                    safe_emit(self._emit(), "text", text)
-                elif block_type == "thinking" and not self._saw_partial_thinking:
-                    safe_emit(self._emit(), "thinking", str(block.get("thinking") or ""))
+                    sink.output.append(text)
+                    safe_emit(emit, "text", text)
+                elif block_type == "thinking" and not sink.saw_partial_thinking:
+                    safe_emit(emit, "thinking", str(block.get("thinking") or ""))
                 elif block_type == "tool_use":
                     tool_id = str(block.get("id") or "")
                     if tool_id and str(block.get("name") or "") in ("Agent", "Task"):
@@ -527,11 +648,11 @@ class _ClaudeSession:
                             "agent_type": str(tool_input.get("subagent_type") or ""),
                         }
                     detail = json.dumps(block.get("input") or {}, ensure_ascii=False)
-                    safe_emit(self._emit(), "tool",
+                    safe_emit(emit, "tool",
                               f"{block.get('name', '?')} {detail[:800]}\n")
             # 一条 assistant 消息结束(流式与整块两条路径都会收到该事件):
             # 补换行,后续消息不与它拼在同一行
-            self._finish_output_line()
+            self._finish_output_line(sink)
             return
         if message_type == "user":
             for block in (message.get("message") or {}).get("content") or []:
@@ -551,7 +672,7 @@ class _ClaudeSession:
                             "task_type": "local_agent",
                         }, inferred=True)
                     mark = "✗ " if block.get("is_error") else ""
-                    safe_emit(self._emit(), "tool_result",
+                    safe_emit(emit, "tool_result",
                               mark + summary + "\n")
             return
         if message_type == "system":
@@ -564,20 +685,29 @@ class _ClaudeSession:
                     config = self._active_config
                     if config:
                         adapters._save_session(config, native_id)
-                safe_emit(self._emit(), "status",
+                safe_emit(emit, "status",
                           f"Claude 会话已连接 session={native_id} model={message.get('model', '')}\n")
                 return
             if subtype in ("compact_boundary", "microcompact_boundary"):
                 config = self._active_config
                 if config is not None:
                     adapters._mark_compact(config)
-                safe_emit(self._emit(), "status",
+                safe_emit(emit, "status",
                           "检测到上下文压缩;下一轮将重新注入完整公共上下文\n")
                 return
             if subtype == "task_started":
                 task_type = str(message.get("task_type") or "")
                 if task_type.endswith("_agent"):
                     self._register_native_agent(message)
+                else:
+                    self._register_background_task(message)
+                return
+            if subtype == "background_tasks_changed":
+                # 权威后台任务列表。只做补登(错过 task_started 的任务);
+                # 移除统一走 task_notification,它在本事件之后到达。
+                for task in message.get("tasks") or []:
+                    if not str(task.get("task_type") or "").endswith("_agent"):
+                        self._register_background_task(task)
                 return
             if subtype == "task_progress":
                 task_id = str(message.get("task_id") or "")
@@ -601,15 +731,23 @@ class _ClaudeSession:
                     # 消费的完成边界是随后到达的 task_notification。在这里
                     # 提前释放 pending 会让夹在两条消息间的 result 误结束本轮。
                     task_id = str(message.get("task_id") or "")
-                    meta = self._native_agents.get(task_id)
+                    meta = (self._native_agents.get(task_id)
+                            or self._background_tasks.get(task_id))
                     if meta:
                         meta["updated_status"] = status
                 return
             if subtype == "task_notification":
                 status = str(message.get("status") or "completed")
-                self._finish_native_agent(message, status)
+                if str(message.get("task_id") or "") in self._background_tasks:
+                    self._finish_background_task(message, status)
+                else:
+                    self._finish_native_agent(message, status)
                 return
         if message_type == "result":
+            if self._wake_sink is not None:
+                # 自唤醒 turn 的收尾:不触碰运行 turn 的 result 状态机
+                self._finish_wake_turn(message)
+                return
             self._result = message
             success = (not bool(message.get("is_error"))
                        and str(message.get("subtype") or "success") == "success")
@@ -752,6 +890,10 @@ class _ClaudeSession:
     def close(self) -> None:
         process = self.process
         self.process = None
+        # 进程终止会连带杀掉其后台命令;未派发的自唤醒缓冲一并作废
+        self._background_tasks.clear()
+        self._wake_sink = None
+        self._wake_reasons = []
         if process and process.poll() is None:
             adapters._kill_process_group(process)
         if self._active_config and not self._result_ready.is_set():

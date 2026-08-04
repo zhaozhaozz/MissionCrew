@@ -51,6 +51,9 @@ class RuntimeInstance:
     executable: str = ""
     started_at: float = 0.0
     last_activity: float = 0.0
+    # 实例内仍存活的后台命令数(run_in_background):>0 时回收/重启该实例
+    # 会终止这些命令,状态页需要展示以供操作前判断
+    background_tasks: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)

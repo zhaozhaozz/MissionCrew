@@ -1215,3 +1215,53 @@ def test_message_paging_tail_and_before_id(seeded):
                        params={"before_id": ids[0]}).json()
     assert empty["messages"] == []
     assert empty["has_earlier"] is False
+
+
+def test_runtime_wake_turn_lands_as_channel_run(chat, seeded):
+    """后台命令结束后的自唤醒汇报:落成新运行、回放事件、按常规回路交回主控。"""
+    seeded.put_chat_session("general::dev", "general", "dev", "mock-claude",
+                            "claude_code", "/tmp", "native-1", "v1")
+    chat._process_runtime_wake({
+        "runtime": "claude",
+        "session_key": "general::dev",
+        "backend_id": "mock-claude",
+        "success": True,
+        "output": "后台部署已完成：全部服务健康，exit 0。",
+        "events": [("status", "Claude 会话已连接\n"),
+                   ("text", "后台部署已完成：全部服务健康，exit 0。")],
+        "tasks": [{"task_id": "bg1", "description": "deploy.sh",
+                   "status": "completed"}],
+    })
+    chat.wait_idle()
+
+    msgs = seeded.list_messages("general")
+    trigger = next(m for m in msgs if m["author_type"] == "platform"
+                   and "后台命令已结束" in m["content"])
+    assert "`deploy.sh`" in trigger["content"]
+    reply = next(m for m in msgs if m["author"] == "dev"
+                 and m["author_type"] == "agent")
+    assert "后台部署已完成" in reply["content"]
+    assert reply["reply_to"] == trigger["id"]
+
+    runs = [r for r in seeded.chat_runs_for_channel("general")
+            if r["role_id"] == "dev"]
+    assert runs and runs[-1]["status"] == "done"
+    assert runs[-1]["trigger_message_id"] == trigger["id"]
+    events = seeded.run_events(runs[-1]["id"])
+    assert any(e["kind"] == "status" for e in events)
+
+
+def test_runtime_wake_ignored_for_archived_or_unknown_session(chat, seeded):
+    """会话不存在或频道已归档时,自唤醒静默丢弃,不产生消息。"""
+    chat._process_runtime_wake({
+        "session_key": "nonexistent::role", "output": "孤儿汇报"})
+    assert seeded.list_messages("general") == []
+
+    seeded.put_channel(Channel(id="deploy", name="deploy",
+                               project_id="webshop", archived=True))
+    seeded.put_chat_session("deploy::dev", "deploy", "dev", "b1",
+                            "claude_code", "/tmp", "n1", "v1")
+    chat._process_runtime_wake({
+        "session_key": "deploy::dev", "output": "归档后的汇报"})
+    chat.wait_idle()
+    assert seeded.list_messages("deploy") == []
