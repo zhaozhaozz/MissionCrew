@@ -134,6 +134,12 @@ def run_codex() -> None:
                 send({"method": "thread/compacted", "params": {
                     "threadId": thread_id, "turnId": turn_id}})
                 codex_finish(thread_id, turn_id, f"codex answer {turn_number}")
+            elif "EMPTY_TURN" in prompt:
+                # 成功但零输出的回合:验证 summary 不落到固定文案
+                send({"method": "turn/completed", "params": {
+                    "threadId": thread_id,
+                    "turn": {"id": turn_id, "status": "completed",
+                             "error": None, "items": []}}})
             elif "TWO_MESSAGES" in prompt:
                 for item_id, text in (("m-1", "先说明进度。"),
                                       ("m-2", "最终结论。")):
@@ -291,6 +297,12 @@ def run_claude() -> None:
                                            "pre_tokens": 160000}})
                 claude_finish(session_id, turn_number,
                               f"claude answer {turn_number}")
+            elif "EMPTY_TURN" in prompt:
+                # 成功但零输出的回合:验证 summary 不落到 subtype 字面值
+                send({"type": "result", "subtype": "success", "is_error": False,
+                      "session_id": session_id, "result": "",
+                      "num_turns": turn_number, "total_cost_usd": 0,
+                      "duration_ms": 1, "duration_api_ms": 1})
             elif "TWO_MESSAGES" in prompt:
                 # 两条完整 assistant 消息 + 空 result:驱动输出兜底聚合路径
                 for text in ("先说明进度。", "最终结论。"):

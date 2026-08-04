@@ -467,3 +467,20 @@ def test_claude_background_task_records_origin_trigger(tmp_path):
         "type": "system", "subtype": "task_notification", "task_id": "bg9",
         "status": "completed", "summary": ""})
     assert session._wake_reasons[0]["origin_trigger"] == 42
+
+
+@pytest.mark.parametrize("adapter,provider_cls", [
+    ("claude_code", ClaudeRuntimeProvider),
+    ("codex", CodexRuntimeProvider),
+])
+def test_empty_success_turn_keeps_summary_blank(tmp_path, adapter, provider_cls):
+    """回归:成功但零输出的回合,summary 不得落到 "success" 等固定文案——
+    否则会被聊天层当成 Agent 回复发布;保持为空让"无输出"守卫接管。"""
+    provider = provider_cls(_Fallback(), _fake_command(adapter))
+    try:
+        result = provider.start(_config(tmp_path, adapter, "EMPTY_TURN", {}, []))
+        assert result.success
+        assert result.output == ""
+        assert result.summary == ""
+    finally:
+        provider.shutdown()

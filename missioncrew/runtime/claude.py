@@ -366,8 +366,13 @@ class _ClaudeSession:
                     summary = (f"Claude session {missing_id} 无法恢复；"
                                f"本轮未创建新会话: {detail}")
                     return RunResult(False, summary)
-                summary = output[-300:] or str(
-                    result.get("error") or result.get("subtype") or "Claude 执行失败")
+                # 成功但零输出时 summary 保持为空:交给聊天层的"无输出"
+                # 守卫处理,不能把 result subtype 字面值("success")当回复发布
+                summary = output[-300:]
+                if not summary:
+                    summary = str(result.get("error") or (
+                        "" if success else
+                        result.get("subtype") or "Claude 执行失败"))
                 return RunResult(success, summary, output=output)
             except Exception as exc:
                 return RunResult(False, str(exc)[-300:])

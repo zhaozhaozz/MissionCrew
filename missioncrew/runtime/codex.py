@@ -329,9 +329,14 @@ class _CodexSession:
                     adapters._save_session(
                         config, self.thread_id, injection_mode,
                         adapters._turn_bytes(prompt, output))
-                summary = self._turn_error or (
-                    "Codex turn completed" if success else
-                    f"Codex turn {self._turn_status or 'failed'}")
+                # 成功但零输出时 summary 保持为空:交给聊天层的"无输出"
+                # 守卫处理,固定文案不能被当成 Agent 回复发布
+                if self._turn_error:
+                    summary = self._turn_error
+                elif success:
+                    summary = "Codex turn completed" if output else ""
+                else:
+                    summary = f"Codex turn {self._turn_status or 'failed'}"
                 return RunResult(success, summary[-300:], output=output)
             except Exception as exc:
                 return RunResult(False, str(exc)[-300:])
