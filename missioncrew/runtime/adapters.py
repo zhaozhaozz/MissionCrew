@@ -800,6 +800,7 @@ class AcpAdapter:
             load_session_meta=(
                 {"noReplay": True}
                 if self.adapter_name == "grok_build" else None),
+            trigger_message_id=cfg.trigger_message_id,
         )
         try:
             _diagnostic_log_path(cfg, self.adapter_name).write_text(text)

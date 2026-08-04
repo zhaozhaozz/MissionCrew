@@ -449,11 +449,15 @@ class _ClaudeSession:
         task_id = str(message.get("task_id") or "")
         if not task_id or task_id in self._background_tasks:
             return
+        config = self._active_config
         meta = {
             "task_id": task_id,
             "task_type": str(message.get("task_type") or "local_bash"),
             "description": str(message.get("description") or "后台命令"),
             "started_at": time.time(),
+            # 记录发起 turn 的触发消息:唤醒汇报按它继承派发语义
+            # (人类直接点名的结果不自动交回主控)
+            "origin_trigger": int(getattr(config, "trigger_message_id", 0) or 0),
         }
         self._background_tasks[task_id] = meta
         emit_json(self._emit(), "backend_agent", {

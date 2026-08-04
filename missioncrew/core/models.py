@@ -693,6 +693,9 @@ class ExecutionConfig:
     # Agent 执行默认没有时间上限；由完成信号或用户主动停止结束。
     # Optional 值保留给测试和显式调用方设置局部截止时间。
     timeout: Optional[float] = None
+    # 触发本轮执行的频道消息 id。后台任务在本轮启动时记下它,任务结束的
+    # 自唤醒汇报按它继承派发语义(人类直接点名的结果不再自动交回主控)。
+    trigger_message_id: int = 0
     effort: str = ""      # 推理力度，由角色绑定的 Runtime 配置填入
     routing_trace: list[str] = field(default_factory=list)
     # 聊天 Runtime 会话按 channel×role 复用。common_prompt 只在新会话、版本

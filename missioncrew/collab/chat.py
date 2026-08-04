@@ -778,13 +778,27 @@ class ChatEngine:
         if project:
             reply = normalize_document_resource_urls(
                 reply, project.id, document_roots)
+        # 唤醒汇报继承"启动后台任务的那轮"的派发语义:该轮由人类直接点名
+        # 时,汇报挂回原人类消息(post 会因此不再交回主控);否则按常规
+        # Agent 回复回路交回主控验收。
+        origin_trigger = next(
+            (int(task.get("origin_trigger") or 0) for task in tasks
+             if task.get("origin_trigger")), 0)
+        origin = (self.store.get_message(origin_trigger)
+                  if origin_trigger else None)
+        if origin and self._is_direct_human_dispatch(origin_trigger, role_id):
+            reply_anchor = origin_trigger
+            reply_root = int(origin.get("root_id") or origin_trigger)
+            reply_depth = int(origin.get("depth") or 0) + 1
+        else:
+            reply_anchor, reply_root, reply_depth = trigger_id, trigger_id, 1
         with self._run_state_lock:
             if not self.store.chat_run_is_active(run_id):
                 return
             self.store.remove_duplicate_reply_output(run_id, reply)
             self.post(channel.id, role_id, reply, author_type="agent",
-                      reply_to=trigger_id, root_id=trigger_id, depth=1,
-                      runtime_id=backend_id,
+                      reply_to=reply_anchor, root_id=reply_root,
+                      depth=reply_depth, runtime_id=backend_id,
                       model=backend.model if backend else None,
                       effort=role.effort or None)
             self.store.update_chat_run(run_id, "done", backend_id=backend_id)
@@ -1233,6 +1247,7 @@ class ChatEngine:
             role_id=role.id, runtime_policy=runtime_policy,
             env=env,
             effort=role.effort,
+            trigger_message_id=msg_id,
             session_key=session_key, session_id=session_id,
             common_prompt=common_prompt, turn_prompt=turn_prompt,
             recovery_prompt=recovery_prompt, context_version=context_version,

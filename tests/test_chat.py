@@ -1265,3 +1265,29 @@ def test_runtime_wake_ignored_for_archived_or_unknown_session(chat, seeded):
         "session_key": "deploy::dev", "output": "归档后的汇报"})
     chat.wait_idle()
     assert seeded.list_messages("deploy") == []
+
+
+def test_runtime_wake_respects_direct_human_dispatch(chat, seeded):
+    """人类直接点名角色启动的后台任务:唤醒汇报挂回原人类消息,不交回主控。"""
+    human_msg = seeded.add_message("general", "human", "human",
+                                   "@dev 部署到测试机", ["dev"])
+    seeded.put_chat_session("general::dev", "general", "dev", "b1",
+                            "claude_code", "/tmp", "n1", "v1")
+    chat._process_runtime_wake({
+        "session_key": "general::dev", "backend_id": "b1",
+        "success": True, "output": "部署完成:服务健康,exit 0。",
+        "events": [("text", "部署完成:服务健康,exit 0。")],
+        "tasks": [{"task_id": "bg1", "description": "deploy.sh",
+                   "status": "completed", "origin_trigger": human_msg}],
+    })
+    chat.wait_idle()
+
+    msgs = seeded.list_messages("general")
+    reply = next(m for m in msgs if m["author"] == "dev"
+                 and m["author_type"] == "agent")
+    assert reply["reply_to"] == human_msg
+    assert reply["root_id"] == human_msg
+    # 与直接点名的常规回复一致:主控不被唤醒
+    assert not any(m["author"] == "lead" and m["author_type"] == "agent"
+                   for m in msgs)
+    assert [r["role_id"] for r in seeded.chat_runs_for_channel("general")] == ["dev"]

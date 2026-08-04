@@ -446,3 +446,24 @@ def test_claude_background_task_finishing_inside_turn_is_not_wake_reason(tmp_pat
         assert session._background_tasks == {}
     finally:
         session._active_config = None
+
+
+def test_claude_background_task_records_origin_trigger(tmp_path):
+    """任务在某轮运行中启动:记录该轮触发消息,唤醒时继承派发语义。"""
+    from types import SimpleNamespace
+
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev", str(tmp_path), persistent=True)
+    session._active_config = SimpleNamespace(emit=None, trigger_message_id=42)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "task_started", "task_id": "bg9",
+            "task_type": "local_bash", "description": "deploy"})
+        assert session._background_tasks["bg9"]["origin_trigger"] == 42
+    finally:
+        session._active_config = None
+    session._handle_message({
+        "type": "system", "subtype": "task_notification", "task_id": "bg9",
+        "status": "completed", "summary": ""})
+    assert session._wake_reasons[0]["origin_trigger"] == 42

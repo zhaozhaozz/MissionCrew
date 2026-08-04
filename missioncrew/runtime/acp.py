@@ -62,6 +62,7 @@ class _ClientTerminal:
         self.output_byte_limit = max(
             4096, int(output_byte_limit or _TERMINAL_OUTPUT_LIMIT))
         self.created_at = time.time()
+        self.origin_trigger = 0   # 发起 turn 的触发消息 id,创建后由客户端补记
         self.truncated = False
         self._buffer = bytearray()
         self._buffer_lock = threading.Lock()
@@ -361,6 +362,7 @@ class _AcpClient:
                 "task_id": terminal_id,
                 "description": terminal.command[:200],
                 "status": state,
+                "origin_trigger": getattr(terminal, "origin_trigger", 0),
             })
             del self._wake_tasks[:-10]
 
@@ -470,6 +472,9 @@ class _AcpClient:
             except OSError as exc:
                 reply(error={"code": -32603, "message": f"spawn failed: {exc}"})
                 return
+            # 记录发起 turn 的触发消息:唤醒汇报按它继承派发语义
+            terminal.origin_trigger = int(
+                self.wake_meta.get("trigger_message_id") or 0)
             with self._terminals_lock:
                 self._terminal_seq += 1
                 terminal_id = f"mc-term-{self._terminal_seq}"
@@ -867,7 +872,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                task_id: str = "", stage_name: str = "",
                project_id: str = "", role_id: str = "",
                cancelled: Optional[Callable[[], bool]] = None,
-               load_session_meta: Optional[dict] = None) -> tuple[bool, str]:
+               load_session_meta: Optional[dict] = None,
+               trigger_message_id: int = 0) -> tuple[bool, str]:
     """完成一轮 ACP prompt，并按 channel×role 复用长驻原生会话。
 
     无 ``session_key`` 时保持一次性调用。长驻进程不存在（包括服务重启）时，
@@ -931,6 +937,7 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
             live.client.wake_meta = {
                 "session_key": session_key, "backend_id": runtime_id,
                 "project_id": project_id, "role_id": role_id,
+                "trigger_message_id": int(trigger_message_id or 0),
             }
             if cancelled and cancelled():
                 return False, "执行已停止"

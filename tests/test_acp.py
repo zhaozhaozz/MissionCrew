@@ -163,7 +163,7 @@ def _chat_cfg(tmp_path, saved, emit=None):
     return ExecutionConfig(
         task_id="chat", stage_name="chat", backend=backend,
         prompt="公共\n恢复历史\n当前任务", workdir=str(tmp_path), timeout=30,
-        project_id="project-a", role_id="lead",
+        project_id="project-a", role_id="lead", trigger_message_id=77,
         session_key="channel::role", session_id=saved.get("id", ""),
         common_prompt="公共上下文", turn_prompt="当前任务",
         recovery_prompt="最近对话\n当前任务", context_version="v1",
@@ -363,6 +363,8 @@ def test_acp_client_terminal_background_wake(tmp_path, monkeypatch):
         assert payload["role_id"] == "lead"
         assert "FAKE_TERMINAL_DONE" in payload["output"]
         assert payload["tasks"] and payload["tasks"][0]["status"] == "completed"
+        # 唤醒任务带回启动该任务的触发消息,派发语义据此继承
+        assert payload["tasks"][0]["origin_trigger"] == 77
         assert any(kind == "text" for kind, _ in payload["events"])
     finally:
         acp.set_wake_handler(None)
