@@ -301,3 +301,101 @@ def test_acp_without_load_capability_starts_recovery_session(tmp_path):
                    for kind, text in events)
     finally:
         acp.close_sessions()
+
+
+def test_client_terminal_methods_roundtrip(tmp_path):
+    """terminal/* 全流程:创建、等待退出、读输出、释放、未知 id 报错。"""
+    client = acp._AcpClient(["cat"], str(tmp_path), {}, timeout=5)
+    responses = []
+    client._write = lambda obj: responses.append(obj)   # 截获发往 agent 的应答
+    try:
+        client._handle_terminal_request(
+            {"id": 1}, "terminal/create", {"command": "echo TERMINAL_OK"})
+        terminal_id = responses[-1]["result"]["terminalId"]
+        assert client.live_terminal_count() in (0, 1)   # 命令可能已瞬时退出
+
+        client._handle_terminal_request(
+            {"id": 2}, "terminal/wait_for_exit", {"terminalId": terminal_id})
+        deadline = time.time() + 5
+        while len(responses) < 2 and time.time() < deadline:
+            time.sleep(0.05)
+        assert responses[-1]["id"] == 2
+        assert responses[-1]["result"]["exitCode"] == 0
+
+        client._handle_terminal_request(
+            {"id": 3}, "terminal/output", {"terminalId": terminal_id})
+        assert "TERMINAL_OK" in responses[-1]["result"]["output"]
+        assert responses[-1]["result"]["exitStatus"]["exitCode"] == 0
+
+        client._handle_terminal_request(
+            {"id": 4}, "terminal/release", {"terminalId": terminal_id})
+        assert client._terminals == {}
+        client._handle_terminal_request(
+            {"id": 5}, "terminal/output", {"terminalId": terminal_id})
+        assert "error" in responses[-1]
+    finally:
+        client.close()
+
+
+def test_acp_client_terminal_background_wake(tmp_path, monkeypatch):
+    """后台命令进客户端终端,turn 立即结束;终端退出后 agent 的自发汇报
+    经唤醒管线整体交付,携带触发任务与会话定位。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.3)
+    woken = []
+    acp.set_wake_handler(woken.append)
+    saved = {}
+    events = []
+    try:
+        result = _adapter("kimi", "terminal").run(
+            _chat_cfg(tmp_path, saved, lambda kind, text: events.append((kind, text))))
+        assert result.success, result.summary
+        assert "后台命令已交给客户端终端" in result.output
+        # 自发汇报不混入本轮 run 的输出
+        assert "自发汇报" not in result.output
+
+        deadline = time.time() + 8
+        while not woken and time.time() < deadline:
+            time.sleep(0.05)
+        assert woken, "wake handler 未被调用"
+        payload = woken[0]
+        assert payload["runtime"] == "acp"
+        assert payload["session_key"] == "channel::role"
+        assert payload["role_id"] == "lead"
+        assert "FAKE_TERMINAL_DONE" in payload["output"]
+        assert payload["tasks"] and payload["tasks"][0]["status"] == "completed"
+        assert any(kind == "text" for kind, _ in payload["events"])
+    finally:
+        acp.set_wake_handler(None)
+        acp.close_sessions()
+
+
+def test_idle_cleanup_spares_clients_with_live_terminals(tmp_path):
+    """带存活客户端终端的长驻会话不被空闲回收;终端退出后正常回收。"""
+    client = acp._AcpClient(["cat"], str(tmp_path), {}, timeout=5)
+    client._write = lambda obj: None
+    key = "cleanup-test::role"
+    try:
+        client._handle_terminal_request(
+            {"id": 1}, "terminal/create", {"command": "sleep 30"})
+        assert client.live_terminal_count() == 1
+        live = acp._LiveSession(client, "kimi", "s1", ("sig",),
+                                last_used=time.time() - 7200)
+        with acp._LIVE_SESSIONS_GUARD:
+            acp._LIVE_SESSIONS[key] = live
+        acp._cleanup_idle_sessions()
+        with acp._LIVE_SESSIONS_GUARD:
+            assert key in acp._LIVE_SESSIONS
+        assert acp.active_instances("kimi")[0].background_tasks == 1
+
+        for terminal in list(client._terminals.values()):
+            terminal.kill()
+        deadline = time.time() + 5
+        while client.live_terminal_count() and time.time() < deadline:
+            time.sleep(0.05)
+        acp._cleanup_idle_sessions()
+        with acp._LIVE_SESSIONS_GUARD:
+            assert key not in acp._LIVE_SESSIONS
+    finally:
+        with acp._LIVE_SESSIONS_GUARD:
+            acp._LIVE_SESSIONS.pop(key, None)
+        client.close()

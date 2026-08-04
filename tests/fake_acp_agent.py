@@ -50,12 +50,33 @@ def main():
     load_count = 0
     load_no_replay = False
     prompt_count = 0
+    pending_terminal = ""
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
         msg = json.loads(line)
         mid, method = msg.get("id"), msg.get("method")
+        if method is None and mid == 902 and pending_terminal:
+            # 客户端终端退出(wait_for_exit 返回):模拟 Grok 在 turn 之外
+            # 自发跑一轮汇报——读取输出并推送 agent_message_chunk
+            exit_code = (msg.get("result") or {}).get("exitCode")
+            send({"jsonrpc": "2.0", "id": 903, "method": "terminal/output",
+                  "params": {"sessionId": "s-test",
+                             "terminalId": pending_terminal}})
+            output = ""
+            for line2 in sys.stdin:
+                resp = json.loads(line2.strip())
+                if resp.get("id") == 903:
+                    output = resp["result"]["output"]
+                    break
+            send({"jsonrpc": "2.0", "id": 904, "method": "terminal/release",
+                  "params": {"sessionId": "s-test",
+                             "terminalId": pending_terminal}})
+            pending_terminal = ""
+            chunk(f"自发汇报:后台命令完成 exit={exit_code}"
+                  f" 输出={output.strip()}")
+            continue
         if method == "initialize":
             send({"jsonrpc": "2.0", "id": mid, "result": {
                 "protocolVersion": 1,
@@ -81,6 +102,26 @@ def main():
             if shape == "slow":
                 time.sleep(1)
             text = msg["params"]["prompt"][0]["text"]
+            if shape == "terminal":
+                # 模拟 Grok:后台命令交给客户端终端,turn 立即结束;终端退出
+                # 后(上方 mid==902 分支)在 turn 之外自发汇报
+                send({"jsonrpc": "2.0", "id": 901, "method": "terminal/create",
+                      "params": {"sessionId": "s-test", "command": "sh",
+                                 "args": ["-c",
+                                          "sleep 0.4; echo FAKE_TERMINAL_DONE"]}})
+                for line2 in sys.stdin:
+                    resp = json.loads(line2.strip())
+                    if resp.get("id") == 901:
+                        pending_terminal = resp["result"]["terminalId"]
+                        break
+                send({"jsonrpc": "2.0", "id": 902,
+                      "method": "terminal/wait_for_exit",
+                      "params": {"sessionId": "s-test",
+                                 "terminalId": pending_terminal}})
+                chunk("后台命令已交给客户端终端")
+                send({"jsonrpc": "2.0", "id": mid,
+                      "result": {"stopReason": "end_turn"}})
+                continue
             if shape == "detached":
                 if prompt_count == 1:
                     send({"jsonrpc": "2.0", "method": "session/update", "params": {
