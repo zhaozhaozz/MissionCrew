@@ -311,6 +311,7 @@ function insertMention(id) {
 
 function selectChannel(id, jump = true) {
   currentChan = id; lastMsgId = 0; lastMsgDate = "";
+  firstMsgId = 0; chanHasEarlier = false;
   runCards.clear();
   updateChatRunControls([]);
   document.getElementById("msgs").innerHTML = "";
@@ -421,6 +422,8 @@ function appendMessagesToSurface(list, surface) {
 }
 
 function appendMessages(list) {
+  // 并发轮询兜底:切频道瞬间可能有两轮请求同时在途,已渲染的 id 直接丢弃
+  list = list.filter(message => Number(message.id) > lastMsgId);
   const surface = {
     pane: document.getElementById("msgs"),
     channelId: currentChan,
@@ -431,6 +434,52 @@ function appendMessages(list) {
   lastMsgDate = surface.lastMsgDate;
   lastMsgId = surface.lastMsgId;
 }
+
+/* ---- 向上翻页:滚动到顶部时按 before_id 取更早历史,插入到消息流顶部 ---- */
+function prependMessages(list) {
+  if (!list.length) return;
+  const pane = document.getElementById("msgs");
+  const holder = document.createElement("div");
+  // 复用追加渲染:在离屏容器里从空日期状态渲染这一批,再整体挂到顶部
+  const surface = { pane: holder, channelId: null, lastMsgDate: "", lastMsgId: 0 };
+  appendMessagesToSurface(list, surface);
+  // 拼接处同一天时去掉原顶部的日期分隔线,避免重复
+  const first = pane.firstElementChild;
+  if (first?.classList.contains("date-sep")
+      && first.textContent.trim() === surface.lastMsgDate) first.remove();
+  const prevHeight = pane.scrollHeight, prevTop = pane.scrollTop;
+  pane.prepend(...holder.childNodes);
+  pane.scrollTop = prevTop + (pane.scrollHeight - prevHeight);
+  firstMsgId = list[0].id;
+}
+
+async function loadEarlierMessages() {
+  if (!currentChan || !chanHasEarlier || chanLoadingEarlier || !firstMsgId) return;
+  const chan = currentChan;
+  chanLoadingEarlier = true;
+  const pane = document.getElementById("msgs");
+  const notice = document.createElement("div");
+  notice.className = "chat-earlier-loading";
+  notice.textContent = "正在加载更早的消息…";
+  pane.prepend(notice);
+  try {
+    const r = await fetch(`/api/chat/${chan}/messages?before_id=${firstMsgId}`);
+    if (!r.ok || chan !== currentChan) return;
+    const d = await r.json();
+    if (chan !== currentChan) return;
+    chanHasEarlier = Boolean(d.has_earlier);
+    notice.remove();   // 先移除提示再插入,保证滚动位置补偿量准确
+    prependMessages(d.messages);
+  } catch (_) { /* 服务重启间隙,继续滚动可重试 */ }
+  finally {
+    notice.remove();
+    chanLoadingEarlier = false;
+  }
+}
+
+document.getElementById("msgs").addEventListener("scroll", event => {
+  if (event.target.scrollTop < 80) loadEarlierMessages();
+});
 
 /* ---- 运行过程卡片:内联在触发消息之后,可折叠,实时刷新 ---- */
 const runCards = new Map();   // run_id -> {el, key, userToggled}
@@ -645,15 +694,14 @@ async function renderRunEvents(run, card, pane = document.getElementById("msgs")
 function syncRuns(runs, surface = null) {
   const pane = surface?.pane || document.getElementById("msgs");
   const cards = surface?.runCards || runCards;
-  const surfaceLastMsgId = surface?.lastMsgId ?? lastMsgId;
   const nearBottom = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 120;
   for (const run of runs) {
     let card = cards.get(run.id);
     if (!card) {
-      // 内联定位:触发消息之后、同触发的更早卡片之后。触发消息还没
-      // 分页加载进来时先不建卡,下轮消息就位后再挂,避免卡片错位搁浅
+      // 内联定位:触发消息之后、同触发的更早卡片之后。触发消息还没加载
+      // (增量未拉到,或更早历史尚未向上翻页)时先不建卡,消息就位后再挂
       let anchor = pane.querySelector(`[data-msg-id="${run.trigger_message_id}"]`);
-      if (!anchor && run.trigger_message_id > surfaceLastMsgId) continue;
+      if (!anchor) continue;
       const el = document.createElement("details");
       el.className = "run-card";
       el.dataset.trigger = run.trigger_message_id;
@@ -665,10 +713,10 @@ function syncRuns(runs, surface = null) {
       el.addEventListener("toggle", () => {   // 展开时过程流贴底显示最新
         if (el.open) { const b = el.querySelector(".rc-events"); b.scrollTop = b.scrollHeight; }
       });
-      while (anchor && anchor.nextElementSibling?.classList?.contains("run-card")
+      while (anchor.nextElementSibling?.classList?.contains("run-card")
              && Number(anchor.nextElementSibling.dataset.runId) < run.id)
         anchor = anchor.nextElementSibling;
-      if (anchor) anchor.after(el); else pane.appendChild(el);
+      anchor.after(el);
       cards.set(run.id, card);
     }
     const live = ["queued", "running", "waiting_user"].includes(run.status);
@@ -707,7 +755,10 @@ async function pollMessages() {
   if (!currentChan) return;
   const chan = currentChan;   // 响应落地时可能已切频道:丢弃过期响应
   try {
-    const r = await fetch(`/api/chat/${chan}/messages?after_id=${lastMsgId}`);
+    // 首屏用 tail 直接定位频道最新一页(长历史不再从头分批追平),
+    // 之后按 after_id 增量;更早历史由 loadEarlierMessages 向上翻页
+    const query = lastMsgId ? `after_id=${lastMsgId}` : "tail=true";
+    const r = await fetch(`/api/chat/${chan}/messages?${query}`);
     if (!r.ok || chan !== currentChan) return;
     const d = await r.json();
     if (chan !== currentChan) return;
@@ -718,6 +769,8 @@ async function pollMessages() {
       channel.last_message_at = Math.max(Number(lastMessageAt || 0),
                                          Number(d.channel.last_message_at || 0));
     }
+    if (!firstMsgId && d.messages.length) firstMsgId = d.messages[0].id;
+    if ("has_earlier" in d) chanHasEarlier = Boolean(d.has_earlier);
     appendMessages(d.messages);
     syncRuns(d.runs || []);
     updateChatRunControls(d.active_runs || []);

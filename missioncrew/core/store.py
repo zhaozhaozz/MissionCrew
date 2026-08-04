@@ -813,10 +813,15 @@ class Store:
             "SELECT * FROM messages WHERE channel=? ORDER BY id", (channel,))]
 
     def recent_messages(self, channel: str, limit: int = 20,
-                        after_id: int = 0) -> list[dict]:
+                        after_id: int = 0, before_id: int = 0) -> list[dict]:
+        """取窗口内最新的 limit 条并按 id 升序返回;before_id>0 时只取更早
+        的消息(id<before_id),用于聊天流向上翻页。"""
+        condition = "AND id<? " if before_id > 0 else ""
+        params = ((channel, after_id, before_id, limit) if before_id > 0
+                  else (channel, after_id, limit))
         rows = self._query(
             "SELECT * FROM messages WHERE channel=? AND id>? "
-            "ORDER BY id DESC LIMIT ?", (channel, after_id, limit))
+            f"{condition}ORDER BY id DESC LIMIT ?", params)
         return [dict(r) for r in reversed(rows)]
 
     # ---- 聊天:执行记录 ----

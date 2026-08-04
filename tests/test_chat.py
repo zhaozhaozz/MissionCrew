@@ -1188,3 +1188,30 @@ def test_human_direct_dispatch_result_is_visible_without_orchestrator(chat, seed
     assert json.loads(dev_msg["mentions"]) == []
     assert not any(m["author"] == "lead" for m in msgs
                    if m["author_type"] == "agent")
+
+
+def test_message_paging_tail_and_before_id(seeded):
+    """长频道首屏 tail 直接取最新一页；before_id 向上翻页；has_earlier 指示更早历史。"""
+    ids = [seeded.add_message("general", "human", "human", f"历史消息 {i}", [])
+           for i in range(205)]
+    client = TestClient(create_app())
+
+    # 增量模式行为不变，且不携带分页标记
+    incremental = client.get("/api/chat/general/messages").json()
+    assert "has_earlier" not in incremental
+    assert [m["id"] for m in incremental["messages"]] == ids[:200]
+
+    tail = client.get("/api/chat/general/messages", params={"tail": True}).json()
+    assert [m["id"] for m in tail["messages"]] == ids[-200:]
+    assert tail["has_earlier"] is True
+
+    earlier = client.get("/api/chat/general/messages",
+                         params={"before_id": tail["messages"][0]["id"]}).json()
+    assert [m["id"] for m in earlier["messages"]] == ids[:5]
+    assert earlier["has_earlier"] is False
+
+    # 空频道 tail：无消息也不误报更早历史
+    empty = client.get("/api/chat/general/messages",
+                       params={"before_id": ids[0]}).json()
+    assert empty["messages"] == []
+    assert empty["has_earlier"] is False

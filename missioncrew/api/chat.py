@@ -118,11 +118,16 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         return channel_data(channel)
 
     @app.get("/api/chat/{channel_id}/messages")
-    def messages(channel_id: str, after_id: int = 0):
+    def messages(channel_id: str, after_id: int = 0, before_id: int = 0,
+                 tail: bool = False):
         channel = store.get_channel(channel_id)
         if channel is None:
             raise HTTPException(404, "频道不存在")
-        items = store.list_messages(channel_id, after_id)
+        # tail 服务首屏(直接定位频道末尾一页),before_id 服务向上翻页;
+        # 两者都取窗口内最新 200 条,否则保持按 after_id 增量拉取
+        paging = tail or before_id > 0
+        items = (store.recent_messages(channel_id, 200, before_id=before_id)
+                 if paging else store.list_messages(channel_id, after_id))
         project = store.get_project(channel.project_id or "")
         document_root = projects_dir() / project.id / "documents" if project else None
         # 新消息持久化执行当时的组合；无法从旧执行事件迁移的历史消息才用
@@ -157,13 +162,19 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                         span["end"] = len(normalize_document_resource_urls(
                             original[:end], project.id, [document_root]))
                     item["content"] = normalized
-        return {
+        payload = {
             "channel": channel_data(channel),
             "messages": items,
             "active_runs": store.active_chat_runs(channel_id),
             # 最近执行记录(含已结束):前端按 events_size 变化拉取过程事件
             "runs": store.chat_runs_for_channel(channel_id),
         }
+        if paging:
+            # 告知前端窗口之前是否还有更早历史,决定是否继续向上翻页
+            earliest = items[0]["id"] if items else before_id
+            payload["has_earlier"] = bool(
+                earliest and store.recent_messages(channel_id, 1, before_id=earliest))
+        return payload
 
     @app.get("/api/chat/runs/{run_id}/events")
     def run_events(run_id: int):

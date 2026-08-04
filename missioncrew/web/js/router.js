@@ -185,6 +185,7 @@ async function setProject(id, updateRoute = true) {
   currentProject = id;
   localStorage.setItem("mc.project", id);
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
+  firstMsgId = 0; chanHasEarlier = false;
   currentCustomBoard = null; customBoardEditing = false;
   selectedGuidelineName = undefined;
   guidelineViewer.reset();

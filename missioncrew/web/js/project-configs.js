@@ -470,9 +470,7 @@ function renderConfigChatThread(context) {
     thread.lastMsgDate = surface.lastMsgDate;
     thread.lastRenderedId = surface.lastMsgId;
   }
-  syncRuns(thread.runs, {
-    pane: root, runCards: thread.runCards, lastMsgId: thread.cursor,
-  });
+  syncRuns(thread.runs, { pane: root, runCards: thread.runCards });
   root.classList.toggle("has-messages", Boolean(thread.entries.length));
   if (!thread.entries.length && !thread.loaded && !root.querySelector(".chat-empty"))
     root.innerHTML = `<div class="chat-empty empty">正在加载内容频道记录…</div>`;

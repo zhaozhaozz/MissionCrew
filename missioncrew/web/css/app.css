@@ -539,6 +539,8 @@
   h3 { font-size: 13px; margin: 16px 0 4px; color: var(--muted); }
   .empty { color: var(--muted); font-size: 13px; padding: 6px 0; }
   .chat-empty { text-align: center; padding: 42px 20px; }
+  .chat-earlier-loading { text-align: center; padding: 8px 0; color: var(--muted);
+                          font-size: 11.5px; }
 
   /* ---- 项目设置 / 全局设置 ---- */
   .page { flex: 1; display: none; overflow-y: auto; padding: 18px 26px; }
