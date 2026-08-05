@@ -48,6 +48,38 @@ def secrets_path() -> Path:
     return mc_home() / "secrets.yaml"
 
 
+# ---- pi Runtime 自有目录:全部落在 MC_HOME 下,不使用 ~/.pi 全局配置 ----
+
+def pi_home() -> Path:
+    return mc_home() / "pi"
+
+
+def pi_agent_dir() -> Path:
+    """pi 的配置目录(经 PI_CODING_AGENT_DIR 注入),models.json 在此。"""
+    d = pi_home() / "agent"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def pi_models_path() -> Path:
+    return pi_agent_dir() / "models.json"
+
+
+def pi_sessions_dir() -> Path:
+    d = pi_home() / "sessions"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def pi_vendor_prefix() -> Path:
+    """vendored pi 的 npm --prefix 安装目录;平台不依赖系统级 pi。"""
+    return pi_home() / "vendor"
+
+
+def pi_vendor_bin() -> Path:
+    return pi_vendor_prefix() / "node_modules" / ".bin" / "pi"
+
+
 DEFAULT_CHAT_MAX_WORKERS = 16
 
 

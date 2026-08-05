@@ -85,9 +85,11 @@ class RuntimeManager:
         # RuntimeManager，Claude/Codex 原生协议类不会越过 runtime 包边界。
         from .claude import ClaudeRuntimeProvider
         from .codex import CodexRuntimeProvider
+        from .pi import PiRuntimeProvider
         self._providers.update({
             "claude_code": ClaudeRuntimeProvider(self._builtin),
             "codex": CodexRuntimeProvider(self._builtin),
+            "pi": PiRuntimeProvider(self._builtin),
         })
 
     def bind_usage_store(self, store) -> None:

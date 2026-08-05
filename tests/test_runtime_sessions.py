@@ -68,12 +68,6 @@ def test_captured_and_directory_session_arguments(tmp_path):
     assert adapters._extract_session_id(
         '{"type":"start","sessionID":"ses_123456"}') == "ses_123456"
 
-    session_dir = str(tmp_path / "sessions" / "x")
-    pi, structured = adapters._apply_cli_session_args(
-        "pi", ["pi", "-p", "任务"], f"pi-dir:{session_dir}", True)
-    assert not structured
-    assert pi[:4] == ["pi", "--session-dir", session_dir, "--continue"]
-
 
 def test_every_default_print_runtime_has_a_session_strategy():
     assert adapters._CLI_SESSION_ADAPTERS == set(adapters.DEFAULT_COMMANDS)
@@ -106,11 +100,6 @@ def test_resume_arguments_for_all_print_runtime_strategies(tmp_path):
         "cursor", ["cursor-agent", "-p", "任务"], "session-123", True)
     assert structured
     assert cursor[-4:] == ["--output-format", "json", "--resume", "session-123"]
-
-    pi_dir = str(tmp_path / "pi")
-    pi, structured = adapters._apply_cli_session_args(
-        "pi", ["pi", "-p", "任务"], f"pi-dir:{pi_dir}", True)
-    assert not structured and "--continue" in pi
 
 
 def test_serialized_runtime_rechecks_cancellation_after_session_lock(monkeypatch):

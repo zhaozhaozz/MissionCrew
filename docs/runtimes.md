@@ -17,7 +17,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 | `copilot` | `copilot` | 打印模式 CLI | npm(`@github/copilot`) |
 | `cursor-agent` | `cursor` | 打印模式 CLI | `cursor-agent update` |
 | `codebuddy` | `codebuddy` | 打印模式 CLI | npm(`@tencent-ai/codebuddy-code`) |
-| `pi` | `pi` | 打印模式 CLI | 不支持自动更新 |
+| `pi` | `pi` | 原生 RPC(vendored) | npm(`@mariozechner/pi-coding-agent`,仅写平台 vendor 目录) |
 | `kimi` | `kimi` | ACP stdio | `kimi upgrade`(不做最新版比对) |
 | `kiro-cli` | `kiro` | ACP stdio | 不支持自动更新 |
 | `qodercli` | `qoder` | ACP stdio | 不支持自动更新 |
@@ -98,7 +98,7 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 | GitHub Copilot / `copilot` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程继续传同一个 `--session-id <id>` | 固定 ID；每轮一个 CLI 进程 |
 | Cursor / `cursor` | 使用 `--output-format json` 启动，并从 JSON 结果捕获 session/chat id | 新进程使用 `--resume <id>` | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | CodeBuddy / `codebuddy` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
-| Pi / `pi` | 为 `channel::role` 计算稳定目录，首轮传 `--session-dir <dir>` | 在同一目录启动新进程并传 `--continue` | SQLite 保存 `pi-dir:<dir>`；每轮一个 CLI 进程，会话文件位于 `runtime-sessions/pi/` |
+| Pi / `pi` | 启动 `pi --mode rpc` 长驻进程，首轮回合后从 `get_state` 保存会话文件路径 | 服务存活时同一进程直接发下一条 `prompt`；进程或服务重启后以 `--session <file>` 恢复 | SQLite 保存会话 JSONL 绝对路径(位于 `MC_HOME/pi/sessions/`);一个 `channel::role` 对应一个长驻进程 |
 | Kimi / `kimi` | 启动 ACP serve 进程并调用 `session/new` | 服务存活时直接在同一进程、同一 `sessionId` 调用 `session/prompt`；MissionCrew 重启后仅在 Runtime 声明 `loadSession` 时调用 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Kiro / `kiro` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Qoder / `qoder` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
@@ -124,6 +124,18 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 默认 Codex provider 不再执行 `codex exec`，而是为每个 `channel::role` 启动官方 `codex app-server`，使用省略 `jsonrpc` 字段的 JSONL 双向协议。连接先完成 `initialize/initialized`，再调用 `thread/start|thread/resume` 和 `turn/start`；agent message delta、reasoning delta、command、file change、plan、usage 和 turn completion 通知分别映射到聊天过程事件。
 
 每轮结构化传入 `cwd`、`model`、`effort`、`runtimeWorkspaceRoots`、`approvalPolicy` 和 `sandboxPolicy`。`workspaceWrite` 的 `writableRoots` 来自统一 `RuntimePolicy.writable_paths`，网络权限来自 `RuntimePermissions.network`。模型目录直接调用 app-server `model/list`，失败时才退回旧的 CLI 发现路径。
+
+### pi RPC 与裸 API 接入
+
+pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平台不重写 agent 循环,直接复用 pi 的工具执行与会话管理。接入走 pi 官方为跨语言宿主设计的 RPC 模式(`pi --mode rpc`),行式 JSON:客户端发 `{"type": <command>, "id": ...}`,进程回 `{"type": "response"}`,回合过程以 `agent_start`、`message_update`(text/thinking delta)、`tool_execution_start/end`、`message_end`、`agent_end` 等事件流出,分别映射到聊天过程事件。注意 `agent_end` 不是可靠的回合终点:pi 遇瞬态错误会在 `agent_end` 后立刻发 `auto_retry_start` 并重开一轮,因此 provider 以短静默期(1s 内无重试事件)判终。
+
+隔离约定:
+
+- **二进制 vendored**:pi 安装在 `MC_HOME/pi/vendor`(`npm install --prefix`),检测只认这份安装,不探测系统 PATH,升级也只写 vendor 目录,绝不 `-g`;
+- **配置自包含**:启动时注入 `PI_CODING_AGENT_DIR=MC_HOME/pi/agent`,models.json、皮肤化配置全部落在平台数据目录,不读写 `~/.pi`;会话 JSONL 固定落在 `MC_HOME/pi/sessions`(`--session-dir`),扩展发现被禁用(`--no-extensions`);
+- **裸 API 配置**:`MC_HOME/pi/agent/models.json` 按 pi 原生格式声明 provider(`baseUrl` + `api`(openai-completions/openai-responses/anthropic-messages/google-generative-ai)+ `apiKey`(字面量或 `$ENV_VAR`)+ 模型清单),经 `GET/PUT /api/backends/pi/providers` 读写(PUT 校验结构、收紧文件权限并刷新 pi 后端的执行单元清单);执行单元即 `provider/model`,模型目录与该文件同源。
+
+每轮回合:进程存活时直接发 `prompt`(模型与思考档位差异经 `set_model`/`set_thinking_level` 在存活进程内对齐,不重启进程);effort 映射为 pi 的 thinking level(off~xhigh)。中断发 `abort`。回合结束后从 `get_state` 读会话文件路径持久化,重启后以 `--session <file>` 恢复。pi 无后台任务/自唤醒协议,长任务语义与 codex 相同(turn 内等待)。
 
 ### 聊天交互与 MissionCrew 权限接管
 
@@ -189,7 +201,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 
 ## 检测与注册
 
-- **检测**(`detect_report`):对检测表逐个 `which` 探测 PATH,已安装的再跑 `--version` 提取语义版本号(输出中匹配不到语义版本就留空——有些安装 shim 会输出无关提示文本);
+- **检测**(`detect_report`):对检测表逐个 `which` 探测 PATH,已安装的再跑 `--version` 提取语义版本号(输出中匹配不到语义版本就留空——有些安装 shim 会输出无关提示文本);pi 例外,只认平台 vendored 安装(`MC_HOME/pi/vendor`),不探测系统 PATH;
 - **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并按 `KNOWN_MODELS` 刷新工具自带模型清单(目前只有 claude 预置:`""`(CLI 默认)/haiku/sonnet/opus/fable);
 - Runtime 管理页只呈现工具、版本与安装状态;每条记录有启用开关,停用的 runtime 不能被角色绑定(保存时 400),已绑定角色的执行会明确报"不可用"。
 

@@ -16,10 +16,12 @@ def test_grok_command_uses_acp_stdio_mode():
     assert isinstance(adapters.get_adapter("grok_build"), adapters.AcpAdapter)
 
 
-def test_grok_detection_creates_routable_backend(monkeypatch):
+def test_grok_detection_creates_routable_backend(monkeypatch, tmp_path):
     grok_path = "/home/u/.grok/bin/grok"
     monkeypatch.setattr(adapters.shutil, "which",
                         lambda binary: grok_path if binary == "grok" else None)
+    # pi 走 vendored 检测,不受 which mock 影响;隔离平台目录避免误检本机安装
+    monkeypatch.setenv("MISSIONCREW_HOME", str(tmp_path / "mc-home"))
     report = adapters.detect_report(with_version=False)
     grok = next(item for item in report if item["binary"] == "grok")
     found = adapters.detect_backends(report)

@@ -11,7 +11,6 @@
 from __future__ import annotations
 
 import atexit
-import hashlib
 import json
 import os
 import re
@@ -28,7 +27,7 @@ from typing import Callable, Optional
 
 from . import acp
 from .base import RuntimeInstance
-from ..core.config import mc_home
+from ..core.config import pi_vendor_bin, pi_vendor_prefix
 from ..core.models import Backend, ExecutionConfig, RunResult
 
 _CLI_SESSION_LOCKS: dict[str, threading.Lock] = {}
@@ -52,12 +51,10 @@ class _ActiveProcess:
 _ACTIVE_PROCESSES: dict[int, _ActiveProcess] = {}
 _ACTIVE_PROCESSES_GUARD = threading.Lock()
 
-# 能够可靠恢复原生会话的打印模式 Runtime。
+# 能够可靠恢复原生会话的打印模式 Runtime(pi 走原生 RPC provider,不在此列)。
 _FIXED_ID_SESSIONS = {"claude_code", "copilot", "codebuddy"}
 _CAPTURED_ID_SESSIONS = {"codex", "opencode", "cursor"}
-_DIRECTORY_SESSIONS = {"pi"}
-_CLI_SESSION_ADAPTERS = (_FIXED_ID_SESSIONS | _CAPTURED_ID_SESSIONS
-                         | _DIRECTORY_SESSIONS)
+_CLI_SESSION_ADAPTERS = _FIXED_ID_SESSIONS | _CAPTURED_ID_SESSIONS
 
 
 def _named_session_lock(key: str) -> threading.Lock:
@@ -292,7 +289,6 @@ DEFAULT_COMMANDS = {
     "cursor": ["cursor-agent", "-p", "--force", "{prompt}", "--model", "{model}"],
     "codebuddy": ["codebuddy", "-p", "{prompt}", "--model", "{model}",
                   "--permission-mode", "acceptEdits", "--add-dir", "{allowed_dirs}"],
-    "pi": ["pi", "-p", "{prompt}", "--model", "{model}"],
 }
 
 # ACP 协议工具的固定 serve 命令(ACP 没有 {prompt} 占位符，prompt 走协议)。
@@ -348,6 +344,8 @@ EFFORT_SUPPORT: dict[str, list[str]] = {
     "claude_code": ["low", "medium", "high", "xhigh", "max"],
     "codex": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     "mock": ["low", "medium", "high"],
+    # pi:映射为 thinking level(`--thinking`/set_thinking_level)。
+    "pi": ["off", "minimal", "low", "medium", "high", "xhigh"],
 }
 
 
@@ -358,6 +356,9 @@ EFFORT_SUPPORT: dict[str, list[str]] = {
 # kimi 的 PyPI 同名包与其独立安装版版本序列对不上(疑似不同产品),
 # 因此 kimi/trae 只提供自更新按钮,不做最新版比对。
 UPDATE_SPECS: dict[str, dict] = {
+    # pi 是平台 vendored 安装:版本比对走 npm registry,更新在 update_plan
+    # 里按 vendor 前缀特判(npm --prefix),不允许 -g 全局安装。
+    "pi": {"npm": "@mariozechner/pi-coding-agent"},
     "claude_code": {"npm": "@anthropic-ai/claude-code", "self_update": ["claude", "update"]},
     "codex":       {"npm": "@openai/codex"},
     "grok_build":  {"self_update": ["grok", "update"]},
@@ -418,6 +419,10 @@ def update_plan(backend: Backend):
     """
     spec = UPDATE_SPECS.get(backend.adapter) or {}
     pkg = spec.get("npm")
+    if backend.adapter == "pi":
+        # vendored 安装:更新只写平台自有 vendor 目录,绝不 -g 污染全局。
+        return ("npm", ["npm", "install", "--prefix", str(pi_vendor_prefix()),
+                        "--no-fund", "--no-audit", f"{pkg}@latest"])
     if pkg and _npm_managed(backend.binary_path):
         return ("npm", ["npm", "install", "-g", f"{pkg}@latest"])
     if spec.get("self_update"):
@@ -460,12 +465,17 @@ def detect_report(with_version: bool = True) -> list[dict]:
     """
     report = []
     for binary, adapter, _caps, _tier, _cost in KNOWN_CLIS:
-        path = shutil.which(binary) or ""
+        if adapter == "pi":
+            # pi 只用平台 vendored 安装(MC_HOME/pi/vendor),不检测系统级 pi。
+            vendored = pi_vendor_bin()
+            path = str(vendored) if vendored.is_file() else ""
+        else:
+            path = shutil.which(binary) or ""
         report.append({
             "binary": binary, "adapter": adapter,
             "id": {"claude_code": "claude", "grok_build": "grok"}.get(adapter, adapter),
             "installed": bool(path), "path": path,
-            "version": _cli_version(binary) if path and with_version else "",
+            "version": _cli_version(path) if path and with_version else "",
         })
     return report
 
@@ -482,10 +492,16 @@ def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
         if not item["installed"]:
             continue
         caps, tier, cost = by_adapter[item["adapter"]]
+        if item["adapter"] == "pi":
+            # pi 的执行单元与平台自有 models.json 同源(provider/model)。
+            from .pi import read_pi_models
+            models = read_pi_models()
+        else:
+            models = list(KNOWN_MODELS.get(item["adapter"], []))
         found.append(Backend(
             id=item["id"], name=f"{item['binary']} (本地)", adapter=item["adapter"],
             model="", tier=tier, capabilities=caps, cost_per_run=cost,
-            models=list(KNOWN_MODELS.get(item["adapter"], [])),
+            models=models,
             binary_path=item["path"], version=item["version"],
         ))
     return found
@@ -1135,9 +1151,6 @@ def _prepare_cli_session(adapter_name: str,
     reused = bool(cfg.session_id)
     if adapter_name in _FIXED_ID_SESSIONS:
         session_id = cfg.session_id or _new_session_id()
-    elif adapter_name == "pi":
-        digest = hashlib.sha256(cfg.session_key.encode("utf-8")).hexdigest()[:20]
-        session_id = cfg.session_id or f"pi-dir:{mc_home() / 'runtime-sessions' / 'pi' / digest}"
     else:
         session_id = cfg.session_id
     prompt, mode = _session_input(cfg, recovery=not reused)
@@ -1169,13 +1182,6 @@ def _apply_cli_session_args(adapter_name: str, cmd: list[str], session_id: str,
         if reused:
             args += ["--resume", session_id]
         return [*cmd, *args], True
-    if adapter_name == "pi":
-        session_dir = session_id.removeprefix("pi-dir:")
-        Path(session_dir).mkdir(parents=True, exist_ok=True)
-        args = ["--session-dir", session_dir]
-        if reused:
-            args.append("--continue")
-        return [cmd[0], *args, *cmd[1:]], False
     return cmd, False
 
 

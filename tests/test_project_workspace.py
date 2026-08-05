@@ -723,7 +723,6 @@ def test_all_runtime_commands_apply_directory_policy():
         f"--add-dir={path}" for path in dirs]
     assert rendered["opencode"][rendered["opencode"].index("--dir") + 1] == workdir
     assert "--force" in rendered["cursor"]
-    assert rendered["pi"][:2] == ["pi", "-p"]
 
     acp_commands = {
         name: adapters.render_command(
