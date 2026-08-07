@@ -262,7 +262,7 @@ async function stopConfigChatAgents() {
     ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
   if (!thread?.channelId || !count) return;
   if (!await uiConfirm(
-      `停止此内容频道中正在排队、运行或等待交互的 ${count} 个 Agent？已完成的文件修改不会自动回滚。`,
+      `停止此内容频道中正在排队、运行或等待交互的 ${count} 个 Agent，并终止对应 Runtime 进程？原生会话 ID 会保留，已完成的文件修改不会自动回滚。`,
       "停止内容频道 Agent")) return;
   await api("POST", `/api/chat/${encodeURIComponent(thread.channelId)}/stop`);
   await pollConfigChat();

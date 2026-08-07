@@ -457,11 +457,9 @@ class ChatEngine:
         channel = self.store.get_channel(channel_id)
         if channel is None:
             raise ValueError(f"频道不存在: {channel_id}")
-        targets: dict[tuple[str, str], object] = {}
-        for session in self.store.chat_sessions_for_channel(channel_id):
-            backend = self.store.get_backend(session["backend_id"])
-            if backend is not None:
-                targets[(backend.id, session["session_key"])] = backend
+        targets = self._channel_runtime_targets(channel)
+        # 清除上下文/归档时还要覆盖尚未来得及保存 chat_session 的实例。
+        # 频道 stop 自身会从活动 run 补齐这个窄竞态，不需要终止无关角色。
         for role in self.store.list_roles(channel.project_id or ""):
             backend = self.store.get_backend(role.runtime_id)
             if backend is not None:
@@ -472,27 +470,36 @@ class ChatEngine:
             stopped += runtime_manager.stop(backend, session_key)
         return stopped
 
+    def _channel_runtime_targets(self, channel: Channel,
+                                 runs: Optional[list[dict]] = None) -> dict:
+        """收集频道已保存会话与活动 run 对应的精确 Runtime 实例。"""
+        targets: dict[tuple[str, str], object] = {}
+        for session in self.store.chat_sessions_for_channel(channel.id):
+            backend = self.store.get_backend(session["backend_id"])
+            if backend is not None:
+                targets[(backend.id, session["session_key"])] = backend
+        for run in runs or []:
+            backend = self.store.get_backend(run.get("backend_id") or "")
+            if backend is not None:
+                targets[(backend.id, self._session_key(channel, run["role_id"]))] = backend
+        return targets
+
     def stop_channel_agents(self, channel_id: str) -> dict:
-        """停止频道内全部活动 Agent，不清除可复用的原生会话。"""
+        """停止频道运行并终止对应 Runtime 进程，保留原生 session id。"""
         channel = self.store.get_channel(channel_id)
         if channel is None:
             raise ValueError(f"频道不存在: {channel_id}")
 
         with self._run_state_lock:
             runs = self.store.stop_active_chat_runs(channel_id)
-            if not runs:
-                return {
-                    "ok": True, "stopped_runs": 0, "interrupted_runtimes": 0,
-                    "stopped_runtimes": 0, "runtime_errors": 0,
-                }
             self._stopping_channels.add(channel_id)
             run_ids = {run["id"] for run in runs}
             for run in runs:
                 self.store.append_run_event(
                     run["id"], "status", "用户已停止当前频道中的 Agent 运行")
 
-            # 等待权限或用户输入的回调必须先释放，否则 Runtime 的当前 turn
-            # 即使收到 interrupt，也可能继续阻塞在 MissionCrew 的交互桥上。
+            # 等待权限或用户输入的回调必须先释放，否则 Runtime 进程终止前
+            # 可能继续阻塞在 MissionCrew 的交互桥上。
             with self._interaction_lock:
                 for pending in self._interactions.values():
                     if pending.run_id not in run_ids:
@@ -504,29 +511,18 @@ class ChatEngine:
                     }
                     pending.ready.set()
 
-            targets = {}
-            for run in runs:
-                backend = self.store.get_backend(run.get("backend_id") or "")
-                if backend is None:
-                    continue  # queued 或尚未完成后端选择的运行没有进程可停止
-                session_key = self._session_key(channel, run["role_id"])
-                targets[(backend.id, session_key)] = backend
+            # 已保存 session 允许在 chat_runs 已无活动项时再次清理孤儿进程；
+            # 活动 run 快照补齐 Runtime 尚未来得及保存 session 的启动窗口。
+            targets = self._channel_runtime_targets(channel, runs)
 
-        # Runtime 原生 interrupt 可能等待协议确认，不能占着运行状态锁；否则
+        # 终止进程可能等待 reader/协议线程退出，不能占着运行状态锁；否则
         # 同一 Runtime 的交互回调无法观察到 stopped 并及时返回 cancel。
-        interrupted = stopped = runtime_errors = 0
+        stopped = runtime_errors = 0
+        marker_id = 0
         try:
             for (_backend_id, session_key), backend in targets.items():
                 try:
-                    if runtime_manager.capabilities(backend).interrupt:
-                        count = runtime_manager.interrupt(backend, session_key)
-                        interrupted += count
-                        if not count:
-                            # turn 尚未登记或刚结束时 interrupt 可能返回 0；关闭
-                            # 该实例可封住“检查取消状态后、启动 turn 前”的窄竞态。
-                            stopped += runtime_manager.stop(backend, session_key)
-                    else:
-                        stopped += runtime_manager.stop(backend, session_key)
+                    stopped += runtime_manager.stop(backend, session_key)
                 except Exception as exc:
                     runtime_errors += 1
                     self.store.audit(
@@ -536,30 +532,38 @@ class ChatEngine:
                     )
 
             with self._run_state_lock:
-                content = f"已停止当前频道中的 {len(runs)} 个 Agent 运行。"
-                if runtime_errors:
-                    content += f"其中 {runtime_errors} 个 Runtime 控制请求失败，请检查运行状态。"
-                marker_id = self.store.add_message(
-                    channel_id, "platform", "platform", content, [],
-                    kind="agent_stop",
-                )
-                self._write_channel_history(channel)
+                if runs or stopped or runtime_errors:
+                    content = (f"已停止当前频道中的 {len(runs)} 个 Agent 运行"
+                               if runs else "当前频道没有活动 Agent 运行")
+                    if stopped:
+                        content += f"，并终止 {stopped} 个 Runtime 进程"
+                    if runtime_errors:
+                        content += f"；其中 {runtime_errors} 个 Runtime 终止请求失败，请检查运行状态"
+                    marker_id = self.store.add_message(
+                        channel_id, "platform", "platform", content + "。", [],
+                        kind="agent_stop",
+                    )
+                    self._write_channel_history(channel)
         finally:
             with self._run_state_lock:
                 self._stopping_channels.discard(channel_id)
-        self.store.audit(
-            "human", "chat_agents_stopped",
-            detail=(f"channel={channel_id} runs={len(runs)} "
-                    f"interrupted={interrupted} stopped={stopped} "
-                    f"errors={runtime_errors} marker={marker_id}"),
-        )
-        return {
-            "ok": True, "marker_id": marker_id,
+        if runs or stopped or runtime_errors:
+            self.store.audit(
+                "human", "chat_agents_stopped",
+                detail=(f"channel={channel_id} runs={len(runs)} "
+                        f"interrupted=0 stopped={stopped} "
+                        f"errors={runtime_errors} marker={marker_id}"),
+            )
+        result = {
+            "ok": True,
             "stopped_runs": len(runs),
-            "interrupted_runtimes": interrupted,
+            "interrupted_runtimes": 0,
             "stopped_runtimes": stopped,
             "runtime_errors": runtime_errors,
         }
+        if marker_id:
+            result["marker_id"] = marker_id
+        return result
 
     # ---- 内部:可信提及、触发与执行 ----
     def _parse_explicit_mentions(self, content: str,

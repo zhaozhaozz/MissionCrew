@@ -187,6 +187,10 @@ class _ClaudeSession:
         self.session_id = ""
         self._signature = ""
         self._run_lock = threading.Lock()
+        # Claude 会在频道 turn 之外自发执行后台任务汇报。显式 run 与这类
+        # wake turn 必须在同一状态边界串行，否则旧 wake sink 会吞掉新 run
+        # 的事件和最终 result，令调用线程永久等待。
+        self._turn_condition = threading.Condition()
         self._write_lock = threading.Lock()
         self._result_ready = threading.Event()
         self._active_config: Optional[ExecutionConfig] = None
@@ -298,29 +302,36 @@ class _ClaudeSession:
 
     def run(self, config: ExecutionConfig) -> RunResult:
         with self._run_lock:
-            if config.cancellation_requested():
-                return RunResult(False, "执行已停止")
-            adapters._refresh_session(config)
-            if self.session_id and not config.session_id:
-                self.close()
-                self.session_id = ""
-            recovery = not bool(config.session_id or self.session_id)
-            prompt, injection_mode = adapters._session_input(
-                config, recovery=recovery)
-            self._active_config = config
-            self.last_activity = time.time()
-            self.last_task_id = config.task_id
-            self.last_stage_name = config.stage_name
-            self.last_project_id = config.project_id
-            self.last_role_id = config.role_id
-            self.last_model = config.backend.model
-            self._result = {}
-            self._run_sink = _TurnSink(emit=config.emit)
-            self._native_agents = {}
-            self._pending_native_agents = set()
-            self._agent_tool_calls = {}
-            self._provisional_result_count = 0
-            self._result_ready.clear()
+            with self._turn_condition:
+                while self._wake_sink is not None:
+                    if config.cancellation_requested():
+                        return RunResult(False, "执行已停止")
+                    self._turn_condition.wait(0.1)
+                if config.cancellation_requested():
+                    return RunResult(False, "执行已停止")
+                adapters._refresh_session(config)
+                if self.session_id and not config.session_id:
+                    self.close()
+                    self.session_id = ""
+                recovery = not bool(config.session_id or self.session_id)
+                prompt, injection_mode = adapters._session_input(
+                    config, recovery=recovery)
+                # 与 _current_sink 使用同一条件锁：从确认无 wake turn 到登记
+                # 当前 run 之间不留可新建 _wake_sink 的竞态窗口。
+                self._active_config = config
+                self.last_activity = time.time()
+                self.last_task_id = config.task_id
+                self.last_stage_name = config.stage_name
+                self.last_project_id = config.project_id
+                self.last_role_id = config.role_id
+                self.last_model = config.backend.model
+                self._result = {}
+                self._run_sink = _TurnSink(emit=config.emit)
+                self._native_agents = {}
+                self._pending_native_agents = set()
+                self._agent_tool_calls = {}
+                self._provisional_result_count = 0
+                self._result_ready.clear()
             try:
                 self._ensure_process(config)
                 if config.cancellation_requested():
@@ -378,13 +389,18 @@ class _ClaudeSession:
                 return RunResult(False, str(exc)[-300:])
             finally:
                 self.last_activity = time.time()
-                self._active_config = None
+                with self._turn_condition:
+                    self._active_config = None
+                    self._turn_condition.notify_all()
 
     def snapshot(self) -> RuntimeInstance:
         alive = self.alive
-        state = ("running" if alive and self._active_config else
+        with self._turn_condition:
+            active = self._active_config is not None
+            background_tasks = len(self._background_tasks)
+        state = ("running" if alive and active else
                  "idle" if alive else
-                 "starting" if self._active_config else "disconnected")
+                 "starting" if active else "disconnected")
         return RuntimeInstance(
             instance_id=f"claude:{self.backend_id}:{self.session_key}",
             backend_id=self.backend_id, adapter="claude_code",
@@ -397,7 +413,7 @@ class _ClaudeSession:
             project_id=self.last_project_id, role_id=self.last_role_id,
             model=self.last_model, executable=Path(self.command[0]).name,
             started_at=self.created_at, last_activity=self.last_activity,
-            background_tasks=len(self._background_tasks),
+            background_tasks=background_tasks,
         )
 
     def _read_stdout(self) -> None:
@@ -485,42 +501,48 @@ class _ClaudeSession:
         })
         # 运行 turn 内结束的任务由 CLI 直接把结果喂给当前回合;只有空闲
         # 或自唤醒场景需要记为唤醒原因,供 wake handler 说明这轮因何而起。
-        if self._active_config is None or self._wake_sink is not None:
-            self._wake_reasons.append({
-                **meta, "status": status, "summary": summary,
-                "output_file": str(message.get("output_file") or ""),
-            })
-            del self._wake_reasons[:-10]
+        with self._turn_condition:
+            if self._active_config is None or self._wake_sink is not None:
+                self._wake_reasons.append({
+                    **meta, "status": status, "summary": summary,
+                    "output_file": str(message.get("output_file") or ""),
+                })
+                del self._wake_reasons[:-10]
 
     def _finish_wake_turn(self, result: dict) -> None:
-        sink = self._wake_sink
-        self._wake_sink = None
-        reasons = self._wake_reasons
-        self._wake_reasons = []
+        payload = None
+        with self._turn_condition:
+            sink = self._wake_sink
+            self._wake_sink = None
+            reasons = self._wake_reasons
+            self._wake_reasons = []
+            if sink is not None:
+                if result.get("session_id"):
+                    self.session_id = str(result["session_id"])
+                self.last_activity = time.time()
+                output = (str(result.get("result") or "").strip()
+                          or "".join(sink.output).strip())
+                success = (not bool(result.get("is_error"))
+                           and str(result.get("subtype") or "success") == "success")
+                if _WAKE_HANDLER is not None and output and self.persistent:
+                    payload = {
+                        "runtime": "claude",
+                        "backend_id": self.backend_id,
+                        "session_key": self.session_key,
+                        "workdir": self.workdir,
+                        "project_id": self.last_project_id,
+                        "role_id": self.last_role_id,
+                        "success": success,
+                        "output": output,
+                        "events": list(sink.events),
+                        "tasks": reasons,
+                    }
+            self._turn_condition.notify_all()
         if sink is None:
             return
-        if result.get("session_id"):
-            self.session_id = str(result["session_id"])
-        self.last_activity = time.time()
-        output = (str(result.get("result") or "").strip()
-                  or "".join(sink.output).strip())
-        success = (not bool(result.get("is_error"))
-                   and str(result.get("subtype") or "success") == "success")
         handler = _WAKE_HANDLER
-        if handler is None or not output or not self.persistent:
+        if handler is None or payload is None:
             return
-        payload = {
-            "runtime": "claude",
-            "backend_id": self.backend_id,
-            "session_key": self.session_key,
-            "workdir": self.workdir,
-            "project_id": self.last_project_id,
-            "role_id": self.last_role_id,
-            "success": success,
-            "output": output,
-            "events": list(sink.events),
-            "tasks": reasons,
-        }
         # 平台回调可能发消息/落库,不能阻塞 stdout 读取线程
         threading.Thread(target=handler, args=(payload,),
                          daemon=True, name="claude-wake").start()
@@ -597,16 +619,17 @@ class _ClaudeSession:
     def _current_sink(self, begin_wake: bool = False) -> Optional[_TurnSink]:
         """事件归属:自唤醒 turn 进行中时优先归它——即使新运行已把用户消息
         排入队列,CLI 也会先送完自唤醒 turn 的事件与 result 再处理排队消息。"""
-        if self._wake_sink is not None:
-            return self._wake_sink
-        if self._active_config is not None:
-            return self._run_sink
-        if begin_wake and self.persistent:
-            sink = _TurnSink()
-            sink.emit = lambda kind, text: sink.events.append((kind, text))
-            self._wake_sink = sink
-            return sink
-        return None
+        with self._turn_condition:
+            if self._wake_sink is not None:
+                return self._wake_sink
+            if self._active_config is not None:
+                return self._run_sink
+            if begin_wake and self.persistent:
+                sink = _TurnSink()
+                sink.emit = lambda kind, text: sink.events.append((kind, text))
+                self._wake_sink = sink
+                return sink
+            return None
 
     def _handle_message(self, message: dict) -> None:
         message_type = message.get("type")
@@ -894,23 +917,26 @@ class _ClaudeSession:
 
     @property
     def active(self) -> bool:
-        return self._active_config is not None
+        with self._turn_condition:
+            return self._active_config is not None
 
     def close(self) -> None:
         process = self.process
         self.process = None
         # 进程终止会连带杀掉其后台命令;未派发的自唤醒缓冲一并作废
-        self._background_tasks.clear()
-        self._wake_sink = None
-        self._wake_reasons = []
+        with self._turn_condition:
+            self._background_tasks.clear()
+            self._wake_sink = None
+            self._wake_reasons = []
+            if self._active_config and not self._result_ready.is_set():
+                self._result = {
+                    "subtype": "error_during_execution", "is_error": True,
+                    "error": "Claude session 已停止",
+                }
+                self._result_ready.set()
+            self._turn_condition.notify_all()
         if process and process.poll() is None:
             adapters._kill_process_group(process)
-        if self._active_config and not self._result_ready.is_set():
-            self._result = {
-                "subtype": "error_during_execution", "is_error": True,
-                "error": "Claude session 已停止",
-            }
-            self._result_ready.set()
 
 
 class ClaudeRuntimeProvider(RuntimeProvider):

@@ -889,20 +889,21 @@ async function stopChannelAgents() {
   const count = Number(button?.dataset.runCount || 0);
   if (!count) return;
   if (!await uiConfirm(
-      `停止当前频道中正在排队、运行或等待交互的 ${count} 个 Agent？已完成的文件修改不会自动回滚。`,
+      `停止当前频道中正在排队、运行或等待交互的 ${count} 个 Agent，并终止对应 Runtime 进程？原生会话 ID 会保留，已完成的文件修改不会自动回滚。`,
       "停止频道 Agent")) return;
   button.disabled = true;
   try {
     const result = await api("POST", `/api/chat/${currentChan}/stop`);
     await pollMessages();
-    if (!result.stopped_runs) {
+    if (!result.stopped_runs && !result.stopped_runtimes) {
       toast("当前频道已经没有运行中的 Agent", "success");
       return;
     }
-    const runtimeText = result.interrupted_runtimes || result.stopped_runtimes
-      ? `；已中断 ${result.interrupted_runtimes} 个当前 turn，终止 ${result.stopped_runtimes} 个 Runtime`
-      : "";
-    toast(`已停止 ${result.stopped_runs} 个 Agent 运行${runtimeText}`,
+    const agentText = result.stopped_runs
+      ? `已停止 ${result.stopped_runs} 个 Agent 运行` : "没有活动 Agent 运行";
+    const runtimeText = result.stopped_runtimes
+      ? `；已终止 ${result.stopped_runtimes} 个 Runtime 进程` : "";
+    toast(`${agentText}${runtimeText}`,
       result.runtime_errors ? "error" : "success", 6000);
   } finally {
     if (!button.hidden) button.disabled = false;

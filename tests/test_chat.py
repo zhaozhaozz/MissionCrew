@@ -3,7 +3,6 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -868,7 +867,7 @@ def test_clear_context_api_rejects_active_run(seeded, monkeypatch):
     assert "正在运行" in response.json()["detail"]
 
 
-def test_stop_channel_api_marks_every_run_and_uses_native_interrupt(
+def test_stop_channel_api_marks_every_run_and_terminates_runtime_processes(
         seeded, monkeypatch):
     trigger = seeded.add_message("general", "human", "human", "并行任务", [])
     dev_run = seeded.add_chat_run("general", "dev", trigger, trigger, 0)
@@ -878,25 +877,20 @@ def test_stop_channel_api_marks_every_run_and_uses_native_interrupt(
     seeded.update_chat_run(expert_run, "running", backend_id="exp-1")
     assert seeded.wait_chat_run_for_interaction(expert_run, "exp-1")
 
-    interrupted = []
-    monkeypatch.setattr(
-        runtime_manager, "capabilities",
-        lambda _backend: SimpleNamespace(interrupt=True))
-    monkeypatch.setattr(
-        runtime_manager, "interrupt",
-        lambda backend, session_key="": interrupted.append(
-            (backend.id, session_key)) or 1)
+    stopped = []
     monkeypatch.setattr(
         runtime_manager, "stop",
-        lambda *_args, **_kwargs: pytest.fail("原生 interrupt 可用时不应关闭会话"))
+        lambda backend, session_key="": stopped.append(
+            (backend.id, session_key)) or 1)
 
     client = TestClient(create_app())
     response = client.post("/api/chat/general/stop")
 
     assert response.status_code == 200
     assert response.json()["stopped_runs"] == 3
-    assert response.json()["interrupted_runtimes"] == 2
-    assert sorted(interrupted) == [
+    assert response.json()["interrupted_runtimes"] == 0
+    assert response.json()["stopped_runtimes"] == 2
+    assert sorted(stopped) == [
         ("exp-1", "general::expert"), ("std-1", "general::dev")]
     assert seeded.active_chat_runs("general") == []
     rows = seeded._query(
@@ -909,6 +903,7 @@ def test_stop_channel_api_marks_every_run_and_uses_native_interrupt(
                for run_id in (dev_run, expert_run, queued_run))
     marker = seeded.list_messages("general")[-1]
     assert marker["kind"] == "agent_stop" and "3 个 Agent" in marker["content"]
+    assert "终止 2 个 Runtime 进程" in marker["content"]
     assert client.post("/api/chat/general/stop").json()["stopped_runs"] == 0
     assert client.post("/api/chat/missing/stop").status_code == 404
 
@@ -954,7 +949,7 @@ def test_stop_channel_prevents_late_reply_and_queued_agent_start(
     assert messages[-1]["kind"] == "agent_stop"
 
 
-def test_stop_channel_closes_native_instance_when_turn_is_not_registered(
+def test_stop_channel_terminates_native_instance_when_turn_is_not_registered(
         seeded, monkeypatch):
     trigger = seeded.add_message("general", "human", "human", "启动中", [])
     run_id = seeded.add_chat_run("general", "dev", trigger, trigger, 0)
@@ -962,10 +957,6 @@ def test_stop_channel_closes_native_instance_when_turn_is_not_registered(
     seeded.update_chat_run(run_id, "running", backend_id=backend_id)
     chat = ChatEngine(seeded)
     stopped = []
-    monkeypatch.setattr(
-        runtime_manager, "capabilities",
-        lambda _backend: SimpleNamespace(interrupt=True))
-    monkeypatch.setattr(runtime_manager, "interrupt", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(
         runtime_manager, "stop",
         lambda backend, session_key="": stopped.append(
@@ -977,6 +968,31 @@ def test_stop_channel_closes_native_instance_when_turn_is_not_registered(
     assert result["stopped_runtimes"] == 1
     assert stopped == [(backend_id, "general::dev")]
     assert not seeded.chat_run_is_active(run_id)
+
+
+def test_stop_channel_terminates_orphan_runtime_without_active_run(
+        seeded, monkeypatch):
+    backend_id = seeded.get_role("webshop", "dev").runtime_id
+    seeded.put_chat_session(
+        "general::dev", "general", "dev", backend_id, "mock", "/tmp",
+        "native-orphan", "v1")
+    chat = ChatEngine(seeded)
+    stopped = []
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda backend, session_key="": stopped.append(
+            (backend.id, session_key)) or 1)
+
+    result = chat.stop_channel_agents("general")
+
+    assert result["stopped_runs"] == 0
+    assert result["interrupted_runtimes"] == 0
+    assert result["stopped_runtimes"] == 1
+    assert stopped == [(backend_id, "general::dev")]
+    marker = seeded.list_messages("general")[-1]
+    assert marker["kind"] == "agent_stop"
+    assert "没有活动 Agent" in marker["content"]
+    assert "终止 1 个 Runtime 进程" in marker["content"]
 
 
 def test_project_context_update_replaces_context_in_existing_session(chat, seeded):

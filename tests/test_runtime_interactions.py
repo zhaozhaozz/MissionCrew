@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import threading
 import time
-from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
 
@@ -94,10 +93,7 @@ def test_channel_stop_cancels_pending_interaction_without_reopening_run(
     assert any(event["kind"] == "permission_request"
                for event in seeded.run_events(run_id))
 
-    monkeypatch.setattr(
-        runtime_manager, "capabilities",
-        lambda _backend: SimpleNamespace(interrupt=True))
-    monkeypatch.setattr(runtime_manager, "interrupt", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(runtime_manager, "stop", lambda *_args, **_kwargs: 1)
     stopped = chat.stop_channel_agents("general")
     worker.join(timeout=5)
 

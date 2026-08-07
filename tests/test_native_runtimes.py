@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -103,6 +104,31 @@ def test_native_provider_reuses_process_and_session(
         assert {"status", "thinking", "tool", "text"} <= kinds
         if adapter == "codex":
             assert {"tool_result", "usage"} <= kinds
+    finally:
+        provider.shutdown()
+
+
+@pytest.mark.parametrize("adapter,provider_cls", [
+    ("claude_code", ClaudeRuntimeProvider),
+    ("codex", CodexRuntimeProvider),
+])
+def test_native_provider_stop_terminates_runtime_process(
+        tmp_path, adapter, provider_cls):
+    provider = provider_cls(_Fallback(), _fake_command(adapter))
+    backend = Backend(id=adapter, name=adapter, adapter=adapter)
+    session_key = f"channel::{adapter}"
+    try:
+        assert provider.start(
+            _config(tmp_path, adapter, "FIRST", {}, [])).success
+        session = provider._sessions[session_key]
+        process = (session.client.process
+                   if adapter == "codex" and session.client is not None
+                   else session.process)
+        assert process is not None and process.poll() is None
+
+        assert provider.stop(backend, session_key) == 1
+        assert process.poll() is not None
+        assert provider.instances(backend) == []
     finally:
         provider.shutdown()
 
@@ -425,6 +451,56 @@ def test_claude_background_bash_tracked_and_wake_turn_dispatched(tmp_path):
         assert session._wake_sink is None
     finally:
         claude_mod.set_wake_handler(None)
+
+
+def test_claude_waits_for_wake_turn_before_starting_channel_turn(
+        tmp_path, monkeypatch):
+    """旧 wake turn 未收尾时，新 run 不得把输入和 result 混入 wake sink。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "claude_code", "channel::expert", str(tmp_path),
+        persistent=True)
+    session.session_id = "native-wake"
+    session._handle_message({
+        "type": "system", "subtype": "init", "session_id": "native-wake"})
+    assert session._wake_sink is not None
+
+    process_started = threading.Event()
+    prompt_written = threading.Event()
+    monkeypatch.setattr(
+        session, "_ensure_process", lambda _config: process_started.set())
+    monkeypatch.setattr(
+        session, "_write", lambda _payload: prompt_written.set())
+    result = {}
+    config = _config(
+        tmp_path, "claude_code", "NEW TURN",
+        {"id": "native-wake", "context": "v1"}, [])
+    config.session_key = "channel::expert"
+    worker = threading.Thread(
+        target=lambda: result.setdefault("value", session.run(config)))
+    worker.start()
+    try:
+        assert not process_started.wait(0.2)
+
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": ""})
+        assert process_started.wait(2)
+        assert prompt_written.wait(2)
+
+        session._handle_message({
+            "type": "assistant", "message": {"content": [
+                {"type": "text", "text": "channel completed"}]}})
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "channel completed"})
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert result["value"].success
+        assert result["value"].output == "channel completed"
+    finally:
+        session.close()
+        worker.join(timeout=2)
 
 
 def test_claude_background_task_finishing_inside_turn_is_not_wake_reason(tmp_path):
