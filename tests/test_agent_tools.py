@@ -44,11 +44,14 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert lead_run_again != lead_run and next_lead_token != lead_token
     assert "# MissionCrew Agent Tool" in lead.common_prompt
     assert "message.publish" in lead.common_prompt
+    assert "最终回复会由平台自动发布" in lead.common_prompt
+    assert "不要再调用空 `mentions` 的 `message.publish`" in lead.common_prompt
+    assert "派工仍必须使用 `message.publish`" in lead.common_prompt
     assert "返回非空 `dispatched` 时" in lead.common_prompt
     assert "不要使用 `sleep`" in lead.common_prompt
     assert "不要向仍在执行的角色再次 `message.publish` 追问" in lead.common_prompt
     assert "不能提供实时进度" in lead.common_prompt
-    assert "立即用简短消息说明已派发并结束当前 turn" in lead.common_prompt
+    assert "不要为这条说明再调用一次 `message.publish`" in lead.common_prompt
     assert "document.publish" in dev.common_prompt
     assert "message.publish" not in dev.common_prompt
     assert "返回非空 `dispatched` 时" not in dev.common_prompt
