@@ -10,7 +10,8 @@ from fastapi.testclient import TestClient
 
 from missioncrew.api import create_app
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.collab.skills import project_skill_library_dir
+from missioncrew.collab.skills import (project_skill_library_dir,
+                                       skill_context_dir, write_skill_context)
 
 
 def _skill_markdown(name: str, description: str, body: str = "") -> str:
@@ -24,6 +25,26 @@ def _zip(files: dict[str, str]) -> bytes:
         for path, content in files.items():
             archive.writestr(path, content)
     return output.getvalue()
+
+
+def test_skill_context_refresh_tolerates_concurrently_removed_stale_directory(
+        seeded, monkeypatch):
+    project = seeded.get_project("webshop")
+    context = skill_context_dir(project)
+    stale = context / ".agents"
+    stale.mkdir(parents=True)
+    original_is_dir = Path.is_dir
+
+    def remove_after_type_check(path: Path) -> bool:
+        is_directory = original_is_dir(path)
+        if path == stale and is_directory:
+            path.rmdir()
+        return is_directory
+
+    monkeypatch.setattr(Path, "is_dir", remove_after_type_check)
+
+    assert write_skill_context(project) == context
+    assert not stale.exists()
 
 
 def test_direct_drop_skill_is_discovered_with_complete_files_and_runtime_access(seeded):

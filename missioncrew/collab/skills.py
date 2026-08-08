@@ -57,10 +57,15 @@ def skill_context_dir(project: Project) -> Path:
 
 
 def _remove_context_entry(path: Path) -> None:
-    if path.is_symlink() or path.is_file():
-        path.unlink()
-    elif path.is_dir():
-        shutil.rmtree(path)
+    try:
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path)
+    except FileNotFoundError:
+        # Runtime 与 overview 共用这个派生视图：条目可能在类型
+        # 检查后被另一执行者移除，“已不存在”即达到清理目标。
+        pass
 
 
 def write_skill_context(project: Project) -> Path:
