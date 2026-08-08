@@ -518,6 +518,8 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
     assert '"runtime-status"' in router
     assert "/api/runtime/status" in js
     assert "/api/runtime/usage" in js
+    assert 'id="runtime-usage-linkage-switch"' in html
+    assert "/api/runtime/usage/role-linkage" in js
     assert "runtimeUsageCard" in js
     assert "runtimeUsageTimeProgress" in js
     assert "runtime-usage-time-marker" in js
@@ -561,6 +563,42 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
     assert "backend.projects" in js and "instance.project_id" in js
     assert "setInterval(pollRuntimeStatus, 10000)" in client.get(
         "/assets/js/main.js").text
+
+
+def test_usage_role_linkage_api_disables_and_restores_related_roles(
+        client, seeded, monkeypatch):
+    runtime_id = seeded.get_role("webshop", "dev").runtime_id
+    monkeypatch.setattr(runtime_manager, "account_usage", lambda backends, refresh=False: {
+        "generated_at": 100,
+        "cache_ttl_seconds": 60,
+        "summary": {"supported": 1, "available": 1, "unavailable": 0},
+        "usage": [{
+            "backend_id": runtime_id, "backend_name": "Standard",
+            "adapter": "mock", "status": "ok", "source": "test",
+            "windows": [{
+                "key": "weekly", "label": "本周", "used_percent": 100,
+                "resets_at": 2_000_000_000, "duration_minutes": 10080,
+            }],
+        }],
+    })
+
+    enabled = client.post(
+        "/api/runtime/usage/role-linkage", json={"enabled": True})
+
+    assert enabled.status_code == 200
+    assert enabled.json()["enabled"] is True
+    assert seeded.get_role("webshop", "dev").enabled is False
+    overview_role = next(
+        role for role in client.get("/api/overview").json()["roles"]
+        if role["project_id"] == "webshop" and role["id"] == "dev")
+    assert overview_role["usage_auto_disabled"] is True
+    assert overview_role["usage_disabled_until"] == 2_000_000_000
+
+    disabled = client.post(
+        "/api/runtime/usage/role-linkage", json={"enabled": False})
+
+    assert disabled.status_code == 200
+    assert seeded.get_role("webshop", "dev").enabled is True
 
 
 def test_project_role_form_can_import_global_template(client):

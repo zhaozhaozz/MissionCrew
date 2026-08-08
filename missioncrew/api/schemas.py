@@ -111,6 +111,10 @@ class RoleEnabledInput(BaseModel):
     enabled: bool
 
 
+class RoleUsageLinkageInput(BaseModel):
+    enabled: bool
+
+
 class RoleTemplateReorder(BaseModel):
     ids: list[str]                 # 全部全局角色模板 id,按目标显示顺序排列
 

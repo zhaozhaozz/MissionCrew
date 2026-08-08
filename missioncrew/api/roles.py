@@ -73,8 +73,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, "角色不存在")
         if not body.enabled and project.orchestrator_role_id == role.id:
             raise HTTPException(409, "不能停用项目主控角色；请先为项目选择其他已启用主控")
-        role.enabled = body.enabled
-        store.put_role(role)
+        role = store.set_role_enabled_manually(
+            project.id, role.id, body.enabled)
         store.audit(
             "human", "role_enabled_changed",
             detail=f"project={project.id} role={role.id} enabled={str(role.enabled).lower()}",

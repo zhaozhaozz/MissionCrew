@@ -155,7 +155,7 @@ function roleInfo(id) {
 function legalMentionTitle(id) {
   const role = roleInfo(id);
   if (role?.enabled === false)
-    return `角色已停用：@${id}${role.name ? `（${role.name}）` : ""}，不会触发新执行`;
+    return `${roleDisabledReason(role)}：@${id}${role.name ? `（${role.name}）` : ""}，不会触发新执行`;
   return `已确认提及：单选会触发 @${id}${role?.name ? `（${role.name}）` : ""}，多选由主控协调`;
 }
 

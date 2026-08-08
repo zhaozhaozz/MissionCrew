@@ -23,6 +23,7 @@ from ..core.config import db_path
 from ..core.models import Channel, Project
 from ..core.store import Store
 from ..runtime import runtime_manager
+from ..runtime.role_usage_linkage import RoleUsageLinkage
 
 MENTION_ID_RE = re.compile(r"[\w-]+")
 
@@ -31,6 +32,7 @@ MENTION_ID_RE = re.compile(r"[\w-]+")
 class ApiContext:
     store: Store
     chat: ChatEngine
+    role_usage_linkage: RoleUsageLinkage | None = None
     # 更新互斥与"更新中"标记:与 ChatEngine 共享同一集合,更新期间不派发该后端
     updating_backends: set[str] = field(default_factory=set)
     updating_guard: threading.Lock = field(default_factory=threading.Lock)
@@ -62,6 +64,11 @@ class ApiContext:
                 detail=f"paths={resource_links}")
         ctx = cls(store=store, chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends
+        ctx.role_usage_linkage = RoleUsageLinkage(
+            store,
+            lambda refresh=True: runtime_manager.account_usage(
+                store.list_backends(), refresh=refresh),
+        )
         return ctx
 
     def discovered_models(self, backend, refresh: bool = False) -> list[str]:

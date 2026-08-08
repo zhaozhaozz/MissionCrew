@@ -189,3 +189,20 @@ def test_manager_caches_usage_and_force_refreshes():
     assert second["summary"] == {"supported": 1, "available": 1, "unavailable": 0}
     assert refreshed["usage"][0]["status"] == "ok"
     assert provider.calls == 2
+
+
+def test_manager_requests_one_usage_refresh_after_execution(tmp_path):
+    manager = RuntimeManager()
+    provider = _UsageProvider()
+    manager.register("usage-test", provider)
+    backend = _backend("usage-test")
+    refreshes = []
+    manager.set_usage_refresh_handler(lambda: refreshes.append("done"))
+
+    result = manager.start(ExecutionConfig(
+        task_id="chat:1", stage_name="chat", backend=backend,
+        prompt="test", workdir=str(tmp_path), project_id="p", role_id="r",
+    ))
+
+    assert result.success is True
+    assert refreshes == ["done"]

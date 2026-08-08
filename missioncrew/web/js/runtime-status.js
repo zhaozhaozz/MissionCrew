@@ -373,6 +373,14 @@ document.addEventListener("scroll", hideRuntimeUsageTip, true);
 function renderRuntimeUsagePayload(data) {
   hideRuntimeUsageTip();
   const usage = data.usage || [];
+  const linkage = data.role_linkage || {};
+  const linkageSwitch = document.getElementById("runtime-usage-linkage-switch");
+  linkageSwitch.classList.toggle("on", linkage.enabled === true);
+  linkageSwitch.setAttribute("aria-checked", String(linkage.enabled === true));
+  const linkageState = document.getElementById("runtime-usage-linkage-state");
+  linkageState.textContent = linkage.enabled
+    ? (linkage.auto_disabled_count ? `${linkage.auto_disabled_count} 个已停用` : "已开启")
+    : "已关闭";
   const available = usage.filter(item => item.status === "ok").length;
   document.getElementById("runtime-usage-count").textContent =
     `${available}/${usage.length} 可用`;
@@ -381,6 +389,20 @@ function renderRuntimeUsagePayload(data) {
     `<div class="runtime-usage-loading">当前没有支持账户限额读取的 Runtime。</div>`;
   document.getElementById("runtime-usage-updated").textContent =
     `读取于 ${new Date((data.generated_at || Date.now() / 1000) * 1000).toLocaleTimeString()}`;
+}
+
+async function toggleRuntimeUsageRoleLinkage() {
+  const control = document.getElementById("runtime-usage-linkage-switch");
+  const enabled = control.getAttribute("aria-checked") !== "true";
+  control.style.pointerEvents = "none";
+  try {
+    await api("POST", "/api/runtime/usage/role-linkage", { enabled });
+    await loadOverview();
+    await renderRuntimeUsage(true);
+    toast(enabled ? "已开启角色用量联动" : "已关闭角色用量联动，自动停用的角色已恢复", "success");
+  } finally {
+    control.style.pointerEvents = "";
+  }
 }
 
 async function renderRuntimeHistory(force = false) {

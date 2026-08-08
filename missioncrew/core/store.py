@@ -32,6 +32,13 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS roles    (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS role_templates (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS app_settings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS role_usage_blocks (
+  project_id TEXT NOT NULL, role_id TEXT NOT NULL, backend_id TEXT NOT NULL,
+  window_keys TEXT NOT NULL DEFAULT '[]', disabled_until REAL NOT NULL DEFAULT 0,
+  created_at REAL NOT NULL, updated_at REAL NOT NULL,
+  PRIMARY KEY(project_id, role_id)
+);
 CREATE TABLE IF NOT EXISTS boards   (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -319,6 +326,7 @@ class Store:
             "SELECT id FROM channels WHERE json_extract(data, '$.project_id')=?"
             ")", (id, project_id))
         self.revoke_agent_tokens(project_id=project_id, role_id=id)
+        self.delete_role_usage_block(project_id, id)
         self._delete("roles", f"{project_id}:{id}")
     def delete_backend(self, id: str) -> None:
         self._execute("DELETE FROM chat_sessions WHERE backend_id=?", (id,))
@@ -740,6 +748,119 @@ class Store:
             rs = [r for r in rs if r.project_id == project_id]
         # 手工排序优先,同序号(含旧数据的默认 0)按 id 字母序稳定兜底
         return sorted(rs, key=lambda r: (r.project_id, r.sort_order, r.id))
+
+    # ---- 账户用量与角色启停联动 ----
+    def get_app_setting(self, id: str, default=None):
+        value = self._get("app_settings", id)
+        return value.get("value", default) if value is not None else default
+
+    def put_app_setting(self, id: str, value) -> None:
+        self._put("app_settings", id, {"value": value})
+
+    def list_role_usage_blocks(self) -> list[dict]:
+        rows = self._query(
+            "SELECT project_id,role_id,backend_id,window_keys,disabled_until,"
+            "created_at,updated_at FROM role_usage_blocks "
+            "ORDER BY project_id,role_id")
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["window_keys"] = json.loads(item["window_keys"] or "[]")
+            except (TypeError, json.JSONDecodeError):
+                item["window_keys"] = []
+            result.append(item)
+        return result
+
+    def delete_role_usage_block(self, project_id: str, role_id: str) -> None:
+        self._execute(
+            "DELETE FROM role_usage_blocks WHERE project_id=? AND role_id=?",
+            (project_id, role_id),
+        )
+
+    def auto_disable_role_for_usage(
+            self, project_id: str, role_id: str, backend_id: str,
+            window_keys: list[str], disabled_until: float) -> bool:
+        """原子停用角色并记录归因；人工已停用的角色不会被自动接管。"""
+        storage_id = f"{project_id}:{role_id}"
+        timestamp = time.time()
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT data FROM roles WHERE id=?", (storage_id,)).fetchone()
+            if row is None:
+                return False
+            role = Role.from_dict(json.loads(row["data"]))
+            existing = self._conn.execute(
+                "SELECT 1 FROM role_usage_blocks WHERE project_id=? AND role_id=?",
+                (project_id, role_id),
+            ).fetchone()
+            if not role.enabled and existing is None:
+                return False
+            changed = role.enabled
+            role.enabled = False
+            self._conn.execute(
+                "UPDATE roles SET data=? WHERE id=?",
+                (json.dumps(role.to_dict(), ensure_ascii=False), storage_id),
+            )
+            self._conn.execute(
+                "INSERT INTO role_usage_blocks(project_id,role_id,backend_id,"
+                "window_keys,disabled_until,created_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?) ON CONFLICT(project_id,role_id) DO UPDATE SET "
+                "backend_id=excluded.backend_id,window_keys=excluded.window_keys,"
+                "disabled_until=excluded.disabled_until,updated_at=excluded.updated_at",
+                (project_id, role_id, backend_id,
+                 json.dumps(window_keys, ensure_ascii=False), disabled_until,
+                 timestamp, timestamp),
+            )
+            return changed
+
+    def auto_enable_role_after_usage(self, project_id: str, role_id: str) -> bool:
+        """只恢复仍带自动停用记录的角色，并原子清除该记录。"""
+        storage_id = f"{project_id}:{role_id}"
+        with self._lock, self._conn:
+            block = self._conn.execute(
+                "SELECT 1 FROM role_usage_blocks WHERE project_id=? AND role_id=?",
+                (project_id, role_id),
+            ).fetchone()
+            if block is None:
+                return False
+            row = self._conn.execute(
+                "SELECT data FROM roles WHERE id=?", (storage_id,)).fetchone()
+            changed = False
+            if row is not None:
+                role = Role.from_dict(json.loads(row["data"]))
+                changed = not role.enabled
+                role.enabled = True
+                self._conn.execute(
+                    "UPDATE roles SET data=? WHERE id=?",
+                    (json.dumps(role.to_dict(), ensure_ascii=False), storage_id),
+                )
+            self._conn.execute(
+                "DELETE FROM role_usage_blocks WHERE project_id=? AND role_id=?",
+                (project_id, role_id),
+            )
+            return changed
+
+    def set_role_enabled_manually(
+            self, project_id: str, role_id: str, enabled: bool) -> Optional[Role]:
+        """人工切换优先于旧的自动归因，防止计时器随后误恢复人工停用。"""
+        storage_id = f"{project_id}:{role_id}"
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT data FROM roles WHERE id=?", (storage_id,)).fetchone()
+            if row is None:
+                return None
+            role = Role.from_dict(json.loads(row["data"]))
+            role.enabled = enabled
+            self._conn.execute(
+                "UPDATE roles SET data=? WHERE id=?",
+                (json.dumps(role.to_dict(), ensure_ascii=False), storage_id),
+            )
+            self._conn.execute(
+                "DELETE FROM role_usage_blocks WHERE project_id=? AND role_id=?",
+                (project_id, role_id),
+            )
+            return role
 
     # ---- 全局角色模板:仅供新项目复制,不与已有项目角色联动 ----
     def put_role_template(self, role: Role) -> None:

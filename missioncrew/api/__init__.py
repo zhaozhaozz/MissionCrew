@@ -10,21 +10,28 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from ..runtime import runtime_manager
 from . import (agent_tools, backends, boards, chat, documents, guidelines, projects,
                recycle_bin, resources, roles, spa, system, tasks)
 from .context import ApiContext
 
 
-@asynccontextmanager
-async def _lifespan(_app: FastAPI):
-    yield
-    runtime_manager.shutdown()
-
-
 def create_app() -> FastAPI:
-    app = FastAPI(title="MissionCrew", version="0.2.0", lifespan=_lifespan)
     ctx = ApiContext.build()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        from ..runtime import runtime_manager
+        runtime_manager.set_usage_refresh_handler(
+            ctx.role_usage_linkage.request_refresh)
+        ctx.role_usage_linkage.start()
+        try:
+            yield
+        finally:
+            runtime_manager.set_usage_refresh_handler(None)
+            ctx.role_usage_linkage.stop()
+            runtime_manager.shutdown()
+
+    app = FastAPI(title="MissionCrew", version="0.2.0", lifespan=lifespan)
     for module in (system, chat, agent_tools, roles, projects, resources, guidelines,
                    documents, boards, recycle_bin, backends, tasks):
         module.register(app, ctx)

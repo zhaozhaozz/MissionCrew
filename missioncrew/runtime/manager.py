@@ -80,6 +80,7 @@ class RuntimeManager:
         self._usage_store = None
         self._account_usage_cache: dict[str, tuple[float, RuntimeUsageSnapshot]] = {}
         self._account_usage_guard = threading.Lock()
+        self._usage_refresh_handler = None
         self._builtin = _BuiltinProvider()
         # 延迟导入避免 provider 与 manager 初始化互相依赖。业务层只会看到
         # RuntimeManager，Claude/Codex 原生协议类不会越过 runtime 包边界。
@@ -115,6 +116,19 @@ class RuntimeManager:
         from . import acp, claude
         acp.set_wake_handler(handler)
         claude.set_wake_handler(handler)
+
+    def set_usage_refresh_handler(self, handler) -> None:
+        """注册一次性用量刷新通知；每次 Runtime 执行结束后触发。"""
+        self._usage_refresh_handler = handler
+
+    def _notify_usage_refresh(self) -> None:
+        handler = self._usage_refresh_handler
+        if handler is None:
+            return
+        try:
+            handler()
+        except Exception:
+            pass
 
     def provider_for(self, backend: Backend) -> RuntimeProvider:
         return self._providers.get(backend.adapter, self._builtin)
@@ -178,6 +192,7 @@ class RuntimeManager:
                         interrupted=prepared.cancellation_requested())
                 except Exception:
                     pass
+            self._notify_usage_refresh()
             raise
         if usage_id:
             try:
@@ -186,6 +201,7 @@ class RuntimeManager:
                     interrupted=prepared.cancellation_requested())
             except Exception:
                 pass
+        self._notify_usage_refresh()
         return result
 
     def stop(self, backend: Backend, session_key: str = "") -> int:

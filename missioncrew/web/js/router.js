@@ -374,11 +374,11 @@ function renderSidebar() {
       return `<div class="role-chip" style="padding-left:20px" data-role-id="${esc(r.id)}"
             ${disabled ? `aria-disabled="true"` :
               `onclick="insertMention(this.dataset.roleId)"`}
-            title="${esc(disabled ? "角色已停用，需在项目设置中重新启用" : r.description)}">
+            title="${esc(disabled ? roleDisabledReason(r) : r.description)}">
          <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>
          <span>@${esc(r.id)}</span><small>${esc(r.name)}</small>
          ${r.id === orch ? `<span class="pill" style="color:var(--warn);border-color:var(--warn)">主控</span>` : ""}
-         ${disabled ? `<span class="pill">停用</span>` : ""}</div>`;
+         ${disabled ? `<span class="pill">${r.usage_auto_disabled ? "用量停用" : "停用"}</span>` : ""}</div>`;
     }).join("");
   document.getElementById("role-bar").innerHTML = activeProjRoles().map(r =>
     `<button data-role-id="${esc(r.id)}" onclick="insertMention(this.dataset.roleId)"

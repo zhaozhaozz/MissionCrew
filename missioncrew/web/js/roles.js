@@ -9,6 +9,7 @@ function renderRoleTable() {
   const rows = projRoles().map(r => {   // 已按 sort_order 排好(服务端顺序)
     const enabled = r.enabled !== false;
     const isOrchestrator = r.id === project?.orchestrator_role_id;
+    const disabledReason = roleDisabledReason(r);
     const exec = r.runtime_id
       ? `${esc(r.runtime_id)} / ${esc(r.model || "(CLI 默认)")}` +
         (r.effort ? ` / effort ${esc(r.effort)}` : "")
@@ -19,14 +20,14 @@ function renderRoleTable() {
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
           <b>@${esc(r.id)}</b> ${esc(r.name)}
           ${isOrchestrator ? `<span class="pill">主控</span>` : ""}
-          ${enabled ? "" : `<span class="pill">停用</span>`}</td>
+          ${enabled ? "" : `<span class="pill" title="${esc(disabledReason)}">${r.usage_auto_disabled ? "用量停用" : "停用"}</span>`}</td>
       <td class="muted">${esc(r.preference || "—")}</td>
       <td>${abilityPills(r) || "—"}</td>
       <td class="muted">${exec}</td>
       <td><span class="switch ${enabled ? "on" : ""}" role="switch"
-          aria-checked="${enabled}" aria-disabled="${isOrchestrator}"
-          title="${isOrchestrator ? "项目主控不能直接停用，请先切换主控" :
-            (enabled ? "已启用，点击临时停用；不会中断当前运行" : "已停用，点击重新启用")}"
+          aria-checked="${enabled}" aria-disabled="${isOrchestrator && enabled}"
+          title="${!enabled ? esc(disabledReason) : (isOrchestrator ? "项目主控不能直接停用，请先切换主控" :
+            "已启用，点击临时停用；不会中断当前运行")}"
           onclick="toggleRoleEnabled(event,'${r.id}',${!enabled})"></span></td>
       <td><button class="ghost" onclick="editRole('${r.id}')">编辑</button></td></tr>`;
   }).join("");

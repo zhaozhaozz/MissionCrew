@@ -65,6 +65,14 @@ function openFormDialog(title, bodyHtml, actionsHtml) {
 }
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 
+function roleDisabledReason(role) {
+  if (!role?.usage_auto_disabled) return "角色已停用，需在项目设置中重新启用";
+  const reset = Number(role.usage_disabled_until || 0);
+  const suffix = reset ? `，预计 ${new Date(reset * 1000).toLocaleString()} 自动恢复`
+    : "，将在下次检测到可用额度后自动恢复";
+  return `账户用量已耗尽，角色由用量联动自动停用${suffix}`;
+}
+
 /* ---- 角色标识色:原生取色器 + 预设色板(与内置角色模板同色系) ---- */
 const ROLE_COLOR_PRESETS = ["#d97706", "#3564d7", "#2e9e5b", "#8b5cf6",
                             "#c98a1b", "#c94b3c", "#0e9488", "#64748b"];

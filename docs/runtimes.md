@@ -62,14 +62,16 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 运行状态页顶部的「账户用量」来自 `GET /api/runtime/usage`，目前支持 Codex、Claude、Kimi 和 Grok。这里的“用量”是本机 CLI 当前登录账户的订阅或信用额度窗口，不是 MissionCrew 自己估算的调用成本，也不是下方 SQLite 中的调用历史。所有 provider 都把原始结果转换为 `RuntimeUsageSnapshot`：每个窗口只包含名称、已用百分比、剩余百分比、窗口时长和重置时间，另可附带套餐名与余额、并发上限等非敏感指标。页面用进度条主体显示额度使用比例，用下方三角显示根据窗口时长和重置时间计算出的时间进度；补充指标紧跟 Runtime 标题显示，悬浮窗口可查看完整额度、周期进度与重置时间。
 
-`RuntimeManager.account_usage()` 并行探测支持该能力的 Runtime，并在服务内按 backend 缓存 60 秒。账户用量只在进入运行状态页或点击“立即刷新”时请求 `GET /api/runtime/usage?refresh=true` 并强制重新读取；页面停留期间的 10 秒常规轮询只更新 Runtime 状态和调用历史，不请求账户用量。探测失败只让对应卡片显示“需要登录”或“暂不可用”，不会影响运行状态、聊天执行或其他 Runtime 的限额。限额快照只保存在内存，不写入 SQLite；API 不返回 access token、refresh token、用户标识、凭据路径或上游错误正文。
+`RuntimeManager.account_usage()` 并行探测支持该能力的 Runtime，并在服务内按 backend 缓存 60 秒。账户用量在 Runtime 任务结束、进入运行状态页或点击“立即刷新”时读取；页面停留期间的 10 秒常规轮询只更新 Runtime 状态和调用历史，不请求账户用量，也没有周期性账户探测线程。任务结束事件只唤醒一次刷新，短时间内连续完成的事件会合并。探测失败只让对应卡片显示“需要登录”或“暂不可用”，不会影响运行状态、聊天执行或其他 Runtime 的限额。限额快照只保存在内存，不写入 SQLite；API 不返回 access token、refresh token、用户标识、凭据路径或上游错误正文。
+
+「角色联动」是默认关闭的全局持久开关。开启后，任一适用窗口达到 100% 时，平台自动停用固定绑定该 Runtime 的项目角色，并把自动停用归因与重置时间单独保存在 SQLite；人工已经停用的角色不会被接管。已知 `resets_at` 到达时，后台只执行本地计时恢复，不探测账户；没有重置时间的窗口则在下次任务结束或页面刷新检测到额度可用时恢复。关闭联动会立即恢复所有仍由该机制持有的角色。人工启停会清除旧的自动归因，因此计时器不会误启用后来被人工停用的角色。
 
 四种 Runtime 的读取机制如下：
 
 | Runtime | 限额来源 | 本机登录态与刷新 | 统一字段映射 |
 |---|---|---|---|
 | Codex | 启动已安装的 `codex app-server`，以 `capabilities.experimentalApi=true` 完成 `initialize/initialized`，再调用官方 `account/rateLimits/read` | app-server 自己读取 Codex CLI 当前账户；MissionCrew 不直接读取 Codex 凭据 | `rateLimitsByLimitId` 下每个 limit id 的 `primary` / `secondary` 桶映射为独立窗口；读取 `usedPercent`、`windowDurationMins`、`resetsAt`，并显示 `planType` 与非敏感 credits 余额。协议字段见 [Codex App Server 文档](https://developers.openai.com/codex/app-server/) |
-| Claude | 执行 `claude -p "/usage" --output-format json`，只解析 JSON `result` 中形如 `Current week …: 53% used · resets …` 的 `/usage` 文本 | Claude Code 命令自己使用当前登录态；该命令不启动模型推理。MissionCrew 不读取 Claude 凭据 | `Current session` 映射为 5 小时窗口，`Current week (all models)` 与模型专项周限额映射为周窗口。重置时间可能省略年份或分钟，解析时补当前年份并处理跨年 |
+| Claude | 执行 `claude -p "/usage" --output-format json`，只解析 JSON `result` 中形如 `Current week …: 53% used · resets …` 的 `/usage` 文本 | Claude Code 命令自己使用当前登录态；该命令不启动模型推理。MissionCrew 不读取 Claude 凭据 | `Current session` 映射为 5 小时窗口，`Current week (all models)` 与模型专项周限额映射为周窗口。角色联动中，会话窗口约束全部 Claude 角色；普通周窗口只约束非 Fable 角色，`Current week (Fable)` 只约束模型名含 Fable（兼容 Fabel 拼写）的角色。重置时间可能省略年份或分钟，解析时补当前年份并处理跨年 |
 | Kimi | 对 Kimi managed provider 的 `${base_url}/usages` 发起只读 GET；默认 `base_url=https://api.kimi.com/coding/v1`，支持 `KIMI_CODE_BASE_URL` 与 `~/.kimi-code/config.toml` 的 `providers."managed:kimi-code".base_url` | 默认从 `$KIMI_CODE_HOME/credentials/kimi-code.json`（未设置时 `$KIMI_CODE_HOME=~/.kimi-code`）读取 OAuth token；只接受无 group/other 权限的凭据文件。access token 过期时，按 Kimi CLI 相同的 `~/.kimi-code/oauth/kimi-code.lock` 跨进程锁约定，通过 `$KIMI_CODE_OAUTH_HOST/api/oauth/token` 刷新并以 `0600` 原子替换凭据，避免 refresh token 轮换竞争 | 顶层 `usage` 映射为周限额，`limits[].detail` 映射为短窗口；用 `limit`、`used` 或 `remaining` 计算百分比，用 `window.duration/timeUnit` 识别 5 小时等窗口，读取 `resetTime`。可显示 membership level、并发上限和 Booster 余额 |
 | Grok | 使用 Grok CLI 当前的 chat proxy base URL，请求 `${GROK_CLI_CHAT_PROXY_BASE_URL:-https://cli-chat-proxy.grok.com/v1}/billing?format=credits`，请求头带 `x-grok-client-mode: grok-build` | 从 `${GROK_AUTH_FILE:-~/.grok/auth.json}` 选择未过期的 Bearer token；只接受无 group/other 权限的凭据文件。401 时执行不推理的 `grok models`，让 Grok CLI 按自身流程刷新登录态，再重新读取一次 | `config.creditUsagePercent` 和 `config.currentPeriod` 映射为当前额度窗口；Grok 的 protobuf JSON 在新周期用量为 0 时可能省略 `creditUsagePercent`，此时只有在周期起止时间均有效时才按 0% 处理。套餐兼容读取顶层或 `config` 中的 `subscriptionTier`；另显示 prepaid balance、on-demand used/cap 与 `productUsage` 分布 |
 
@@ -210,6 +212,8 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 项目角色的 `enabled` 开关只控制新执行入口：停用后，聊天角色栏和提及选择器不再提供该角色，Web 结构化提及、CLI `@[role]`、主控 `message.publish` 和 Task 主控派发都会在后端拒绝或跳过。停用不会删除角色配置、历史消息、Agent Tool 身份或持久 Runtime 会话，也不会中断已经接受的 turn；重新启用后仍可复用原上下文。为保证项目始终有调度入口，当前 `orchestrator_role_id` 不能直接停用，必须先切换到另一个已启用角色。
 
 启停状态只属于人类控制面。主控提示词中的项目角色名册不会列出停用角色；Agent Tool 对停用角色与未知角色统一返回 `role_not_found`，不会向 Agent 暴露“角色已停用”这一状态。
+
+账户用量联动可以绕过“当前主控不能人工停用”的控制面限制，因为额度耗尽时该主控也无法继续执行。自动停用仍只阻止新 turn，不中断已经接受的执行；页面用「用量停用」和预计恢复时间区分自动状态与人工停用。
 
 ## 模型清单
 
