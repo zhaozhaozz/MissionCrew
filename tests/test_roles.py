@@ -21,6 +21,7 @@ def test_abilities_fixed_and_preference_free_text():
                              "model": "", "traits": ["deep", "quality"]})
     assert legacy.preference == "深度攻坚、高质量"
     assert legacy.enabled is True
+    assert legacy.usage_linkage_enabled is False
 
 
 def test_default_roles_are_bound_once_to_runtime_and_model(seeded):
@@ -81,6 +82,7 @@ def test_role_crud_api(client):
     assert roles["writer"]["model"] == "pro"
     assert roles["writer"]["description"] == "自由文本人格"
     assert roles["writer"]["enabled"] is True
+    assert roles["writer"]["usage_linkage_enabled"] is False
     assert client.delete("/api/roles/writer?project_id=webshop").status_code == 200
     assert "writer" not in {r["id"] for r in client.get("/api/roles").json()}
 
@@ -159,6 +161,7 @@ def test_global_role_templates_seed_new_projects_and_first_is_default(client, se
         "id": "coordinator", "name": "协调者", "runtime_id": "exp-1",
         "model": "ultra", "effort": "high", "capabilities": ["reasoning"],
         "description": "负责新项目调度", "preference": "先规划", "color": "#112233",
+        "usage_linkage_enabled": True,
     }
     assert client.post("/api/role-templates", json=coordinator).status_code == 200
     ids = ["coordinator", *[role["id"] for role in templates]]
@@ -169,6 +172,7 @@ def test_global_role_templates_seed_new_projects_and_first_is_default(client, se
     assert created.json()["orchestrator_role_id"] == "coordinator"
     copied = seeded.get_role("templated", "coordinator")
     assert (copied.runtime_id, copied.model, copied.effort) == ("exp-1", "ultra", "high")
+    assert copied.usage_linkage_enabled is True
     assert copied.description == "负责新项目调度"
     assert [role.id for role in seeded.list_roles("templated")] == ids
 
@@ -518,8 +522,10 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
     assert '"runtime-status"' in router
     assert "/api/runtime/status" in js
     assert "/api/runtime/usage" in js
-    assert 'id="runtime-usage-linkage-switch"' in html
-    assert "/api/runtime/usage/role-linkage" in js
+    assert 'id="runtime-usage-linkage-switch"' not in html
+    assert "/api/runtime/usage/role-linkage" not in js
+    assert "/api/runtime/usage/role-linkage" not in client.get(
+        "/openapi.json").json()["paths"]
     assert "runtimeUsageCard" in js
     assert "runtimeUsageTimeProgress" in js
     assert "runtime-usage-time-marker" in js
@@ -567,7 +573,15 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
 
 def test_usage_role_linkage_api_disables_and_restores_related_roles(
         client, seeded, monkeypatch):
-    runtime_id = seeded.get_role("webshop", "dev").runtime_id
+    dev = seeded.get_role("webshop", "dev")
+    runtime_id = dev.runtime_id
+    unlinked = Role(
+        id="third-party", project_id="webshop", runtime_id=runtime_id,
+        model=dev.model)
+    seeded.put_role(unlinked)
+    body = dev.to_dict()
+    body["usage_linkage_enabled"] = True
+    assert client.post("/api/roles", json=body).status_code == 200
     monkeypatch.setattr(runtime_manager, "account_usage", lambda backends, refresh=False: {
         "generated_at": 100,
         "cache_ttl_seconds": 60,
@@ -582,20 +596,21 @@ def test_usage_role_linkage_api_disables_and_restores_related_roles(
         }],
     })
 
-    enabled = client.post(
-        "/api/runtime/usage/role-linkage", json={"enabled": True})
+    usage = client.get("/api/runtime/usage?refresh=true")
 
-    assert enabled.status_code == 200
-    assert enabled.json()["enabled"] is True
+    assert usage.status_code == 200
+    assert usage.json()["role_linkage"]["linked_role_count"] == 1
     assert seeded.get_role("webshop", "dev").enabled is False
+    assert seeded.get_role("webshop", "third-party").enabled is True
     overview_role = next(
         role for role in client.get("/api/overview").json()["roles"]
         if role["project_id"] == "webshop" and role["id"] == "dev")
     assert overview_role["usage_auto_disabled"] is True
     assert overview_role["usage_disabled_until"] == 2_000_000_000
 
-    disabled = client.post(
-        "/api/runtime/usage/role-linkage", json={"enabled": False})
+    body = seeded.get_role("webshop", "dev").to_dict()
+    body["usage_linkage_enabled"] = False
+    disabled = client.post("/api/roles", json=body)
 
     assert disabled.status_code == 200
     assert seeded.get_role("webshop", "dev").enabled is True
@@ -620,6 +635,12 @@ def test_project_role_form_can_import_global_template(client):
     assert "activeProjRoles().map" in router
     assert "activeProjRoles().filter" in sidebar
     assert "const activeProjRoles" in ui
+    assert "roleUsageLinkageField" in ui
+    assert 'id="rf-usage-linkage"' in ui
+    assert "usage_linkage_enabled" in js
+    settings_runtime = client.get("/assets/js/settings-runtime.js").text
+    assert "roleUsageLinkageField(role)" in settings_runtime
+    assert "usage_linkage_enabled" in settings_runtime
 
 
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----

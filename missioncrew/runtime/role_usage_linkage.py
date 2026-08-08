@@ -7,9 +7,8 @@ from collections.abc import Callable
 
 
 class RoleUsageLinkage:
-    """定期刷新限额，只恢复由本机制自动停用的角色。"""
+    """按角色的显式开关应用限额，只恢复由本机制自动停用的角色。"""
 
-    SETTING_KEY = "role_usage_linkage_enabled"
     _FABLE_MARKERS = ("fable", "fabel")
 
     def __init__(self, store, usage_loader: Callable[..., dict]):
@@ -21,32 +20,33 @@ class RoleUsageLinkage:
         self._refresh_requested = threading.Event()
         self._thread: threading.Thread | None = None
 
-    @property
-    def enabled(self) -> bool:
-        return bool(self.store.get_app_setting(self.SETTING_KEY, False))
-
     def state(self) -> dict:
         blocks = self.store.list_role_usage_blocks()
+        linked_roles = [role for role in self.store.list_roles()
+                        if role.usage_linkage_enabled]
         deadlines = [float(item["disabled_until"]) for item in blocks
                      if float(item["disabled_until"] or 0) > 0]
         return {
-            "enabled": self.enabled,
+            "linked_role_count": len(linked_roles),
             "auto_disabled_count": len(blocks),
             "next_reset_at": min(deadlines) if deadlines else None,
             "roles": blocks,
         }
 
-    def set_enabled(self, enabled: bool) -> dict:
-        self.store.put_app_setting(self.SETTING_KEY, bool(enabled))
-        self.store.audit(
-            "human", "role_usage_linkage_changed",
-            detail=f"enabled={str(bool(enabled)).lower()}")
-        if enabled:
-            self.reconcile()
-        else:
-            self._restore_all("linkage_disabled")
+    def role_updated(self, role, previous=None) -> None:
+        """关闭联动或改绑执行组合时，清除旧限额对角色的控制。"""
+        with self._guard:
+            block = next((item for item in self.store.list_role_usage_blocks()
+                          if item["project_id"] == role.project_id
+                          and item["role_id"] == role.id), None)
+            binding_changed = bool(previous and (
+                previous.runtime_id != role.runtime_id
+                or previous.model != role.model))
+            if block and (not role.usage_linkage_enabled or binding_changed):
+                reason = ("role_linkage_disabled" if not role.usage_linkage_enabled
+                          else "role_binding_changed")
+                self._restore(block, reason)
         self._wake.set()
-        return self.state()
 
     @classmethod
     def _is_fable(cls, value: object) -> bool:
@@ -100,9 +100,14 @@ class RoleUsageLinkage:
                         f"backend={block['backend_id']} reason={reason}"))
         return changed
 
-    def _restore_all(self, reason: str) -> int:
-        return sum(self._restore(block, reason)
-                   for block in self.store.list_role_usage_blocks())
+    def _restore_unlinked(self) -> int:
+        linked = {(role.project_id, role.id) for role in self.store.list_roles()
+                  if role.usage_linkage_enabled}
+        return sum(
+            self._restore(block, "role_linkage_disabled")
+            for block in self.store.list_role_usage_blocks()
+            if (block["project_id"], block["role_id"]) not in linked
+        )
 
     def _restore_due(self, now: float | None = None) -> int:
         current_time = time.time() if now is None else now
@@ -117,20 +122,6 @@ class RoleUsageLinkage:
         """应用一次限额快照；可由后台计时器或 API 刷新共同调用。"""
         with self._guard:
             current_time = time.time() if now is None else now
-            if not self.enabled:
-                self._restore_all("linkage_disabled")
-                return self.state()
-
-            if usage is None:
-                try:
-                    usage = self.usage_loader(refresh=True)
-                except Exception:
-                    usage = {"usage": []}
-            snapshots = {
-                str(item.get("backend_id") or ""): item
-                for item in usage.get("usage") or []
-                if item.get("status") == "ok"
-            }
             blocks = {
                 (item["project_id"], item["role_id"]): item
                 for item in self.store.list_role_usage_blocks()
@@ -144,7 +135,28 @@ class RoleUsageLinkage:
                     self._restore(block, "role_deleted")
                     blocks.pop(key, None)
 
+            linked_roles = []
             for role in roles:
+                key = (role.project_id, role.id)
+                if role.usage_linkage_enabled:
+                    linked_roles.append(role)
+                elif key in blocks:
+                    self._restore(blocks.pop(key), "role_linkage_disabled")
+
+            if not linked_roles:
+                return self.state()
+            if usage is None:
+                try:
+                    usage = self.usage_loader(refresh=True)
+                except Exception:
+                    usage = {"usage": []}
+            snapshots = {
+                str(item.get("backend_id") or ""): item
+                for item in usage.get("usage") or []
+                if item.get("status") == "ok"
+            }
+
+            for role in linked_roles:
                 key = (role.project_id, role.id)
                 block = blocks.get(key)
                 snapshot = snapshots.get(role.runtime_id)
@@ -184,7 +196,7 @@ class RoleUsageLinkage:
 
     def request_refresh(self) -> None:
         """Runtime 执行结束时唤醒一次刷新；连续完成事件会被合并。"""
-        if not self.enabled:
+        if not any(role.usage_linkage_enabled for role in self.store.list_roles()):
             return
         self._refresh_requested.set()
         self._wake.set()
@@ -192,13 +204,11 @@ class RoleUsageLinkage:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                if not self.enabled:
-                    self._restore_all("linkage_disabled")
-                else:
-                    self._restore_due()
-                    if self._refresh_requested.is_set():
-                        self._refresh_requested.clear()
-                        self.reconcile()
+                self._restore_unlinked()
+                self._restore_due()
+                if self._refresh_requested.is_set():
+                    self._refresh_requested.clear()
+                    self.reconcile()
             except Exception:
                 # 后台联动不能影响主服务；下次任务完成或页面刷新时重试。
                 pass

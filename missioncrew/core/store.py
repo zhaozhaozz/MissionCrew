@@ -32,7 +32,6 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE TABLE IF NOT EXISTS channels (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS roles    (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS role_templates (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS app_settings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS role_usage_blocks (
   project_id TEXT NOT NULL, role_id TEXT NOT NULL, backend_id TEXT NOT NULL,
   window_keys TEXT NOT NULL DEFAULT '[]', disabled_until REAL NOT NULL DEFAULT 0,
@@ -750,13 +749,6 @@ class Store:
         return sorted(rs, key=lambda r: (r.project_id, r.sort_order, r.id))
 
     # ---- 账户用量与角色启停联动 ----
-    def get_app_setting(self, id: str, default=None):
-        value = self._get("app_settings", id)
-        return value.get("value", default) if value is not None else default
-
-    def put_app_setting(self, id: str, value) -> None:
-        self._put("app_settings", id, {"value": value})
-
     def list_role_usage_blocks(self) -> list[dict]:
         rows = self._query(
             "SELECT project_id,role_id,backend_id,window_keys,disabled_until,"

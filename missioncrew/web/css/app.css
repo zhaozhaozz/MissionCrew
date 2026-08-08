@@ -620,10 +620,6 @@
   .runtime-section-head h2 { margin: 0 0 3px; font-size: 14.5px; }
   .runtime-section-head p { margin: 0; max-width: 820px; }
   .runtime-section-head > span { flex: none; padding-top: 2px; }
-  .runtime-usage-head-actions { display: flex; align-items: center; gap: 14px; flex: none; }
-  .runtime-usage-linkage { display: inline-flex; align-items: center; gap: 7px;
-                           color: var(--muted); font-size: 12px; white-space: nowrap; }
-  .runtime-usage-linkage small { min-width: 42px; color: var(--muted); }
   .runtime-usage-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr));
                         gap: 14px; }
   .runtime-usage-loading { grid-column: 1 / -1; padding: 34px 18px; text-align: center;
@@ -731,7 +727,6 @@
     .runtime-status-head { flex-direction: column; }
     .runtime-usage-grid { grid-template-columns: 1fr; }
     .runtime-section-head { flex-direction: column; }
-    .runtime-usage-head-actions { width: 100%; justify-content: space-between; }
   }
   .content-topbar-actions { flex: 0 1 auto; display: flex;
                             justify-content: flex-end; flex-wrap: wrap; gap: 6px; }
@@ -867,6 +862,12 @@
                    box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: left .18s; }
   .switch.on { background: var(--ok); }
   .switch.on::after { left: 19px; }
+  .role-usage-linkage-field { display: flex; align-items: center; justify-content: space-between;
+                              gap: 16px; padding: 10px 12px; border: 1px solid var(--line);
+                              border-radius: 8px; background: var(--bg-soft); cursor: pointer; }
+  .role-usage-linkage-field > span:first-child { display: grid; gap: 2px; }
+  .role-usage-linkage-field small { color: var(--muted); font-weight: 400; }
+  .role-usage-linkage-field .switch { flex: none; }
   .role-chip[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
   .muted { color: var(--muted); font-size: 12px; }
 

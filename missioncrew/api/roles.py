@@ -62,8 +62,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 (r.sort_order for r in store.list_roles(body.project_id)), default=0)
         role = Role(**data)
         store.put_role(role)
+        ctx.role_usage_linkage.role_updated(role, previous=existing)
         store.audit("human", "role_saved", detail=f"project={role.project_id} role={role.id}")
-        return role.to_dict()
+        return store.get_role(role.project_id, role.id).to_dict()
 
     @app.post("/api/roles/{role_id}/enabled")
     def set_role_enabled(role_id: str, body: RoleEnabledInput):

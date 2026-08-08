@@ -22,7 +22,8 @@ function renderGlobalRoleTable() {
           ondragstart="globalRoleDragStart(event)" ondragend="globalRoleDragEnd()">⠿</td>
       <td><span class="role-dot" style="background:${esc(role.color || "#888")};display:inline-block"></span>
           <b>@${esc(role.id)}</b> ${esc(role.name)}
-          ${index === 0 ? `<span class="pill">新项目默认主控</span>` : ""}</td>
+          ${index === 0 ? `<span class="pill">新项目默认主控</span>` : ""}
+          ${role.usage_linkage_enabled ? `<span class="pill">用量联动</span>` : ""}</td>
       <td class="muted">${esc(role.preference || "—")}</td>
       <td>${abilityPills(role) || "—"}</td>
       <td class="muted">${execution}</td>
@@ -82,6 +83,7 @@ function editGlobalRoleTemplate(id) {
   const role = globalRoleTemplates().find(item => item.id === id) || {
     id: "", name: "", description: "", capabilities: [], preference: "",
     runtime_id: "", model: "", effort: "", color: "#3564d7",
+    usage_linkage_enabled: false,
   };
   const abilityChips = Object.entries(traitMeta.abilities).map(([key, label]) =>
     `<span class="chip ${(role.capabilities || []).includes(key) ? "on" : ""}" data-cap="${key}"
@@ -106,6 +108,7 @@ function editGlobalRoleTemplate(id) {
       <div><label>模型(清单来自 runtime)</label><select id="rf-model"></select></div>
       <div><label>Effort(推理力度)</label><select id="rf-effort"></select></div>
     </div>
+    ${roleUsageLinkageField(role)}
     <label>角色定位/人格(给角色本人与主控看:写清"是谁、怎么工作"的专长画像;平台原样装配、不改写,任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(role.description)}</textarea>
     <label>角色偏好(给主控选人看:何时该选它的领域/风格短标签,顿号分隔,如"前端"、"只审不改";名册中与能力并列展示)</label>
@@ -132,6 +135,7 @@ async function saveGlobalRoleTemplate() {
     runtime_id: runtimeId,
     model: document.getElementById("rf-model").value,
     effort: document.getElementById("rf-effort").value,
+    usage_linkage_enabled: document.getElementById("rf-usage-linkage").classList.contains("on"),
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
   if (!runtimeId) { uiAlert("请为角色选择 runtime"); return; }

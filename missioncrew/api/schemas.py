@@ -89,6 +89,7 @@ class RoleTemplateInput(BaseModel):
     runtime_id: str            # 角色定义时固定的 runtime,必填
     model: str = ""            # 空 = CLI 默认模型
     effort: str = ""           # 推理力度,仅支持的 runtime 可设;空 = CLI 默认
+    usage_linkage_enabled: bool = False  # 该角色是否跟随账户限额自动启停
     name: str = ""
     description: str = ""
     capabilities: list[str] = []   # 固定能力选项(ROLE_ABILITIES)
@@ -108,10 +109,6 @@ class RoleReorder(BaseModel):
 
 class RoleEnabledInput(BaseModel):
     project_id: str
-    enabled: bool
-
-
-class RoleUsageLinkageInput(BaseModel):
     enabled: bool
 
 

@@ -73,6 +73,16 @@ function roleDisabledReason(role) {
   return `账户用量已耗尽，角色由用量联动自动停用${suffix}`;
 }
 
+function roleUsageLinkageField(role) {
+  const enabled = role?.usage_linkage_enabled === true;
+  return `<label class="role-usage-linkage-field"
+    onclick="const control=this.querySelector('#rf-usage-linkage');control.classList.toggle('on');control.setAttribute('aria-checked',String(control.classList.contains('on')))">
+    <span><b>账户用量联动</b><small>仅当该角色直接消耗所选 Runtime 的账户限额时开启；使用第三方 LLM API 时保持关闭。</small></span>
+    <span class="switch ${enabled ? "on" : ""}" id="rf-usage-linkage" role="switch"
+      aria-checked="${enabled}"></span>
+  </label>`;
+}
+
 /* ---- 角色标识色:原生取色器 + 预设色板(与内置角色模板同色系) ---- */
 const ROLE_COLOR_PRESETS = ["#d97706", "#3564d7", "#2e9e5b", "#8b5cf6",
                             "#c98a1b", "#c94b3c", "#0e9488", "#64748b"];

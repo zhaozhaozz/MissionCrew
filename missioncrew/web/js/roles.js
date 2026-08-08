@@ -20,6 +20,7 @@ function renderRoleTable() {
       <td><span class="role-dot" style="background:${esc(r.color || "#888")};display:inline-block"></span>
           <b>@${esc(r.id)}</b> ${esc(r.name)}
           ${isOrchestrator ? `<span class="pill">主控</span>` : ""}
+          ${r.usage_linkage_enabled ? `<span class="pill">用量联动</span>` : ""}
           ${enabled ? "" : `<span class="pill" title="${esc(disabledReason)}">${r.usage_auto_disabled ? "用量停用" : "停用"}</span>`}</td>
       <td class="muted">${esc(r.preference || "—")}</td>
       <td>${abilityPills(r) || "—"}</td>
@@ -112,7 +113,8 @@ function editRole(id, templateId = "") {
   }
   const r = projRoles().find(x => x.id === id) || template || {
     id: "", name: "", description: "", capabilities: [], preference: "",
-    runtime_id: "", model: "", effort: "", color: "#3564d7", enabled: true };
+    runtime_id: "", model: "", effort: "", color: "#3564d7", enabled: true,
+    usage_linkage_enabled: false };
   const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
     `<span class="chip ${(r.capabilities || []).includes(k) ? "on" : ""}" data-cap="${k}"
        onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");
@@ -153,6 +155,7 @@ function editRole(id, templateId = "") {
       <div><label>Effort(推理力度,仅部分 runtime 支持)</label>
         <select id="rf-effort"></select></div>
     </div>
+    ${roleUsageLinkageField(r)}
     <label>角色定位/人格(给角色本人与主控看:写清"是谁、怎么工作"的专长画像;平台原样装配、不改写,任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
     <label>角色偏好(给主控选人看:何时该选它的领域/风格短标签,顿号分隔,如"前端"、"只审不改";名册中与能力并列展示)</label>
@@ -250,6 +253,7 @@ async function saveRole() {
     runtime_id,
     model: document.getElementById("rf-model").value,
     effort: document.getElementById("rf-effort").value,
+    usage_linkage_enabled: document.getElementById("rf-usage-linkage").classList.contains("on"),
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
   if (!runtime_id) { uiAlert("请为角色选择 runtime(定义时固定执行组合)"); return; }

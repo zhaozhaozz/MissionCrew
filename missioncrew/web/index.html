@@ -301,15 +301,7 @@
             <h2>账户用量 <span class="count" id="runtime-usage-count"></span></h2>
             <p class="muted">任务完成、进入本页或点击“立即刷新”时读取账户限额；进度条表示额度用量，下方三角表示周期时间进度。</p>
           </div>
-          <div class="runtime-usage-head-actions">
-            <label class="runtime-usage-linkage" title="额度耗尽时自动停用相关角色，重置时间到达后自动恢复">
-              <span>角色联动</span>
-              <span class="switch" id="runtime-usage-linkage-switch" role="switch"
-                aria-checked="false" onclick="toggleRuntimeUsageRoleLinkage()"></span>
-              <small id="runtime-usage-linkage-state">已关闭</small>
-            </label>
-            <span class="muted" id="runtime-usage-updated">尚未读取</span>
-          </div>
+          <span class="muted" id="runtime-usage-updated">尚未读取</span>
         </div>
         <div class="runtime-usage-grid" id="runtime-usage-cards">
           <div class="runtime-usage-loading">正在读取账户限额…</div>

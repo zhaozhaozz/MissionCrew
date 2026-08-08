@@ -13,7 +13,6 @@ from ..collab.resource_urls import (channel_resource_url,
 from ..core.models import BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER
 from ..runtime import runtime_manager
 from .context import ApiContext
-from .schemas import RoleUsageLinkageInput
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -97,8 +96,3 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         result["role_linkage"] = ctx.role_usage_linkage.reconcile(
             result, now=result.get("generated_at"))
         return result
-
-    @app.post("/api/runtime/usage/role-linkage")
-    def set_runtime_usage_role_linkage(body: RoleUsageLinkageInput):
-        """持久切换账户用量与角色启停联动；开启时立即读取一次新快照。"""
-        return ctx.role_usage_linkage.set_enabled(body.enabled)
