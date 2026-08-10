@@ -268,6 +268,10 @@ effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 
 
 每次执行的进程环境中，工作目录仍是 Channel workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`。`MISSIONCREW_WORKSPACE` 指向平台数据根内当前 channel×role 的 harness，集中放置项目资料、Task 快照、角色隔离历史、令牌和 Runtime 诊断。Agent 通过 Agent Tool 发布文档、编辑 Task 和追加状态简报；Task 快照只读，不参与执行后反向同步。Runtime 只能访问 Prompt 明确列出的目录，不应使用 `/tmp`、`/var/tmp` 或其他未授权路径；临时文件使用业务仓约定目录或 `$MISSIONCREW_WORKSPACE/temp`。Channel 中的 Agent 执行不设置时间上限，直到 Runtime 返回、失败或用户主动停止。
 
+环境变量方面，子进程环境是 `host_isolated_environ()` 的结果叠加本次执行的 `cfg.env`（平台注入的 `MISSIONCREW_*`）。服务进程的环境本来会整份铺给 Agent CLI，宿主注入的变量会让子进程以为自己跑在那个宿主里：CLI 去连宿主的 IPC，`git` 去调宿主的 askpass 而在无头执行中挂住。因此 `runtime/base.py` 按“变量来自宿主”剥掉一批——`VSCODE_*`、`CLAUDE_*`、`CURSOR_*`、`TERM_PROGRAM*` 等前缀，以及 `CLAUDECODE`（没有下划线，前缀匹配不到）、`GIT_ASKPASS`、`SSH_ASKPASS`、`GIT_EDITOR`、`PYTHONSTARTUP`、`SSH_AUTH_SOCK`、`SSH_CLIENT`、`SSH_CONNECTION` 这些名字上看不出来源的具体项。
+
+**PATH 和代理设置（`HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY`）不在剥离范围内**：PATH 不是污染源，服务同样要靠它探测本机装了哪些 CLI，在启动脚本里重建最小 PATH 会让装在非标准目录的工具被误判为未安装；代理设置剥掉则会让 Agent 的下载退回直连。剥离发生在派发这一层而不是启动脚本，因此无论服务由 pm2、CLI 还是测试拉起，Agent 拿到的环境都一致；新增需要屏蔽的变量改 `base.py` 里那份清单即可。
+
 完整的目录职责、历史隔离和内部数据边界见 [Agent harness 工作区与项目资料边界](agent-harness-workspace.md)。
 
 ## 接入新工具

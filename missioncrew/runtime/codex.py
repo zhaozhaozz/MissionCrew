@@ -10,6 +10,7 @@ from typing import Optional
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
+from .base import host_isolated_environ
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageMetric, RuntimeUsageSnapshot,
                    RuntimeUsageWindow)
@@ -641,7 +642,8 @@ class CodexRuntimeProvider(RuntimeProvider):
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         client = JsonLineProcess(
-            self._command(backend), cwd=str(Path.cwd()), env=dict(os.environ),
+            self._command(backend), cwd=str(Path.cwd()),
+            env=host_isolated_environ(),
             notification_handler=lambda _method, _params: None,
             request_handler=lambda _method, _params: {},
         )
@@ -674,7 +676,8 @@ class CodexRuntimeProvider(RuntimeProvider):
     def account_usage(self, backend: Backend,
                       timeout: int = 15) -> RuntimeUsageSnapshot:
         client = JsonLineProcess(
-            self._command(backend), cwd=str(Path.cwd()), env=dict(os.environ),
+            self._command(backend), cwd=str(Path.cwd()),
+            env=host_isolated_environ(),
             notification_handler=lambda _method, _params: None,
             request_handler=lambda _method, _params: {},
         )

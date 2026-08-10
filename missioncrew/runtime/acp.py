@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from .base import RuntimeInstance
+from .base import RuntimeInstance, host_isolated_environ
 
 
 class AcpError(Exception):
@@ -993,7 +993,7 @@ def list_models(cmd: list[str], env: Optional[dict] = None,
     import tempfile
     workdir = tempfile.mkdtemp(prefix="mc-acp-models-")
     try:
-        client = _AcpClient(cmd, workdir, env or dict(os.environ), timeout)
+        client = _AcpClient(cmd, workdir, env or host_isolated_environ(), timeout)
     except OSError:
         return []
     if runtime_id:

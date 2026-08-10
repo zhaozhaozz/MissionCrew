@@ -30,7 +30,7 @@ except ImportError:  # Python 3.10 仍可使用默认 Kimi 配置路径。
     tomllib = None
 
 from ..core.models import Backend
-from .base import (RuntimeUsageMetric, RuntimeUsageSnapshot,
+from .base import (RuntimeUsageMetric, RuntimeUsageSnapshot, host_isolated_environ,
                    RuntimeUsageWindow)
 
 
@@ -217,7 +217,8 @@ def probe_claude_usage(
     try:
         result = subprocess.run(
             [*command, "-p", "/usage", "--output-format", "json"],
-            cwd=str(Path.home()), env=dict(os.environ), stdin=subprocess.DEVNULL,
+            cwd=str(Path.home()), env=host_isolated_environ(),
+            stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=timeout, check=False,
         )
     except (OSError, subprocess.TimeoutExpired):

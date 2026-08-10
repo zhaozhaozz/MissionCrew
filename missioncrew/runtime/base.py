@@ -2,10 +2,48 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import os
 import time
 from dataclasses import asdict, dataclass, field
+from typing import Mapping, Optional
 
 from ..core.models import Backend, ExecutionConfig, RunResult
+
+# 服务进程的环境会整份铺给 Agent CLI,宿主(VS Code、外层 Agent 会话、SSH
+# 登录)注入的变量会让子进程以为自己跑在那个宿主里:CLI 去连宿主的 IPC,
+# git 去调宿主的 askpass 而在无头执行中挂住。这里按"变量来自宿主"剥掉,
+# 不动 PATH、代理设置和平台自己注入的 MISSIONCREW_*——PATH 不是污染源,
+# 服务同样要靠它探测本机装了哪些 CLI。
+_HOST_ENV_PREFIXES = (
+    "VSCODE_",        # IPC hook、askpass、nonce、debugpy 端点
+    "CLAUDE_",        # 外层 Claude Code 会话的 session/socket
+    "CURSOR_",
+    "TERM_PROGRAM",   # 宿主终端身份,含 TERM_PROGRAM_VERSION
+)
+_HOST_ENV_NAMES = frozenset({
+    "CLAUDECODE",     # 没有下划线,前缀匹配不到
+    "GIT_ASKPASS",    # 值指向宿主 askpass 脚本,无头执行下会挂住
+    "SSH_ASKPASS",
+    "GIT_EDITOR",     # 宿主会改写成 true 或自己的 helper
+    "PYTHONSTARTUP",  # 指向宿主注入的 pythonrc
+    "SSH_AUTH_SOCK",  # 随终端失效,且等于把私钥代理交给 Agent
+    "SSH_CLIENT",
+    "SSH_CONNECTION",
+    "NoDefaultCurrentDirectoryInExePath",
+})
+
+
+def host_isolated_environ(
+        source: Optional[Mapping[str, str]] = None) -> dict[str, str]:
+    """剥掉宿主注入的变量,得到派发 Agent 用的基础环境。
+
+    放在派发这一层而不是启动脚本里:无论服务由 pm2、CLI 还是测试拉起,
+    Agent 拿到的环境都一致,不依赖"必须用某个脚本启动"的约定。
+    """
+    items: Mapping[str, str] = os.environ if source is None else source
+    return {name: value for name, value in items.items()
+            if name not in _HOST_ENV_NAMES
+            and not name.startswith(_HOST_ENV_PREFIXES)}
 
 
 @dataclass(frozen=True)

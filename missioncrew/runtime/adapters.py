@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import acp
-from .base import RuntimeInstance
+from .base import RuntimeInstance, host_isolated_environ
 from ..core.config import pi_vendor_bin, pi_vendor_prefix
 from ..core.models import Backend, ExecutionConfig, RunResult
 
@@ -626,7 +626,7 @@ def _additional_allowed_dirs(workdir: str, allowed_dirs: list[str]) -> list[str]
 def _runtime_env(cfg: ExecutionConfig, adapter_name: str) -> dict:
     """构造子进程环境，并为需要配置式多目录授权的 Runtime 注入策略。"""
     workdir = str(Path(cfg.workdir).expanduser().resolve())
-    env = {**os.environ, **cfg.env, "PWD": workdir}
+    env = {**host_isolated_environ(), **cfg.env, "PWD": workdir}
     env["MISSIONCREW_ALLOWED_DIRS"] = json.dumps(cfg.allowed_dirs, ensure_ascii=False)
     policy = cfg.runtime_policy
     env.setdefault("MISSIONCREW_READABLE_DIRS", json.dumps(

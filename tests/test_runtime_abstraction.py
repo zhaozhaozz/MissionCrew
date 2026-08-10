@@ -285,3 +285,44 @@ def test_builtin_cli_stop_terminates_tracked_process(tmp_path):
     finally:
         if process.poll() is None:
             process.kill()
+
+
+def test_host_isolated_environ_strips_host_vars_but_keeps_infra():
+    """宿主注入的变量不进 Agent 环境;PATH、代理和平台变量必须留下。"""
+    stripped = {
+        "VSCODE_IPC_HOOK_CLI": "/run/vscode.sock",
+        "VSCODE_GIT_ASKPASS_MAIN": "/x/askpass.js",
+        "CLAUDE_CODE_SESSION_ID": "abc",
+        "CLAUDECODE": "1",                 # 无下划线,前缀匹配不到
+        "GIT_ASKPASS": "/x/vscode/askpass.sh",   # 名字里看不出宿主
+        "PYTHONSTARTUP": "/x/vscode/pythonrc.py",
+        "SSH_AUTH_SOCK": "/run/agent.sock",
+        "TERM_PROGRAM": "vscode",
+    }
+    kept = {
+        "PATH": "/usr/bin:/home/u/.kimi-code/bin",   # 探测 CLI 要靠它
+        "HTTP_PROXY": "http://127.0.0.1:7890",       # 剥掉会让下载走直连
+        "HTTPS_PROXY": "http://127.0.0.1:7890",
+        "NO_PROXY": "localhost",
+        "HOME": "/home/u",
+        "MISSIONCREW_WORKSPACE": "/w",               # 平台自己注入的
+        "MISSIONCREW_CLAUDE_SANDBOX": "on",          # CLAUDE 在中间,不该被误伤
+    }
+    result = adapters.host_isolated_environ({**stripped, **kept})
+    assert result == kept
+
+
+def test_runtime_env_isolates_host_vars_and_keeps_platform_env(tmp_path, monkeypatch):
+    """派发层构造的子进程环境同样不含宿主变量,cfg.env 仍然生效。"""
+    monkeypatch.setenv("VSCODE_NONCE", "n")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:7890")
+    backend = Backend(id="runtime", name="Runtime", adapter="recording")
+    config = ExecutionConfig(
+        task_id="task", stage_name="chat", backend=backend, prompt="work",
+        workdir=str(tmp_path), env={"MISSIONCREW_WORKSPACE": "/w"})
+    env = adapters._runtime_env(config, "claude_code")
+    assert "VSCODE_NONCE" not in env and "CLAUDECODE" not in env
+    assert env["HTTP_PROXY"] == "http://127.0.0.1:7890"
+    assert env["MISSIONCREW_WORKSPACE"] == "/w"
+    assert env["PWD"] == str(tmp_path)
