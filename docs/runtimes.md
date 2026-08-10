@@ -197,7 +197,7 @@ ACP v1 把 `session/prompt` 响应定义为完整 prompt turn 的终止边界：
 
 Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。同一 `channel × role` 的 Run 串行获得执行锁；平台随后在稳定令牌路径原子写入绑定该 Run 的 capability，CLI 不提交 `run_id`，API 从已认证 token 确定归属。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
 
-最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和 Task 分别位于 `MISSIONCREW_WORKSPACE` 下，并提供对应环境变量。聊天角色新建、修改或删除文档、Task 时使用 `document.publish`、`task.create`、`task.update`、`task.brief` 或 `task.delete`；文档执行后扫描只作为迁移兼容，Task 快照不会反向同步。
+最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和 Task 分别位于 `MISSIONCREW_WORKSPACE` 下，并提供对应环境变量。聊天角色新建、修改、移动或删除文档、Task 时使用 `document.publish`、`document.rename`、`document.delete`、`task.create`、`task.update`、`task.brief` 或 `task.delete`；文档执行后扫描只作为迁移兼容，Task 快照不会反向同步。
 
 ### Mock(`MockAdapter`)
 

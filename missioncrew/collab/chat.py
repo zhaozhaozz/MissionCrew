@@ -163,6 +163,8 @@ ORCHESTRATOR_TEMPLATE = """\
 - 验证、审查、安全和审批等项目要求也统一写入准则 Markdown，由 Agent 根据任务
   判断是否适用；平台不再维护或机械执行独立的验证规则。`document.publish` 写入项目
   版本化文档库并立即生成 Git 版本，覆盖已有路径时必须显式传 `overwrite: true`。
+  移动或重命名文档时使用 `document.rename`，传入 `source` 和尚不存在的 `target`；
+  目录由文档相对路径隐式形成，不需要也不存在独立的目录创建、移动或删除动作。
   删除文档、准则或 Skill 时分别使用 `document.delete`、`guideline.delete`、`skill.delete`；
   删除仅限主控，所有资源进入项目统一回收站。使用 `recycle.list` 查看，
   `recycle.restore` 恢复；只有用户明确要求永久删除时才使用 `recycle.purge`。

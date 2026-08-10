@@ -53,6 +53,7 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert "不能提供实时进度" in lead.common_prompt
     assert "不要为这条说明再调用一次 `message.publish`" in lead.common_prompt
     assert "document.publish" in dev.common_prompt
+    assert "document.rename" in dev.common_prompt
     assert "message.publish" not in dev.common_prompt
     assert "返回非空 `dispatched` 时" not in dev.common_prompt
     assert "missioncrew-action>" not in lead.common_prompt
@@ -127,7 +128,8 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     capabilities = client.get("/api/agent/v1/actions", headers=headers)
     assert capabilities.status_code == 200
     assert set(capabilities.json()["result"]["actions"]) == {
-        "document.publish", "task.brief", "task.create", "task.update"}
+        "document.publish", "document.rename",
+        "task.brief", "task.create", "task.update"}
 
     published = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "document.publish",
@@ -154,6 +156,66 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
         "retryable": False,
     }
 
+    content_channel = client.post(
+        "/api/projects/webshop/content-channel", json={
+            "content_kind": "docs",
+            "content_key": "reports/tool-result.bin",
+            "label": "tool-result.bin",
+        }).json()
+    renamed = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "document.rename",
+        "request_id": "rename-1",
+        "arguments": {
+            "source": "reports/tool-result.bin",
+            "target": "archive/tool-result.bin",
+        },
+    })
+    assert renamed.status_code == 200
+    assert renamed.json()["result"]["resource_url"] == \
+        "/resources/webshop/documents/archive/tool-result.bin"
+    with pytest.raises(FileNotFoundError):
+        library_for("webshop").read_bytes("reports/tool-result.bin")
+    assert library_for("webshop").read_bytes(
+        "archive/tool-result.bin") == b"tool-result\x00"
+    history = library_for("webshop").history("archive/tool-result.bin")
+    assert history[0]["revision"] == renamed.json()["result"]["revision"]
+    assert history[0]["actor"] == "role:dev"
+    rebound = seeded.get_channel(content_channel["id"])
+    assert rebound is not None
+    assert rebound.content_key == "archive/tool-result.bin"
+
+    library_for("webshop").write(
+        "reports/other.md", "other\n", actor="test",
+        message="Prepare rename conflict")
+    existing_target = client.post(
+        "/api/agent/v1/actions", headers=headers, json={
+            "action": "document.rename",
+            "request_id": "rename-existing",
+            "arguments": {
+                "source": "reports/other.md",
+                "target": "archive/tool-result.bin",
+            },
+        })
+    assert existing_target.status_code == 409
+    assert existing_target.json()["error"]["code"] == "already_exists"
+    missing_source = client.post(
+        "/api/agent/v1/actions", headers=headers, json={
+            "action": "document.rename",
+            "request_id": "rename-missing",
+            "arguments": {"source": "missing.md", "target": "new.md"},
+        })
+    assert missing_source.status_code == 404
+    assert missing_source.json()["error"]["code"] == "not_found"
+    same_path = client.post(
+        "/api/agent/v1/actions", headers=headers, json={
+            "action": "document.rename",
+            "request_id": "rename-same",
+            "arguments": {"source": "archive/tool-result.bin",
+                          "target": "archive/tool-result.bin"},
+        })
+    assert same_path.status_code == 400
+    assert same_path.json()["error"]["code"] == "invalid_arguments"
+
     forbidden = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "message.publish", "run_id": dev_run,
         "request_id": "message-1",
@@ -170,6 +232,8 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     assert any("request=publish-1" in row["detail"] and "status=success" in row["detail"]
                for row in audits)
     assert any("request=publish-2" in row["detail"] and "code=already_exists" in row["detail"]
+               for row in audits)
+    assert any("request=rename-1" in row["detail"] and "status=success" in row["detail"]
                for row in audits)
     assert any("request=message-1" in row["detail"] and "status=failed" in row["detail"]
                for row in audits)
@@ -232,19 +296,26 @@ def test_writable_agent_tools_append_conversation_receipts(seeded):
             identity, "document.publish", {
                 "path": "reports/receipt.md", "content": "重复",
             }, run_id, "failed-write-no-receipt")
+    renamed = chat.agent_tools.execute(
+        identity, "document.rename", {
+            "source": "reports/receipt.md", "target": "archive/receipt.md",
+        }, run_id, "rename-document-receipt")
 
     appended = seeded.list_messages("general")[before:]
-    assert len(appended) == 2
+    assert len(appended) == 3
     assert all(item["author_type"] == "platform" for item in appended)
     assert all(item["kind"] == "agent_tool" for item in appended)
     assert channel["summary"] in appended[0]["content"]
     assert document["summary"] in appended[1]["content"]
+    assert renamed["summary"] in appended[2]["content"]
     assert "`channel.create`" in appended[0]["content"]
     assert "`document.publish`" in appended[1]["content"]
+    assert "`document.rename`" in appended[2]["content"]
     assert all("@lead 使用 MissionCrew Tool" in item["content"]
                for item in appended)
     assert [json.loads(item["context"])["agent_tool"]["action"]
-            for item in appended] == ["channel.create", "document.publish"]
+            for item in appended] == [
+                "channel.create", "document.publish", "document.rename"]
     assert all(item["root_id"] == seeded.get_chat_run(run_id)["root_id"]
                for item in appended)
     assert len(seeded._query("SELECT * FROM chat_runs")) == 1

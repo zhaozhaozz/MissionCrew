@@ -41,6 +41,9 @@ Runtime
 "$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool publish-file \
   --source reports/result.md \
   --path reports/result.md
+
+"$MISSIONCREW_AGENT_TOOL_PYTHON" -m missioncrew.agent_tool call document.rename \
+  --arguments '{"source":"reports/result.md","target":"archive/result.md"}'
 ```
 
 安装项目后也可以使用等价的 `missioncrew-tool` 命令。CLI 在成功时退出码为 0；API 错误、连接错误或客户端参数错误时退出码非零，并把 JSON 原样打印到 stdout，便于 Runtime 在同一回合读取、修正和重试。
@@ -58,6 +61,7 @@ Runtime
 | `task.create` / `task.update` / `task.brief` | 允许 | 允许 |
 | `task.delete` | 禁止 | 允许 |
 | `document.publish` | 允许 | 允许 |
+| `document.rename` | 允许 | 允许 |
 | `document.delete` | 禁止 | 允许 |
 | `message.publish` | 禁止 | 允许 |
 | `channel.create` | 禁止 | 允许 |
@@ -89,6 +93,7 @@ Runtime
 ```
 
 - 文档必须且只能提供 UTF-8 `content` 或 `content_base64`；单文件上限 50 MB。默认不覆盖已有文件，显式传 `overwrite: true` 才能覆盖并形成新版本。
+- `document.rename` 使用文档库内的 `source` 和 `target` 相对路径；源文件必须存在、目标路径必须不存在。移动和仅修改文件名使用同一动作，并以一次 Git 提交保留原文件的历史链。若源文档已有页面对话绑定，该频道、消息和 Runtime 会话会迁移到新路径。
 - `task.delete`、`document.delete`、`dashboard.delete`、`guideline.delete` 和 `skill.delete` 都要求项目主控身份。目标不存在时返回 `task_not_found` 或 `not_found`，不会把删除不存在的资源误报为成功；成功结果包含 `recycle_item`。
 - `recycle.list` 返回当前项目全部类型的回收项；`recycle.restore` 和 `recycle.purge` 使用回收项 `id`，均要求项目主控身份。
 - `task.update` 必须带读取任务时得到的 `snapshot_updated_at`。任务已经被其他执行更新时返回 `version_conflict`，防止旧快照覆盖新状态。
@@ -138,3 +143,5 @@ Runtime
 历史 `missioncrew-action` 文本块仍可读取，避免旧的持久 Runtime 会话或历史测试立即失效；解析后只转发到同一个动作注册表，不再拥有独立写入逻辑。其中 `post_message` 与 `message.publish` 同契约：只有块内显式携带 `mentions` 数组才会派发，正文里的 `@[角色ID]` 不再触发任何执行。新上下文不会要求 Runtime 生成该格式，旧入口也无法像工具调用一样把错误返回给同一 Agent 回合，因此只作为迁移兼容，不应新增依赖。
 
 聊天角色直接编辑 `.missioncrew/documents/` 的执行后同步仍属于兼容路径；新实现应调用 `document.publish`。`.missioncrew/tasks/` 只是只读快照，Task 只有在 Agent 显式调用 `task.create`、`task.update`、`task.brief` 或 `task.delete` 时才会改变。Task 处理统一进入 Channel 协作，不存在独立的任务阶段 Runtime。
+
+文档库没有独立的目录资源或目录动作。目录树由各文件的相对路径隐式形成：发布 `a/b/c.md` 后，Web 会展示目录 `a/b` 下的 `c.md`。创建目标父目录由 `document.publish` / `document.rename` 自动完成；空目录不会进入文档清单或 Git 历史，也没有单独的创建、移动、重命名或删除接口。

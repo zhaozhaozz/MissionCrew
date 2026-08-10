@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from .content_channels import content_channel, rebind_content_channel
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
 from .guidelines import save_guideline
@@ -132,6 +133,14 @@ ACTION_DEFINITIONS = {
             "message": "可选版本说明",
         },
     },
+    "document.rename": {
+        "description": "移动或重命名项目版本化文档并保留 Git 历史",
+        "orchestrator_only": False,
+        "arguments": {
+            "source": "现有文档库相对路径",
+            "target": "新的文档库相对路径；目标必须不存在",
+        },
+    },
     "document.delete": {
         "description": "把项目版本化文档移入统一回收站并保留 Git 历史",
         "orchestrator_only": True,
@@ -218,6 +227,7 @@ ACTION_ARGUMENTS = {
     "document.publish": {
         "path", "content", "content_base64", "overwrite", "message",
     },
+    "document.rename": {"source", "target"},
     "document.delete": {"path"},
     "message.publish": {"channel", "content", "mentions"},
     "channel.create": {"id", "name", "purpose", "workdir"},
@@ -547,6 +557,7 @@ class AgentActionService:
             "task.brief": self._add_task_brief,
             "task.delete": self._delete_task,
             "document.publish": self._publish_document,
+            "document.rename": self._rename_document,
             "document.delete": self._delete_document,
             "message.publish": self._publish_message,
             "channel.create": self._create_channel,
@@ -704,6 +715,45 @@ class AgentActionService:
         return {
             "summary": f"已发布文档 [{path}]({url})",
             "path": path, "size": len(payload), "revision": revision,
+            "resource_url": url,
+        }
+
+    def _rename_document(self, project: Project, identity: AgentIdentity,
+                         arguments: dict, _context: AgentRunContext) -> dict:
+        source = safe_relative_path(str(arguments.get("source", "")))
+        target = safe_relative_path(str(arguments.get("target", "")))
+        if source == target:
+            raise AgentToolError(
+                "invalid_arguments", "document.rename 的 source 和 target 不能相同")
+
+        # 文档页的对话绑定跟随路径迁移；若目标已有独立对话，拒绝重命名，
+        # 避免两个页面会话无法确定应保留哪一个。
+        source_channel = content_channel(self.store, project.id, "docs", source)
+        target_channel = content_channel(self.store, project.id, "docs", target)
+        if (source_channel is not None and target_channel is not None
+                and source_channel.id != target_channel.id):
+            raise AgentToolError(
+                "channel_conflict", f"目标文档已有独立对话: {target}", 409)
+
+        actor = f"role:{identity.role_id}"
+        try:
+            revision = library_for(project.id).rename(
+                source, target, actor=actor)
+        except FileNotFoundError as exc:
+            raise AgentToolError("not_found", str(exc), 404) from exc
+        except FileExistsError as exc:
+            raise AgentToolError("already_exists", str(exc), 409) from exc
+        rebind_content_channel(
+            self.store, project, "docs", source, target, target)
+        self.store.audit(
+            actor, "document_renamed",
+            detail=(f"project={project.id} source={source} target={target} "
+                    f"revision={revision}"),
+        )
+        url = document_resource_url(project.id, target)
+        return {
+            "summary": f"已将文档 `{source}` 重命名为 [{target}]({url})",
+            "source": source, "target": target, "revision": revision,
             "resource_url": url,
         }
 
