@@ -196,31 +196,62 @@ def test_pi_models_come_from_platform_models_json(tmp_path):
     ]
 
 
-def test_pi_providers_api_roundtrip(seeded):
+def _model_provider_client(seeded):
     from fastapi.testclient import TestClient
     from missioncrew.api import create_app
 
     seeded.put_backend(Backend(id="pi", name="pi", adapter="pi"))
-    client = TestClient(create_app())
-    assert client.get("/api/backends/pi/providers").json()["config"] == {
-        "providers": {}}
+    return TestClient(create_app())
+
+
+def test_model_providers_api_roundtrip(seeded):
+    client = _model_provider_client(seeded)
+    initial = client.get("/api/model-providers").json()
+    assert initial["config"] == {"providers": {}}
+    # 页面按这两项决定是否提示"先装/先启用执行这些模型的运行时"
+    assert initial["executor"]["id"] == "pi"
+    assert "openai-completions" in initial["apis"]
 
     config = {"providers": {"raw-openai": {
         "baseUrl": "https://api.openai.com/v1", "apiKey": "sk-x",
         "api": "openai-completions", "models": [{"id": "gpt-5.2"}]}}}
-    response = client.put("/api/backends/pi/providers", json=config)
+    response = client.put("/api/model-providers", json=config)
     assert response.status_code == 200
-    assert response.json()["models"] == ["raw-openai/gpt-5.2"]
+    assert response.json()["executor"]["models"] == ["raw-openai/gpt-5.2"]
     path = core_config.pi_models_path()
     assert json.loads(path.read_text(encoding="utf-8")) == config
     assert (path.stat().st_mode & 0o777) == 0o600
     assert seeded.get_backend("pi").models == ["raw-openai/gpt-5.2"]
-    assert client.get("/api/backends/pi/providers").json()["config"] == config
 
-    bad = client.put("/api/backends/pi/providers", json={"providers": {
+    bad = client.put("/api/model-providers", json={"providers": {
         "p": {"baseUrl": "", "api": "openai-completions",
               "models": [{"id": "m"}]}}})
     assert bad.status_code == 400
+
+
+def test_model_providers_never_return_literal_key_and_keep_it_on_edit(seeded):
+    """字面量密钥不回传浏览器,编辑时留空即沿用已保存的值。"""
+    client = _model_provider_client(seeded)
+    client.put("/api/model-providers", json={"providers": {
+        "raw-openai": {"baseUrl": "https://api.openai.com/v1", "apiKey": "sk-x",
+                       "api": "openai-completions", "models": [{"id": "gpt-5.2"}]},
+        "by-env": {"baseUrl": "https://x/v1", "apiKey": "$MY_KEY",
+                   "api": "openai-completions", "models": [{"id": "m"}]}}})
+
+    shown = client.get("/api/model-providers").json()["config"]["providers"]
+    assert shown["raw-openai"]["apiKey"] == ""          # 字面量只说明"已保存"
+    assert shown["raw-openai"]["apiKeySaved"] is True
+    assert shown["by-env"]["apiKey"] == "$MY_KEY"       # 环境变量引用不是密钥
+
+    # 前端把读到的内容原样回写(密钥字段为空),已保存的密钥不能被清掉
+    shown["raw-openai"]["models"] = [{"id": "gpt-5.2"}, {"id": "gpt-5.2-mini"}]
+    client.put("/api/model-providers", json={"providers": shown})
+    saved = json.loads(core_config.pi_models_path().read_text(encoding="utf-8"))
+    assert saved["providers"]["raw-openai"]["apiKey"] == "sk-x"
+    assert saved["providers"]["by-env"]["apiKey"] == "$MY_KEY"
+    assert "apiKeySaved" not in saved["providers"]["raw-openai"]
+    assert seeded.get_backend("pi").models == [
+        "raw-openai/gpt-5.2", "raw-openai/gpt-5.2-mini", "by-env/m"]
 
 
 def test_validate_pi_providers_rejects_bad_shapes():
@@ -234,3 +265,7 @@ def test_validate_pi_providers_rejects_bad_shapes():
     assert validate_pi_providers({"providers": {
         "p": {"baseUrl": "https://x", "api": "openai-completions",
               "models": [{"id": "m"}]}}}) == ""
+    # 执行单元是 "provider/model",provider 名带斜杠会让模型解析歧义
+    assert validate_pi_providers({"providers": {
+        "a/b": {"baseUrl": "https://x", "api": "openai-completions",
+                "models": [{"id": "m"}]}}}) != ""

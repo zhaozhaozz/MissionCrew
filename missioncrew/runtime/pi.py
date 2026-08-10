@@ -13,6 +13,7 @@ pi 的配置目录经 ``PI_CODING_AGENT_DIR`` 重定向到 ``MC_HOME/pi/agent``
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import threading
 import time
@@ -34,6 +35,8 @@ SUPPORTED_PROVIDER_APIS = {
     "openai-completions", "openai-responses", "anthropic-messages",
     "google-generative-ai",
 }
+
+_PROVIDER_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 
 # agent_end 之后可能立刻跟 auto_retry_start 重开一轮(pi 的瞬态错误自动
 # 重试),因此 agent_end 不能直接判终;静默该时长且无重试事件才算回合结束。
@@ -69,6 +72,10 @@ def validate_pi_providers(data: dict) -> str:
     if not isinstance(providers, dict):
         return "缺少 providers 对象"
     for name, spec in providers.items():
+        # provider 名会拼进执行单元 "provider/model",带斜杠会让模型解析歧义;
+        # 同时收敛为可安全出现在页面与 URL 中的字符集。
+        if not _PROVIDER_NAME_RE.fullmatch(str(name)):
+            return f"provider 名 {name} 只能使用字母、数字、. _ -"
         if not isinstance(spec, dict):
             return f"provider {name} 必须是对象"
         if not str(spec.get("baseUrl") or ""):

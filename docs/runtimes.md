@@ -137,7 +137,7 @@ pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平�
 
 - **二进制 vendored**:pi 安装在 `MC_HOME/pi/vendor`(`npm install --prefix`),检测只认这份安装,不探测系统 PATH,升级也只写 vendor 目录,绝不 `-g`;
 - **配置自包含**:启动时注入 `PI_CODING_AGENT_DIR=MC_HOME/pi/agent`,models.json、皮肤化配置全部落在平台数据目录,不读写 `~/.pi`;会话 JSONL 固定落在 `MC_HOME/pi/sessions`(`--session-dir`),扩展发现被禁用(`--no-extensions`);
-- **裸 API 配置**:`MC_HOME/pi/agent/models.json` 按 pi 原生格式声明 provider(`baseUrl` + `api`(openai-completions/openai-responses/anthropic-messages/google-generative-ai)+ `apiKey`(字面量或 `$ENV_VAR`)+ 模型清单),经 `GET/PUT /api/backends/pi/providers` 读写(PUT 校验结构、收紧文件权限并刷新 pi 后端的执行单元清单);执行单元即 `provider/model`,模型目录与该文件同源。
+- **裸 API 配置**:`MC_HOME/pi/agent/models.json` 按 pi 原生格式声明 provider(`baseUrl` + `api`(openai-completions/openai-responses/anthropic-messages/google-generative-ai)+ `apiKey`(字面量或 `$ENV_VAR`)+ 模型清单);执行单元即 `provider/model`,模型目录与该文件同源。这份文件是下方「自定义模型接入」能力的存储实现,不直接暴露给用户。
 
 每轮回合:进程存活时直接发 `prompt`(模型与思考档位差异经 `set_model`/`set_thinking_level` 在存活进程内对齐,不重启进程);effort 映射为 pi 的 thinking level(off~xhigh)。中断发 `abort`。回合结束后从 `get_state` 读会话文件路径持久化,重启后以 `--session <file>` 恢复。pi 无后台任务/自唤醒协议,长任务语义与 codex 相同(turn 内等待)。
 
@@ -230,6 +230,18 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
    - mock:返回工具自带清单。
 
 保存角色时模型必须属于两份清单之一;空模型 = 显式使用 CLI 默认,总是合法。执行时把模型套用到本次执行配置上,**不写回注册表**——注册表始终保持工具级条目。
+
+### 自定义模型接入
+
+除上述两类由工具决定的清单外,用户还可以接入**任意 OpenAI / Anthropic 兼容的 API 端点**(自建推理服务、网关代理、第三方托管),这是平台对外承诺的能力,与"由谁执行"无关。全局设置页的「自定义模型接入」区域负责增删改,一个接入项包含接入名、接口协议、Base URL、API Key 和模型 id 列表;接入后模型以 `接入名/模型 id` 的形态进入角色的模型清单。
+
+对外契约是 `GET/PUT /api/model-providers`:
+
+- **密钥不回传浏览器**:GET 对字面量 apiKey 返回空串并置 `apiKeySaved=true`,只有 `$ENV_VAR` 引用原样返回(它是引用不是密钥);PUT 中某个 provider 的 apiKey 为空即沿用已保存的值,因此编辑界面无需读出明文再写回。
+- **保留未展示的字段**:PUT 按 provider 整体覆盖,页面在提交前会合并回原有的额外配置(provider 级 `compat`、模型级 `contextWindow`/`cost` 等),界面没有暴露的字段不会被清掉。
+- **写入即刷新**:校验结构、把配置文件收紧到 `0600`,并刷新执行 Runtime 的执行单元清单;响应里的 `executor` 说明该 Runtime 是否已安装启用,页面据此提示先装或先启用。
+
+当前由 pi 执行这些模型,配置落在它的 `models.json`(见上文 pi 小节)。执行后端只由 `missioncrew/api/backends.py` 的 `CUSTOM_MODEL_RUNTIME` 决定,更换时对外接口与页面都不需要改动。
 
 ## Effort(推理力度)
 

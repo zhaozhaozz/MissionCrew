@@ -337,6 +337,15 @@
         <p class="muted">这里只做工具的检测、启停与更新；固定执行组合、角色定位与偏好在上方的新项目角色模板或各项目角色配置中定义。</p>
         <table class="mgr" id="backend-table"></table>
       </div>
+      <div class="section">
+        <h2>自定义模型接入(OpenAI / Anthropic 兼容 API)
+          <button class="ghost" style="margin-left:8px" onclick="editModelProvider(null)">＋ 接入 API</button></h2>
+        <p class="muted">接入任意 OpenAI / Anthropic 兼容的 API 端点：自建推理服务、网关代理、第三方托管都可以。
+          保存后这里声明的模型会以 <code>接入名/模型 id</code> 的形式出现在角色配置的模型清单中。
+          API Key 只保存在本机平台数据目录，可以填字面量，也可以填 <code>$环境变量名</code> 只保存引用。</p>
+        <p class="muted" id="model-provider-hint" hidden></p>
+        <div class="runtime-table-wrap"><table class="mgr" id="model-provider-table"></table></div>
+      </div>
     </div>
 
     <section id="config-chat" class="config-chat" aria-label="当前配置页主控对话">
@@ -454,6 +463,7 @@
 <script src="/assets/js/roles.js"></script>
 <script src="/assets/js/channels.js"></script>
 <script src="/assets/js/settings-runtime.js"></script>
+<script src="/assets/js/settings-models.js"></script>
 <script src="/assets/js/runtime-status.js"></script>
 <script src="/assets/js/main.js"></script>
 </body>

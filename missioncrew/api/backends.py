@@ -11,9 +11,14 @@ from ..core import config as core_config
 from ..core import seed as seed_mod
 from ..core.models import TIER_ORDER
 from ..runtime import runtime_manager
-from ..runtime.pi import validate_pi_providers
+from ..runtime.pi import SUPPORTED_PROVIDER_APIS, validate_pi_providers
 from .context import ApiContext
 from .schemas import BackendInput
+
+# 平台对外提供的能力是"接入任意 OpenAI / Anthropic 兼容 API",这些自定义
+# 模型当前交给 pi 执行,配置也复用它的 models.json。换执行后端时只需改这个
+# 常量与下面的读写实现,对外的 /api/model-providers 契约和页面都不用动。
+CUSTOM_MODEL_RUNTIME = "pi"
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -103,40 +108,85 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         rows.sort(key=lambda row: row["installed"], reverse=True)
         return rows
 
-    @app.get("/api/backends/pi/providers")
-    def pi_providers():
-        """pi 的裸 API provider 配置(MC_HOME/pi/agent/models.json)。"""
+    def _read_model_providers() -> dict:
         path = core_config.pi_models_path()
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            return json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
-            data = {"providers": {}}
+            return {"providers": {}}
         except (OSError, ValueError) as exc:
-            raise HTTPException(500, f"models.json 不可读: {exc}")
-        return {"path": str(path), "config": data}
+            raise HTTPException(500, f"模型接入配置不可读: {exc}") from exc
 
-    @app.put("/api/backends/pi/providers")
-    def put_pi_providers(body: dict = Body(...)):
-        """写入 pi 的 provider 配置并刷新 pi 后端的执行单元清单。
+    def _executor_state() -> dict:
+        """执行这些自定义模型的 Runtime 现状,供页面提示先装/先启用。"""
+        backend = store.get_backend(CUSTOM_MODEL_RUNTIME)
+        installed = any(item["id"] == CUSTOM_MODEL_RUNTIME and item["installed"]
+                        for item in runtime_manager.detect_report(with_version=False))
+        return {
+            "id": CUSTOM_MODEL_RUNTIME,
+            "installed": installed,
+            "registered": backend is not None,
+            "enabled": bool(backend and backend.enabled),
+            "models": list(backend.models) if backend else [],
+        }
 
-        配置整体落在平台数据目录,不触碰 ~/.pi;apiKey 支持字面量或
-        $ENV_VAR 引用(pi 原生语义)。"""
-        error = validate_pi_providers(body)
+    @app.get("/api/model-providers")
+    def model_providers():
+        """用户自定义的 OpenAI / Anthropic 兼容 API 接入配置。"""
+        providers = {}
+        for name, spec in (_read_model_providers().get("providers") or {}).items():
+            if not isinstance(spec, dict):
+                continue
+            # 字面量密钥不回传浏览器,只告知"已保存";$ENV_VAR 是引用不是
+            # 密钥本身,原样返回以便页面显示引用了哪个环境变量。
+            key = str(spec.get("apiKey") or "")
+            providers[name] = {**spec,
+                               "apiKey": key if key.startswith("$") else "",
+                               "apiKeySaved": bool(key)}
+        return {
+            "path": str(core_config.pi_models_path()),
+            "config": {"providers": providers},
+            "apis": sorted(SUPPORTED_PROVIDER_APIS),
+            "executor": _executor_state(),
+        }
+
+    @app.put("/api/model-providers")
+    def put_model_providers(body: dict = Body(...)):
+        """写入自定义 API 接入配置并刷新对应 Runtime 的执行单元清单。
+
+        配置整体落在平台数据目录,不触碰用户级 CLI 配置;apiKey 支持字面量
+        或 $ENV_VAR 引用。某个 provider 的 apiKey 留空表示沿用已保存的值,
+        这样编辑界面不需要先把明文密钥读出来再写回去。"""
+        incoming = body.get("providers")
+        if not isinstance(incoming, dict):
+            raise HTTPException(400, "缺少 providers 对象")
+        stored = _read_model_providers().get("providers") or {}
+        providers = {}
+        for name, spec in incoming.items():
+            if not isinstance(spec, dict):
+                raise HTTPException(400, f"provider {name} 必须是对象")
+            spec = {k: v for k, v in spec.items() if k != "apiKeySaved"}
+            if not str(spec.get("apiKey") or ""):
+                kept = str((stored.get(name) or {}).get("apiKey") or "")
+                if kept:
+                    spec["apiKey"] = kept
+            providers[name] = spec
+        payload = {**body, "providers": providers}
+        error = validate_pi_providers(payload)
         if error:
             raise HTTPException(400, error)
         path = core_config.pi_models_path()
         path.write_text(
-            json.dumps(body, ensure_ascii=False, indent=2) + "\n",
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8")
         path.chmod(0o600)   # 文件含密钥,收紧权限
-        backend = store.get_backend("pi")
+        backend = store.get_backend(CUSTOM_MODEL_RUNTIME)
         if backend is not None:
             backend.models = runtime_manager.list_models(backend)
             store.put_backend(backend)
-        store.audit("human", "pi_providers_updated",
-                    detail=f"providers={sorted((body.get('providers') or {}))}")
-        return {"ok": True, "models": (backend.models if backend else []),
-                "registered": backend is not None}
+        store.audit("human", "model_providers_updated",
+                    detail=f"providers={sorted(providers)}")
+        return {"ok": True, "executor": _executor_state()}
 
     @app.get("/api/backends/{backend_id}/models")
     def backend_models(backend_id: str, refresh: bool = False):
