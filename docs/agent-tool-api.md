@@ -70,7 +70,7 @@ Runtime
 | `skill.save` / `skill.delete` | 禁止 | 允许 |
 | `recycle.list` / `recycle.restore` / `recycle.purge` | 禁止 | 允许 |
 
-`guideline.save` 与 Web 准则编辑器共用 Git 版本库。每次 Markdown 内容变更都返回 `revision`，记录为当前角色的操作；重命名会继续原文件的历史链。删除属于主控权限：文档、准则、Skill 和面板都会进入项目统一回收站，文档与准则删除同时形成新 Git 提交，历史不会被抹除。`recycle.restore` 在原标识已被占用时返回 `already_exists` 并保留回收项；`recycle.purge` 是不可撤销的永久删除，只应在用户明确要求时调用。工具响应不会暴露回收目录的本地路径。
+`guideline.save` 与 Web 准则编辑器共用准则 Git 版本库。`skill.save` 同样把当前完整 Skill 目录提交到项目 Skill 版本库，因此已有 `scripts/`、`references/`、`assets/` 等辅助文件会与更新后的 `SKILL.md` 一起构成版本；两个动作成功后都返回 `revision`，并记录当前角色。准则重命名会继续原文件的历史链。删除属于主控权限：文档、准则、Skill 和面板都会进入项目统一回收站，文档、准则与 Skill 删除同时形成新 Git 提交，历史不会被抹除。`recycle.restore` 在原标识已被占用时返回 `already_exists` 并保留回收项；`recycle.purge` 是不可撤销的永久删除，只应在用户明确要求时调用。工具响应不会暴露回收目录的本地路径。
 
 `message.publish` 的 `mentions` 是独立的角色 ID 数组，也是**唯一**的派发通道：只有数组中的合法角色会被调度；正文里出现的 `@reviewer`、`@[reviewer]` 等文本一律只是普通内容。主控的 Runtime 最终回复会由平台自动发布到当前 Channel；普通答复、结论和状态汇总不应再通过空 `mentions` 的 `message.publish` 重复发布。派工仍使用 `message.publish` 并显式传入目标 `mentions`。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。至少一个角色实际启动时，结果还会返回 `handoff: "end_turn"` 和后续恢复说明；主控应立即在 Runtime 最终回复中简短说明已派发并结束当前 turn，不再为这条说明调用一次 `message.publish`；同时不用 `sleep` 或轮询频道、工作树、运行状态来等待，也不应向执行中的同一角色再次派发“报告中间状态”之类的消息。同一频道同一角色的持久会话不能在执行中插入第二个 turn，这类请求只会排在原任务后面，不能提供实时进度。角色完成或失败后，平台会自动启动新的主控 turn 并交回完整结果。协作链预算导致无人启动时，`dispatched` 为空且不会返回该 handoff。
 

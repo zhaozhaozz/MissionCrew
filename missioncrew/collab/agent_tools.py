@@ -967,18 +967,20 @@ class AgentActionService:
         if markdown is not None:
             if not isinstance(markdown, str):
                 raise AgentToolError("invalid_arguments", "markdown 必须是字符串")
-            saved = save_project_skill_markdown(
+            saved, revision = save_project_skill_markdown(
                 self.store, project, raw_id, markdown, enabled=enabled, actor=actor)
         else:
             skill = ProjectSkill(
                 id=raw_id, name=str(arguments.get("name", "")),
                 description=str(arguments.get("description", "")),
                 instructions=str(arguments.get("instructions", "")), enabled=enabled)
-            saved = save_project_skill(self.store, project, skill, actor=actor)
+            saved, revision = save_project_skill(
+                self.store, project, skill, actor=actor)
         url = skill_resource_url(project.id, saved.id)
         return {
             "summary": f"已保存 Skill [{saved.name or raw_id}]({url})",
             "skill": saved.__dict__, "resource_url": url,
+            "revision": revision,
         }
 
     def _delete_skill(self, project: Project, identity: AgentIdentity,
@@ -994,6 +996,7 @@ class AgentActionService:
             "summary": f"已将 Skill {skill_id} 移入项目回收站",
             "deleted": True,
             "recycle_item": item,
+            "revision": item["revision"],
             "resource_url": skill_resource_url(project.id, skill_id),
         }
 

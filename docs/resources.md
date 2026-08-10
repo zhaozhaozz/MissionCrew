@@ -117,7 +117,7 @@ description: 修改业务代码或接口后进行独立审查
 
 ### Skill
 
-Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKILL.md`，并可包含 `scripts/`、`references/`、`assets/` 等文件。项目支持 ZIP 上传、本地目录导入以及直接复制到项目 Skill 投放目录；完整格式和导入边界见 [项目 Skill 完整目录](skills.md)。
+Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKILL.md`，并可包含 `scripts/`、`references/`、`assets/` 等文件。同级 `skill-history.git` bare Git 仓库保存完整目录历史，包括文件的可执行权限；启用状态不属于内容版本。项目支持 ZIP 上传、本地目录导入以及直接复制到项目 Skill 投放目录；完整格式、历史行为和导入边界见 [项目 Skill 完整目录](skills.md)。
 
 已启用 Skill 会映射到 Agent harness 的 `.missioncrew/skills/<skill-id>/`。Skill 根 URL 打开 `SKILL.md`，追加相对路径可以直接打开 Skill 内文件。该 URL 仅用于 Web 阅读；Agent 执行脚本或读取引用资料时仍使用 harness 中经过授权的真实目录。
 
@@ -126,7 +126,11 @@ Skill 的事实源是项目托管 Skill 目录，每个 Skill 至少包含 `SKIL
 - `GET /api/projects/<project>/skills`
 - `GET /api/projects/<project>/skills/library`
 - `POST /api/projects/<project>/skills`
-- `GET /api/projects/<project>/skills/<skill-id>/file?path=<relative-path>`
+- `GET /api/projects/<project>/skills/<skill-id>/history`
+- `GET /api/projects/<project>/skills/<skill-id>/history/<revision>`
+- `GET /api/projects/<project>/skills/<skill-id>/file?path=<relative-path>&revision=<revision>`
+- `POST /api/projects/<project>/skills/<skill-id>/compare`
+- `POST /api/projects/<project>/skills/<skill-id>/restore`
 
 ### 项目文档
 
@@ -154,7 +158,7 @@ Web 目录树由文件清单中的相对路径即时构造，不存在独立的�
 
 回收站页面是项目级单页视图，可以按资源类型筛选。每项显示原名称、稳定标识、删除时间、操作者和大小。恢复会重建资源事实源，并同步 Project 索引及准则/Skill 实时视图；只有整条链完成才移除回收项。若原路径或 ID 已被新资源占用，恢复返回 `409`，现有资源和回收项都保持不变。永久删除单项和清空回收站不可撤销，Web 会先要求确认。
 
-回收站保存的是“恢复当前资源所需的副本”，不是所有历史的唯一事实源。永久删除回收项后，文档与准则的 Git 历史、频道消息和审计记录仍按各自保留策略存在。内置 Task 看板、项目本身、全局 Runtime 和全局角色模板不进入项目回收站。
+回收站保存的是“恢复当前资源所需的副本”，不是所有历史的唯一事实源。永久删除回收项后，文档、准则与 Skill 的 Git 历史、频道消息和审计记录仍按各自保留策略存在。内置 Task 看板、项目本身、全局 Runtime 和全局角色模板不进入项目回收站。
 
 主要 API：
 

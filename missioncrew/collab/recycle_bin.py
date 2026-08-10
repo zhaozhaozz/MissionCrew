@@ -23,6 +23,7 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             skill_resource_url, task_resource_url)
 from .skills import (project_skill_library_dir, sync_project_skill_library,
                      write_skill_context)
+from .skill_versions import skill_version_library
 
 
 RESOURCE_TYPES = frozenset({
@@ -302,12 +303,16 @@ def recycle_skill(store: Store, project: Project, skill_id: str, *, actor: str) 
         current = store.get_project(project.id) or project
         current.skills = [item for item in current.skills if item.id != skill_id]
         store.put_project(current)
-        sync_project_skill_library(store, current, audit=False)
+        sync_project_skill_library(
+            store, current, audit=False, history_actor=actor,
+            history_message=f"Delete Skill {skill_id}")
     except Exception:
         if not directory.exists():
             shutil.copytree(_item_dir(project.id, manifest["id"]) / "payload", directory)
         rollback = store.get_project(project.id) or project
-        rollback, _ = sync_project_skill_library(store, rollback, audit=False)
+        rollback, _ = sync_project_skill_library(
+            store, rollback, audit=False, history_actor=actor,
+            history_message=f"Rollback deletion of Skill {skill_id}")
         restored = next(
             (item for item in rollback.skills if item.id == skill_id), None)
         if restored is not None:
@@ -318,7 +323,8 @@ def recycle_skill(store: Store, project: Project, skill_id: str, *, actor: str) 
         raise
     store.audit(actor, "skill_recycled",
                 detail=f"project={project.id} skill={skill_id} item={manifest['id']}")
-    return _public_item(manifest)
+    return {**_public_item(manifest),
+            "revision": skill_version_library(project.id).head()}
 
 
 def recycle_dashboard(store: Store, project: Project, board_id: str,
@@ -447,7 +453,9 @@ def _restore_skill(store: Store, project: Project, manifest: dict,
     shutil.copytree(payload, target)
     try:
         current = store.get_project(project.id) or project
-        current, _ = sync_project_skill_library(store, current, audit=False)
+        current, _ = sync_project_skill_library(
+            store, current, audit=False, history_actor=actor,
+            history_message=f"Restore Skill {skill_id} from recycle bin")
         if not any(item.id == skill_id for item in current.skills):
             raise ValueError("回收站中的 Skill 包不再满足当前校验要求")
         restored = next(item for item in current.skills if item.id == skill_id)
@@ -459,6 +467,9 @@ def _restore_skill(store: Store, project: Project, manifest: dict,
         rollback = store.get_project(project.id) or project
         rollback.skills = previous_skills
         store.put_project(rollback)
+        sync_project_skill_library(
+            store, rollback, audit=False, history_actor=actor,
+            history_message=f"Rollback restore of Skill {skill_id}")
         write_skill_context(rollback)
         raise
     return skill_resource_url(project.id, skill_id)

@@ -19,6 +19,7 @@ import yaml
 from ..core.config import projects_dir
 from ..core.models import Project, ProjectSkill
 from .resource_urls import skill_resource_url
+from .skill_versions import skill_version_library
 
 if TYPE_CHECKING:
     from ..core.store import Store
@@ -217,7 +218,9 @@ def skill_directory_version(directory: Path) -> str:
     for relative in files:
         digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
-        with (directory / relative).open("rb") as handle:
+        path = directory / relative
+        digest.update(b"x" if path.stat().st_mode & 0o111 else b"-")
+        with path.open("rb") as handle:
             while chunk := handle.read(1024 * 1024):
                 digest.update(chunk)
         digest.update(b"\0")
@@ -258,13 +261,18 @@ def materialize_project_skills(project: Project, *, overwrite: bool = False) -> 
 
 
 def sync_project_skill_library(store: Store, project: Project,
-                               *, audit: bool = True) -> tuple[Project, list[str]]:
+                               *, audit: bool = True,
+                               history_actor: str = "platform",
+                               history_message: str = "Sync project Skill library",
+                               record_history: bool = True
+                               ) -> tuple[Project, list[str]]:
     """扫描直接子目录并把合法 SKILL.md 元数据同步到 Project。"""
     with _project_lock(project.id):
         root = project_skill_library_dir(project.id)
         _initialize_legacy_skills(project, root)
         existing = {skill.id: skill for skill in project.skills}
         discovered: list[ProjectSkill] = []
+        valid_directories: dict[str, Path] = {}
         issues: list[str] = []
         for directory in sorted(root.iterdir(), key=lambda path: path.name.lower()):
             if directory.name.startswith("."):
@@ -294,6 +302,7 @@ def sync_project_skill_library(store: Store, project: Project,
                 issues.append(f"{skill_id}: {exc}")
                 continue
             discovered.append(skill)
+            valid_directories[skill_id] = directory
 
         before = [asdict(skill) for skill in project.skills]
         after = [asdict(skill) for skill in discovered]
@@ -308,6 +317,9 @@ def sync_project_skill_library(store: Store, project: Project,
                     detail=(f"project={project.id} added={sorted(new_ids - old_ids)} "
                             f"removed={sorted(old_ids - new_ids)}"),
                 )
+        if record_history:
+            skill_version_library(project.id).record(
+                valid_directories, actor=history_actor, message=history_message)
         write_skill_context(project)
         return project, issues
 
@@ -322,9 +334,14 @@ def sync_all_project_skill_libraries(store: Store) -> int:
     return changed
 
 
-def skill_library_info(store: Store, project: Project) -> dict:
-    project, issues = sync_project_skill_library(store, project)
+def skill_library_info(store: Store, project: Project, *,
+                       history_actor: str = "platform",
+                       history_message: str = "Sync project Skill library") -> dict:
+    project, issues = sync_project_skill_library(
+        store, project, history_actor=history_actor,
+        history_message=history_message)
     root = project_skill_library_dir(project.id)
+    versions = skill_version_library(project.id)
     skills = []
     for skill in project.skills:
         directory = root / skill.id
@@ -341,8 +358,88 @@ def skill_library_info(store: Store, project: Project) -> dict:
             "file_count": len(files),
             "total_bytes": total,
             "content_version": skill_directory_version(directory),
+            "revision": versions.current_revision(skill.id),
         })
     return {"path": str(root), "skills": skills, "issues": issues}
+
+
+def skill_history(store: Store, project: Project, skill_id: str,
+                  limit: int = 100) -> list[dict]:
+    project, _ = sync_project_skill_library(store, project)
+    if not any(skill.id == skill_id for skill in project.skills):
+        raise FileNotFoundError("Skill 不存在")
+    return skill_version_library(project.id).history(skill_id, limit)
+
+
+def read_skill_version(store: Store, project: Project, skill_id: str,
+                       revision: str) -> dict:
+    project, _ = sync_project_skill_library(store, project)
+    if not any(skill.id == skill_id for skill in project.skills):
+        raise FileNotFoundError("Skill 不存在")
+    return skill_version_library(project.id).package_info(skill_id, revision)
+
+
+def restore_skill_version(store: Store, project: Project, skill_id: str,
+                          revision: str, *, actor: str
+                          ) -> tuple[ProjectSkill, str]:
+    with _project_lock(project.id):
+        return _restore_skill_version_locked(
+            store, project, skill_id, revision, actor=actor)
+
+
+def _restore_skill_version_locked(store: Store, project: Project, skill_id: str,
+                                  revision: str, *, actor: str
+                                  ) -> tuple[ProjectSkill, str]:
+    project, _ = sync_project_skill_library(store, project)
+    current = next((skill for skill in project.skills if skill.id == skill_id), None)
+    if current is None:
+        raise FileNotFoundError("Skill 不存在")
+    root = project_skill_library_dir(project.id)
+    target = root / skill_id
+    with tempfile.TemporaryDirectory(
+            dir=root.parent, prefix=".skill-version-restore-") as temporary_name:
+        backup = Path(temporary_name) / skill_id
+        shutil.copytree(target, backup)
+        try:
+            skill_version_library(project.id).restore_files(skill_id, revision, root)
+            restored_file = _skill_file(target)
+            if restored_file is None:
+                raise ValueError("历史版本缺少唯一的 SKILL.md")
+            _validate_tree(target)
+            parse_skill_markdown(
+                skill_id, restored_file.read_text(encoding="utf-8"),
+                enabled=current.enabled)
+            project, issues = sync_project_skill_library(
+                store, project, audit=False, history_actor=actor,
+                history_message=f"Restore Skill {skill_id} to {revision[:10]}")
+            if any(issue.startswith(f"{skill_id}:") for issue in issues):
+                raise ValueError(f"恢复后的 Skill 无效: {skill_id}")
+            restored = next(item for item in project.skills if item.id == skill_id)
+            restored.enabled = current.enabled
+            store.put_project(project)
+            write_skill_context(project)
+        except Exception:
+            if target.exists():
+                shutil.rmtree(target)
+            shutil.copytree(backup, target)
+            rollback = store.get_project(project.id) or project
+            rollback, _ = sync_project_skill_library(
+                store, rollback, audit=False, history_actor=actor,
+                history_message=f"Rollback restore of Skill {skill_id}")
+            previous = next(
+                (item for item in rollback.skills if item.id == skill_id), None)
+            if previous is not None:
+                previous.enabled = current.enabled
+                store.put_project(rollback)
+                write_skill_context(rollback)
+            raise
+    new_revision = skill_version_library(project.id).current_revision(skill_id)
+    store.audit(
+        actor, "skill_restored",
+        detail=(f"project={project.id} skill={skill_id} from={revision[:10]} "
+                f"revision={new_revision[:10]}"),
+    )
+    return restored, new_revision
 
 
 def _prepare_skill_save_target(root: Path, skill_id: str) -> Path:
@@ -354,7 +451,7 @@ def _prepare_skill_save_target(root: Path, skill_id: str) -> Path:
 
 
 def save_project_skill(store: Store, project: Project, skill: ProjectSkill,
-                       *, actor: str) -> ProjectSkill:
+                       *, actor: str) -> tuple[ProjectSkill, str]:
     with _project_lock(project.id):
         root = project_skill_library_dir(project.id)
         _initialize_legacy_skills(project, root)
@@ -366,18 +463,21 @@ def save_project_skill(store: Store, project: Project, skill: ProjectSkill,
         if existing_file is not None and existing_file != target:
             existing_file.unlink()
         _atomic_write_text(target, render_skill_markdown(skill, existing_markdown))
-        project, _ = sync_project_skill_library(store, project, audit=False)
+        project, _ = sync_project_skill_library(
+            store, project, audit=False, history_actor=actor,
+            history_message=f"Save Skill {skill.id}")
         saved = next(item for item in project.skills if item.id == skill.id)
         saved.enabled = skill.enabled
         store.put_project(project)
         write_skill_context(project)
         store.audit(actor, "skill_saved", detail=f"project={project.id} skill={skill.id}")
-        return saved
+        revision = skill_version_library(project.id).current_revision(skill.id)
+        return saved, revision
 
 
 def save_project_skill_markdown(store: Store, project: Project, skill_id: str,
                                 markdown: str, *, enabled: bool,
-                                actor: str) -> ProjectSkill:
+                                actor: str) -> tuple[ProjectSkill, str]:
     """按完整 SKILL.md 原文保存；frontmatter 与附加属性原样保留。"""
     if not _ID_RE.fullmatch(skill_id):
         raise ValueError("Skill id 只能包含字母、数字、下划线、连字符")
@@ -391,13 +491,16 @@ def save_project_skill_markdown(store: Store, project: Project, skill_id: str,
         if existing_file is not None and existing_file != target:
             existing_file.unlink()
         _atomic_write_text(target, markdown if markdown.endswith("\n") else markdown + "\n")
-        project, _ = sync_project_skill_library(store, project, audit=False)
+        project, _ = sync_project_skill_library(
+            store, project, audit=False, history_actor=actor,
+            history_message=f"Save Skill {skill_id}")
         saved = next(item for item in project.skills if item.id == skill_id)
         saved.enabled = enabled
         store.put_project(project)
         write_skill_context(project)
         store.audit(actor, "skill_saved", detail=f"project={project.id} skill={skill_id}")
-        return saved
+        revision = skill_version_library(project.id).current_revision(skill_id)
+        return saved, revision
 
 
 def _discover_skill_directories(source: Path) -> tuple[list[tuple[str, Path]], list[str]]:
@@ -484,8 +587,11 @@ def _install_discovered(store: Store, project: Project, source: Path,
                     archives.append(archived["id"])
                 (staging / skill_id).rename(destination)
 
-        project, sync_issues = sync_project_skill_library(store, project, audit=False)
         imported = sorted(skill_id for skill_id, _ in found)
+        project, sync_issues = sync_project_skill_library(
+            store, project, audit=False, history_actor=actor,
+            history_message=f"Import Skills {', '.join(imported)}")
+        revision = skill_version_library(project.id).head()
         store.audit(
             actor, "skills_imported",
             detail=(f"project={project.id} skills={imported} overwrite={overwrite} "
@@ -497,6 +603,7 @@ def _install_discovered(store: Store, project: Project, source: Path,
             "imported": imported,
             "issues": [*issues, *sync_issues],
             "path": str(root),
+            "revision": revision,
         }
 
 

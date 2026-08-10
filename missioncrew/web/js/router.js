@@ -130,6 +130,7 @@ async function applyRoute() {
       }
     }
     if (r.tab === "skills") {
+      resetSkillHistoryState();
       selectedSkillId = (projObj()?.skills || [])
         .some(item => item.id === r.skill) ? r.skill : undefined;
       skillOpenFile = selectedSkillId ? r.skillFile : null;
@@ -190,6 +191,7 @@ async function setProject(id, updateRoute = true) {
   selectedGuidelineName = undefined;
   guidelineViewer.reset();
   selectedSkillId = undefined;
+  resetSkillHistoryState();
   skillMarkdownMode = "preview";
   skillOpenFile = null;
   skillLibraryInfo = null;

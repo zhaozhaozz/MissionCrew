@@ -50,6 +50,14 @@ Skill id 默认取目录名，只允许字母、数字、下划线和连字符�
 
 已有的旧式文本 Skill 会在项目首次初始化时自动迁移为 `skills/<id>/SKILL.md`。新项目创建时会立即获得空的 `skills/` 目录。
 
+## 版本历史
+
+每个项目在 `projects/<project-id>/skill-history.git` 中保存独立的 bare Git 历史。一次版本包含当前全部有效 Skill 的完整目录快照，因此 `SKILL.md`、`scripts/`、`references/`、`assets/`、其他文件以及文件的可执行权限都会进入版本；启用状态保存在 Project 索引中，不属于 Skill 包内容版本。
+
+通过 Web 或 Agent Tool 保存、导入、覆盖、删除、从回收站恢复和按历史版本恢复都会提交版本。直接投放目录中的变化会在 Web 自动扫描、手动重新扫描或下一次 Agent 装配扫描时提交；内容和权限没有变化时不会产生空版本。Skill 页面可以查看任一历史版本的完整文件树和文件内容，按 A → B 比较两个包的文件增删改及文本差异，并把完整目录恢复到旧版本。恢复会生成一个新提交，不改写既有历史。
+
+版本仓位于平台项目数据目录，不会暴露给 Runtime，也不属于业务代码仓。删除 Skill 后，Git 历史仍然保留；回收站负责恢复当前被删除的完整目录，版本历史负责查看和恢复仍然存在的 Skill 的旧内容。
+
 ## 重复、删除与安全边界
 
 - 导入发现同 id Skill 时先返回冲突清单，用户确认后才覆盖。
@@ -73,6 +81,11 @@ Skill id 默认取目录名，只允许字母、数字、下划线和连字符�
 ## API
 
 - `GET /api/projects/<project>/skills/library`：读取投放路径、文件清单与扫描问题。
+- `GET /api/projects/<project>/skills/<skill-id>/history`：列出完整包版本。
+- `GET /api/projects/<project>/skills/<skill-id>/history/<revision>`：读取历史版本的文件树与 `SKILL.md`。
+- `GET /api/projects/<project>/skills/<skill-id>/file?path=<relative-path>&revision=<revision>`：读取当前或历史版本中的文本文件。
+- `POST /api/projects/<project>/skills/<skill-id>/compare`：比较两个完整包版本。
+- `POST /api/projects/<project>/skills/<skill-id>/restore`：把完整目录恢复到指定版本并生成新版本。
 - `POST /api/projects/<project>/skills/import-zip`：请求体为原始 ZIP 字节；`overwrite=true` 表示确认覆盖。
 - `POST /api/projects/<project>/skills/import-folder`：导入服务器本地目录。
 - `POST /api/projects/<project>/skills/rescan`：立即重新扫描直接投放目录。

@@ -1078,6 +1078,10 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "guideline-markdown-preview" in js
     assert "createTextViewer" in js and "guidelineViewer" in js
     assert "guidelineViewer.confirmDiscard" in js
+    # Skill 完整包历史：查看、比较与恢复都从专用端点驱动。
+    assert "skillHistoryPanelHtml" in js and "viewSkillRevision" in js
+    assert "runSkillCompare" in js and "restoreSkillRevision" in js
+    assert "/history" in js and "/restore" in js
     assert "/history" in js and "恢复会写入一个新版本" in js
     assert "恢复此版本" in viewer
     assert "viewer-edit-preview" in viewer

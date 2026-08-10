@@ -109,7 +109,8 @@ function configChatContext() {
     const skill = project.skills?.find(value => value.id === selectedSkillId);
     const draftName = guidelineFrontmatterValue(valueOf("sf-content"), "name");
     const draftId = skill ? skill.id : valueOf("sf-id").trim();
-    item = skill ? `${draftName || skill.name || skill.id}（id: ${skill.id}）`
+    item = skill ? `${draftName || skill.name || skill.id}（id: ${skill.id}${
+      skillViewingRevision ? `，历史版本 ${skillViewingRevision.slice(0, 10)}` : ""}）`
                  : `新建 Skill（${draftName || draftId || "未命名"}，未保存）`;
     itemKey = skill?.id || "new";
     contentKey = skill?.id || null;
@@ -148,6 +149,7 @@ function currentConfigDraft(context) {
     },
     enabled: document.getElementById("sf-enabled")?.classList.contains("on") ?? true,
     unsaved_changes: configEditorDirty.skills,
+    viewing_revision: skillViewingRevision,
   };
   return null;
 }
@@ -817,6 +819,12 @@ let skillMarkdownMode = "preview";
 let skillFileTreeCollapsed = false;
 let skillEditorSignature = null;
 let skillLibraryLoad = null;
+let skillViewingRevision = null;
+let skillHistoricalPackage = null;
+let skillHistoryOpen = false;
+let skillHistoryRows = null;
+let skillCompareRevisions = [];
+let skillCompareResult = null;
 
 function skillMetadataSignature(skills) {
   return JSON.stringify((skills || []).map(skill => ({
@@ -828,7 +836,7 @@ function skillMetadataSignature(skills) {
 function skillEditorStateSignature(skill, packageInfo) {
   return JSON.stringify([
     currentProject, selectedSkillId, skill || null,
-    packageInfo ? packageInfo.content_version : null,
+    packageInfo ? packageInfo.content_version : null, skillViewingRevision,
   ]);
 }
 
@@ -897,15 +905,187 @@ function renderSkillLibraryStatus() {
 }
 
 function selectedSkillPackage() {
+  if (skillViewingRevision) return skillHistoricalPackage;
   return skillLibraryInfo?.project_id === currentProject
     ? (skillLibraryInfo.skills || []).find(item => item.id === selectedSkillId) : null;
+}
+
+function resetSkillHistoryState() {
+  skillViewingRevision = null;
+  skillHistoricalPackage = null;
+  skillHistoryOpen = false;
+  skillHistoryRows = null;
+  skillCompareRevisions = [];
+  skillCompareResult = null;
+}
+
+function skillHistoryPanelHtml() {
+  if (!skillHistoryOpen) return "";
+  if (skillCompareResult) {
+    if (skillCompareResult.loading)
+      return `<section class="doc-compare-panel"><div class="empty">正在比较 Skill 包…</div></section>`;
+    const result = skillCompareResult;
+    const statusLabels = { added: "新增", deleted: "删除", modified: "修改" };
+    const changes = result.file_changes || [];
+    return `<section class="doc-compare-panel">
+      <div class="doc-compare-head"><strong>Skill 包版本比较</strong>
+        <code>A ${esc(result.from_revision.slice(0, 10))}</code><span>→</span>
+        <code>B ${esc(result.to_revision.slice(0, 10))}</code>
+        <span class="st-done">+${result.additions}</span>
+        <span class="st-failed">−${result.deletions}</span>
+        <span class="guideline-toolbar-spacer"></span>
+        <button class="ghost compact" type="button" onclick="closeSkillCompare()">退出比较</button>
+      </div>
+      <div class="skill-version-file-changes">${changes.length
+        ? changes.map(item => `<code class="skill-version-change ${esc(item.status)}">${
+            esc(statusLabels[item.status] || item.status)} ${esc(item.path)}</code>`).join("")
+        : `<span class="muted">文件内容和权限均相同。</span>`}</div>
+      ${result.identical
+        ? `<div class="empty">两个版本的 Skill 包完全相同。</div>`
+        : viewerInlineDiffHtml(result.ops)}
+    </section>`;
+  }
+  if (skillHistoryRows === null)
+    return `<section class="doc-history-panel"><div class="empty">正在读取版本历史…</div></section>`;
+  if (!skillHistoryRows.length)
+    return `<section class="doc-history-panel"><div class="empty">暂无版本历史。</div></section>`;
+  const full = skillCompareRevisions.length >= 2;
+  return `<section class="doc-history-panel">
+    <div class="doc-history-head"><h3>版本历史</h3>
+      <span class="muted">每个版本包含 SKILL.md、scripts、references、assets 等完整目录内容</span>
+      <span class="guideline-toolbar-spacer"></span>
+      <button class="action compact" type="button" onclick="runSkillCompare()"
+        ${skillCompareRevisions.length === 2 ? "" : "disabled"}>
+        比较已选版本 (${skillCompareRevisions.length}/2)</button>
+    </div>
+    <div class="doc-history-table-wrap"><table>
+      <tr><th>比较</th><th>版本</th><th>时间</th><th>作者</th><th>说明</th><th></th></tr>
+      ${skillHistoryRows.map((row, index) => {
+        const slot = skillCompareRevisions.indexOf(row.revision);
+        const checked = slot >= 0;
+        return `<tr class="${skillViewingRevision === row.revision ? "selected" : ""}">
+          <td class="doc-compare-choice"><input type="checkbox"
+            data-rev="${esc(row.revision)}" onchange="toggleSkillCompareRevision(this.dataset.rev)"
+            aria-label="选择版本 ${esc(row.revision.slice(0, 10))} 进行比较"
+            ${checked ? "checked" : ""} ${full && !checked ? "disabled" : ""}>
+            ${checked ? `<span class="doc-compare-slot">${slot === 0 ? "A" : "B"}</span>` : ""}</td>
+          <td><code>${esc(row.revision.slice(0, 10))}</code>
+            ${index === 0 ? `<span class="pill st-done">最新</span>` : ""}</td>
+          <td>${new Date(row.created_at * 1000).toLocaleString()}</td>
+          <td>${esc(row.actor)}</td><td>${esc(row.message)}</td><td>
+            <button class="ghost compact" type="button" data-rev="${esc(row.revision)}"
+              onclick="viewSkillRevision(this.dataset.rev)">查看</button>
+            <button class="ghost compact" type="button" data-rev="${esc(row.revision)}"
+              onclick="restoreSkillRevision(this.dataset.rev)">恢复</button>
+          </td></tr>`;
+      }).join("")}
+    </table></div>
+  </section>`;
+}
+
+async function loadSkillHistory() {
+  if (!currentProject || !selectedSkillId) return;
+  const projectId = currentProject;
+  const skillId = selectedSkillId;
+  try {
+    const rows = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/skills/` +
+      `${encodeURIComponent(skillId)}/history`);
+    if (projectId !== currentProject || skillId !== selectedSkillId) return;
+    skillHistoryRows = rows;
+    renderSkillsPage(true);
+  } catch (_) { /* api() 已显示错误 */ }
+}
+
+function toggleSkillHistory() {
+  skillHistoryOpen = !skillHistoryOpen;
+  skillCompareResult = null;
+  renderSkillsPage(true);
+  if (skillHistoryOpen && skillHistoryRows === null) void loadSkillHistory();
+}
+
+function toggleSkillCompareRevision(revision) {
+  const index = skillCompareRevisions.indexOf(revision);
+  if (index >= 0) skillCompareRevisions.splice(index, 1);
+  else if (skillCompareRevisions.length < 2) skillCompareRevisions.push(revision);
+  renderSkillsPage(true);
+}
+
+async function runSkillCompare() {
+  if (skillCompareRevisions.length !== 2 || !currentProject || !selectedSkillId) return;
+  const projectId = currentProject;
+  const skillId = selectedSkillId;
+  const [fromRevision, toRevision] = skillCompareRevisions;
+  skillCompareResult = { loading: true };
+  renderSkillsPage(true);
+  try {
+    const result = await api("POST", `/api/projects/${encodeURIComponent(projectId)}/skills/` +
+      `${encodeURIComponent(skillId)}/compare`, {
+        from_revision: fromRevision, to_revision: toRevision,
+      });
+    if (projectId !== currentProject || skillId !== selectedSkillId) return;
+    skillCompareResult = result;
+    renderSkillsPage(true);
+  } catch (_) {
+    if (projectId === currentProject && skillId === selectedSkillId) {
+      skillCompareResult = null;
+      renderSkillsPage(true);
+    }
+  }
+}
+
+function closeSkillCompare() {
+  skillCompareResult = null;
+  renderSkillsPage(true);
+}
+
+async function viewSkillRevision(revision) {
+  if (!currentProject || !selectedSkillId) return;
+  const projectId = currentProject;
+  const skillId = selectedSkillId;
+  const info = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/skills/` +
+    `${encodeURIComponent(skillId)}/history/${encodeURIComponent(revision)}`);
+  if (projectId !== currentProject || skillId !== selectedSkillId) return;
+  skillViewingRevision = info.revision;
+  skillHistoricalPackage = info;
+  skillOpenFile = null;
+  skillMarkdownMode = "preview";
+  configEditorDirty.skills = false;
+  renderSkillsPage(true);
+}
+
+function closeSkillRevision() {
+  skillViewingRevision = null;
+  skillHistoricalPackage = null;
+  skillOpenFile = null;
+  renderSkillsPage(true);
+}
+
+async function restoreSkillRevision(revision) {
+  if (!currentProject || !selectedSkillId) return;
+  if (!await uiConfirm(
+      `将 Skill「${selectedSkillId}」的完整目录恢复到版本 ${revision.slice(0, 10)}？`)) return;
+  const projectId = currentProject;
+  const skillId = selectedSkillId;
+  await api("POST", `/api/projects/${encodeURIComponent(projectId)}/skills/` +
+    `${encodeURIComponent(skillId)}/restore`, { revision });
+  if (projectId !== currentProject || skillId !== selectedSkillId) return;
+  resetSkillHistoryState();
+  skillOpenFile = null;
+  configEditorDirty.skills = false;
+  await loadOverview();
+  skillLibraryInfo = null;
+  await loadSkillLibraryInfo();
+  renderSkillsPage(true);
+  toast("Skill 完整目录已恢复，并已生成新版本", "success");
 }
 
 function renderSkillEditor(skill = undefined, packageInfo = undefined, signature = undefined) {
   if (skill === undefined)
     skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
   if (packageInfo === undefined) packageInfo = skill ? selectedSkillPackage() : null;
+  const historical = Boolean(skillViewingRevision);
   if (!skill) skillMarkdownMode = "edit";
+  if (historical) skillMarkdownMode = "preview";
   // 已存在的 Skill 必须等库信息带回 SKILL.md 原文再进入编辑，
   // 避免用字段重建的草稿覆盖 frontmatter 附加属性。
   const loading = Boolean(skill) && !packageInfo;
@@ -928,22 +1108,31 @@ function renderSkillEditor(skill = undefined, packageInfo = undefined, signature
               oninput="markConfigDirty('skills')"></label>`}
       <label class="guideline-enabled"><span>启用</span>
         <span class="switch ${skill?.enabled === false ? "" : "on"}" id="sf-enabled"
-          role="switch" tabindex="0"
-          onclick="this.classList.toggle('on');markConfigDirty('skills')"></span></label>
+          role="switch" tabindex="0" ${historical ? "aria-disabled=\"true\"" : ""}
+          ${historical ? "" : `onclick="this.classList.toggle('on');markConfigDirty('skills')"`}></span></label>
+      ${historical ? `<span class="guideline-history-badge">历史版本
+        <code>${esc(skillViewingRevision.slice(0, 10))}</code></span>` : ""}
       <span class="guideline-toolbar-spacer"></span>
       ${skill ? `<button class="ghost compact ${skillFileTreeCollapsed ? "" : "active"}"
         id="skill-tree-toggle" type="button" onclick="toggleSkillFileTree()">文件树</button>` : ""}
-      <div class="guideline-view-toggle" aria-label="Markdown 显示方式">
+      ${historical ? "" : `<div class="guideline-view-toggle" aria-label="Markdown 显示方式">
         <button class="ghost compact" id="skill-edit-button" type="button"
           onclick="setSkillMarkdownMode('edit')">编辑</button>
         <button class="ghost compact" id="skill-preview-button" type="button"
           onclick="setSkillMarkdownMode('preview')">预览</button>
-      </div>
+      </div>`}
+      ${historical ? `<button class="action compact" type="button"
+          data-rev="${esc(skillViewingRevision)}"
+          onclick="restoreSkillRevision(this.dataset.rev)">恢复此版本</button>
+        <button class="ghost compact" type="button" onclick="closeSkillRevision()">返回最新</button>` : `
       <button class="action" type="button" ${loading ? "disabled" : ""}
         onclick="saveSkill()">保存</button>
       ${skill ? `<button class="danger" type="button" data-id="${esc(skill.id)}"
-        onclick="deleteSkill(this.dataset.id)">删除</button>` : ""}
+        onclick="deleteSkill(this.dataset.id)">删除</button>` : ""}`}
+      ${skill ? `<button class="ghost compact" type="button" onclick="toggleSkillHistory()">
+        ${skillHistoryOpen ? "收起历史" : "版本历史"}</button>` : ""}
     </div>
+    ${skillHistoryPanelHtml()}
     <div class="skill-main">
       ${skill ? `<aside class="skill-file-tree ${skillFileTreeCollapsed ? "collapsed" : ""}"
         id="skill-file-tree" style="width:${skillTreeWidth}px">
@@ -954,8 +1143,8 @@ function renderSkillEditor(skill = undefined, packageInfo = undefined, signature
       <div class="guideline-markdown-surface">
         ${loading ? `<div class="empty" style="padding:18px 20px">正在读取 SKILL.md…</div>` : `
         <textarea id="sf-content" class="guideline-markdown-editor" aria-label="完整 SKILL.md 文件"
-          spellcheck="false"
-          oninput="markConfigDirty('skills');updateSkillMarkdownPreview()">${esc(skill ? packageInfo.markdown : SKILL_MARKDOWN_PLACEHOLDER)}</textarea>
+          spellcheck="false" ${historical ? "readonly" : ""}
+          ${historical ? "" : `oninput="markConfigDirty('skills');updateSkillMarkdownPreview()"`}>${esc(skill ? packageInfo.markdown : SKILL_MARKDOWN_PLACEHOLDER)}</textarea>
         <article class="skill-markdown-preview markdown-body" id="skill-markdown-preview"></article>`}
       </div>
       <div class="skill-file-viewer" id="skill-file-viewer" hidden></div>
@@ -973,7 +1162,8 @@ function skillFileTreeHtml(packageInfo) {
   const head = `<div class="skill-file-tree-head"><strong>文件树</strong>
     <span class="muted">${packageInfo ? `${(packageInfo.files || []).length} 个文件` : ""}</span></div>`;
   if (!packageInfo) return head + `<div class="muted">正在读取文件清单…</div>`;
-  const pathLine = `<code class="skill-file-tree-path">${esc(packageInfo.path)}</code>`;
+  const pathLine = `<code class="skill-file-tree-path">${esc(
+    packageInfo.path || `历史版本 ${packageInfo.revision?.slice(0, 10) || ""}`)}</code>`;
   const files = packageInfo.files || [];
   if (!files.length) return head + pathLine + `<div class="muted">目录为空。</div>`;
   const root = { dirs: new Map(), files: [] };
@@ -1043,6 +1233,7 @@ function updateSkillMarkdownPreview() {
 }
 
 function setSkillMarkdownMode(mode) {
+  if (skillViewingRevision && mode === "edit") mode = "preview";
   skillMarkdownMode = mode === "edit" ? "edit" : "preview";
   const editor = document.getElementById("sf-content");
   const preview = document.getElementById("skill-markdown-preview");
@@ -1066,11 +1257,14 @@ async function openSkillFile(path, restoreState = null) {
   if (path.toLowerCase() === "skill.md") { closeSkillFile(); return; }
   const projectId = currentProject;
   const skillId = selectedSkillId;
+  const revision = skillViewingRevision;
   skillOpenFile = path;
+  const revisionQuery = revision ? `&revision=${encodeURIComponent(revision)}` : "";
   const data = await api("GET",
     `/api/projects/${encodeURIComponent(projectId)}/skills/` +
-    `${encodeURIComponent(skillId)}/file?path=${encodeURIComponent(path)}`);
-  if (projectId !== currentProject || skillId !== selectedSkillId || skillOpenFile !== path) return;
+    `${encodeURIComponent(skillId)}/file?path=${encodeURIComponent(path)}${revisionQuery}`);
+  if (projectId !== currentProject || skillId !== selectedSkillId
+      || revision !== skillViewingRevision || skillOpenFile !== path) return;
   const viewer = document.getElementById("skill-file-viewer");
   if (!viewer) return;
   const body = isSkillMarkdownFile(path)
@@ -1107,6 +1301,7 @@ function closeSkillFile() {
 
 function editSkill(id) {
   selectedSkillId = id;
+  resetSkillHistoryState();
   skillOpenFile = null;
   skillMarkdownMode = id ? "preview" : "edit";
   configChatSelection = null;
@@ -1116,6 +1311,7 @@ function editSkill(id) {
 }
 
 async function saveSkill() {
+  if (skillViewingRevision) return;
   const skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
   const id = skill ? skill.id : document.getElementById("sf-id").value.trim();
   if (!id) { uiAlert("请输入 Skill id"); return; }
@@ -1127,6 +1323,7 @@ async function saveSkill() {
     enabled: document.getElementById("sf-enabled").classList.contains("on"),
   });
   selectedSkillId = id;
+  resetSkillHistoryState();
   skillMarkdownMode = "preview";
   configEditorDirty.skills = false;
   await loadOverview();
@@ -1143,6 +1340,7 @@ async function deleteSkill(id) {
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/skills/${encodeURIComponent(id)}`);
   if (threadKey) configChatThreads.delete(threadKey);
   selectedSkillId = undefined;
+  resetSkillHistoryState();
   skillOpenFile = null;
   configEditorDirty.skills = false;
   await loadOverview();
@@ -1155,6 +1353,7 @@ async function deleteSkill(id) {
 async function finishSkillImport(result) {
   if (result.needs_confirmation) return false;
   selectedSkillId = result.imported?.[0] || selectedSkillId;
+  resetSkillHistoryState();
   configEditorDirty.skills = false;
   skillLibraryInfo = null;
   await loadOverview();
@@ -1230,6 +1429,7 @@ async function importSkillFolder(overwrite) {
 
 async function rescanSkillLibrary() {
   const info = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/skills/rescan`);
+  resetSkillHistoryState();
   skillLibraryInfo = { ...info, project_id: currentProject };
   await loadOverview();
   renderSkillsPage(true);

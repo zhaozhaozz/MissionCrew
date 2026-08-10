@@ -15,15 +15,17 @@ from ..collab.recycle_bin import recycle_guideline, recycle_skill
 from ..collab.resource_urls import guideline_resource_url, skill_resource_url
 from ..collab.skills import (import_skill_folder, import_skill_zip,
                              project_skill_library_dir,
-                             read_skill_file, save_project_skill,
+                             read_skill_file, read_skill_version,
+                             restore_skill_version, save_project_skill,
                              save_project_skill_markdown, skill_library_info,
-                             sync_project_skill_library)
+                             skill_history, sync_project_skill_library)
+from ..collab.skill_versions import skill_version_library
 from ..core.models import ProjectSkill
 from .context import MENTION_ID_RE, ApiContext
 from .diffutil import (_NonTextDocumentError, _decode_pure_text,
                        build_diff_ops, build_text_diff)
 from .schemas import (GuidelineCompare, GuidelineInput, GuidelineRestore,
-                      SkillFolderImport, SkillInput)
+                      SkillCompare, SkillFolderImport, SkillInput, SkillRestore)
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -173,20 +175,90 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, "Skill id 只能包含字母、数字、下划线、连字符")
         try:
             if body.markdown is not None:
-                saved = save_project_skill_markdown(
+                saved, revision = save_project_skill_markdown(
                     store, project, body.id, body.markdown,
                     enabled=body.enabled, actor=actor)
                 return {**saved.__dict__,
-                        "resource_url": skill_resource_url(project_id, saved.id)}
+                        "resource_url": skill_resource_url(project_id, saved.id),
+                        "revision": revision}
             skill = ProjectSkill(**body.model_dump(exclude={"actor_role_id", "markdown"}))
-            saved = save_project_skill(store, project, skill, actor=actor)
+            saved, revision = save_project_skill(store, project, skill, actor=actor)
             return {**saved.__dict__,
-                    "resource_url": skill_resource_url(project_id, saved.id)}
+                    "resource_url": skill_resource_url(project_id, saved.id),
+                    "revision": revision}
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
+    @app.get("/api/projects/{project_id}/skills/{skill_id}/history")
+    def list_skill_history(project_id: str, skill_id: str, limit: int = 100):
+        project = ctx.must_project(project_id)
+        try:
+            return skill_history(store, project, skill_id, limit)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.get("/api/projects/{project_id}/skills/{skill_id}/history/{revision}")
+    def get_skill_history_version(project_id: str, skill_id: str,
+                                  revision: str):
+        project = ctx.must_project(project_id)
+        try:
+            info = read_skill_version(store, project, skill_id, revision)
+            return {**info,
+                    "resource_url": skill_resource_url(project_id, skill_id)}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.post("/api/projects/{project_id}/skills/{skill_id}/compare")
+    def compare_skill_versions(project_id: str, skill_id: str,
+                               body: SkillCompare):
+        project = ctx.must_project(project_id)
+        try:
+            skill_history(store, project, skill_id, 1)
+            versions = skill_version_library(project_id)
+            before = versions.comparison_text(skill_id, body.from_revision)
+            after = versions.comparison_text(skill_id, body.to_revision)
+            changes = versions.file_changes(
+                skill_id, body.from_revision, body.to_revision)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        label_a = f"{skill_id}@{body.from_revision[:10]}"
+        label_b = f"{skill_id}@{body.to_revision[:10]}"
+        text_diff = build_text_diff(before, after, label_a, label_b)
+        return {
+            "skill_id": skill_id,
+            "from_revision": body.from_revision,
+            "to_revision": body.to_revision,
+            "file_changes": changes,
+            **text_diff,
+            # 文件权限也是 Skill 包内容；仅 chmod 时文本 diff 为空，包仍不相同。
+            "identical": not changes,
+            "ops": build_diff_ops(before, after),
+        }
+
+    @app.post("/api/projects/{project_id}/skills/{skill_id}/restore")
+    def restore_skill_history_version(project_id: str, skill_id: str,
+                                      body: SkillRestore):
+        project = ctx.must_project(project_id)
+        actor = ctx.validate_orchestrator_actor(project, body.actor_role_id)
+        try:
+            skill, revision = restore_skill_version(
+                store, project, skill_id, body.revision, actor=actor)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return {**skill.__dict__, "revision": revision,
+                "resource_url": skill_resource_url(project_id, skill.id)}
+
     @app.get("/api/projects/{project_id}/skills/{skill_id}/file")
-    def read_skill_file_endpoint(project_id: str, skill_id: str, path: str):
+    def read_skill_file_endpoint(project_id: str, skill_id: str, path: str,
+                                 revision: Optional[str] = None):
         project = ctx.must_project(project_id)
         if not MENTION_ID_RE.fullmatch(skill_id):
             raise HTTPException(400, "Skill id 不合法")
@@ -194,13 +266,22 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if not directory.is_dir():
             raise HTTPException(404, "Skill 不存在")
         try:
-            content, truncated = read_skill_file(directory, path)
+            if revision:
+                content, truncated = skill_version_library(project.id).read_text(
+                    skill_id, path, revision)
+            else:
+                content, truncated = read_skill_file(directory, path)
         except FileNotFoundError as exc:
             raise HTTPException(404, str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
-        return {"path": path, "content": content, "truncated": truncated,
-                "resource_url": skill_resource_url(project_id, skill_id, path)}
+        result = {
+            "path": path, "content": content, "truncated": truncated,
+            "resource_url": skill_resource_url(project_id, skill_id, path),
+        }
+        if revision:
+            result["revision"] = revision
+        return result
 
     @app.post("/api/projects/{project_id}/skills/import-folder")
     def import_skills_from_folder(project_id: str, body: SkillFolderImport):
@@ -228,8 +309,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def rescan_skill_library(project_id: str,
                              actor_role_id: Optional[str] = None):
         project = ctx.must_project(project_id)
-        ctx.validate_orchestrator_actor(project, actor_role_id)
-        return skill_library_info(store, project)
+        actor = ctx.validate_orchestrator_actor(project, actor_role_id)
+        return skill_library_info(
+            store, project, history_actor=actor,
+            history_message="Rescan project Skill library")
 
     @app.delete("/api/projects/{project_id}/skills/{skill_id}")
     def delete_skill(project_id: str, skill_id: str,
@@ -248,4 +331,5 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             channel, actor=actor, reason="skill_deleted",
             stopped_runtimes=stopped)
         return {"ok": True, "recycle_item": item,
+                "revision": item["revision"],
                 "conversation": conversation}

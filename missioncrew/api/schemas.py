@@ -146,6 +146,19 @@ class SkillInput(BaseModel):
     actor_role_id: Optional[str] = None
 
 
+class SkillRestore(BaseModel):
+    revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+    actor_role_id: Optional[str] = None
+
+
+class SkillCompare(BaseModel):
+    from_revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+    to_revision: str = Field(
+        min_length=7, max_length=40, pattern=r"^[0-9a-fA-F]{7,40}$")
+
+
 class SkillFolderImport(BaseModel):
     path: str
     overwrite: bool = False

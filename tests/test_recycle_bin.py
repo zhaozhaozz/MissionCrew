@@ -75,6 +75,7 @@ def test_project_resources_share_one_recycle_bin_and_restore(seeded, tmp_path):
     assert all(response.status_code == 200 for response in responses)
     for response in responses[:3]:
         assert response.json()["conversation"]["deleted"] is True
+    assert len(responses[2].json()["revision"]) == 40
     for channel_id in content_channels.values():
         assert seeded.get_channel(channel_id) is None
         assert seeded.all_messages(channel_id) == []
@@ -102,6 +103,10 @@ def test_project_resources_share_one_recycle_bin_and_restore(seeded, tmp_path):
     assert not next(item for item in project.skills
                     if item.id == "recycle-skill").enabled
     assert (project_skill_library_dir(project_id) / "recycle-skill" / "SKILL.md").is_file()
+    skill_history = client.get(
+        f"/api/projects/{project_id}/skills/recycle-skill/history").json()
+    assert [row["message"].split()[0] for row in skill_history[:3]] == [
+        "Restore", "Delete", "Save"]
     assert seeded.get_board(f"{project_id}:recycle-board") is not None
     assert seeded.get_channel(channel["id"]) is not None
     assert seeded.get_role(project_id, "reviewer") is not None

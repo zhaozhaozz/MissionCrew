@@ -227,6 +227,101 @@ def test_save_skill_with_full_markdown_preserves_frontmatter(seeded):
     assert not (root / "broken").exists()
 
 
+def test_skill_full_package_history_compare_and_restore(seeded):
+    client = TestClient(create_app())
+    root = project_skill_library_dir("webshop")
+    directory = root / "versioned-skill"
+    (directory / "scripts").mkdir(parents=True)
+    (directory / "SKILL.md").write_text(
+        _skill_markdown("versioned-skill", "第一版", "使用 scripts/run.sh。"))
+    script = directory / "scripts" / "run.sh"
+    script.write_text("echo first\n")
+    script.chmod(0o755)
+
+    scanned = client.post("/api/projects/webshop/skills/rescan")
+    assert scanned.status_code == 200
+    first_revision = next(
+        item for item in scanned.json()["skills"]
+        if item["id"] == "versioned-skill")["revision"]
+    assert len(first_revision) == 40
+
+    (directory / "SKILL.md").write_text(
+        _skill_markdown("versioned-skill", "第二版", "使用 references/check.md。"))
+    script.write_text("echo second\n")
+    (directory / "references").mkdir()
+    (directory / "references" / "check.md").write_text("# Check\n")
+    rescanned = client.post("/api/projects/webshop/skills/rescan")
+    second_revision = next(
+        item for item in rescanned.json()["skills"]
+        if item["id"] == "versioned-skill")["revision"]
+    assert second_revision != first_revision
+
+    enabled_only = client.post("/api/projects/webshop/skills", json={
+        "id": "versioned-skill",
+        "markdown": (directory / "SKILL.md").read_text(),
+        "enabled": False,
+    })
+    assert enabled_only.status_code == 200
+    assert enabled_only.json()["revision"] == second_revision
+
+    history_url = "/api/projects/webshop/skills/versioned-skill/history"
+    history = client.get(history_url)
+    assert history.status_code == 200
+    assert [row["revision"] for row in history.json()[:2]] == [
+        second_revision, first_revision]
+
+    old = client.get(f"{history_url}/{first_revision}")
+    assert old.status_code == 200
+    assert "第一版" in old.json()["markdown"]
+    assert old.json()["files"] == ["SKILL.md", "scripts/run.sh"]
+    old_script = client.get(
+        "/api/projects/webshop/skills/versioned-skill/file",
+        params={"path": "scripts/run.sh", "revision": first_revision})
+    assert old_script.json()["content"] == "echo first\n"
+
+    compared = client.post(
+        "/api/projects/webshop/skills/versioned-skill/compare", json={
+            "from_revision": first_revision,
+            "to_revision": second_revision,
+        })
+    assert compared.status_code == 200
+    changes = {item["path"]: item["status"]
+               for item in compared.json()["file_changes"]}
+    assert changes == {
+        "SKILL.md": "modified",
+        "references/check.md": "added",
+        "scripts/run.sh": "modified",
+    }
+    assert compared.json()["identical"] is False
+
+    script.chmod(0o644)
+    mode_revision = next(
+        item for item in client.post(
+            "/api/projects/webshop/skills/rescan").json()["skills"]
+        if item["id"] == "versioned-skill")["revision"]
+    mode_compared = client.post(
+        "/api/projects/webshop/skills/versioned-skill/compare", json={
+            "from_revision": second_revision,
+            "to_revision": mode_revision,
+        }).json()
+    assert mode_compared["file_changes"] == [
+        {"path": "scripts/run.sh", "status": "modified"}]
+    assert mode_compared["additions"] == mode_compared["deletions"] == 0
+    assert mode_compared["identical"] is False
+
+    restored = client.post(
+        "/api/projects/webshop/skills/versioned-skill/restore",
+        json={"revision": first_revision})
+    assert restored.status_code == 200
+    restored_revision = restored.json()["revision"]
+    assert restored_revision not in {first_revision, second_revision}
+    assert "第一版" in (directory / "SKILL.md").read_text()
+    assert script.read_text() == "echo first\n"
+    assert script.stat().st_mode & 0o111
+    assert not (directory / "references").exists()
+    assert client.get(history_url).json()[0]["revision"] == restored_revision
+
+
 def test_skill_file_read_endpoint_serves_text_and_rejects_escape(seeded):
     client = TestClient(create_app())
     root = project_skill_library_dir("webshop")

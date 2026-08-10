@@ -347,7 +347,7 @@ def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
         "markdown": "---\nname: tool-managed\ndescription: 工具一致性测试\n---\n\n正文\n",
         "enabled": True,
     })
-    call("skill.save", "save-skill", {
+    saved_skill = call("skill.save", "save-skill", {
         "id": "tool-managed",
         "markdown": "---\nname: tool-managed\ndescription: 工具一致性测试\n---\n\n说明\n",
         "enabled": True,
@@ -365,6 +365,7 @@ def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
     assert skill_path.is_file() and "说明" in skill_path.read_text()
     assert document_path.read_text() == "正文\n"
     assert task_path.is_file()
+    assert len(saved_skill["revision"]) == 40
 
     guideline_result = call(
         "guideline.delete", "delete-guideline", {"name": "tool-managed"})
@@ -375,6 +376,7 @@ def test_orchestrator_delete_tools_update_shared_views_in_same_run(seeded):
     assert guideline_result["deleted"] is skill_result["deleted"] is True
     assert document_result["deleted"] is task_result["deleted"] is True
     assert len(guideline_result["revision"]) == 40
+    assert len(skill_result["revision"]) == 40
     assert len(document_result["revision"]) == 40
     assert not guideline_path.exists()
     assert not skill_path.exists()
