@@ -209,11 +209,11 @@ def render_project_context(project: Project, library: DocumentLibrary,
          "标签和 Channel 绑定；每个 Task 至少绑定一个可用 Channel。回合结束只刷新快照，"
          "不会把文件修改同步回 Task。frontmatter 中的 status_briefs 是平台生成的只读历史。")
         if tasks_dir is not None else "# 项目任务文件\n（本次执行未物化）",
-        "# 本次可读写目录\n以下项目资源和 MissionCrew workspace 已显式授权，可直接读写：\n"
+        "# 本次可读写目录\n以下本地代码仓和 MissionCrew workspace 已显式授权，可直接读写：\n"
         + dirs_section,
         "# 文件系统边界\n"
         "只能读写上面列出的目录及其子目录。不要探测或访问授权范围之外的路径，"
-        "包括 `/tmp`、`/var/tmp`、其他项目目录、用户主目录中的未授权文件和未作为项目资源"
+        "包括 `/tmp`、`/var/tmp`、其他项目目录、用户主目录中的未授权文件和未作为本地代码仓"
         "显式列出的 MissionCrew 源码目录；命令中的重定向、管道、后台日志和工具自动生成文件"
         "也必须遵守。"
         "若现有命令使用了外部路径，执行前先改写到授权目录，不要先尝试再等待权限批准。\n"

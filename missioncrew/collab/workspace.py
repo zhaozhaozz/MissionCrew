@@ -322,7 +322,7 @@ def _render_project_file(project: Project) -> str:
         f"- Project ID: `{project.id}`\n"
         f"- Description: {project.description or '未填写'}\n"
         f"- Orchestrator: `@{project.orchestrator_role_id}`\n\n"
-        f"## 项目资源\n\n{repos}\n"
+        f"## 本地代码仓\n\n{repos}\n"
     )
 
 
@@ -335,7 +335,7 @@ def _render_workspace_readme(workspace: AgentWorkspace, project_id: str,
         """## 修改 MissionCrew 资源
 
 当前聊天角色必须使用 Prompt 中的 MissionCrew Agent Tool 发布文档、创建或修改任务、
-发送消息、创建频道，以及保存或删除面板、文档、准则或 Skill。项目资源删除后进入统一
+发送消息、创建频道，以及保存或删除面板、文档、准则或 Skill。平台资源删除后进入统一
 回收站；主控可列出、恢复或永久删除回收项。工具会在当前回合返回结构化错误并记录角色
 审计。`documents/` 和 `tasks/` 中的直接写入同步只用于旧会话兼容。
 

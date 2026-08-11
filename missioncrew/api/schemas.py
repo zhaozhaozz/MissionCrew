@@ -169,7 +169,7 @@ class ProjectInput(BaseModel):
     id: str
     name: str = ""
     description: str = ""
-    repos: Optional[list[dict | str]] = None   # None = 保留;资源经专用端点管理
+    repos: Optional[list[dict | str]] = None   # None = 保留;代码仓经专用端点管理
     charter: str = ""
     dev_guidelines: Optional[str] = None       # 已由准则文档替代;None = 保留
     orchestrator_role_id: Optional[str] = None

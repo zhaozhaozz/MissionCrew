@@ -344,13 +344,13 @@ function renderSidebar() {
   // 文档 -> 文档库视图
   if (!_secState("docs", "doc-list", "cnt-docs", docFiles.length))
     document.getElementById("doc-list").innerHTML = documentSidebarHtml();
-  // 资源 -> 项目设置资源管理;本地 git 仓自动带远程标记
+  // 本地代码仓 -> 项目设置的代码仓管理;git 管理的仓库带 git 图标与远程地址提示
   const res = projObj()?.repos || [];
   if (!_secState("resources", "resource-list", "cnt-resources", res.length))
     document.getElementById("resource-list").innerHTML = res.map(r =>
       `<div class="side-item" onclick="gotoProjSection('res-table')"
-            title="${esc(r.path || "")}${r.remote ? "\n远程: " + esc(r.remote) : ""}">
-         ${r.kind === "git" ? "🔗" : "📁"} ${esc(r.name || r.id)}</div>`).join("")
+            title="${esc(repoKindLabel(r))}\n${esc(r.path || "")}${r.remote ? "\n远程: " + esc(r.remote) : ""}">
+         ${repoIcon(r)} ${esc(r.name || r.id)}</div>`).join("")
       || `<div class="side-item" onclick="quickAddResource()">＋ 添加本地路径或 git 仓…</div>`;
   // 准则 -> 全页逐篇编辑
   const guides = projObj()?.guidelines || [];

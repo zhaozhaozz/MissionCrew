@@ -402,7 +402,7 @@ def recycle_project_resource(store: Store, project: Project, resource_id: str,
                              *, actor: str) -> dict:
     resource = next((item for item in project.repos if item.id == resource_id), None)
     if resource is None:
-        raise FileNotFoundError("项目资源不存在")
+        raise FileNotFoundError("本地代码仓不存在")
     snapshot = dict(resource.__dict__)
     manifest = _archive_snapshot(
         project.id, "project_resource", resource.id,
@@ -514,7 +514,7 @@ def _restore_snapshot(store: Store, project: Project, manifest: dict) -> str:
         current = store.get_project(project.id) or project
         resource = ProjectResource.from_dict(snapshot)
         if any(item.id == resource.id for item in current.repos):
-            raise RecycleConflictError(f"项目资源已存在: {resource.id}")
+            raise RecycleConflictError(f"本地代码仓已存在: {resource.id}")
         current.repos.append(resource)
         store.put_project(current)
         return recycle_bin_url(project.id)

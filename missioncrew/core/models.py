@@ -266,10 +266,10 @@ class ProjectSkill:
 
 @dataclass
 class ProjectResource:
-    """项目资源:本地路径或 git 仓。
+    """本地代码仓:本地路径或 git 仓。
 
-    本地路径若是 git 仓,添加时自动读取其远程地址绑定为 git 资源;
-    纯远程地址(http/git@)则是没有本地路径的 git 资源。
+    本地路径若由 git 管理,添加时自动读取其远程地址绑定为 git 仓;
+    纯远程地址(http/git@)则是没有本地路径的 git 仓。
     """
 
     id: str
@@ -304,7 +304,7 @@ class Project:
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
 
     def __post_init__(self):
-        # 资源条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
+        # 代码仓条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
         self.repos = [r if isinstance(r, ProjectResource) else ProjectResource.from_dict(r)
                       for r in self.repos]
         if (isinstance(self.max_chain_runs, bool)
@@ -313,7 +313,7 @@ class Project:
             raise ValueError("max_chain_runs 必须是正整数")
 
     def repo_paths(self) -> list[str]:
-        """有本地路径的资源(供频道工作目录校验等使用)。"""
+        """有本地路径的代码仓(供频道工作目录校验等使用)。"""
         return [r.path for r in self.repos if r.path]
 
     def to_dict(self) -> dict:

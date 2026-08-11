@@ -221,3 +221,14 @@ const BUILTIN_TASK_PANEL = Object.freeze({
 });
 const projPanels = () => currentProject ? [BUILTIN_TASK_PANEL,
   ...projBoards().map(board => ({ ...board, kind: "custom", builtin: false }))] : [];
+
+/* ---- 本地代码仓（Project.repos）----
+   git 管理的仓库用 git 分支图标区分，普通本地目录仍用文件夹图标。 */
+const GIT_ICON_SVG = `<svg class="git-icon" viewBox="0 0 16 16" aria-hidden="true"
+  fill="currentColor"><g fill="none" stroke="currentColor" stroke-width="1.5"
+  stroke-linecap="round"><path d="M4.5 4.2v7.6"/><path d="M4.5 8h4.5a2 2 0 0 0 2-2V5"/></g>
+  <circle cx="4.5" cy="2.6" r="1.7"/><circle cx="4.5" cy="13.4" r="1.7"/>
+  <circle cx="11" cy="3.4" r="1.7"/></svg>`;
+const repoIsGit = repo => repo?.kind === "git";
+const repoIcon = repo => repoIsGit(repo) ? GIT_ICON_SVG : "📁";
+const repoKindLabel = repo => repoIsGit(repo) ? "git 仓" : "本地目录";

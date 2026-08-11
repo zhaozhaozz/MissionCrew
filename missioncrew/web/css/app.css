@@ -846,6 +846,8 @@
     }
   }
   table.mgr th { white-space: nowrap; }
+  /* 代码仓类型列:图标与文字同行,列宽收到内容宽度,避免被路径列挤成竖排 */
+  td.repo-kind { white-space: nowrap; width: 1%; }
   /* 拖动排序:手柄格可抓取,拖动中的行半透明 */
   td.drag-handle { cursor: grab; user-select: none; color: var(--muted);
                    width: 24px; text-align: center; }
@@ -950,6 +952,9 @@
   .doc-image { display: flex; justify-content: center; padding: 14px;
                background: var(--bg-soft); border-radius: 10px; }
   .doc-image img { max-width: 100%; max-height: 68vh; object-fit: contain; }
+  /* git 仓图标:跟随文字大小与基线,保持 git 品牌橙色以便和普通目录一眼区分 */
+  .git-icon { width: 1.05em; height: 1.05em; vertical-align: -.16em;
+              color: #f05133; flex: 0 0 auto; }
   .markdown-body img.markdown-image { max-width: 100%; border-radius: 6px; }
   .viewer-edit-surface { height: calc(100% - 64px); min-height: 320px; }
   .viewer-edit-surface .doc-editor { height: 100%; }

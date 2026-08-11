@@ -1,4 +1,4 @@
-/* ---------------- 项目设置(当前项目:信息 / 角色 / 频道 / 资源) ---------------- */
+/* ---------------- 项目设置(当前项目:信息 / 角色 / 频道 / 本地代码仓) ---------------- */
 
 function projObj() { return overview.projects.find(project => project.id === currentProject); }
 
@@ -57,11 +57,11 @@ async function renderProjSettings() {
   loadDocFiles();
 }
 
-/* ---- 项目资源管理 ---- */
+/* ---- 本地代码仓管理 ---- */
 function renderResourceTable() {
   const resources = projObj()?.repos || [];
   const rows = resources.map(resource => `<tr>
-    <td>${resource.kind === "git" ? "🔗 git 仓" : "📁 本地路径"}</td>
+    <td class="repo-kind">${repoIcon(resource)} ${repoKindLabel(resource)}</td>
     <td><b>${esc(resource.name || resource.id)}</b></td>
     <td class="muted">${esc(resource.path || "—")}</td>
     <td class="muted">${esc(resource.remote || "—")}</td>
@@ -71,7 +71,7 @@ function renderResourceTable() {
       onclick="deleteResource(this.dataset.id)">移除</button></td></tr>`).join("");
   document.getElementById("res-table").innerHTML =
     `<tr><th>类型</th><th>名称</th><th>本地路径</th><th>git 远程</th><th></th></tr>` +
-    (rows || `<tr><td colspan="5" class="empty">暂无资源</td></tr>`);
+    (rows || `<tr><td colspan="5" class="empty">暂无本地代码仓</td></tr>`);
 }
 
 async function addResourceFromForm() {
@@ -83,7 +83,7 @@ async function addResourceFromForm() {
   fdlg.close();
   await loadOverview();
   renderResourceTable(); renderSidebar();
-  toast("资源已添加", "success");
+  toast("本地代码仓已添加", "success");
 }
 
 async function refreshResource(id) {
@@ -93,16 +93,16 @@ async function refreshResource(id) {
   renderResourceTable(); renderSidebar();
   toast(resource.kind === "git"
     ? `已刷新:git 仓,远程 ${resource.remote || "(未配置)"}`
-    : "已刷新:普通本地路径(未检测到 git 仓)", "success");
+    : "已刷新:普通本地目录(未检测到 git 仓)", "success");
 }
 
 async function deleteResource(id) {
-  if (!await uiConfirm(`将资源关联「${id}」移入项目回收站？不会删除磁盘内容。`)) return;
+  if (!await uiConfirm(`将本地代码仓「${id}」移出项目？只解除关联,不会删除磁盘内容。`)) return;
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/resources/${encodeURIComponent(id)}`);
   await loadOverview();
   renderResourceTable(); renderSidebar();
-  toast("资源关联已移入回收站", "success");
+  toast("代码仓关联已移入回收站", "success");
 }
 
 async function saveProject() {

@@ -34,20 +34,20 @@ function quickAddResource() {
 
 function openResourceDialog() {
   if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
-  openFormDialog("添加资源", `
-    <label>本地路径或 git 远程地址(本地路径若是 git 仓,自动绑定其远程仓库)</label>
+  openFormDialog("添加本地代码仓", `
+    <label>本地路径或 git 远程地址(本地路径若由 git 管理,自动绑定其远程仓库)</label>
     <div class="row">
       <div><input type="text" id="res-target" placeholder="~/code/myrepo 或 https://github.com/acme/x.git"></div>
       <div style="flex:0 0 90px"><button class="ghost" style="width:100%"
         onclick="openDirPicker(document.getElementById('res-target').value)">浏览…</button></div>
     </div>
     <label>名称(可选)</label><input type="text" id="res-name">`,
-    `<button class="action" onclick="addResourceFromForm()">添加资源</button>
+    `<button class="action" onclick="addResourceFromForm()">添加代码仓</button>
      <button class="ghost" onclick="fdlg.close()">取消</button>`);
   setTimeout(() => document.getElementById("res-target")?.focus(), 60);
 }
 
-// 本地目录选择弹窗:逐级浏览,支持显示隐藏目录;确认后回填资源输入框
+// 本地目录选择弹窗:逐级浏览,支持显示隐藏目录;确认后回填代码仓输入框
 let _pickHidden = false;
 let _pickTargetInputId = "res-target";
 
@@ -76,7 +76,7 @@ async function pickBrowse(path) {
     })).join(`<span style="opacity:.45">/</span>`).replace(
       `</span><span style="opacity:.45">/</span>`, `</span>`);  // 根后不重复斜杠
   const gitInfo = !d.is_git ? "" :
-    ` <span class="pill" style="color:var(--ok);border-color:var(--ok)">git 仓</span>` +
+    ` <span class="pill" style="color:var(--ok);border-color:var(--ok)">${GIT_ICON_SVG} git 仓</span>` +
     ((d.remotes || []).map(r =>
       `<div class="muted" style="font-size:12px;margin-top:2px">🔗 ${esc(r.name)}: ${esc(r.url)}</div>`).join("")
      || `<div class="muted" style="font-size:12px;margin-top:2px">(未配置远程)</div>`);

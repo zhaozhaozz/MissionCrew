@@ -71,10 +71,10 @@
       </div>
       <div class="side-sec">
         <h2 class="sec-head" id="sec-resources" onclick="toggleSection('resources')">
-          <span class="caret">▾</span>资源<span class="count" id="cnt-resources"></span>
+          <span class="caret">▾</span>本地代码仓<span class="count" id="cnt-resources"></span>
           <span class="sec-act">
-            <button class="icon-btn" title="添加资源(本地路径或 git 地址)" onclick="event.stopPropagation();quickAddResource()">＋</button>
-            <button class="icon-btn" title="管理资源" onclick="event.stopPropagation();gotoProjSection('res-table')">⚙</button>
+            <button class="icon-btn" title="添加本地代码仓(本地路径或 git 地址)" onclick="event.stopPropagation();quickAddResource()">＋</button>
+            <button class="icon-btn" title="管理本地代码仓" onclick="event.stopPropagation();gotoProjSection('res-table')">⚙</button>
           </span></h2>
         <div id="resource-list"></div>
       </div>
@@ -188,7 +188,7 @@
     <div id="proj-view" class="page">
       <div class="subnav">
         <a onclick="scrollToSec('sec-proj-info')">项目信息</a>
-        <a onclick="scrollToSec('sec-proj-res')">资源</a>
+        <a onclick="scrollToSec('sec-proj-res')">本地代码仓</a>
         <a onclick="scrollToSec('sec-proj-roles')">角色</a>
         <a onclick="scrollToSec('sec-proj-chans')">频道</a>
         <a onclick="switchTab('guidelines')">准则文档 ↗</a>
@@ -201,9 +201,9 @@
         <div class="form" id="proj-form"></div>
       </div>
       <div class="section" id="sec-proj-res">
-        <h2>资源 <span class="muted" id="res-proj-label"></span>
-          <button class="ghost" style="margin-left:8px" onclick="openResourceDialog()">+ 添加资源</button></h2>
-        <p class="muted">项目使用的本地路径与 git 仓;本地路径若是 git 仓会自动绑定其远程仓库。有本地路径的资源可作为任务频道的工作目录。</p>
+        <h2>本地代码仓 <span class="muted" id="res-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="openResourceDialog()">+ 添加本地代码仓</button></h2>
+        <p class="muted">项目使用的本地代码仓;本地路径若由 git 管理会自动绑定其远程仓库并显示 git 图标。有本地路径的代码仓可作为任务频道的工作目录。</p>
         <table class="mgr" id="res-table"></table>
       </div>
       <div class="section" id="sec-proj-roles">
@@ -259,7 +259,7 @@
       <div class="section recycle-bin-head">
         <div>
           <h2>项目回收站 <span class="muted" id="recycle-bin-project"></span></h2>
-          <p class="muted">文档、准则、Skill、面板、Task、频道、角色和项目资源共用此处。恢复时若原标识已被占用，平台会保留回收项并提示冲突。永久删除会移除回收副本；Git 历史、聊天记录和审计记录仍按各自保留策略存在。</p>
+          <p class="muted">文档、准则、Skill、面板、Task、频道、角色和本地代码仓共用此处。恢复时若原标识已被占用，平台会保留回收项并提示冲突。永久删除会移除回收副本；Git 历史、聊天记录和审计记录仍按各自保留策略存在。</p>
         </div>
         <div class="recycle-bin-actions">
           <select id="recycle-bin-filter" onchange="renderRecycleBinTable()">
@@ -271,7 +271,7 @@
             <option value="task">Task</option>
             <option value="channel">频道</option>
             <option value="role">角色</option>
-            <option value="project_resource">项目资源</option>
+            <option value="project_resource">本地代码仓</option>
           </select>
           <button class="ghost compact" onclick="renderRecycleBin(true)">刷新</button>
           <button class="danger compact" id="empty-recycle-bin-btn" onclick="emptyRecycleBin()">清空回收站</button>

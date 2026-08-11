@@ -1,4 +1,4 @@
-"""项目资源端点:本地路径/git 仓的绑定、刷新与目录浏览。"""
+"""本地代码仓端点:本地路径/git 仓的绑定、刷新与目录浏览。"""
 from __future__ import annotations
 
 import subprocess

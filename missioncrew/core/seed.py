@@ -236,7 +236,7 @@ def ensure_role_bindings(store: Store) -> int:
 
 
 def migrate_project_fields(store: Store) -> int:
-    """迁移项目字段、旧默认协作预算和字符串资源。
+    """迁移项目字段、旧默认协作预算和字符串代码仓。
 
     幂等:dev_guidelines 迁移后清空;旧默认预算 20 升为当前默认值;
     repos 经 Project.__post_init__ 归一化,重写一遍即落库为结构化条目。
@@ -266,7 +266,7 @@ def migrate_project_fields(store: Store) -> int:
                 f"->{DEFAULT_MAX_CHAIN_RUNS}")
         if changes:
             migrated += 1
-        store.put_project(project)   # 顺带把旧字符串 repos 写成结构化资源
+        store.put_project(project)   # 顺带把旧字符串 repos 写成结构化代码仓
         if changes:
             store.audit("platform", "project_migrated",
                         detail=f"project={project.id} {' '.join(changes)}")

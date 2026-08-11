@@ -9,7 +9,7 @@ const RECYCLE_TYPE_LABELS = Object.freeze({
   task: "Task",
   channel: "频道",
   role: "角色",
-  project_resource: "项目资源",
+  project_resource: "本地代码仓",
 });
 
 function recycleSize(size) {
