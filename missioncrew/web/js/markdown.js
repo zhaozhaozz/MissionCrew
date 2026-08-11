@@ -139,6 +139,71 @@ function markdownBlockStart(lines, index) {
     || (line.includes("|") && /^\s*\|?\s*:?-{3,}:?/.test(lines[index + 1] || ""));
 }
 
+/* ---- 列表解析 ----
+   列表按缩进递归解析：记录每项的「内容起始列」，缩进不小于它的后续行都属于
+   该项正文，交给 miniMarkdown 递归渲染，从而支持子列表、多段落等嵌套块。 */
+function markdownListItem(line) {
+  const match = String(line ?? "").match(/^([ \t]*)([-*+]|\d+[.)])([ \t]+)(.*)$/);
+  if (!match) return null;
+  const [, indent, marker, gap, text] = match;
+  return {
+    indent: indent.length,
+    ordered: /^\d/.test(marker),
+    number: parseInt(marker, 10),
+    contentIndent: indent.length + marker.length + gap.length,
+    text,
+  };
+}
+
+// 紧凑列表项不显示段落间距：去掉首段的 <p> 包裹，子块保持原样。
+function markdownTightItem(html) {
+  return html.replace(/^<p>([\s\S]*?)<\/p>(?:\n|$)/, "$1");
+}
+
+function markdownList(lines, start) {
+  const first = markdownListItem(lines[start]);
+  const ordered = first.ordered;
+  const items = [];
+  let current = null;
+  let loose = false;
+  let blanks = 0;
+  let index = start;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) { blanks += 1; index += 1; continue; }
+
+    const item = markdownListItem(line);
+    const indent = line.length - line.replace(/^[ \t]*/, "").length;
+    if (item && item.indent < (current ? current.contentIndent : Infinity)) {
+      // 同级新项；标记类型不同说明是另一个列表，留给外层重新解析
+      if (item.ordered !== ordered) break;
+      if (blanks) loose = true;
+      current = { contentIndent: item.contentIndent, lines: [item.text] };
+      items.push(current);
+    } else if (current && indent >= current.contentIndent) {
+      if (blanks) { current.lines.push(""); loose = true; }
+      current.lines.push(line.slice(current.contentIndent));
+    } else if (current && !blanks && !markdownBlockStart(lines, index)) {
+      current.lines.push(line.trim());   // 懒续行：缩进不足的段落后续行
+    } else {
+      break;
+    }
+    blanks = 0;
+    index += 1;
+  }
+
+  const body = items.map(item => {
+    const html = miniMarkdown(item.lines.join("\n"));
+    return `<li>${loose ? html : markdownTightItem(html)}</li>`;
+  }).join("");
+  const tag = ordered ? "ol" : "ul";
+  // 起始序号只由首项决定，显式的 3./5. 才能接着上文继续编号
+  const attribute = ordered && Number.isFinite(first.number) && first.number !== 1
+    ? ` start="${first.number}"` : "";
+  return { html: `<${tag}${attribute}>${body}</${tag}>`, next: index };
+}
+
 function miniMarkdown(text) {
   // 项目内容来自用户和 Agent，先按块解析并逐段转义，避免 Markdown 预览注入 HTML。
   const lines = String(text ?? "").replace(/\r\n?/g, "\n").split("\n");
@@ -183,18 +248,10 @@ function miniMarkdown(text) {
       continue;
     }
 
-    const list = line.match(/^\s*([-*+]|\d+[.)])\s+(.+)$/);
-    if (list) {
-      const ordered = /^\d/.test(list[1]);
-      const tag = ordered ? "ol" : "ul";
-      const items = [];
-      while (index < lines.length) {
-        const item = lines[index].match(/^\s*([-*+]|\d+[.)])\s+(.+)$/);
-        if (!item || /^\d/.test(item[1]) !== ordered) break;
-        items.push(`<li>${markdownInline(item[2])}</li>`);
-        index += 1;
-      }
-      output.push(`<${tag}>${items.join("")}</${tag}>`);
+    if (markdownListItem(line)) {
+      const list = markdownList(lines, index);
+      output.push(list.html);
+      index = list.next;
       continue;
     }
 

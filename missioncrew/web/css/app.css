@@ -996,6 +996,11 @@
   .markdown-body p { margin: .7em 0; }
   .markdown-body ul, .markdown-body ol { margin: .65em 0; padding-left: 1.8em; }
   .markdown-body li + li { margin-top: .25em; }
+  /* 嵌套列表与松散列表项：收紧首尾块的外边距，避免层级越深空隙越大 */
+  .markdown-body li > p { margin: .35em 0; }
+  .markdown-body li > :first-child { margin-top: 0; }
+  .markdown-body li > :last-child { margin-bottom: 0; }
+  .markdown-body li ul, .markdown-body li ol { margin: .3em 0; }
   .markdown-body blockquote { margin: .8em 0; padding: .2em 1em; color: var(--muted);
                               border-left: 3px solid var(--accent); background: var(--bg-soft); }
   .markdown-body code { background: var(--bg-soft); border-radius: 4px; padding: .12em .4em;
