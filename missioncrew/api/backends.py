@@ -191,13 +191,19 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.get("/api/backends/{backend_id}/models")
     def backend_models(backend_id: str, refresh: bool = False):
         """runtime 可用模型:configured 为工具自带清单(别名,含 ""=CLI 默认),
-        discovered 为向工具本体查询的型号目录(缓存 10 分钟)。"""
+        discovered 为向工具本体查询的型号目录(缓存 10 分钟)。
+
+        efforts 是同一次探测里工具自报的按模型推理力度(模型 -> 档位,低到高);
+        只有能自报的工具(目前是 grok)才有条目,其余为空 = 角色编辑器回退到
+        /api/traits 的 adapter 级档位。"""
         b = store.get_backend(backend_id)
         if b is None:
             raise HTTPException(404, "后端不存在")
+        models, efforts = ctx.discovered_catalog(b, refresh=refresh)
         return {
             "configured": list(b.models),
-            "discovered": ctx.discovered_models(b, refresh=refresh),
+            "discovered": models,
+            "efforts": efforts,
         }
 
     @app.post("/api/backends/check_updates")

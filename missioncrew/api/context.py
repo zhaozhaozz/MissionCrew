@@ -36,8 +36,10 @@ class ApiContext:
     # 更新互斥与"更新中"标记:与 ChatEngine 共享同一集合,更新期间不派发该后端
     updating_backends: set[str] = field(default_factory=set)
     updating_guard: threading.Lock = field(default_factory=threading.Lock)
-    # runtime 模型目录缓存:发现可能要起进程(codex/opencode/ACP),10 分钟内复用
-    model_catalog_cache: dict[str, tuple[float, list[str]]] = field(default_factory=dict)
+    # runtime 模型目录缓存:发现可能要起进程(codex/opencode/ACP),10 分钟内复用。
+    # 一条缓存同时存模型目录与按模型的推理力度档位——两者来自同一次探测。
+    model_catalog_cache: dict[
+        str, tuple[float, list[str], dict[str, list[str]]]] = field(default_factory=dict)
     model_catalog_guard: threading.Lock = field(default_factory=threading.Lock)
 
     @classmethod
@@ -71,15 +73,24 @@ class ApiContext:
         )
         return ctx
 
-    def discovered_models(self, backend, refresh: bool = False) -> list[str]:
+    def discovered_catalog(self, backend, refresh: bool = False
+                           ) -> tuple[list[str], dict[str, list[str]]]:
+        """缓存后的(模型目录, 按模型推理力度);两者一次探测取回,一起过期。"""
         with self.model_catalog_guard:
             cached = self.model_catalog_cache.get(backend.id)
             if cached and not refresh and time.time() - cached[0] < 600:
-                return cached[1]
-        models = runtime_manager.list_models(backend)
+                return cached[1], cached[2]
+        models, efforts = runtime_manager.list_model_catalog(backend)
         with self.model_catalog_guard:
-            self.model_catalog_cache[backend.id] = (time.time(), models)
-        return models
+            self.model_catalog_cache[backend.id] = (time.time(), models, efforts)
+        return models, efforts
+
+    def discovered_models(self, backend, refresh: bool = False) -> list[str]:
+        return self.discovered_catalog(backend, refresh=refresh)[0]
+
+    def discovered_model_efforts(self, backend, refresh: bool = False
+                                 ) -> dict[str, list[str]]:
+        return self.discovered_catalog(backend, refresh=refresh)[1]
 
     def must_project(self, project_id: str) -> Project:
         project = self.store.get_project(project_id)

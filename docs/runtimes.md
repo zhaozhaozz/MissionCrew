@@ -245,18 +245,30 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 
 ## Effort(推理力度)
 
-部分工具支持按次指定推理力度,支持矩阵在 `EFFORT_SUPPORT`(adapter → 允许档位):
+部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到 `EFFORT_SUPPORT`(adapter → 允许档位)这份静态兜底矩阵:
 
 - claude:原生 `--effort` 标志,档位 low/medium/high/xhigh/max;
 - codex:原生 `turn/start.effort`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 app-server 自行报错并照常回流到频道);
-- grok:ACP serve 命令上的 `grok agent --reasoning-effort`,档位 low/medium/high/xhigh;
+- grok:ACP serve 命令上的 `grok agent --reasoning-effort`,静态兜底档位 low/medium/high/xhigh,实际档位按模型动态发现(见下);
 - pi:映射为 thinking level(`--thinking`/`set_thinking_level`),档位 off/minimal/low/medium/high/xhigh;
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。
 
 effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 默认，总是合法；打印模式执行时经内置命令模板的 `{effort}` 占位符注入，为空时连同紧邻标志一起移除。
 
-grok 的档位列的是 grok-4.6 全量档位，低档模型只认子集（grok-4.5 无 xhigh）。与 codex 不同，`grok agent` 不校验档位：越界不报错，而是静默回落到该模型默认档位（xhigh + grok-4.5 实测落到 high），因此频道里看不到任何错误提示。effort 进的是 ACP serve 命令，改档位会改变 `acp.py` 的 client signature，长驻会话按新命令重启进程，不会沿用旧档位。
+### 按模型动态发现档位
+
+同一个工具的不同模型支持的档位并不一样：grok-4.6 有 low/medium/high/xhigh，grok-4.5 只有 low/medium/high。因此档位不能只按 adapter 记死。
+
+ACP 工具在 `session/new` 响应的 `models.availableModels[]._meta` 里自报 `supportsReasoningEffort` 与 `reasoningEfforts`，`acp.list_model_catalog()` 把它和模型目录**在同一次探测里**一起取回——档位表是模型目录的副产品，不额外起进程。往上依次是 `adapters.list_runtime_model_catalog()`（按 `EFFORT_ORDER` 规范成低到高，grok 自己按高到低返回）、`RuntimeManager.list_model_catalog()`，最后由 `ApiContext.discovered_catalog()` 连同模型目录一起缓存 10 分钟。
+
+`RuntimeManager.effort_options(backend, model, model_efforts)` 决定最终清单：给定模型在自报表里有档位就用它，否则回退 `EFFORT_SUPPORT`。模型留空（CLI 默认模型）也走回退，因为此时并不知道 CLI 最终选哪个模型。自报表由调用方传入（API 用缓存，CLI 现查），这个函数本身不探测 runtime。
+
+角色编辑器的 effort 下拉从 `/api/backends/<id>/models` 的 `efforts` 字段取按模型档位，换模型时重算；角色已存的档位若不在新模型的清单里，保留并标注「该模型不支持」，不静默改写用户配过的值。
+
+这一层校验是必需的，因为 **`grok agent` 不校验档位**：与 codex（app-server 报错并回流到频道）不同，grok 对越界档位不报错，而是静默回落到该模型默认档位（xhigh + grok-4.5 实测落到 high）。放过去用户在频道里看不到任何提示，只能在保存角色时按所选模型拦住。
+
+effort 进的是 ACP serve 命令，改档位会改变 `acp.py` 的 client signature，长驻会话按新命令重启进程，不会沿用旧档位。
 
 ## 升级
 

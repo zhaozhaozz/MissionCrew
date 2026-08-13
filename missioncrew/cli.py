@@ -333,9 +333,16 @@ def role_add(file: Path = typer.Option(..., help="角色定义 YAML(单个或列
         known_models = set(backend.models)
         if known_models and r.model not in known_models:
             raise typer.BadParameter(f"@{r.id} 的模型不属于 runtime {r.runtime_id}")
-        if r.effort and r.effort not in runtime_manager.effort_options(backend):
-            raise typer.BadParameter(
-                f"@{r.id} 的 effort={r.effort} 不受 runtime {r.runtime_id} 支持")
+        if r.effort:
+            # 与 API 保持同一口径:工具能自报按模型档位就按模型校验(这里没有
+            # API 那层缓存,只在确实配了 effort 时才探测 runtime)。
+            _, model_efforts = runtime_manager.list_model_catalog(backend)
+            allowed = runtime_manager.effort_options(backend, r.model, model_efforts)
+            if r.effort not in allowed:
+                raise typer.BadParameter(
+                    f"@{r.id} 的 effort={r.effort} 不受 runtime {r.runtime_id} "
+                    f"的模型 {r.model or '(CLI 默认)'} 支持"
+                    + (f"(可选: {'/'.join(allowed)})" if allowed else ""))
         store.put_role(r)
         typer.echo(f"角色已保存: [{r.project_id}] @{r.id}")
 

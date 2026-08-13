@@ -29,6 +29,26 @@ def chunk(text, meta=None):
 
 
 def _session_new_result(shape):
+    if shape == "efforts":  # 真实 grok 的形态:每个模型自报推理力度(高到低)
+        return {"sessionId": "s-test",
+                "models": {"availableModels": [
+                    {"modelId": "fake-4.6", "name": "Fake 4.6", "_meta": {
+                        "supportsReasoningEffort": True,
+                        "reasoningEfforts": [
+                            {"id": "xhigh", "value": "xhigh", "label": "Extra High"},
+                            {"id": "high", "value": "high", "label": "High"},
+                            {"id": "medium", "value": "medium", "label": "Medium"},
+                            {"id": "low", "value": "low", "label": "Low"}]}},
+                    {"modelId": "fake-4.5", "name": "Fake 4.5", "_meta": {
+                        "supportsReasoningEffort": True,
+                        "reasoningEfforts": [
+                            {"id": "high", "value": "high", "label": "High"},
+                            {"id": "medium", "value": "medium", "label": "Medium"},
+                            {"id": "low", "value": "low", "label": "Low"}]}},
+                    # 不支持推理力度的模型不进档位表,调用方回退 adapter 静态档位
+                    {"modelId": "fake-mini", "name": "Fake Mini", "_meta": {
+                        "supportsReasoningEffort": False}}],
+                    "currentModelId": "fake-4.6"}}
     if shape == "trae":   # 真实 traecli 的形态(实测 + Multica 对齐)
         return {"sessionId": "s-test",
                 "models": {"availableModels": [

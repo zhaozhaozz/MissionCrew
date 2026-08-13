@@ -44,6 +44,11 @@ class _BuiltinProvider(RuntimeProvider):
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return _executors.list_runtime_models(backend, timeout=timeout)
 
+    def list_model_catalog(
+            self, backend: Backend,
+            timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
+        return _executors.list_runtime_model_catalog(backend, timeout=timeout)
+
     def instances(self, backend: Backend) -> list[RuntimeInstance]:
         instances = _executors.active_execution_instances(backend.id)
         if backend.adapter in _executors.ACP_SERVE_COMMANDS:
@@ -232,6 +237,13 @@ class RuntimeManager:
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return self.provider_for(backend).list_models(backend, timeout=timeout)
 
+    def list_model_catalog(
+            self, backend: Backend,
+            timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
+        """模型目录 + 每个模型自报的推理力度档位;后者为空表示无按模型差异。"""
+        return self.provider_for(backend).list_model_catalog(
+            backend, timeout=timeout)
+
     def status(self, backends: list[Backend]) -> dict:
         """聚合所有 provider 的实时实例，不向 API 暴露原始执行器。"""
         all_instances: list[RuntimeInstance] = []
@@ -350,7 +362,20 @@ class RuntimeManager:
             "usage": [snapshot.to_dict() for snapshot in snapshots],
         }
 
-    def effort_options(self, backend: Backend) -> list[str]:
+    def effort_options(self, backend: Backend, model: str = "",
+                       model_efforts: Optional[dict[str, list[str]]] = None
+                       ) -> list[str]:
+        """该 Backend 可选的推理力度档位。
+
+        ``model_efforts`` 是 :meth:`list_model_catalog` 查到的按模型档位表(调用方
+        负责缓存,这里不主动探测 runtime)。给定模型在表里自报了档位就以它为准,
+        否则回退到 adapter 级 ``EFFORT_SUPPORT``——模型留空(CLI 默认模型)时也走
+        回退,因为此时并不知道 CLI 最终选哪个模型。
+        """
+        if model and model_efforts:
+            levels = model_efforts.get(model)
+            if levels:
+                return list(levels)
         return list(_executors.EFFORT_SUPPORT.get(backend.adapter, []))
 
     def effort_catalog(self) -> dict[str, list[str]]:

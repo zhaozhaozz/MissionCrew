@@ -649,11 +649,12 @@ def test_backend_models_endpoint_merges_own_list_and_runtime(client, seeded, mon
     from missioncrew.runtime import adapters
     seeded.put_backend(Backend(
         id="listed", name="listed", adapter="mock", models=["small"]))
-    monkeypatch.setattr(adapters, "list_runtime_models",
-                        lambda b, timeout=25: ["dyn/alpha", "dyn/beta"])
+    monkeypatch.setattr(adapters, "list_runtime_model_catalog",
+                        lambda b, timeout=25: (["dyn/alpha", "dyn/beta"], {}))
     d = client.get("/api/backends/listed/models").json()
     assert d["configured"] == ["small"]                       # 工具自带清单
     assert d["discovered"] == ["dyn/alpha", "dyn/beta"]       # runtime 动态目录
+    assert d["efforts"] == {}                                 # 该工具不自报按模型档位
     assert client.get("/api/backends/ghost/models").status_code == 404
 
 
@@ -673,8 +674,8 @@ def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch)
     from missioncrew.runtime import adapters
     seeded.put_backend(Backend(
         id="laddered", name="laddered", adapter="mock", models=["small"]))
-    monkeypatch.setattr(adapters, "list_runtime_models",
-                        lambda b, timeout=25: ["dyn/alpha"])
+    monkeypatch.setattr(adapters, "list_runtime_model_catalog",
+                        lambda b, timeout=25: (["dyn/alpha"], {}))
     ok = client.post("/api/roles", json={
         "id": "dyn-user", "project_id": "webshop", "runtime_id": "laddered",
         "model": "dyn/alpha"})
@@ -688,6 +689,43 @@ def test_save_role_accepts_runtime_discovered_model(client, seeded, monkeypatch)
         "id": "cli-default", "project_id": "webshop", "runtime_id": "laddered"})
     assert cli_default.status_code == 200
     assert cli_default.json()["model"] == ""
+
+
+def test_save_role_validates_effort_against_selected_model(client, seeded, monkeypatch):
+    """工具自报按模型档位时按模型校验:CLI 对越界档位静默回落,只能在保存时拦。"""
+    from missioncrew.runtime import adapters
+    seeded.put_backend(Backend(
+        id="reasoner", name="reasoner", adapter="mock", models=["big", "small"]))
+    monkeypatch.setattr(
+        adapters, "list_runtime_model_catalog",
+        lambda b, timeout=25: (["big", "small"],
+                               {"big": ["low", "medium", "high"],
+                                "small": ["low", "medium"]}))
+
+    ok = client.post("/api/roles", json={
+        "id": "big-high", "project_id": "webshop", "runtime_id": "reasoner",
+        "model": "big", "effort": "high"})
+    assert ok.status_code == 200 and ok.json()["effort"] == "high"
+
+    bad = client.post("/api/roles", json={
+        "id": "small-high", "project_id": "webshop", "runtime_id": "reasoner",
+        "model": "small", "effort": "high"})
+    assert bad.status_code == 400
+    assert "small" in bad.json()["detail"]                    # 报清楚是哪个模型
+    assert "low/medium" in bad.json()["detail"]               # 以及该模型可选什么
+
+    # 模型留空(CLI 默认):不知道最终跑哪个模型,按 adapter 级档位放行
+    cli_default = client.post("/api/roles", json={
+        "id": "default-high", "project_id": "webshop", "runtime_id": "reasoner",
+        "effort": "high"})
+    assert cli_default.status_code == 200
+
+
+def test_role_editor_recomputes_effort_when_model_changes(client):
+    """换模型要重算 effort 下拉,否则用户看到的是上一个模型的档位。"""
+    js = client.get("/assets/js/roles.js").text
+    assert 'id="rf-model" onchange="refreshEffortOptions()"' in js
+    assert "modelCatalogCache[bid]?.efforts?.[model]" in js
 
 
 def test_save_role_rejects_disabled_runtime(client, seeded):

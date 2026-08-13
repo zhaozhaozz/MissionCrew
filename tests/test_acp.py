@@ -128,6 +128,28 @@ def test_acp_list_models_from_trae_models_block():
     assert models == ["GLM-5.2", "Kimi-K2.6"]
 
 
+def test_acp_catalog_reads_per_model_reasoning_efforts():
+    """grok 形态:同一次 session/new 里既有模型目录,也有每个模型的档位。"""
+    from missioncrew.runtime import acp
+    models, efforts = acp.list_model_catalog(
+        [sys.executable, FAKE, "efforts"], timeout=15)
+
+    assert models == ["fake-4.6", "fake-4.5", "fake-mini"]
+    # 协议原样顺序(高到低),规范排序由 adapters 层负责
+    assert efforts == {"fake-4.6": ["xhigh", "high", "medium", "low"],
+                       "fake-4.5": ["high", "medium", "low"]}
+    assert "fake-mini" not in efforts   # 明确不支持的模型不入表
+
+
+def test_acp_catalog_empty_efforts_when_runtime_stays_silent():
+    """工具不自报档位时档位表为空 = 调用方回退 adapter 级静态档位。"""
+    from missioncrew.runtime import acp
+    models, efforts = acp.list_model_catalog(
+        [sys.executable, FAKE, "trae"], timeout=15)
+
+    assert models == ["GLM-5.2", "Kimi-K2.6"] and efforts == {}
+
+
 def test_acp_one_shot_execution_appears_in_runtime_status(tmp_path):
     result = {}
 

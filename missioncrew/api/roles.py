@@ -36,11 +36,16 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 raise HTTPException(
                     400, f"模型 {body.model or '(CLI 默认)'} 不属于 runtime {body.runtime_id}")
         if body.effort:
-            allowed = runtime_manager.effort_options(backend)
+            # 工具自报按模型档位时以它为准:grok 这类 CLI 对越界档位不报错而是
+            # 静默回落,放过去用户看不到任何提示,只能在保存时拦住。
+            allowed = runtime_manager.effort_options(
+                backend, body.model, ctx.discovered_model_efforts(backend))
             if not allowed:
                 raise HTTPException(400, f"runtime {body.runtime_id} 不支持 effort(推理力度)配置")
             if body.effort not in allowed:
-                raise HTTPException(400, f"effort 必须是 {'/'.join(allowed)} 之一")
+                raise HTTPException(
+                    400, f"模型 {body.model or '(CLI 默认)'} 的 effort "
+                         f"必须是 {'/'.join(allowed)} 之一")
 
     @app.get("/api/roles")
     def roles():

@@ -32,9 +32,37 @@ def test_grok_effort_renders_into_serve_command():
 def test_grok_exposes_cli_effort_levels():
     backend = Backend(id="grok", name="Grok Build", adapter="grok_build")
 
-    # 档位取自 `grok --reasoning-effort <非法值>` 的报错清单,从低到高
+    # 未知模型时回退 adapter 级档位:取自 `grok --reasoning-effort <非法值>`
+    # 的报错清单(grok-4.6 全量),从低到高
     assert RuntimeManager().effort_options(backend) == [
         "low", "medium", "high", "xhigh"]
+
+
+def test_effort_options_prefer_per_model_levels():
+    """工具自报按模型档位时以它为准:grok-4.5 没有 xhigh,不能照抄 adapter 清单。"""
+    backend = Backend(id="grok", name="Grok Build", adapter="grok_build")
+    manager = RuntimeManager()
+    reported = {"grok-4.6": ["low", "medium", "high", "xhigh"],
+                "grok-4.5": ["low", "medium", "high"]}
+
+    assert manager.effort_options(backend, "grok-4.5", reported) == [
+        "low", "medium", "high"]
+    assert manager.effort_options(backend, "grok-4.6", reported) == [
+        "low", "medium", "high", "xhigh"]
+    # 模型留空(CLI 默认)或模型不在自报表里:回退 adapter 级档位
+    assert manager.effort_options(backend, "", reported) == [
+        "low", "medium", "high", "xhigh"]
+    assert manager.effort_options(backend, "grok-9", reported) == [
+        "low", "medium", "high", "xhigh"]
+
+
+def test_discovered_efforts_sorted_low_to_high():
+    """grok 按高到低返回,进下拉前统一成与 EFFORT_SUPPORT 一致的低到高。"""
+    assert adapters.sort_efforts(["xhigh", "high", "medium", "low"]) == [
+        "low", "medium", "high", "xhigh"]
+    # 没见过的档位不丢弃,排在已知档位之后
+    assert adapters.sort_efforts(["high", "turbo", "low"]) == [
+        "low", "high", "turbo"]
 
 
 def test_grok_detection_creates_routable_backend(monkeypatch, tmp_path):

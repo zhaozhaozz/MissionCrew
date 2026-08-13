@@ -151,7 +151,7 @@ function editRole(id, templateId = "") {
       <div><label>Runtime(定义角色时固定,必选)</label>
         <select id="rf-backend" onchange="window._editingRoleModel=null;window._editingRoleEffort=null;refreshModelOptions();refreshEffortOptions()">${backendOpts}</select></div>
       <div><label>模型(清单来自 runtime)</label>
-        <select id="rf-model"></select></div>
+        <select id="rf-model" onchange="refreshEffortOptions()"></select></div>
       <div><label>Effort(推理力度,仅部分 runtime 支持)</label>
         <select id="rf-effort"></select></div>
     </div>
@@ -218,25 +218,37 @@ async function refreshModelOptions() {
   if (cur && !configuredNames.has(cur) && !extra.includes(cur))
     opts += `<option value="${esc(cur)}" selected>${esc(cur)}(当前值)</option>`;
   sel.innerHTML = opts;
+  refreshEffortOptions();   // 档位可能按模型不同,模型清单到位后重算一次
 }
 
-// effort(推理力度)是 adapter 级静态选项(词表来自 /api/traits):
-// 选中的 runtime 支持才可配置,不支持时下拉禁用、保存为空。
+// effort(推理力度)优先用工具按模型自报的档位(/api/backends/<id>/models 的
+// efforts,与模型清单同一次探测),自报不了才回退到 adapter 级静态词表
+// (/api/traits)。两者都没有就说明该 runtime 不支持,下拉禁用、保存为空。
 function refreshEffortOptions() {
   const sel = document.getElementById("rf-effort");
   const bid = document.getElementById("rf-backend").value;
   const adapter = overview.backends.find(x => x.id === bid)?.adapter;
-  const levels = (adapter && traitMeta.effort_options?.[adapter]) || [];
+  const model = document.getElementById("rf-model")?.value || "";
+  const perModel = modelCatalogCache[bid]?.efforts?.[model];
+  const levels = perModel?.length ? perModel
+    : ((adapter && traitMeta.effort_options?.[adapter]) || []);
   const cur = window._editingRoleEffort ?? sel.value;
-  window._editingRoleEffort = null;
   if (!levels.length) {
+    // 还没渲染出可选项就不消费待选中值:模型清单是异步到的,这里可能只是
+    // 早于目录的那一次渲染,消费掉会让角色已存的档位在第二次渲染时丢失。
     sel.innerHTML = `<option value="">${bid ? "(该 runtime 不支持)" : "先选择 runtime"}</option>`;
     sel.disabled = true;
     return;
   }
+  window._editingRoleEffort = null;
   sel.disabled = false;
-  sel.innerHTML = `<option value="">(CLI 默认)</option>` + levels.map(l =>
+  let opts = `<option value="">(CLI 默认)</option>` + levels.map(l =>
     `<option value="${esc(l)}" ${cur === l ? "selected" : ""}>${esc(l)}</option>`).join("");
+  // 换模型后旧档位可能不在新模型的清单里:保留并标注,让用户看见要改什么,
+  // 而不是静默改掉他配过的值(保存时 API 会以同样口径拒绝)。
+  if (cur && !levels.includes(cur))
+    opts += `<option value="${esc(cur)}" selected>${esc(cur)}(当前值,该模型不支持)</option>`;
+  sel.innerHTML = opts;
 }
 
 async function saveRole() {

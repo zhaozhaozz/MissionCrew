@@ -342,9 +342,10 @@ KNOWN_MODELS: dict[str, list[str]] = {
 #   越界时 CLI 自行报错,错误照常回流到频道);
 # - grok:ACP serve 命令上的 `grok agent --reasoning-effort <档位>`。effort 进了
 #   serve 命令,改档位会改变 acp.py 的 client signature,长驻会话按新命令重启,
-#   不会沿用旧档位。这里列的是 grok-4.6 的全量档位;低档模型只认子集
-#   (grok-4.5 无 xhigh),且 `grok agent` 不校验档位——越界会静默回落到模型默认
-#   (xhigh + grok-4.5 实测落到 high),不像 codex 那样报错,不要指望错误回流;
+#   不会沿用旧档位。这里列的是 grok-4.6 的全量档位,只作兜底:实际档位按模型
+#   动态发现(list_runtime_model_catalog),因为低档模型只认子集(grok-4.5 无
+#   xhigh),而 `grok agent` 不校验档位——越界静默回落到模型默认(xhigh +
+#   grok-4.5 实测落到 high),不像 codex 那样报错,不要指望错误回流;
 # - mock:仅供测试/演示走通配置链路。
 EFFORT_SUPPORT: dict[str, list[str]] = {
     "claude_code": ["low", "medium", "high", "xhigh", "max"],
@@ -354,6 +355,17 @@ EFFORT_SUPPORT: dict[str, list[str]] = {
     # pi:映射为 thinking level(`--thinking`/set_thinking_level)。
     "pi": ["off", "minimal", "low", "medium", "high", "xhigh"],
 }
+
+# 全平台档位的规范顺序(低到高)。runtime 自报的档位顺序各家不一(grok 按高到低
+# 返回),统一按这里排序后再进下拉,保证同一个下拉里方向一致;没见过的档位按
+# 原顺序排在已知档位之后,不丢弃。
+EFFORT_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+
+
+def sort_efforts(levels: list[str]) -> list[str]:
+    """把 runtime 自报的档位按 EFFORT_ORDER 规范排序。"""
+    known = [level for level in EFFORT_ORDER if level in levels]
+    return known + [level for level in levels if level not in EFFORT_ORDER]
 
 
 # 各工具的更新规格:
@@ -1452,36 +1464,49 @@ def _parse_opencode_models(raw: str) -> list[str]:
             if line.strip() and "/" in line and " " not in line.strip()]
 
 
-def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
-    """向 runtime 本体查询可用模型;查不到返回空(调用方只剩工具自带清单)。
+def list_runtime_model_catalog(
+        backend: Backend, timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
+    """向 runtime 本体查询模型目录，以及每个模型自报的推理力度档位。
 
     - codex:`codex debug models --bundled`(JSON 目录)
     - opencode:`opencode models`(行式目录)
     - ACP 工具(grok/kimi/kiro/qoder/trae):一次性会话,session/new 返回目录
     - claude:CLI 无枚举命令,返回静态型号目录(别名见 KNOWN_MODELS);
       mock:返回工具自带清单(测试/演示)
+
+    第二个返回值只有 ACP 工具会自报(目前只有 grok):模型 -> 档位(低到高)。
+    为空表示该 runtime 说不出按模型的差异,调用方回退到 adapter 级
+    ``EFFORT_SUPPORT``。查不到一律返回空目录与空档位表。
     """
     adapter = backend.adapter
     if adapter == "mock":
-        return [name for name in backend.models if name]
+        return [name for name in backend.models if name], {}
     if adapter == "claude_code":
-        return list(CLAUDE_MODEL_CATALOG)
+        return list(CLAUDE_MODEL_CATALOG), {}
     binary = Path(backend.binary_path).name if backend.binary_path else None
     try:
         if adapter == "codex":
             proc = subprocess.run([binary or "codex", "debug", "models", "--bundled"],
                                   capture_output=True, text=True, timeout=timeout,
                                   stdin=subprocess.DEVNULL)
-            return _parse_codex_models(proc.stdout)
+            return _parse_codex_models(proc.stdout), {}
         if adapter == "opencode":
             proc = subprocess.run([binary or "opencode", "models"],
                                   capture_output=True, text=True, timeout=timeout,
                                   stdin=subprocess.DEVNULL)
-            return _parse_opencode_models(proc.stdout)
+            return _parse_opencode_models(proc.stdout), {}
     except (OSError, subprocess.TimeoutExpired):
-        return []
+        return [], {}
     if adapter in ACP_SERVE_COMMANDS:
         template = ACP_SERVE_COMMANDS[adapter]
         cmd = render_command(template, "", backend.model, allowed_dirs=[])
-        return acp.list_models(cmd, timeout=timeout, runtime_id=backend.id)
-    return []
+        models, efforts = acp.list_model_catalog(
+            cmd, timeout=timeout, runtime_id=backend.id)
+        return models, {model: sort_efforts(levels)
+                        for model, levels in efforts.items()}
+    return [], {}
+
+
+def list_runtime_models(backend: Backend, timeout: int = 25) -> list[str]:
+    """只取模型目录;需要按模型的推理力度时用 :func:`list_runtime_model_catalog`。"""
+    return list_runtime_model_catalog(backend, timeout=timeout)[0]

@@ -173,6 +173,16 @@ class RuntimeProvider(ABC):
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         """从 Runtime 查询模型目录。"""
 
+    def list_model_catalog(
+            self, backend: Backend,
+            timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
+        """查询模型目录，以及每个模型自报的推理力度档位(模型 -> 档位,低到高)。
+
+        默认只给目录、档位表为空 = 该 Runtime 说不出按模型的差异,调用方回退到
+        adapter 级静态档位表;能自报的 provider 覆盖本方法。
+        """
+        return self.list_models(backend, timeout=timeout), {}
+
     def shutdown(self) -> None:
         """释放 provider 持有的所有长驻进程；无状态 provider 无需实现。"""
 
