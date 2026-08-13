@@ -40,6 +40,14 @@ def session_args(cmd: list[str], session_id: str,
     return [*cmd, "--resume" if reused else "--session-id", session_id], False
 
 
+def private_dirs() -> list[str]:
+    """Claude 的用户级配置目录:skills/agents/记忆等自带能力都在这里。"""
+    import os
+    from pathlib import Path
+    return [os.environ.get("CLAUDE_CONFIG_DIR")
+            or str(Path.home() / ".claude")]
+
+
 SPEC = CliSpec(
     adapter="claude_code",
     binary="claude",
@@ -62,4 +70,5 @@ SPEC = CliSpec(
     discover_models=discover_models,
     apply_permissions=apply_permissions,
     session_args=session_args,
+    private_dirs=private_dirs,
 )

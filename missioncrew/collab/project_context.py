@@ -127,8 +127,13 @@ def _render_skill_summary(project_id: str, skill: ProjectSkill, path: Path,
 
 
 def render_project_context(project: Project, library: DocumentLibrary,
-                           workspace_dir: Path | None = None) -> str:
-    """生成 Channel 角色共用的项目上下文。"""
+                           workspace_dir: Path | None = None,
+                           extra_dirs: list[str] | None = None) -> str:
+    """生成 Channel 角色共用的项目上下文。
+
+    extra_dirs 是项目之外额外授权的目录(如 Runtime 工具自有目录),
+    追加进"本次可读写目录"清单,让 Agent 知道可以使用。
+    """
     canonical_guidelines = write_guideline_context(project)
     guideline_dir = (workspace_dir / "guidelines" if workspace_dir is not None
                      else guideline_context_dir(project))
@@ -161,6 +166,9 @@ def render_project_context(project: Project, library: DocumentLibrary,
         for skill in project.skills if skill.enabled
     ]
     allowed_dirs = project_allowed_dirs(project, library, workspace_dir)
+    for raw in extra_dirs or []:
+        if raw and raw not in allowed_dirs:
+            allowed_dirs.append(raw)
     project_url = missioncrew_project_url(project.id)
     dirs_section = "\n".join(f"- {path}" for path in allowed_dirs) or "（无本地目录）"
     temp_dir = workspace_dir / "temp" if workspace_dir is not None else None

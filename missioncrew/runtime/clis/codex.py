@@ -54,6 +54,13 @@ def session_args(cmd: list[str], session_id: str,
     return [cmd[0], *cmd[2:-1], "exec", "resume", session_id, cmd[-1]], False
 
 
+def private_dirs() -> list[str]:
+    """Codex 的用户级主目录:skills/记忆/会话等自带能力都在这里。"""
+    import os
+    return [os.environ.get("CODEX_HOME")
+            or str(Path.home() / ".codex")]
+
+
 SPEC = CliSpec(
     adapter="codex",
     binary="codex",
@@ -68,4 +75,5 @@ SPEC = CliSpec(
     discover_models=discover_models,
     apply_permissions=apply_permissions,
     session_args=session_args,
+    private_dirs=private_dirs,
 )

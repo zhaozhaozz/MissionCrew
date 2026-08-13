@@ -14,6 +14,7 @@ from missioncrew.core.models import (Backend, ExecutionConfig, RunResult,
 from missioncrew.runtime import (RuntimeCapabilities, RuntimeManager,
                                  RuntimeExecutionInfo, RuntimeProvider)
 from missioncrew.runtime import adapters
+from missioncrew.runtime.base import system_temp_dirs
 
 
 class _RecordingProvider(RuntimeProvider):
@@ -278,7 +279,58 @@ def test_explicit_readable_paths_are_not_promoted_to_writable(tmp_path):
     )
     manager.start(config)
     assert json.loads(config.env["MISSIONCREW_READABLE_DIRS"]) == [str(tmp_path)]
+    # workspace-write 默认追加系统临时目录,但显式只读路径不得被提升为可写
+    writable = json.loads(config.env["MISSIONCREW_WRITABLE_DIRS"])
+    assert writable == system_temp_dirs()
+    assert str(tmp_path) not in writable
+
+
+def test_prepare_appends_temp_and_private_dirs_for_workspace_write(
+        tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    manager = RuntimeManager()
+    provider = _RecordingProvider()
+    manager.register("codex", provider)
+    backend = Backend(id="codex", name="Codex", adapter="codex")
+    workdir = tmp_path / "repo"
+    workdir.mkdir()
+    config = ExecutionConfig(
+        task_id="task", stage_name="chat", backend=backend, prompt="work",
+        workdir=str(workdir),
+        runtime_policy=RuntimePolicy(
+            readable_paths=[str(workdir)], writable_paths=[str(workdir)]),
+    )
+    manager.start(config)
+    writable = json.loads(config.env["MISSIONCREW_WRITABLE_DIRS"])
+    assert writable[0] == str(workdir)
+    for temp_dir in system_temp_dirs():
+        assert temp_dir in writable
+    assert str(codex_home) in writable
+    readable = json.loads(config.env["MISSIONCREW_READABLE_DIRS"])
+    assert str(codex_home) in readable
+    # 业务层查询接口与 _prepare 使用同一声明
+    assert manager.private_dirs(backend) == [str(codex_home)]
+
+
+def test_prepare_keeps_read_only_policy_untouched(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    manager = RuntimeManager()
+    manager.register("codex", _RecordingProvider())
+    backend = Backend(id="codex", name="Codex", adapter="codex")
+    config = ExecutionConfig(
+        task_id="task", stage_name="chat", backend=backend, prompt="read",
+        workdir=str(tmp_path),
+        runtime_policy=RuntimePolicy(
+            readable_paths=[str(tmp_path)],
+            permissions=RuntimePermissions(filesystem="read-only")),
+    )
+    manager.start(config)
     assert json.loads(config.env["MISSIONCREW_WRITABLE_DIRS"]) == []
+    assert json.loads(config.env["MISSIONCREW_READABLE_DIRS"]) == [str(tmp_path)]
 
 
 def test_application_layers_do_not_import_raw_runtime_executors():

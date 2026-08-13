@@ -11,8 +11,8 @@ from missioncrew.api import create_app
 from missioncrew.collab.agent_tools import DispatchInactiveError
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.documents import library_for
-from missioncrew.core.models import (Channel, DEFAULT_MAX_CHAIN_RUNS, Project,
-                                     RunResult)
+from missioncrew.core.models import (Backend, Channel, DEFAULT_MAX_CHAIN_RUNS,
+                                     Project, RunResult)
 from missioncrew.runtime import adapters, runtime_manager
 
 
@@ -707,6 +707,19 @@ def test_bracket_mention_text_is_redacted_for_workers(chat, seeded):
     worker_trigger = _prompt_json_section(
         cfg.prompt, "触发消息(JSON,你的任务简报由发起者撰写)")
     assert worker_trigger["content"] == "@dev 参考 [其他执行角色] 的历史结论。"
+
+
+def test_prompt_lists_runtime_private_dirs(chat, seeded, tmp_path, monkeypatch):
+    """工具自有目录(如 Codex 主目录)要进入授权清单,Agent 才敢用自带能力。"""
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    msg_id = seeded.add_message(
+        "general", "human", "human", "@dev 修一下登录", ["dev"])
+    backend = Backend(id="codex", name="codex", adapter="codex")
+    cfg = chat._assemble(seeded.get_channel("general"),
+                         seeded.get_role("webshop", "dev"), backend, msg_id)
+    assert str(codex_home.resolve()) in cfg.common_prompt
 
 
 def test_prompt_separates_worker_context_from_orchestrator_roster(chat, seeded):

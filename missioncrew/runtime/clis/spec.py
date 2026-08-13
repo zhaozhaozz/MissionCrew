@@ -67,3 +67,6 @@ class CliSpec:
     session_args: Optional[Callable[..., tuple[list[str], bool]]] = None
     # (backend, timeout) -> RuntimeUsageSnapshot;账户限额探测
     account_usage_probe: Optional[Callable] = None
+    # () -> 工具自有目录清单(配置/Skill/记忆/会话等,如 ~/.codex);平台把
+    # 其中存在的目录并入授权清单与沙箱可写根,Agent 才能使用工具自带能力
+    private_dirs: Optional[Callable[[], list[str]]] = None

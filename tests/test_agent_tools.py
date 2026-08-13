@@ -152,7 +152,8 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     assert conflict.status_code == 409
     assert conflict.json()["error"] == {
         "code": "already_exists",
-        "message": "文档已存在: reports/tool-result.bin",
+        "message": "文档已存在: reports/tool-result.bin；更新已有文档请传"
+                   " overwrite=true(publish-file 加 --overwrite)",
         "retryable": False,
     }
 

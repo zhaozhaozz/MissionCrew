@@ -15,8 +15,9 @@ from pathlib import Path
 from typing import Optional
 
 from . import adapters as _executors
+from . import clis as _clis
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
-                   RuntimeProvider, RuntimeUsageSnapshot)
+                   RuntimeProvider, RuntimeUsageSnapshot, system_temp_dirs)
 from ..core.models import Backend, ExecutionConfig, RunResult
 
 
@@ -144,6 +145,18 @@ class RuntimeManager:
     def _prepare(config: ExecutionConfig) -> ExecutionConfig:
         """把统一策略规范化为所有 provider 都能消费的环境和路径边界。"""
         policy = config.runtime_policy
+        # workspace-write(常规模式)额外放行系统临时目录与工具自有目录:
+        # 前者救隐式使用 /tmp 的工具链,后者让 Agent 能用工具自带的
+        # skill/记忆能力。read-only/full-access 不改写,保持策略原义。
+        if policy.permissions.filesystem == "workspace-write":
+            for path in system_temp_dirs():
+                if path not in policy.writable_paths:
+                    policy.writable_paths.append(path)
+            for path in _clis.private_dirs_for(config.backend.adapter):
+                if path not in policy.readable_paths:
+                    policy.readable_paths.append(path)
+                if path not in policy.writable_paths:
+                    policy.writable_paths.append(path)
         paths = [*policy.allowed_paths(), *policy.skill_paths]
         for skill_path in policy.skill_paths:
             if skill_path not in policy.readable_paths:
@@ -229,6 +242,10 @@ class RuntimeManager:
         _executors.acp.close_sessions()
         with self._account_usage_guard:
             self._account_usage_cache.clear()
+
+    def private_dirs(self, backend: Backend) -> list[str]:
+        """Runtime 工具自有目录(配置/Skill/记忆);业务层用于授权清单展示。"""
+        return _clis.private_dirs_for(backend.adapter)
 
     def capabilities(self, backend: Backend) -> RuntimeCapabilities:
         return self.provider_for(backend).capabilities(backend)

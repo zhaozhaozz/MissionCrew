@@ -17,4 +17,22 @@ SPECS: tuple[CliSpec, ...] = (
 )
 BY_ADAPTER: dict[str, CliSpec] = {spec.adapter: spec for spec in SPECS}
 
-__all__ = ["CliSpec", "SPECS", "BY_ADAPTER"]
+
+def private_dirs_for(adapter: str) -> list[str]:
+    """返回工具声明的自有目录中真实存在的,解析绝对路径并去重。"""
+    from pathlib import Path
+    spec = BY_ADAPTER.get(adapter)
+    if spec is None or spec.private_dirs is None:
+        return []
+    found: list[str] = []
+    for raw in spec.private_dirs():
+        path = Path(raw).expanduser()
+        if not path.is_dir():
+            continue
+        resolved = str(path.resolve())
+        if resolved not in found:
+            found.append(resolved)
+    return found
+
+
+__all__ = ["CliSpec", "SPECS", "BY_ADAPTER", "private_dirs_for"]

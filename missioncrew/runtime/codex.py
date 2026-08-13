@@ -120,7 +120,10 @@ def _sandbox_mode(config: ExecutionConfig) -> str:
 
 def _sandbox_policy(config: ExecutionConfig) -> dict:
     permissions = config.runtime_policy.permissions
-    network = permissions.network == "allow"
+    # 本地协作平台默认放行网络:Agent Tool 的回环 API、git fetch/push 都
+    # 依赖它,禁网只会把每次访问变成"沙箱失败→审批升级重试"的浪费;
+    # 显式 network=deny 仍完全禁网。
+    network = permissions.network != "deny"
     if permissions.filesystem == "read-only":
         return {"type": "readOnly", "networkAccess": network}
     if permissions.filesystem == "full-access":

@@ -29,6 +29,12 @@ def update_plan() -> tuple:
                     "--no-fund", "--no-audit", f"{_NPM_PACKAGE}@latest"])
 
 
+def private_dirs() -> list[str]:
+    """pi 的平台自有主目录(agent 配置/会话/vendored 安装均重定向到此)。"""
+    from ...core.config import pi_home
+    return [str(pi_home())]
+
+
 SPEC = CliSpec(
     adapter="pi",
     binary="pi",
@@ -40,4 +46,5 @@ SPEC = CliSpec(
     locate_binary=locate_binary,
     configured_models=configured_models,
     update_plan=update_plan,
+    private_dirs=private_dirs,
 )

@@ -705,7 +705,11 @@ class AgentActionService:
                 overwrite=overwrite,
             )
         except FileExistsError as exc:
-            raise AgentToolError("already_exists", str(exc), 409) from exc
+            raise AgentToolError(
+                "already_exists",
+                f"{exc}；更新已有文档请传 overwrite=true"
+                "(publish-file 加 --overwrite)",
+                409) from exc
         self.store.audit(
             actor, "document_published",
             detail=(f"project={project.id} path={path} size={len(payload)} "

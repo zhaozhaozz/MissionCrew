@@ -46,6 +46,25 @@ def host_isolated_environ(
             and not name.startswith(_HOST_ENV_PREFIXES)}
 
 
+def system_temp_dirs() -> list[str]:
+    """系统级临时目录:工具链(tsx 的 IPC socket 等)默认落在这里。
+
+    这些目录并入沙箱可写根,避免隐式使用 /tmp 的工具在沙箱内直接失败;
+    提示词仍引导 Agent 把自建临时文件放到工作区 temp/,两者不冲突。
+    """
+    import tempfile
+    from pathlib import Path
+    found: list[str] = []
+    for raw in (tempfile.gettempdir(), "/tmp", "/var/tmp"):
+        path = Path(raw)
+        if not path.is_dir():
+            continue
+        resolved = str(path.resolve())
+        if resolved not in found:
+            found.append(resolved)
+    return found
+
+
 @dataclass(frozen=True)
 class RuntimeCapabilities:
     """一个 Runtime 通过统一接口对外暴露的操作能力。"""

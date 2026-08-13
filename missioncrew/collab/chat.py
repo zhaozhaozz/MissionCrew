@@ -1062,7 +1062,8 @@ class ChatEngine:
                     chat_workspace_dir(project.id, channel.id, role.id),
                     has_history=True)
                 project_section = render_project_context(
-                    project, library, workspace.root)
+                    project, library, workspace.root,
+                    extra_dirs=runtime_manager.private_dirs(backend))
                 env["MISSIONCREW_WORKSPACE"] = str(workspace.root)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(workspace.documents)
                 env["MISSIONCREW_DOCUMENTS_URL"] = document_resource_url(project.id)

@@ -127,7 +127,7 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 
 默认 Codex provider 不再执行 `codex exec`，而是为每个 `channel::role` 启动官方 `codex app-server`，使用省略 `jsonrpc` 字段的 JSONL 双向协议。连接先完成 `initialize/initialized`，再调用 `thread/start|thread/resume` 和 `turn/start`；agent message delta、reasoning delta、command、file change、plan、usage 和 turn completion 通知分别映射到聊天过程事件。
 
-每轮结构化传入 `cwd`、`model`、`effort`、`runtimeWorkspaceRoots`、`approvalPolicy` 和 `sandboxPolicy`。`workspaceWrite` 的 `writableRoots` 来自统一 `RuntimePolicy.writable_paths`，网络权限来自 `RuntimePermissions.network`。模型目录直接调用 app-server `model/list`，失败时才退回旧的 CLI 发现路径。
+每轮结构化传入 `cwd`、`model`、`effort`、`runtimeWorkspaceRoots`、`approvalPolicy` 和 `sandboxPolicy`。`workspaceWrite` 的 `writableRoots` 来自统一 `RuntimePolicy.writable_paths`；网络默认放行（Agent Tool 的回环 API 与 git 操作都依赖网络，禁网只会把每次访问变成沙箱失败加审批升级重试），仅 `RuntimePermissions.network=deny` 时关闭。统一策略在 manager `_prepare` 阶段对 `workspace-write` 模式追加系统临时目录（`/tmp` 等，救隐式使用它们的工具链）和 Runtime 工具自有目录（`CliSpec.private_dirs` 声明的配置/Skill/记忆位置，如 `~/.codex`、`~/.claude`）进入可写根；`read-only` 与 `full-access` 不改写。工具自有目录同时经 `runtime_manager.private_dirs` 进入聊天上下文的授权目录清单。模型目录直接调用 app-server `model/list`，失败时才退回旧的 CLI 发现路径。
 
 ### pi RPC 与裸 API 接入
 

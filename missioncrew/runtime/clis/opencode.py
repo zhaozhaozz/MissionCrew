@@ -72,6 +72,16 @@ def session_args(cmd: list[str], session_id: str,
     return [*cmd[:-1], *args, cmd[-1]], True
 
 
+def private_dirs() -> list[str]:
+    """OpenCode 的用户级配置与数据目录(XDG 布局)。"""
+    import os
+    from pathlib import Path
+    config_home = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    data_home = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
+    return [str(Path(config_home) / "opencode"),
+            str(Path(data_home) / "opencode")]
+
+
 SPEC = CliSpec(
     adapter="opencode",
     binary="opencode",
@@ -85,4 +95,5 @@ SPEC = CliSpec(
     discover_models=discover_models,
     prepare_env=prepare_env,
     session_args=session_args,
+    private_dirs=private_dirs,
 )

@@ -372,6 +372,23 @@ def test_claude_auto_approval_still_enforces_hard_policy(
         provider.shutdown()
 
 
+def test_codex_sandbox_network_allowed_unless_denied(tmp_path):
+    # 本地协作平台的 Agent Tool 回环 API 与 git 操作都依赖网络:
+    # inherit(默认)放行,显式 deny 才禁网。
+    from missioncrew.runtime.codex import _sandbox_policy
+    events: list[tuple[str, str]] = []
+    default = _sandbox_policy(_config(tmp_path, "codex", "任务", {}, events))
+    assert default["type"] == "workspaceWrite"
+    assert default["networkAccess"] is True
+    denied = _sandbox_policy(
+        _config(tmp_path, "codex", "任务", {}, events, network="deny"))
+    assert denied["networkAccess"] is False
+    read_only = _sandbox_policy(
+        _config(tmp_path, "codex", "任务", {}, events,
+                filesystem="read-only"))
+    assert read_only == {"type": "readOnly", "networkAccess": True}
+
+
 def test_claude_os_sandbox_default_off_and_opt_in(tmp_path, monkeypatch):
     # OS 沙箱默认关闭(其网络命名空间连宿主回环都不可达,对本地协作限制过强);
     # MISSIONCREW_CLAUDE_SANDBOX=on 显式启用时,Agent Tool CLI 必须列入
