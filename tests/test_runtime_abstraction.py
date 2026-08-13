@@ -77,6 +77,45 @@ def test_manager_injects_skills_paths_and_permissions(tmp_path):
     assert provider.stopped == ("runtime", "channel::role")
 
 
+def test_effort_support_is_declared_per_provider():
+    """档位声明随 provider 走:原生 provider 各自声明,内置执行器只管自己的
+    adapter,manager 合并成 /api/traits 的全量目录;注册自定义 provider 即接管
+    对应 adapter 的档位,与 provider_for 的路由规则一致。"""
+    from missioncrew.runtime.claude import ClaudeRuntimeProvider
+    from missioncrew.runtime.codex import CodexRuntimeProvider
+    from missioncrew.runtime.pi import PiRuntimeProvider
+
+    manager = RuntimeManager()
+    # 原生 provider 的档位不再进 adapters 的静态表
+    assert set(adapters.EFFORT_SUPPORT) == {"grok_build", "mock"}
+    builtin = object.__new__(ClaudeRuntimeProvider)  # 只查声明,无需构造会话
+    assert builtin.effort_catalog() == {
+        "claude_code": ["low", "medium", "high", "xhigh", "max"]}
+    assert CodexRuntimeProvider.effort_catalog(
+        object.__new__(CodexRuntimeProvider))["codex"][0] == "minimal"
+    assert PiRuntimeProvider.effort_catalog(
+        object.__new__(PiRuntimeProvider))["pi"][0] == "off"
+
+    # manager 合并后对外形状不变(adapter -> 档位)
+    catalog = manager.effort_catalog()
+    assert set(catalog) == {"claude_code", "codex", "pi", "grok_build", "mock"}
+
+    # effort_options 经 provider_for 路由;未声明档位的 provider 默认不支持
+    class _NoEffortProvider(_RecordingProvider):
+        pass
+
+    class _CustomEffortProvider(_RecordingProvider):
+        def effort_catalog(self):
+            return {"custom": ["gentle", "fierce"]}
+
+    manager.register("custom", _NoEffortProvider())
+    backend = Backend(id="c", name="c", adapter="custom")
+    assert manager.effort_options(backend) == []
+    manager.register("custom", _CustomEffortProvider())
+    assert manager.effort_options(backend) == ["gentle", "fierce"]
+    assert manager.effort_catalog()["custom"] == ["gentle", "fierce"]
+
+
 def test_manager_persists_runtime_usage_history(store, tmp_path):
     manager = RuntimeManager()
     manager.bind_usage_store(store)

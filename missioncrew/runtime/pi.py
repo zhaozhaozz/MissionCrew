@@ -597,6 +597,10 @@ def _tool_result_text(detail) -> str:
 class PiRuntimeProvider(RuntimeProvider):
     """把 pi RPC 的会话/回合能力封装为统一 Runtime。"""
 
+    def effort_catalog(self) -> dict[str, list[str]]:
+        # 映射为 pi 的 thinking level(`--thinking`/set_thinking_level)
+        return {"pi": ["off", "minimal", "low", "medium", "high", "xhigh"]}
+
     def __init__(self, fallback: RuntimeProvider,
                  command: Optional[list[str]] = None):
         self.fallback = fallback

@@ -245,7 +245,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 
 ## Effort(推理力度)
 
-部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到 `EFFORT_SUPPORT`(adapter → 允许档位)这份静态兜底矩阵:
+部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到各 provider 声明的静态兜底档位。静态声明随 provider 走(`RuntimeProvider.effort_catalog()`):claude/codex/pi 在各自 provider 类里声明,内置 CLI/ACP 执行器负责的 adapter(grok、mock)集中在 `adapters.EFFORT_SUPPORT`;`RuntimeManager.effort_catalog()` 把所有声明合并成 `/api/traits` 用的全量目录,注册自定义 provider 即接管对应 adapter 的档位:
 
 - claude:原生 `--effort` 标志,档位 low/medium/high/xhigh/max;
 - codex:原生 `turn/start.effort`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 app-server 自行报错并照常回流到频道);
@@ -262,7 +262,7 @@ effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 
 
 ACP 工具在 `session/new` 响应的 `models.availableModels[]._meta` 里自报 `supportsReasoningEffort` 与 `reasoningEfforts`，`acp.list_model_catalog()` 把它和模型目录**在同一次探测里**一起取回——档位表是模型目录的副产品，不额外起进程。往上依次是 `adapters.list_runtime_model_catalog()`（按 `EFFORT_ORDER` 规范成低到高，grok 自己按高到低返回）、`RuntimeManager.list_model_catalog()`，最后由 `ApiContext.discovered_catalog()` 连同模型目录一起缓存 10 分钟。
 
-`RuntimeManager.effort_options(backend, model, model_efforts)` 决定最终清单：给定模型在自报表里有档位就用它，否则回退 `EFFORT_SUPPORT`。模型留空（CLI 默认模型）也走回退，因为此时并不知道 CLI 最终选哪个模型。自报表由调用方传入（API 用缓存，CLI 现查），这个函数本身不探测 runtime。
+`RuntimeManager.effort_options(backend, model, model_efforts)` 决定最终清单：给定模型在自报表里有档位就用它，否则经 `provider_for()` 回退到该 Backend 的 provider 声明的静态档位。模型留空（CLI 默认模型）也走回退，因为此时并不知道 CLI 最终选哪个模型。自报表由调用方传入（API 用缓存，CLI 现查），这个函数本身不探测 runtime。
 
 角色编辑器的 effort 下拉从 `/api/backends/<id>/models` 的 `efforts` 字段取按模型档位，换模型时重算；角色已存的档位若不在新模型的清单里，保留并标注「该模型不支持」，不静默改写用户配过的值。
 

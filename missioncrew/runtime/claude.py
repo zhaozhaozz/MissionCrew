@@ -942,6 +942,10 @@ class _ClaudeSession:
 class ClaudeRuntimeProvider(RuntimeProvider):
     """把 Claude Code SDK-compatible stream-json 封装为统一 Runtime。"""
 
+    def effort_catalog(self) -> dict[str, list[str]]:
+        # 原生 `--effort` 标志,档位来自 `claude --help`
+        return {"claude_code": ["low", "medium", "high", "xhigh", "max"]}
+
     def __init__(self, fallback: RuntimeProvider,
                  command: Optional[list[str]] = None):
         self.fallback = fallback

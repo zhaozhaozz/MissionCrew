@@ -572,6 +572,12 @@ class _CodexSession:
 class CodexRuntimeProvider(RuntimeProvider):
     """把 Codex app-server 的 thread/turn 能力封装为统一 Runtime。"""
 
+    def effort_catalog(self) -> dict[str, list[str]]:
+        # 原生 turn/start.effort;具体模型未必支持全部档位,越界时 app-server
+        # 自行报错并照常回流到频道
+        return {"codex": ["minimal", "low", "medium", "high",
+                          "xhigh", "max", "ultra"]}
+
     def __init__(self, fallback: RuntimeProvider,
                  command: Optional[list[str]] = None):
         self.fallback = fallback

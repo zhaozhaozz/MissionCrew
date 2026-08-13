@@ -335,11 +335,10 @@ KNOWN_MODELS: dict[str, list[str]] = {
 }
 
 
-# 各适配器的 effort(推理力度)支持:adapter -> 允许的档位(从低到高)。
-# 只有列出的适配器可在角色上配置 effort,注入方式见 DEFAULT_COMMANDS 的 {effort}:
-# - claude:原生 `--effort` 标志(档位来自 `claude --help`);
-# - codex:配置覆盖 `-c model_reasoning_effort=<档位>`(具体模型未必支持全部档位,
-#   越界时 CLI 自行报错,错误照常回流到频道);
+# 内置执行器负责的适配器的 effort(推理力度)支持:adapter -> 档位(低到高)。
+# 只覆盖没有原生 provider 的 adapter;claude/codex/pi 的档位由各自 provider 类
+# 的 effort_catalog() 声明(claude.py/codex.py/pi.py),不在这份表里。
+# 注入方式见 DEFAULT_COMMANDS / ACP_SERVE_COMMANDS 的 {effort} 占位符:
 # - grok:ACP serve 命令上的 `grok agent --reasoning-effort <档位>`。effort 进了
 #   serve 命令,改档位会改变 acp.py 的 client signature,长驻会话按新命令重启,
 #   不会沿用旧档位。这里列的是 grok-4.6 的全量档位,只作兜底:实际档位按模型
@@ -348,12 +347,8 @@ KNOWN_MODELS: dict[str, list[str]] = {
 #   grok-4.5 实测落到 high),不像 codex 那样报错,不要指望错误回流;
 # - mock:仅供测试/演示走通配置链路。
 EFFORT_SUPPORT: dict[str, list[str]] = {
-    "claude_code": ["low", "medium", "high", "xhigh", "max"],
-    "codex": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
     "grok_build": ["low", "medium", "high", "xhigh"],
     "mock": ["low", "medium", "high"],
-    # pi:映射为 thinking level(`--thinking`/set_thinking_level)。
-    "pi": ["off", "minimal", "low", "medium", "high", "xhigh"],
 }
 
 # 全平台档位的规范顺序(低到高)。runtime 自报的档位顺序各家不一(grok 按高到低
@@ -1475,8 +1470,8 @@ def list_runtime_model_catalog(
       mock:返回工具自带清单(测试/演示)
 
     第二个返回值只有 ACP 工具会自报(目前只有 grok):模型 -> 档位(低到高)。
-    为空表示该 runtime 说不出按模型的差异,调用方回退到 adapter 级
-    ``EFFORT_SUPPORT``。查不到一律返回空目录与空档位表。
+    为空表示该 runtime 说不出按模型的差异,调用方回退到 provider 声明的
+    静态档位(effort_support)。查不到一律返回空目录与空档位表。
     """
     adapter = backend.adapter
     if adapter == "mock":

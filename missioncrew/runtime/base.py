@@ -179,9 +179,21 @@ class RuntimeProvider(ABC):
         """查询模型目录，以及每个模型自报的推理力度档位(模型 -> 档位,低到高)。
 
         默认只给目录、档位表为空 = 该 Runtime 说不出按模型的差异,调用方回退到
-        adapter 级静态档位表;能自报的 provider 覆盖本方法。
+        :meth:`effort_support` 的静态档位;能自报的 provider 覆盖本方法。
         """
         return self.list_models(backend, timeout=timeout), {}
+
+    def effort_catalog(self) -> dict[str, list[str]]:
+        """该 provider 声明的推理力度支持(adapter -> 档位,低到高)。
+
+        每个 provider 只声明自己负责的 adapter;空 dict = 全不支持。一个
+        provider 服务多个 adapter 时(内置 CLI/ACP 执行器)返回多条。
+        """
+        return {}
+
+    def effort_support(self, backend: Backend) -> list[str]:
+        """某个 Backend 可配置的静态档位;默认按 adapter 查自家声明。"""
+        return list(self.effort_catalog().get(backend.adapter, []))
 
     def shutdown(self) -> None:
         """释放 provider 持有的所有长驻进程；无状态 provider 无需实现。"""

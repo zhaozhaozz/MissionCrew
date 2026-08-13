@@ -49,6 +49,11 @@ class _BuiltinProvider(RuntimeProvider):
             timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
         return _executors.list_runtime_model_catalog(backend, timeout=timeout)
 
+    def effort_catalog(self) -> dict[str, list[str]]:
+        # 内置执行器服务多个 adapter,静态档位表随执行器放在 adapters 模块
+        return {adapter: list(levels)
+                for adapter, levels in _executors.EFFORT_SUPPORT.items()}
+
     def instances(self, backend: Backend) -> list[RuntimeInstance]:
         instances = _executors.active_execution_instances(backend.id)
         if backend.adapter in _executors.ACP_SERVE_COMMANDS:
@@ -369,18 +374,25 @@ class RuntimeManager:
 
         ``model_efforts`` 是 :meth:`list_model_catalog` 查到的按模型档位表(调用方
         负责缓存,这里不主动探测 runtime)。给定模型在表里自报了档位就以它为准,
-        否则回退到 adapter 级 ``EFFORT_SUPPORT``——模型留空(CLI 默认模型)时也走
-        回退,因为此时并不知道 CLI 最终选哪个模型。
+        否则回退到该 Backend 的 provider 声明的静态档位——模型留空(CLI 默认
+        模型)时也走回退,因为此时并不知道 CLI 最终选哪个模型。
         """
         if model and model_efforts:
             levels = model_efforts.get(model)
             if levels:
                 return list(levels)
-        return list(_executors.EFFORT_SUPPORT.get(backend.adapter, []))
+        return self.provider_for(backend).effort_support(backend)
 
     def effort_catalog(self) -> dict[str, list[str]]:
-        return {adapter: list(options)
-                for adapter, options in _executors.EFFORT_SUPPORT.items()}
+        """全部 provider 声明的静态档位合并(adapter -> 档位,供 /api/traits)。
+
+        原生 provider 的声明覆盖内置执行器的同名 adapter 条目——注册即接管,
+        与 :meth:`provider_for` 的路由规则一致。
+        """
+        catalog = dict(self._builtin.effort_catalog())
+        for provider in self._providers.values():
+            catalog.update(provider.effort_catalog())
+        return catalog
 
     # ---- Runtime 发现、版本与更新也统一收口 ----
     def detect_report(self, with_version: bool = True) -> list[dict]:
