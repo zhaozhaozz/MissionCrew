@@ -1376,57 +1376,25 @@ def _trigger_from_prompt(prompt: str) -> str:
 # claude 的静态型号目录在 clis/claude.py(CLAUDE_MODEL_CATALOG 由顶部导入)。
 
 
-def _parse_codex_models(raw: str) -> list[str]:
-    """`codex debug models --bundled` 输出 JSON,取 visibility=list 的 slug。"""
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-    return [str(m.get("slug", "")) for m in data.get("models", [])
-            if m.get("slug") and m.get("visibility") != "hide"]
-
-
-def _parse_opencode_models(raw: str) -> list[str]:
-    """`opencode models` 每行一个 provider/model id;过滤日志噪声行。"""
-    return [line.strip() for line in raw.splitlines()
-            if line.strip() and "/" in line and " " not in line.strip()]
-
-
 def list_runtime_model_catalog(
         backend: Backend, timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
     """向 runtime 本体查询模型目录，以及每个模型自报的推理力度档位。
 
-    - codex:`codex debug models --bundled`(JSON 目录)
-    - opencode:`opencode models`(行式目录)
-    - ACP 工具(grok/kimi/kiro/qoder/trae):一次性会话,session/new 返回目录
-    - claude:CLI 无枚举命令,返回静态型号目录(别名见 KNOWN_MODELS);
-      mock:返回工具自带清单(测试/演示)
+    各工具自己的枚举方式(枚举子命令、静态目录)写在 clis/ 声明模块的
+    discover_models 回调里;没有回调但声明了 acp_serve 的工具走通用 ACP
+    探测(一次性会话,session/new 返回目录)。两者都无 = 不支持模型枚举。
 
     第二个返回值只有 ACP 工具会自报(目前只有 grok):模型 -> 档位(低到高)。
     为空表示该 runtime 说不出按模型的差异,调用方回退到 provider 声明的
     静态档位(effort_support)。查不到一律返回空目录与空档位表。
     """
-    adapter = backend.adapter
-    if adapter == "mock":
-        return [name for name in backend.models if name], {}
-    if adapter == "claude_code":
-        return list(CLAUDE_MODEL_CATALOG), {}
-    binary = Path(backend.binary_path).name if backend.binary_path else None
-    try:
-        if adapter == "codex":
-            proc = subprocess.run([binary or "codex", "debug", "models", "--bundled"],
-                                  capture_output=True, text=True, timeout=timeout,
-                                  stdin=subprocess.DEVNULL)
-            return _parse_codex_models(proc.stdout), {}
-        if adapter == "opencode":
-            proc = subprocess.run([binary or "opencode", "models"],
-                                  capture_output=True, text=True, timeout=timeout,
-                                  stdin=subprocess.DEVNULL)
-            return _parse_opencode_models(proc.stdout), {}
-    except (OSError, subprocess.TimeoutExpired):
-        return [], {}
-    if adapter in ACP_SERVE_COMMANDS:
-        template = ACP_SERVE_COMMANDS[adapter]
+    spec = _clis.BY_ADAPTER.get(backend.adapter)
+    if spec and spec.discover_models:
+        return spec.discover_models(backend, timeout)
+    # ACP 探测的 serve 命令仍取自注册表(而不是 spec 原件),保证测试或
+    # 运维对 ACP_SERVE_COMMANDS 的覆盖同样作用于模型发现
+    template = ACP_SERVE_COMMANDS.get(backend.adapter)
+    if template:
         cmd = render_command(template, "", backend.model, allowed_dirs=[])
         models, efforts = acp.list_model_catalog(
             cmd, timeout=timeout, runtime_id=backend.id)

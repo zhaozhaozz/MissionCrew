@@ -40,3 +40,22 @@ def test_registry_tables_are_derived_from_specs():
     assert adapters._load_session_meta("grok_build") == {"noReplay": True}
     assert adapters.supports_account_usage("kimi")
     assert not adapters.supports_account_usage("codex")
+
+
+def test_model_discovery_dispatches_to_spec_hooks():
+    """模型发现回调随工具声明;ACP 工具无回调,走通用 session/new 探测。"""
+    from missioncrew.core.models import Backend
+
+    assert {a for a, s in BY_ADAPTER.items() if s.discover_models} == {
+        "claude_code", "codex", "opencode", "mock"}
+    for spec in BY_ADAPTER.values():
+        if spec.acp_serve:
+            assert spec.discover_models is None, spec.adapter
+
+    # claude:静态目录;mock:工具自带清单——都经统一入口分发到声明回调
+    models, efforts = adapters.list_runtime_model_catalog(
+        Backend(id="c", name="c", adapter="claude_code"))
+    assert models == list(adapters.CLAUDE_MODEL_CATALOG) and efforts == {}
+    models, efforts = adapters.list_runtime_model_catalog(
+        Backend(id="m", name="m", adapter="mock", models=["", "small"]))
+    assert models == ["small"] and efforts == {}

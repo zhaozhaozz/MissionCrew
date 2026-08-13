@@ -9,7 +9,7 @@ KNOWN_CLIS 等)。执行行为本身是统一的(CliAdapter/AcpAdapter + acp 协
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -40,3 +40,9 @@ class CliSpec:
     # ACP session/load 的额外 _meta(如 grok 的 noReplay)
     load_session_meta: Optional[dict] = None
     account_usage: bool = False         # usage.py 有对应账户限额探测
+    # 模型发现:(backend, timeout) -> (模型目录, 按模型 effort 档位)。
+    # 工具自己的枚举方式(枚举子命令、静态目录)写在各自声明模块里;
+    # None 且声明了 acp_serve 时走通用 ACP 探测(session/new 返回目录),
+    # 两者都无 = 该工具不支持模型枚举。失败由回调自行兜底返回空。
+    discover_models: Optional[
+        Callable[..., tuple[list[str], dict[str, list[str]]]]] = None

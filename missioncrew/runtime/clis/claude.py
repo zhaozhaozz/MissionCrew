@@ -21,6 +21,11 @@ MODEL_CATALOG = [
     "claude-haiku-4-5",
 ]
 
+def discover_models(backend, timeout: int = 25):
+    """claude CLI 无枚举命令:模型发现返回静态型号目录。"""
+    return list(MODEL_CATALOG), {}
+
+
 SPEC = CliSpec(
     adapter="claude_code",
     binary="claude",
@@ -40,4 +45,5 @@ SPEC = CliSpec(
     models=("", "haiku", "sonnet", "opus", "fable"),
     update={"npm": "@anthropic-ai/claude-code",
             "self_update": ["claude", "update"]},
+    discover_models=discover_models,
 )
