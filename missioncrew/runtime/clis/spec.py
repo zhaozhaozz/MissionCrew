@@ -39,10 +39,31 @@ class CliSpec:
     update: dict = field(default_factory=dict)
     # ACP session/load 的额外 _meta(如 grok 的 noReplay)
     load_session_meta: Optional[dict] = None
-    account_usage: bool = False         # usage.py 有对应账户限额探测
     # 模型发现:(backend, timeout) -> (模型目录, 按模型 effort 档位)。
     # 工具自己的枚举方式(枚举子命令、静态目录)写在各自声明模块里;
     # None 且声明了 acp_serve 时走通用 ACP 探测(session/new 返回目录),
     # 两者都无 = 该工具不支持模型枚举。失败由回调自行兜底返回空。
     discover_models: Optional[
         Callable[..., tuple[list[str], dict[str, list[str]]]]] = None
+
+    # ---- 以下是可选的工具特有行为钩子:声明了才生效,None = 用通用行为。
+    # 钩子体内如需 adapters 的工具函数,用函数内延迟导入避免环形依赖。
+
+    # ACP session/new models 块 -> {模型: 档位};解析厂商私有扩展
+    # (如 grok 的 _meta.reasoningEfforts),协议层不认识这些字段
+    parse_model_efforts: Optional[Callable[..., dict[str, list[str]]]] = None
+    # () -> 可执行路径;不经 PATH 检测的安装方式(pi vendored)
+    locate_binary: Optional[Callable[[], str]] = None
+    # () -> 工具自带模型清单;清单需动态读取时替代静态 models(pi models.json)
+    configured_models: Optional[Callable[[], list[str]]] = None
+    # () -> ("npm"|"self", cmd);覆盖通用升级计划(pi 只写 vendor 目录)
+    update_plan: Optional[Callable[[], tuple]] = None
+    # (command, filesystem) -> command;把统一文件系统权限翻译为原生参数
+    apply_permissions: Optional[Callable[..., list[str]]] = None
+    # (env, external_dirs) -> env;需要配置式多目录授权的工具注入自有配置
+    prepare_env: Optional[Callable[..., dict]] = None
+    # (cmd, session_id, reused) -> (cmd, structured_json);
+    # 各 CLI 的 create/resume 参数语法
+    session_args: Optional[Callable[..., tuple[list[str], bool]]] = None
+    # (backend, timeout) -> RuntimeUsageSnapshot;账户限额探测
+    account_usage_probe: Optional[Callable] = None

@@ -129,10 +129,15 @@ def test_acp_list_models_from_trae_models_block():
 
 
 def test_acp_catalog_reads_per_model_reasoning_efforts():
-    """grok 形态:同一次 session/new 里既有模型目录,也有每个模型的档位。"""
+    """grok 形态:同一次 session/new 里既有模型目录,也有每个模型的档位。
+
+    按模型档位是厂商私有扩展,解析回调来自工具的 clis 声明,协议层只透传。
+    """
     from missioncrew.runtime import acp
+    from missioncrew.runtime.clis import grok
     models, efforts = acp.list_model_catalog(
-        [sys.executable, FAKE, "efforts"], timeout=15)
+        [sys.executable, FAKE, "efforts"], timeout=15,
+        parse_efforts=grok.parse_model_efforts)
 
     assert models == ["fake-4.6", "fake-4.5", "fake-mini"]
     # 协议原样顺序(高到低),规范排序由 adapters 层负责
@@ -141,8 +146,8 @@ def test_acp_catalog_reads_per_model_reasoning_efforts():
     assert "fake-mini" not in efforts   # 明确不支持的模型不入表
 
 
-def test_acp_catalog_empty_efforts_when_runtime_stays_silent():
-    """工具不自报档位时档位表为空 = 调用方回退 adapter 级静态档位。"""
+def test_acp_catalog_empty_efforts_without_parser():
+    """没有解析回调的工具(kimi/trae 等)档位表恒为空 = 回退静态档位。"""
     from missioncrew.runtime import acp
     models, efforts = acp.list_model_catalog(
         [sys.executable, FAKE, "trae"], timeout=15)

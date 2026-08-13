@@ -26,6 +26,20 @@ def discover_models(backend, timeout: int = 25):
     return list(MODEL_CATALOG), {}
 
 
+def apply_permissions(command: list[str], filesystem: str) -> list[str]:
+    """只读文件系统映射为 plan 模式(只分析不落盘)。"""
+    from ..adapters import _remove_command_option
+    if filesystem != "read-only":
+        return command
+    command = _remove_command_option(command, "--permission-mode", has_value=True)
+    return [*command, "--permission-mode", "plan"]
+
+
+def session_args(cmd: list[str], session_id: str,
+                 reused: bool) -> tuple[list[str], bool]:
+    return [*cmd, "--resume" if reused else "--session-id", session_id], False
+
+
 SPEC = CliSpec(
     adapter="claude_code",
     binary="claude",
@@ -46,4 +60,6 @@ SPEC = CliSpec(
     update={"npm": "@anthropic-ai/claude-code",
             "self_update": ["claude", "update"]},
     discover_models=discover_models,
+    apply_permissions=apply_permissions,
+    session_args=session_args,
 )

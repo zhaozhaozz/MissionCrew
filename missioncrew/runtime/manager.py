@@ -71,12 +71,9 @@ class _BuiltinProvider(RuntimeProvider):
 
     def account_usage(self, backend: Backend,
                       timeout: int = 15) -> RuntimeUsageSnapshot:
-        from .usage import probe_grok_usage, probe_kimi_usage
-        if backend.adapter == "kimi":
-            return probe_kimi_usage(backend, timeout)
-        if backend.adapter == "grok_build":
-            return probe_grok_usage(
-                backend, [backend.binary_path or "grok"], timeout)
+        probe = _executors.account_usage_probe(backend.adapter)
+        if probe is not None:
+            return probe(backend, timeout)
         return super().account_usage(backend, timeout)
 
 

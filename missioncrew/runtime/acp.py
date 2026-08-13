@@ -980,54 +980,21 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                 live.client.end_turn()
 
 
-def _parse_model_efforts(block: object) -> dict[str, list[str]]:
-    """从 availableModels 解析每个模型自报的推理力度档位。
-
-    grok 在每个模型的 `_meta` 里给出 `supportsReasoningEffort` 与
-    `reasoningEfforts:[{value|id, label, ...}]`;只有显式声明支持的模型才入表,
-    没声明的模型不入表 = 调用方回退到 adapter 级静态档位。档位顺序按各自
-    协议原样返回,规范化排序由上层 adapters 统一负责。
-    """
-    if not isinstance(block, list):
-        return {}
-    efforts: dict[str, list[str]] = {}
-    for item in block:
-        if not isinstance(item, dict):
-            continue
-        model_id = str(item.get("modelId") or item.get("model_id")
-                       or item.get("id") or item.get("value") or "")
-        meta = item.get("_meta")
-        if not model_id or not isinstance(meta, dict):
-            continue
-        supports = meta.get("supportsReasoningEffort",
-                            meta.get("supports_reasoning_effort"))
-        levels_raw = meta.get("reasoningEfforts") or meta.get("reasoning_efforts")
-        if supports is False or not isinstance(levels_raw, list):
-            continue
-        levels = []
-        for level in levels_raw:
-            value = (str(level.get("value") or level.get("id") or "")
-                     if isinstance(level, dict) else str(level))
-            if value and value not in levels:
-                levels.append(value)
-        if levels:
-            efforts[model_id] = levels
-    return efforts
-
-
 def list_model_catalog(
         cmd: list[str], env: Optional[dict] = None, timeout: int = 30,
-        runtime_id: str = "") -> tuple[list[str], dict[str, list[str]]]:
+        runtime_id: str = "",
+        parse_efforts=None) -> tuple[list[str], dict[str, list[str]]]:
     """一次性会话同时取回模型目录与每个模型支持的推理力度。
 
     模型目录兼容两种形态:kimi 等返回 configOptions(category=model 的 select
     选项);部分实现返回 models 块——trae 用 {availableModels:[{modelId,...}]}
     (对齐 Multica parseACPSessionNewModels,兼容 snake_case 与旧的
-    {available:[...]} 及裸数组)。推理力度只有 availableModels 形态会自报,
-    因此走 models 块解析;查不到返回空目录与空档位表。
+    {available:[...]} 及裸数组)。查不到返回空目录与空档位表。
 
-    两份信息来自同一个 session/new 响应,合并在一次探测里取回,避免为了档位
-    再启一个 CLI 进程。
+    按模型的推理力度是厂商私有扩展,不属于 ACP 标准:协议层只把 models 块
+    透传给 ``parse_efforts`` 回调(来自该工具的 clis 声明,如 grok 解析
+    `_meta.reasoningEfforts`);不传回调 = 档位表恒为空。两份信息来自同一个
+    session/new 响应,合并在一次探测里取回,避免为了档位再启一个 CLI 进程。
     """
     import tempfile
     workdir = tempfile.mkdtemp(prefix="mc-acp-models-")
@@ -1059,7 +1026,8 @@ def list_model_catalog(
             models = [str(m.get("modelId") or m.get("model_id") or m.get("id")
                           or m.get("value") or "")
                       if isinstance(m, dict) else str(m) for m in block]
-        return [m for m in models if m], _parse_model_efforts(block)
+        return ([m for m in models if m],
+                parse_efforts(block) if parse_efforts else {})
     except AcpError:
         return [], {}
     finally:

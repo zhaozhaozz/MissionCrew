@@ -32,7 +32,6 @@ from . import acp
 from . import clis as _clis
 from .base import RuntimeInstance, host_isolated_environ
 from .clis.claude import MODEL_CATALOG as CLAUDE_MODEL_CATALOG
-from ..core.config import pi_vendor_bin, pi_vendor_prefix
 from ..core.models import Backend, ExecutionConfig, RunResult
 
 _CLI_SESSION_LOCKS: dict[str, threading.Lock] = {}
@@ -368,12 +367,12 @@ def update_plan(backend: Backend):
     避免自更新器把新版本装到别处、npm 里的旧副本继续占着 PATH;
     非 npm 安装(原生安装器/独立脚本)用工具自带的更新命令。
     """
+    cli_spec = _clis.BY_ADAPTER.get(backend.adapter)
+    if cli_spec and cli_spec.update_plan:
+        # 安装方式特殊的工具(pi vendored)自带升级计划
+        return cli_spec.update_plan()
     spec = UPDATE_SPECS.get(backend.adapter) or {}
     pkg = spec.get("npm")
-    if backend.adapter == "pi":
-        # vendored 安装:更新只写平台自有 vendor 目录,绝不 -g 污染全局。
-        return ("npm", ["npm", "install", "--prefix", str(pi_vendor_prefix()),
-                        "--no-fund", "--no-audit", f"{pkg}@latest"])
     if pkg and _npm_managed(backend.binary_path):
         return ("npm", ["npm", "install", "-g", f"{pkg}@latest"])
     if spec.get("self_update"):
@@ -416,13 +415,10 @@ def detect_report(with_version: bool = True) -> list[dict]:
     """
     report = []
     for binary, adapter, _caps, _tier, _cost in KNOWN_CLIS:
-        if adapter == "pi":
-            # pi 只用平台 vendored 安装(MC_HOME/pi/vendor),不检测系统级 pi。
-            vendored = pi_vendor_bin()
-            path = str(vendored) if vendored.is_file() else ""
-        else:
-            path = shutil.which(binary) or ""
         spec = _clis.BY_ADAPTER[adapter]
+        # 非 PATH 检测的安装方式(pi vendored)由声明钩子定位
+        path = (spec.locate_binary() if spec.locate_binary
+                else shutil.which(binary) or "")
         report.append({
             "binary": binary, "adapter": adapter,
             "id": spec.detect_id or adapter,
@@ -444,12 +440,10 @@ def detect_backends(report: Optional[list[dict]] = None) -> list[Backend]:
         if not item["installed"]:
             continue
         caps, tier, cost = by_adapter[item["adapter"]]
-        if item["adapter"] == "pi":
-            # pi 的执行单元与平台自有 models.json 同源(provider/model)。
-            from .pi import read_pi_models
-            models = read_pi_models()
-        else:
-            models = list(KNOWN_MODELS.get(item["adapter"], []))
+        spec = _clis.BY_ADAPTER[item["adapter"]]
+        # 工具自带清单需动态读取时(pi 与平台 models.json 同源)走声明钩子
+        models = (spec.configured_models() if spec.configured_models
+                  else list(KNOWN_MODELS.get(item["adapter"], [])))
         found.append(Backend(
             id=item["id"], name=f"{item['binary']} (本地)", adapter=item["adapter"],
             model="", tier=tier, capabilities=caps, cost_per_run=cost,
@@ -542,18 +536,9 @@ def _apply_permission_policy(command: list[str], adapter_name: str,
                 ("--yolo", False), ("--trust-all-tools", False)):
             result = _remove_command_option(result, flag, has_value=has_value)
 
-    if adapter_name == "codex" and "--sandbox" in result:
-        index = result.index("--sandbox") + 1
-        if index < len(result):
-            result[index] = {
-                "read-only": "read-only",
-                "workspace-write": "workspace-write",
-                "full-access": "danger-full-access",
-            }[permissions.filesystem]
-    elif (permissions.filesystem == "read-only"
-          and adapter_name in {"claude_code", "codebuddy"}):
-        result = _remove_command_option(result, "--permission-mode", has_value=True)
-        result.extend(["--permission-mode", "plan"])
+    spec = _clis.BY_ADAPTER.get(adapter_name)
+    if spec and spec.apply_permissions:
+        result = spec.apply_permissions(result, permissions.filesystem)
     return result
 
 
@@ -590,45 +575,10 @@ def _runtime_env(cfg: ExecutionConfig, adapter_name: str) -> dict:
         policy.skill_paths, ensure_ascii=False))
     env.setdefault("MISSIONCREW_RUNTIME_PERMISSIONS", json.dumps(
         asdict(policy.permissions), ensure_ascii=False))
-    if adapter_name != "opencode":
-        return env
-
-    config = {}
-    try:
-        parsed = json.loads(env.get("OPENCODE_CONFIG_CONTENT", "{}"))
-        if isinstance(parsed, dict):
-            config = parsed
-    except json.JSONDecodeError:
-        # 无效的既有 inline 配置本就无法被 OpenCode 使用；本次生成最小有效配置。
-        pass
-    permission = config.get("permission")
-    if isinstance(permission, dict):
-        permission = dict(permission)
-    elif isinstance(permission, str):
-        permission = {"*": permission}
-    else:
-        permission = {}
-
-    # MissionCrew 项目资源是受信任的读写工作区。OpenCode 自带的 *.env
-    # 读取询问规则会覆盖普通 read=allow；在无头模式下询问会被自动拒绝，
-    # 因此必须为已授权资源显式补上 read/edit 规则。外部路径仍由下方的
-    # external_directory 精确白名单约束。
-    permission.setdefault("read", "allow")
-    permission.setdefault("edit", "allow")
-
-    external = _additional_allowed_dirs(workdir, cfg.allowed_dirs)
-    current = permission.get("external_directory")
-    if isinstance(current, dict):
-        rules = dict(current)
-    elif isinstance(current, str):
-        rules = {"*": current}
-    else:
-        rules = {}
-    for path in external:
-        rules[f"{path.rstrip('/')}/**"] = "allow"
-    permission["external_directory"] = rules
-    config["permission"] = permission
-    env["OPENCODE_CONFIG_CONTENT"] = json.dumps(config, ensure_ascii=False)
+    spec = _clis.BY_ADAPTER.get(adapter_name)
+    if spec and spec.prepare_env:
+        env = spec.prepare_env(
+            env, _additional_allowed_dirs(workdir, cfg.allowed_dirs))
     return env
 
 
@@ -728,9 +678,14 @@ def _load_session_meta(adapter_name: str) -> Optional[dict]:
 
 
 def supports_account_usage(adapter: str) -> bool:
-    """该 adapter 是否声明了账户限额探测(usage.py 有对应 probe)。"""
+    """该 adapter 是否声明了账户限额探测钩子。"""
+    return account_usage_probe(adapter) is not None
+
+
+def account_usage_probe(adapter: str):
+    """工具声明的账户限额探测回调;None = 不支持。"""
     spec = _clis.BY_ADAPTER.get(adapter)
-    return bool(spec and spec.account_usage)
+    return spec.account_usage_probe if spec else None
 
 
 class AcpAdapter:
@@ -1122,29 +1077,10 @@ def _prepare_cli_session(adapter_name: str,
 
 def _apply_cli_session_args(adapter_name: str, cmd: list[str], session_id: str,
                             reused: bool) -> tuple[list[str], bool]:
-    """把各 CLI 不同的 create/resume 参数翻译到已渲染命令。"""
-    if adapter_name == "claude_code":
-        return [*cmd, "--resume" if reused else "--session-id", session_id], False
-    if adapter_name == "codebuddy":
-        return [*cmd, "--resume" if reused else "--session-id", session_id], False
-    if adapter_name == "copilot":
-        return [*cmd, "--session-id", session_id], False
-    if adapter_name == "codex":
-        if not reused:
-            return cmd, False
-        # resume 子命令不接受 exec 的局部参数；把安全/目录/模型选项放到
-        # codex 全局参数区，再调用 `exec resume ID PROMPT`。
-        return [cmd[0], *cmd[2:-1], "exec", "resume", session_id, cmd[-1]], False
-    if adapter_name == "opencode":
-        args = ["--format", "json", "--thinking"]
-        if reused:
-            args += ["--session", session_id]
-        return [*cmd[:-1], *args, cmd[-1]], True
-    if adapter_name == "cursor":
-        args = ["--output-format", "json"]
-        if reused:
-            args += ["--resume", session_id]
-        return [*cmd, *args], True
+    """把各 CLI 不同的 create/resume 参数翻译到已渲染命令(语法在各声明模块)。"""
+    spec = _clis.BY_ADAPTER.get(adapter_name)
+    if spec and spec.session_args:
+        return spec.session_args(cmd, session_id, reused)
     return cmd, False
 
 
@@ -1397,7 +1333,10 @@ def list_runtime_model_catalog(
     if template:
         cmd = render_command(template, "", backend.model, allowed_dirs=[])
         models, efforts = acp.list_model_catalog(
-            cmd, timeout=timeout, runtime_id=backend.id)
+            cmd, timeout=timeout, runtime_id=backend.id,
+            # 厂商私有的按模型档位扩展(grok 的 _meta.reasoningEfforts)
+            # 由该工具的声明钩子解析,协议层只透传 models 块
+            parse_efforts=spec.parse_model_efforts if spec else None)
         return models, {model: sort_efforts(levels)
                         for model, levels in efforts.items()}
     return [], {}

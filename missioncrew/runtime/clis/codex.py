@@ -32,6 +32,28 @@ def discover_models(backend, timeout: int = 25):
     return _parse_models(proc.stdout), {}
 
 
+def apply_permissions(command: list[str], filesystem: str) -> list[str]:
+    """统一文件系统权限映射到 --sandbox 档位。"""
+    if "--sandbox" not in command:
+        return command
+    result = list(command)
+    index = result.index("--sandbox") + 1
+    if index < len(result):
+        result[index] = {"read-only": "read-only",
+                         "workspace-write": "workspace-write",
+                         "full-access": "danger-full-access"}[filesystem]
+    return result
+
+
+def session_args(cmd: list[str], session_id: str,
+                 reused: bool) -> tuple[list[str], bool]:
+    if not reused:
+        return cmd, False
+    # resume 子命令不接受 exec 的局部参数;把安全/目录/模型选项放到
+    # codex 全局参数区,再调用 `exec resume ID PROMPT`。
+    return [cmd[0], *cmd[2:-1], "exec", "resume", session_id, cmd[-1]], False
+
+
 SPEC = CliSpec(
     adapter="codex",
     binary="codex",
@@ -44,4 +66,6 @@ SPEC = CliSpec(
     session_id="captured",
     update={"npm": "@openai/codex"},
     discover_models=discover_models,
+    apply_permissions=apply_permissions,
+    session_args=session_args,
 )

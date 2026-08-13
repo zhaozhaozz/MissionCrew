@@ -5,6 +5,14 @@ Cursor print 模式需 --force 才会实际落盘;该 CLI 没有多根目录参�
 """
 from .spec import CliSpec
 
+def session_args(cmd: list[str], session_id: str,
+                 reused: bool) -> tuple[list[str], bool]:
+    args = ["--output-format", "json"]
+    if reused:
+        args += ["--resume", session_id]
+    return [*cmd, *args], True
+
+
 SPEC = CliSpec(
     adapter="cursor",
     binary="cursor-agent",
@@ -14,4 +22,5 @@ SPEC = CliSpec(
     command=("cursor-agent", "-p", "--force", "{prompt}", "--model", "{model}"),
     session_id="captured",
     update={"self_update": ["cursor-agent", "update"]},
+    session_args=session_args,
 )

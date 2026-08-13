@@ -40,6 +40,12 @@ def test_registry_tables_are_derived_from_specs():
     assert adapters._load_session_meta("grok_build") == {"noReplay": True}
     assert adapters.supports_account_usage("kimi")
     assert not adapters.supports_account_usage("codex")
+    # 厂商私有的按模型档位扩展只有 grok 声明解析回调
+    assert {a for a, s in BY_ADAPTER.items() if s.parse_model_efforts} == {
+        "grok_build"}
+    # 会话恢复参数语法随声明走,session_id 与钩子必须成对出现
+    for spec in BY_ADAPTER.values():
+        assert bool(spec.session_id) == bool(spec.session_args), spec.adapter
 
 
 def test_model_discovery_dispatches_to_spec_hooks():

@@ -161,6 +161,8 @@ pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平�
 
 每个工具的静态声明（检测可执行名、命令模板、能力、模型清单、effort 兜底档位、升级渠道、ACP 特例）按工具拆在 `runtime/clis/` 子包里，一个工具一个模块（`clis/grok.py`、`clis/kimi.py`…）；`adapters.py` 把声明汇总成 `DEFAULT_COMMANDS`、`ACP_SERVE_COMMANDS`、`KNOWN_CLIS`、`KNOWN_MODELS`、`EFFORT_SUPPORT`、`UPDATE_SPECS` 这些注册表。新增工具时加一个声明模块并追加进 `clis.SPECS` 即可，不需要动执行器；执行行为仍由统一的 `CliAdapter`/`AcpAdapter` 承担，有原生 provider 的工具（claude/codex/pi）执行与 effort 档位在各自 provider 类里。
 
+工具特有行为通过 `CliSpec` 的可选钩子随声明走，`adapters.py` 只做分发：`session_args`（各 CLI 的 create/resume 参数语法）、`apply_permissions`（统一文件系统权限到原生参数的翻译，如 codex 的 `--sandbox` 档位、claude/codebuddy 的只读→plan 模式）、`prepare_env`（opencode 的 `OPENCODE_CONFIG_CONTENT` 目录授权注入）、`parse_model_efforts`（grok 的 `_meta.reasoningEfforts` 厂商扩展解析，ACP 协议层只透传 models 块）、`locate_binary`/`configured_models`/`update_plan`（pi 的 vendored 安装三件套）、`account_usage_probe`（grok/kimi 的账户限额探测入口，实现仍在 `usage.py`）。仍留在执行器层的工具相关代码只剩流式输出解析（claude stream-json、codex stderr 进度、opencode/cursor 结构化输出提取）——它们与 `CliAdapter` 的读循环耦合，需要设计独立的解析器接口后再拆。
+
 模板占位符(`render_command`):
 
 - `{prompt}` — 装配好的完整提示词(角色定位、项目上下文、JSON 格式的最近对话与触发消息、按需读取的频道历史文件路径);
