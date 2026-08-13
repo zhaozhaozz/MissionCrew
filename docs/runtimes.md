@@ -157,7 +157,9 @@ pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平�
 
 ### 打印模式 CLI(`CliAdapter`)
 
-未实现原生双向 provider 的工具仍使用打印模式：一次执行 = 一个子进程，按内置命令模板渲染参数，在频道工作目录内启动，收集 stdout/stderr，以退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板统一在 `DEFAULT_COMMANDS` 中定义，不接受 Backend 数据覆盖。
+未实现原生双向 provider 的工具仍使用打印模式：一次执行 = 一个子进程，按内置命令模板渲染参数，在频道工作目录内启动，收集 stdout/stderr，以退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板统一经 `DEFAULT_COMMANDS` 使用，不接受 Backend 数据覆盖。
+
+每个工具的静态声明（检测可执行名、命令模板、能力、模型清单、effort 兜底档位、升级渠道、ACP 特例）按工具拆在 `runtime/clis/` 子包里，一个工具一个模块（`clis/grok.py`、`clis/kimi.py`…）；`adapters.py` 把声明汇总成 `DEFAULT_COMMANDS`、`ACP_SERVE_COMMANDS`、`KNOWN_CLIS`、`KNOWN_MODELS`、`EFFORT_SUPPORT`、`UPDATE_SPECS` 这些注册表。新增工具时加一个声明模块并追加进 `clis.SPECS` 即可，不需要动执行器；执行行为仍由统一的 `CliAdapter`/`AcpAdapter` 承担，有原生 provider 的工具（claude/codex/pi）执行与 effort 档位在各自 provider 类里。
 
 模板占位符(`render_command`):
 

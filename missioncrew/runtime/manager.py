@@ -38,7 +38,7 @@ class _BuiltinProvider(RuntimeProvider):
             session_reuse=_executors.supports_native_session(backend),
             structured_events=is_acp,
             permission_control=is_acp,
-            account_usage=backend.adapter in {"kimi", "grok_build"},
+            account_usage=_executors.supports_account_usage(backend.adapter),
         )
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:

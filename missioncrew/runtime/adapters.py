@@ -7,6 +7,9 @@
   (命令行直接传 prompt,{prompt}/{model} 占位符渲染)
 - ACP stdio 协议:grok、kimi、kiro、qoder、trae(CLI 作为 JSON-RPC 服务挂在
   stdio 上,见 acp.py)
+
+各工具的静态声明(检测、命令模板、能力、模型、升级渠道)按工具拆在 clis/
+子包里,一个工具一个模块;本模块把声明汇总成下方的注册表并提供统一执行器。
 """
 from __future__ import annotations
 
@@ -26,7 +29,9 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from . import acp
+from . import clis as _clis
 from .base import RuntimeInstance, host_isolated_environ
+from .clis.claude import MODEL_CATALOG as CLAUDE_MODEL_CATALOG
 from ..core.config import pi_vendor_bin, pi_vendor_prefix
 from ..core.models import Backend, ExecutionConfig, RunResult
 
@@ -52,8 +57,9 @@ _ACTIVE_PROCESSES: dict[int, _ActiveProcess] = {}
 _ACTIVE_PROCESSES_GUARD = threading.Lock()
 
 # 能够可靠恢复原生会话的打印模式 Runtime(pi 走原生 RPC provider,不在此列)。
-_FIXED_ID_SESSIONS = {"claude_code", "copilot", "codebuddy"}
-_CAPTURED_ID_SESSIONS = {"codex", "opencode", "cursor"}
+_FIXED_ID_SESSIONS = {s.adapter for s in _clis.SPECS if s.session_id == "fixed"}
+_CAPTURED_ID_SESSIONS = {s.adapter for s in _clis.SPECS
+                         if s.session_id == "captured"}
 _CLI_SESSION_ADAPTERS = _FIXED_ID_SESSIONS | _CAPTURED_ID_SESSIONS
 
 
@@ -268,88 +274,33 @@ def supports_native_session(backend: Backend) -> bool:
     return (backend.adapter in _CLI_SESSION_ADAPTERS
             or backend.adapter in ACP_SERVE_COMMANDS)
 
-# 各适配器的默认命令模板；除 prompt/model/effort 外，workdir 与
-# allowed_dirs 由平台按本次项目动态渲染。
-DEFAULT_COMMANDS = {
-    # claude 用 stream-json 输出:逐事件拿到思考/工具调用/文本,实时上报
-    # 运行过程;最终回复取 result 事件(CliAdapter 检测到 stream-json 才解析)
-    "claude_code": ["claude", "-p", "{prompt}", "--model", "{model}",
-                    "--effort", "{effort}",
-                    "--output-format", "stream-json", "--verbose",
-                    "--permission-mode", "acceptEdits", "--add-dir", "{allowed_dirs}"],
-    "codex": ["codex", "exec", "--sandbox", "workspace-write", "--add-dir",
-              "{allowed_dirs}", "-m", "{model}",
-              "-c", "model_reasoning_effort={effort}", "{prompt}"],
-    "opencode": ["opencode", "run", "--dir", "{workdir}",
-                 "--model", "{model}", "{prompt}"],
-    "copilot": ["copilot", "-p", "{prompt}", "--model", "{model}",
-                "--allow-all-tools", "--add-dir={allowed_dirs}"],
-    # Cursor print 模式需 --force 才会实际落盘；该 CLI 没有多根目录参数，
-    # 额外资源通过绝对路径上下文访问，进程本身不设文件系统沙箱。
-    "cursor": ["cursor-agent", "-p", "--force", "{prompt}", "--model", "{model}"],
-    "codebuddy": ["codebuddy", "-p", "{prompt}", "--model", "{model}",
-                  "--permission-mode", "acceptEdits", "--add-dir", "{allowed_dirs}"],
-}
+# ---- 以下注册表全部由 clis/ 子包的按工具声明汇总而来 ----
+# 工具级注释(命令模板取舍、升级渠道限制、effort 兜底口径等)见各声明模块。
 
-# ACP 协议工具的固定 serve 命令(ACP 没有 {prompt} 占位符，prompt 走协议)。
-ACP_SERVE_COMMANDS = {
-    # Grok 的 print 模式按无换行 token flush，通用逐行读取器无法实时消费；
-    # 原生 ACP 同时提供正文、思考、工具、权限和可复用 session 生命周期。
-    "grok_build": ["grok", "--cwd", "{workdir}", "agent",
-                   "--reasoning-effort", "{effort}",
-                   "--always-approve", "--no-leader", "stdio"],
-    "kimi": ["kimi", "--add-dir", "{allowed_dirs}", "acp"],
-    "kiro": ["kiro-cli", "acp", "--trust-all-tools"],
-    "qoder": ["qodercli", "--add-dir", "{allowed_dirs}", "--yolo", "--acp"],
-    "trae": ["traecli", "--add-dir", "{allowed_dirs}",
-             "acp", "serve", "--yolo"],
-}
+# 各适配器的默认命令模板;除 prompt/model/effort 外,workdir 与
+# allowed_dirs 由平台按本次项目动态渲染。
+DEFAULT_COMMANDS: dict[str, list[str]] = {
+    s.adapter: list(s.command) for s in _clis.SPECS if s.command}
+
+# ACP 协议工具的固定 serve 命令(ACP 没有 {prompt} 占位符,prompt 走协议)。
+ACP_SERVE_COMMANDS: dict[str, list[str]] = {
+    s.adapter: list(s.acp_serve) for s in _clis.SPECS if s.acp_serve}
 
 # 本地 CLI 检测表:binary -> (adapter, 默认能力, 默认档位, 成本估算)
-_CLAUDE_CAPS = ["coding", "reasoning", "review", "security", "multimodal",
-                "web_search", "sub_agents"]
-KNOWN_CLIS = [
-    ("claude", "claude_code", _CLAUDE_CAPS, "standard", 5.0),
-    ("codex", "codex", ["coding", "reasoning", "review", "security"], "standard", 5.0),
-    ("grok", "grok_build", ["coding", "reasoning", "review", "web_search", "sub_agents"],
-     "standard", 5.0),
-    ("opencode", "opencode", ["coding", "reasoning"], "standard", 4.0),
-    ("copilot", "copilot", ["coding"], "economy", 2.0),
-    ("cursor-agent", "cursor", ["coding", "reasoning"], "standard", 4.0),
-    ("codebuddy", "codebuddy", ["coding"], "economy", 2.0),
-    ("pi", "pi", ["coding", "reasoning"], "standard", 4.0),
-    # ACP stdio 协议工具
-    ("kimi", "kimi", ["coding", "reasoning"], "standard", 4.0),
-    ("kiro-cli", "kiro", ["coding", "reasoning"], "standard", 4.0),
-    ("qodercli", "qoder", ["coding", "reasoning"], "standard", 4.0),
-    ("traecli", "trae", ["coding", "reasoning"], "standard", 4.0),
-]
-
+KNOWN_CLIS: list[tuple] = [
+    (s.binary, s.adapter, list(s.capabilities), s.tier, s.cost_per_run)
+    for s in _clis.SPECS if s.binary]
 
 # 各工具已知的模型清单(检测时自动填充,不可编辑);"" = CLI 默认模型,排在最前。
 # 只记模型名:平台不跟踪单个模型的档位与成本,配额一律按工具级 cost_per_run 扣减。
-# claude 无枚举命令,这里只列稳定别名——别名由 CLI 解析到当前最新版,不会过期;
-# 带版本号的具体型号走 CLAUDE_MODEL_CATALOG,在角色下拉的「来自 runtime」组里。
 KNOWN_MODELS: dict[str, list[str]] = {
-    "claude_code": ["", "haiku", "sonnet", "opus", "fable"],
-}
+    s.adapter: list(s.models) for s in _clis.SPECS if s.models}
 
-
-# 内置执行器负责的适配器的 effort(推理力度)支持:adapter -> 档位(低到高)。
+# 内置执行器负责的适配器的 effort(推理力度)静态兜底:adapter -> 档位(低到高)。
 # 只覆盖没有原生 provider 的 adapter;claude/codex/pi 的档位由各自 provider 类
-# 的 effort_catalog() 声明(claude.py/codex.py/pi.py),不在这份表里。
-# 注入方式见 DEFAULT_COMMANDS / ACP_SERVE_COMMANDS 的 {effort} 占位符:
-# - grok:ACP serve 命令上的 `grok agent --reasoning-effort <档位>`。effort 进了
-#   serve 命令,改档位会改变 acp.py 的 client signature,长驻会话按新命令重启,
-#   不会沿用旧档位。这里列的是 grok-4.6 的全量档位,只作兜底:实际档位按模型
-#   动态发现(list_runtime_model_catalog),因为低档模型只认子集(grok-4.5 无
-#   xhigh),而 `grok agent` 不校验档位——越界静默回落到模型默认(xhigh +
-#   grok-4.5 实测落到 high),不像 codex 那样报错,不要指望错误回流;
-# - mock:仅供测试/演示走通配置链路。
+# 的 effort_catalog() 声明。注入方式见命令模板的 {effort} 占位符。
 EFFORT_SUPPORT: dict[str, list[str]] = {
-    "grok_build": ["low", "medium", "high", "xhigh"],
-    "mock": ["low", "medium", "high"],
-}
+    s.adapter: list(s.efforts) for s in _clis.SPECS if s.efforts}
 
 # 全平台档位的规范顺序(低到高)。runtime 自报的档位顺序各家不一(grok 按高到低
 # 返回),统一按这里排序后再进下拉,保证同一个下拉里方向一致;没见过的档位按
@@ -366,23 +317,9 @@ def sort_efforts(levels: list[str]) -> list[str]:
 # 各工具的更新规格:
 #   self_update — 工具自带的更新子命令(优先使用,自更新器了解自己的安装方式);
 #   npm         — npm 包名,用于查询最新版本;仅当二进制确实由 npm 管理时才允许
-#                 `npm install -g` 更新(copilot 常由 VS Code 扩展托管,不能乱动)。
-# kimi 的 PyPI 同名包与其独立安装版版本序列对不上(疑似不同产品),
-# 因此 kimi/trae 只提供自更新按钮,不做最新版比对。
+#                 `npm install -g` 更新。各工具的渠道限制见其声明模块。
 UPDATE_SPECS: dict[str, dict] = {
-    # pi 是平台 vendored 安装:版本比对走 npm registry,更新在 update_plan
-    # 里按 vendor 前缀特判(npm --prefix),不允许 -g 全局安装。
-    "pi": {"npm": "@mariozechner/pi-coding-agent"},
-    "claude_code": {"npm": "@anthropic-ai/claude-code", "self_update": ["claude", "update"]},
-    "codex":       {"npm": "@openai/codex"},
-    "grok_build":  {"self_update": ["grok", "update"]},
-    "opencode":    {"npm": "opencode-ai", "self_update": ["opencode", "upgrade"]},
-    "copilot":     {"npm": "@github/copilot"},
-    "cursor":      {"self_update": ["cursor-agent", "update"]},
-    "codebuddy":   {"npm": "@tencent-ai/codebuddy-code"},
-    "kimi":        {"self_update": ["kimi", "upgrade"]},
-    "trae":        {"self_update": ["traecli", "update"]},
-}
+    s.adapter: dict(s.update) for s in _clis.SPECS if s.update}
 
 _VERSION_RE = re.compile(r"v?\d+\.\d+[\.\d]*")
 
@@ -485,9 +422,10 @@ def detect_report(with_version: bool = True) -> list[dict]:
             path = str(vendored) if vendored.is_file() else ""
         else:
             path = shutil.which(binary) or ""
+        spec = _clis.BY_ADAPTER[adapter]
         report.append({
             "binary": binary, "adapter": adapter,
-            "id": {"claude_code": "claude", "grok_build": "grok"}.get(adapter, adapter),
+            "id": spec.detect_id or adapter,
             "installed": bool(path), "path": path,
             "version": _cli_version(path) if path and with_version else "",
         })
@@ -783,6 +721,18 @@ class MockAdapter:
         return RunResult(True, reply[:120], output=reply)
 
 
+def _load_session_meta(adapter_name: str) -> Optional[dict]:
+    """工具声明的 session/load 额外 _meta(如 grok 的 noReplay)。"""
+    spec = _clis.BY_ADAPTER.get(adapter_name)
+    return dict(spec.load_session_meta) if spec and spec.load_session_meta else None
+
+
+def supports_account_usage(adapter: str) -> bool:
+    """该 adapter 是否声明了账户限额探测(usage.py 有对应 probe)。"""
+    spec = _clis.BY_ADAPTER.get(adapter)
+    return bool(spec and spec.account_usage)
+
+
 class AcpAdapter:
     """ACP stdio 协议适配器:CLI 作为 JSON-RPC 服务运行,prompt 走协议传递。"""
 
@@ -828,9 +778,7 @@ class AcpAdapter:
             task_id=cfg.task_id, stage_name=cfg.stage_name,
             project_id=cfg.project_id, role_id=cfg.role_id,
             cancelled=cfg.cancelled,
-            load_session_meta=(
-                {"noReplay": True}
-                if self.adapter_name == "grok_build" else None),
+            load_session_meta=_load_session_meta(self.adapter_name),
             trigger_message_id=cfg.trigger_message_id,
         )
         try:
@@ -1425,22 +1373,7 @@ def _trigger_from_prompt(prompt: str) -> str:
 
 
 # ---- 按 runtime 动态发现可用模型(仿 Multica 的 per-provider ListModels) ----
-
-# claude CLI 无模型枚举命令;此目录对齐 Multica 的 claudeStaticModels,列出
-# `claude --model` 接受的具体型号(按系列与新旧排列)。稳定别名不在这里——它们
-# 是 KNOWN_MODELS 里的工具自带清单,两份合并后才是角色可选的全集。
-CLAUDE_MODEL_CATALOG = [
-    "claude-fable-5",
-    "claude-opus-5",
-    "claude-opus-4-8",
-    "claude-opus-4-7",
-    "claude-opus-4-6",
-    "claude-opus-4-5",
-    "claude-sonnet-5",
-    "claude-sonnet-4-6",
-    "claude-sonnet-4-5",
-    "claude-haiku-4-5",
-]
+# claude 的静态型号目录在 clis/claude.py(CLAUDE_MODEL_CATALOG 由顶部导入)。
 
 
 def _parse_codex_models(raw: str) -> list[str]:
