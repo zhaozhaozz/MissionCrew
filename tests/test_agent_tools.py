@@ -580,6 +580,16 @@ def test_agent_tool_task_update_uses_optimistic_version_and_run_scope(seeded):
     assert "lables" in typo.json()["error"]["message"]
 
 
+def test_agent_tool_cli_unknown_command_hints_documents_dir(capsys):
+    with pytest.raises(SystemExit) as excinfo:
+        agent_tool.main(["read-document", "--path", "reports/x.md"])
+    assert excinfo.value.code == 2
+    err = capsys.readouterr().err
+    assert "未知子命令: read-document" in err
+    assert "$MISSIONCREW_DOCUMENTS_DIR" in err
+    assert "publish-file" in err          # 同时列出可用子命令
+
+
 def test_agent_tool_cli_encodes_file_and_preserves_structured_error(
         tmp_path, monkeypatch, capsys):
     source = tmp_path / "evidence.bin"

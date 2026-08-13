@@ -89,6 +89,24 @@ def _request_payload(action: str, arguments: dict,
     return payload
 
 
+_KNOWN_COMMANDS = ("actions", "call", "publish-message", "publish-file")
+
+
+def _hint_unknown_command(argv: list[str]) -> None:
+    """在 argparse 的 invalid choice 报错前先打印修正提示。
+
+    模型最常见的误用是发明 read-document 之类的读文档子命令;读取文档
+    本来就不经过本工具,提示直接读文档库目录,让模型当场改对。"""
+    command = next((arg for arg in argv if not arg.startswith("-")), "")
+    if not command or command in _KNOWN_COMMANDS:
+        return
+    print(
+        f"未知子命令: {command}。可用子命令: {', '.join(_KNOWN_COMMANDS)}。\n"
+        "读取项目文档不需要本工具: 直接读取 "
+        "$MISSIONCREW_DOCUMENTS_DIR/<文档库相对路径>。",
+        file=sys.stderr)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="missioncrew-tool",
@@ -127,6 +145,8 @@ def _local_error(message: str) -> dict:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    _hint_unknown_command(argv)
     parser = _build_parser()
     args = parser.parse_args(argv)
     try:

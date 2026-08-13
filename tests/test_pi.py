@@ -109,6 +109,24 @@ def test_pi_turn_streams_and_reuses_session(tmp_path):
         provider.shutdown()
 
 
+def test_pi_launch_loads_bash_timeout_guard_extension(tmp_path):
+    provider = PiRuntimeProvider(_Fallback(), [sys.executable, FAKE_PI])
+    events: list[tuple[str, str]] = []
+    try:
+        result = provider.start(_config(tmp_path, "GUARD", {}, events))
+        assert result.success
+        launch = _launches(tmp_path)[0]
+        assert "--no-extensions" in launch
+        guard = Path(launch[launch.index("--extension") + 1])
+        assert guard.name == "pi_guard.ts" and guard.is_file()
+        # 守卫职责钉住:注入超时规则提示词 + 拒绝无 timeout 的 bash 调用。
+        text = guard.read_text(encoding="utf-8")
+        assert "before_agent_start" in text and "tool_call" in text
+        assert "block: true" in text
+    finally:
+        provider.shutdown()
+
+
 def test_pi_ephemeral_run_uses_no_session(tmp_path):
     provider = PiRuntimeProvider(_Fallback(), [sys.executable, FAKE_PI])
     events: list[tuple[str, str]] = []

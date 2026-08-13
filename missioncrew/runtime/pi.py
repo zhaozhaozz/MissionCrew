@@ -42,6 +42,9 @@ _PROVIDER_NAME_RE = re.compile(r"[A-Za-z0-9._-]+")
 # 重试),因此 agent_end 不能直接判终;静默该时长且无重试事件才算回合结束。
 _RETRY_GRACE_SECONDS = 1.0
 
+# 平台守卫扩展:随包分发,要求模型为每次 bash 调用显式声明 timeout。
+_GUARD_EXTENSION = Path(__file__).with_name("pi_guard.ts")
+
 
 def read_pi_models() -> list[str]:
     """从平台自有 models.json 枚举 ``provider/model`` 执行单元。"""
@@ -280,6 +283,10 @@ class _PiSession:
     def _command(self, config: ExecutionConfig, resume_file: str) -> list[str]:
         command = [*self.prefix, "--mode", "rpc", "--no-extensions",
                    "--session-dir", str(core_config.pi_sessions_dir())]
+        # --no-extensions 只禁自动发现的用户扩展;平台守卫扩展显式加载,
+        # 强制模型为每次 bash 调用声明 timeout(pi 的 bash 默认无超时)。
+        if _GUARD_EXTENSION.is_file():
+            command += ["--extension", str(_GUARD_EXTENSION)]
         if not self.persistent:
             command.append("--no-session")
         elif resume_file:
