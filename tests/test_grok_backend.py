@@ -8,12 +8,33 @@ from missioncrew.core.models import Backend
 def test_grok_command_uses_acp_stdio_mode():
     template = adapters.ACP_SERVE_COMMANDS["grok_build"]
 
+    # 未配 effort 时 `--reasoning-effort` 整对丢弃,不能留下悬空标志
     assert adapters.render_command(
         template, "", "grok-build", workdir="/work/project") == [
         "grok", "--cwd", "/work/project", "agent", "--always-approve",
         "--no-leader", "stdio",
     ]
     assert isinstance(adapters.get_adapter("grok_build"), adapters.AcpAdapter)
+
+
+def test_grok_effort_renders_into_serve_command():
+    template = adapters.ACP_SERVE_COMMANDS["grok_build"]
+
+    assert adapters.render_command(
+        template, "", "grok-build", effort="high",
+        workdir="/work/project") == [
+        "grok", "--cwd", "/work/project", "agent",
+        "--reasoning-effort", "high", "--always-approve",
+        "--no-leader", "stdio",
+    ]
+
+
+def test_grok_exposes_cli_effort_levels():
+    backend = Backend(id="grok", name="Grok Build", adapter="grok_build")
+
+    # 档位取自 `grok --reasoning-effort <非法值>` 的报错清单,从低到高
+    assert RuntimeManager().effort_options(backend) == [
+        "low", "medium", "high", "xhigh"]
 
 
 def test_grok_detection_creates_routable_backend(monkeypatch, tmp_path):

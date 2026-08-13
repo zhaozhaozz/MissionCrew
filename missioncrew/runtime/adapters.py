@@ -296,6 +296,7 @@ ACP_SERVE_COMMANDS = {
     # Grok 的 print 模式按无换行 token flush，通用逐行读取器无法实时消费；
     # 原生 ACP 同时提供正文、思考、工具、权限和可复用 session 生命周期。
     "grok_build": ["grok", "--cwd", "{workdir}", "agent",
+                   "--reasoning-effort", "{effort}",
                    "--always-approve", "--no-leader", "stdio"],
     "kimi": ["kimi", "--add-dir", "{allowed_dirs}", "acp"],
     "kiro": ["kiro-cli", "acp", "--trust-all-tools"],
@@ -339,10 +340,16 @@ KNOWN_MODELS: dict[str, list[str]] = {
 # - claude:原生 `--effort` 标志(档位来自 `claude --help`);
 # - codex:配置覆盖 `-c model_reasoning_effort=<档位>`(具体模型未必支持全部档位,
 #   越界时 CLI 自行报错,错误照常回流到频道);
+# - grok:ACP serve 命令上的 `grok agent --reasoning-effort <档位>`。effort 进了
+#   serve 命令,改档位会改变 acp.py 的 client signature,长驻会话按新命令重启,
+#   不会沿用旧档位。这里列的是 grok-4.6 的全量档位;低档模型只认子集
+#   (grok-4.5 无 xhigh),且 `grok agent` 不校验档位——越界会静默回落到模型默认
+#   (xhigh + grok-4.5 实测落到 high),不像 codex 那样报错,不要指望错误回流;
 # - mock:仅供测试/演示走通配置链路。
 EFFORT_SUPPORT: dict[str, list[str]] = {
     "claude_code": ["low", "medium", "high", "xhigh", "max"],
     "codex": ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
+    "grok_build": ["low", "medium", "high", "xhigh"],
     "mock": ["low", "medium", "high"],
     # pi:映射为 thinking level(`--thinking`/set_thinking_level)。
     "pi": ["off", "minimal", "low", "medium", "high", "xhigh"],
@@ -524,7 +531,8 @@ def render_command(template: list[str], prompt: str, model: str,
             tok = tok.replace("{model}", model)
         if "{effort}" in tok:
             if not effort:
-                if cmd and cmd[-1] in ("--effort", "-c", "--config"):
+                if cmd and cmd[-1] in ("--effort", "--reasoning-effort",
+                                       "-c", "--config"):
                     cmd.pop()
                 continue
             tok = tok.replace("{effort}", effort)
