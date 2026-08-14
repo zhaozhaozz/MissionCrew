@@ -1312,6 +1312,23 @@ def _trigger_from_prompt(prompt: str) -> str:
 # claude 的静态型号目录在 clis/claude.py(CLAUDE_MODEL_CATALOG 由顶部导入)。
 
 
+def _list_acp_model_catalog(
+        backend: Backend, timeout: int = 25,
+        parse_efforts=None) -> tuple[list[str], dict[str, list[str]]]:
+    """执行一次通用 ACP 模型目录探测，不包含任何工具级重试策略。"""
+    template = ACP_SERVE_COMMANDS.get(backend.adapter)
+    if not template:
+        return [], {}
+    cmd = render_command(template, "", backend.model, allowed_dirs=[])
+    models, efforts = acp.list_model_catalog(
+        cmd, timeout=timeout, runtime_id=backend.id,
+        # 厂商私有的按模型档位扩展(grok 的 _meta.reasoningEfforts)
+        # 由工具声明钩子解析，协议层只透传 models 块。
+        parse_efforts=parse_efforts)
+    return models, {model: sort_efforts(levels)
+                    for model, levels in efforts.items()}
+
+
 def list_runtime_model_catalog(
         backend: Backend, timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
     """向 runtime 本体查询模型目录，以及每个模型自报的推理力度档位。
@@ -1329,16 +1346,10 @@ def list_runtime_model_catalog(
         return spec.discover_models(backend, timeout)
     # ACP 探测的 serve 命令仍取自注册表(而不是 spec 原件),保证测试或
     # 运维对 ACP_SERVE_COMMANDS 的覆盖同样作用于模型发现
-    template = ACP_SERVE_COMMANDS.get(backend.adapter)
-    if template:
-        cmd = render_command(template, "", backend.model, allowed_dirs=[])
-        models, efforts = acp.list_model_catalog(
-            cmd, timeout=timeout, runtime_id=backend.id,
-            # 厂商私有的按模型档位扩展(grok 的 _meta.reasoningEfforts)
-            # 由该工具的声明钩子解析,协议层只透传 models 块
+    if backend.adapter in ACP_SERVE_COMMANDS:
+        return _list_acp_model_catalog(
+            backend, timeout,
             parse_efforts=spec.parse_model_efforts if spec else None)
-        return models, {model: sort_efforts(levels)
-                        for model, levels in efforts.items()}
     return [], {}
 
 

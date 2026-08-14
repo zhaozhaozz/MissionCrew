@@ -65,6 +65,62 @@ def test_discovered_efforts_sorted_low_to_high():
         "low", "high", "turbo"]
 
 
+def test_grok_model_discovery_retries_empty_or_fallback_once(monkeypatch):
+    backend = Backend(id="grok", name="Grok Build", adapter="grok_build")
+    final = (["grok-4.6", "grok-4.5"], {
+        "grok-4.6": ["low", "medium", "high", "xhigh"],
+        "grok-4.5": ["low", "medium", "high"],
+    })
+
+    for first in (([], {}), (["grok-4.5"], {
+            "grok-4.5": ["low", "medium", "high"]})):
+        replies = iter((first, final))
+        calls = []
+
+        def probe(*args, **kwargs):
+            calls.append((args, kwargs))
+            return next(replies)
+
+        monkeypatch.setattr(adapters, "_list_acp_model_catalog", probe)
+
+        assert adapters.list_runtime_model_catalog(backend) == final
+        assert len(calls) == 2
+        assert all(call[1]["parse_efforts"] is not None for call in calls)
+
+
+def test_grok_model_discovery_retries_at_most_once(monkeypatch):
+    backend = Backend(id="grok", name="Grok Build", adapter="grok_build")
+    fallback = (["grok-4.5"], {
+        "grok-4.5": ["low", "medium", "high"]})
+    calls = []
+
+    def probe(*args, **kwargs):
+        calls.append((args, kwargs))
+        return fallback
+
+    monkeypatch.setattr(adapters, "_list_acp_model_catalog", probe)
+
+    assert adapters.list_runtime_model_catalog(backend) == fallback
+    assert len(calls) == 2
+
+
+def test_grok_model_discovery_keeps_complete_first_result(monkeypatch):
+    backend = Backend(id="grok", name="Grok Build", adapter="grok_build")
+    complete = (["grok-4.6", "grok-4.5"], {
+        "grok-4.6": ["low", "medium", "high", "xhigh"],
+        "grok-4.5": ["low", "medium", "high"]})
+    calls = []
+
+    def probe(*args, **kwargs):
+        calls.append((args, kwargs))
+        return complete
+
+    monkeypatch.setattr(adapters, "_list_acp_model_catalog", probe)
+
+    assert adapters.list_runtime_model_catalog(backend) == complete
+    assert len(calls) == 1
+
+
 def test_grok_detection_creates_routable_backend(monkeypatch, tmp_path):
     grok_path = "/home/u/.grok/bin/grok"
     monkeypatch.setattr(adapters.shutil, "which",

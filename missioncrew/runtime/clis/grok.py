@@ -46,6 +46,20 @@ def account_usage_probe(backend, timeout: int = 15):
     return probe_grok_usage(backend, [backend.binary_path or "grok"], timeout)
 
 
+def discover_models(backend, timeout: int = 25):
+    """经 ACP 发现模型；首次为空或命中单模型兜底时只重试一次。"""
+    # 延迟导入避免 clis -> adapters -> clis 的模块初始化环。这里不读取
+    # auth.json；第二次独立启动 CLI，让 Grok 自己完成可能的静默续期。
+    from ..adapters import _list_acp_model_catalog
+
+    first = _list_acp_model_catalog(
+        backend, timeout, parse_efforts=parse_model_efforts)
+    if first[0] and first[0] != ["grok-4.5"]:
+        return first
+    return _list_acp_model_catalog(
+        backend, timeout, parse_efforts=parse_model_efforts)
+
+
 SPEC = CliSpec(
     adapter="grok_build",
     binary="grok",
@@ -66,6 +80,7 @@ SPEC = CliSpec(
     update={"self_update": ["grok", "update"]},
     # session/load 带 noReplay:恢复会话时不回放历史,避免把旧输出当本轮
     load_session_meta={"noReplay": True},
+    discover_models=discover_models,
     parse_model_efforts=parse_model_efforts,
     account_usage_probe=account_usage_probe,
 )

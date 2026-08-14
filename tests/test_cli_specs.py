@@ -49,13 +49,13 @@ def test_registry_tables_are_derived_from_specs():
 
 
 def test_model_discovery_dispatches_to_spec_hooks():
-    """模型发现回调随工具声明;ACP 工具无回调,走通用 session/new 探测。"""
+    """模型发现回调随工具声明;Grok 专用重试也经声明钩子分发。"""
     from missioncrew.core.models import Backend
 
     assert {a for a, s in BY_ADAPTER.items() if s.discover_models} == {
-        "claude_code", "codex", "opencode", "mock"}
+        "claude_code", "codex", "grok_build", "opencode", "mock"}
     for spec in BY_ADAPTER.values():
-        if spec.acp_serve:
+        if spec.acp_serve and spec.adapter != "grok_build":
             assert spec.discover_models is None, spec.adapter
 
     # claude:静态目录;mock:工具自带清单——都经统一入口分发到声明回调
