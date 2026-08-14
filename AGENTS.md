@@ -42,4 +42,5 @@ docs/runtimes.md      Runtime 层的详细设计文档(会话恢复/权限/effor
 - 提交完成后默认重启 MissionCrew。停服前必须同时确认数据库没有 `queued`、`running` 或 `waiting_user` 状态的 `chat_runs`，确认 `/api/runtime/status` 的 `summary.running` 为 0 且各实例 `background_tasks` 均为 0；存在活动 Agent 或后台命令时等待其结束，不得直接中断，除非用户明确要求强制停止。
 - 服务统一由 pm2 管理，入口是 `scripts/serve.sh {start|restart|stop|status|logs}`（配置在 `ecosystem.config.cjs`）；不要再用 `nohup`/`setsid` 手工拉起服务。服务按常规继承调用方环境，PATH 必须完整——Runtime 检测靠它探测本机装了哪些 Agent CLI。宿主终端注入的变量（`VSCODE_*`、`CLAUDE_*`、`CLAUDECODE`、`GIT_ASKPASS`、`SSH_AUTH_SOCK` 等）由派发层 `runtime/base.py` 的 `host_isolated_environ()` 统一剥离，不依赖启动方式；新增这类变量改那份清单，不要改启动脚本。
 - 启动后用 `pm2 status missioncrew` 确认单实例在线，并检查 `0.0.0.0:8321` 监听与 `/api/overview` 健康接口；日志在 `.missioncrew/server.log`（pm2 接管 stdout/stderr）。
+- 改动 `core/models.py` 等序列化字段后重启不可跳过：脚本、CLI、测试等旁路进程会用新代码把新字段写进 `db.sqlite3`，旧服务进程 `from_dict` 读到未知字段即抛 `TypeError`、接口 500。健康检查必须打 `/api/overview` 这类会读库的接口——首页是静态 HTML，返回 200 不代表服务正常。
 - 如果测试失败、无法安全区分待提交文件、提交失败或服务无法健康启动，不要生成不完整提交；先说明具体证据并继续排查。
