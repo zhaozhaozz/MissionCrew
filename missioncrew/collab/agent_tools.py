@@ -79,9 +79,20 @@ class AgentIdentity:
     token_id: str
     project_id: str
     channel_id: str
-    role_id: str
+    role_id: str               # kind=automation 时是自动化脚本 id
     issued_scopes: tuple[str, ...]
     run_id: int = 0
+    kind: str = "run"          # run(绑定聊天 Run) | automation(脚本身份)
+
+    @property
+    def is_automation(self) -> bool:
+        return self.kind == "automation"
+
+    @property
+    def actor(self) -> str:
+        """审计与产物归属使用的身份前缀,可区分角色与脚本触发。"""
+        prefix = "automation" if self.is_automation else "role"
+        return f"{prefix}:{self.role_id}"
 
 
 @dataclass(frozen=True)
@@ -197,6 +208,26 @@ ACTION_DEFINITIONS = {
         "orchestrator_only": True,
         "arguments": {"id": "Skill id"},
     },
+    "automation.save": {
+        "description": (
+            "创建或更新项目自动化脚本;脚本经统一定时入口按 cron 或手动触发,"
+            "以专属 token 调用平台动作"
+        ),
+        "orchestrator_only": True,
+        "arguments": {
+            "id": "脚本短 id", "name": "名称", "description": "用途",
+            "script": "脚本全文(有 shebang 按可执行文件运行,否则用 bash)",
+            "cron": "五段 crontab;空字符串表示仅手动触发",
+            "enabled": "是否启用定时触发",
+            "actions": "允许调用的动作白名单数组;不传保留现值",
+            "timeout_seconds": "单次运行超时秒数",
+        },
+    },
+    "automation.delete": {
+        "description": "删除项目自动化脚本及其运行记录",
+        "orchestrator_only": True,
+        "arguments": {"id": "脚本短 id"},
+    },
     "recycle.list": {
         "description": "列出当前项目统一回收站",
         "orchestrator_only": True,
@@ -239,6 +270,11 @@ ACTION_ARGUMENTS = {
         "id", "markdown", "enabled", "name", "description", "instructions",
     },
     "skill.delete": {"id"},
+    "automation.save": {
+        "id", "name", "description", "script", "cron", "enabled", "actions",
+        "timeout_seconds",
+    },
+    "automation.delete": {"id"},
     "recycle.list": set(),
     "recycle.restore": {"id"},
     "recycle.purge": {"id"},
@@ -364,6 +400,8 @@ class AgentActionService:
             raise AgentToolError("invalid_token", "Agent Tool token 无效或已撤销", 401)
         if row["expires_at"] <= now:
             raise AgentToolError("expired_token", "Agent Tool token 已过期，请开始新一轮执行", 401)
+        if str(row.get("kind") or "run") == "automation":
+            return self._authenticate_automation(row, token_hash)
         project = self.store.get_project(str(row["project_id"]))
         channel = self.store.get_channel(str(row["channel"]))
         role = self.store.get_role(str(row["project_id"]), str(row["role_id"]))
@@ -378,9 +416,43 @@ class AgentActionService:
             run_id=int(row.get("run_id") or 0),
         )
 
+    def _authenticate_automation(self, row: dict, token_hash: str) -> AgentIdentity:
+        """脚本身份不绑定 Run;权限以自动化脚本当前的动作白名单为事实源。"""
+        automation = self.store.get_automation(str(row["role_id"]))
+        project = self.store.get_project(str(row["project_id"]))
+        if (automation is None or project is None
+                or automation.project_id != project.id):
+            raise AgentToolError(
+                "stale_identity", "Token 对应的自动化脚本或项目已不存在", 401)
+        self.store.touch_agent_token(token_hash)
+        scopes = tuple(action for action in automation.actions
+                       if action in ACTION_DEFINITIONS)
+        return AgentIdentity(
+            token_id=str(row["token_id"]), project_id=project.id,
+            channel_id="", role_id=automation.id,
+            issued_scopes=scopes, run_id=0, kind="automation",
+        )
+
+    def issue_automation_token(self, automation, ttl_seconds: float) -> str:
+        """为一次脚本运行签发短期 token;上一次未撤销的旧 token 一并作废。"""
+        self.revoke_automation_tokens(automation.id)
+        token = secrets.token_urlsafe(32)
+        self.store.put_agent_token(
+            token_hash=self._hash_token(token), token_id=uuid.uuid4().hex,
+            project_id=automation.project_id, channel="",
+            role_id=automation.id, run_id=0, kind="automation",
+            scopes=list(automation.actions),
+            expires_at=time.time() + max(60.0, ttl_seconds),
+        )
+        return token
+
+    def revoke_automation_tokens(self, automation_id: str) -> int:
+        return self.store.revoke_agent_tokens(
+            role_id=automation_id, kind="automation")
+
     def capabilities(self, identity: AgentIdentity) -> dict:
         project = self._identity_project(identity)
-        allowed = self.allowed_actions(project, identity.role_id)
+        allowed = self._identity_actions(project, identity)
         return {
             "project_id": identity.project_id,
             "channel_id": identity.channel_id,
@@ -399,6 +471,30 @@ class AgentActionService:
             raise AgentToolError(
                 "invalid_request_id", "request_id 只能包含字母、数字、下划线、连字符",
             )
+        if identity.is_automation:
+            # 脚本身份不绑定聊天 Run;消息发布自成协作链,回执由运行记录承载。
+            context = AgentRunContext(run_id=0, channel_id="", root_id=0, depth=0)
+            try:
+                result = self._execute_action(identity, action, arguments, context)
+            except AgentToolError as exc:
+                self._audit_call(identity, action, request_id, 0, "failed", exc.code)
+                raise
+            except (TypeError, ValueError, binascii.Error) as exc:
+                error = AgentToolError("invalid_arguments", str(exc), 400)
+                self._audit_call(identity, action, request_id, 0, "failed", error.code)
+                raise error from exc
+            except Exception as exc:
+                LOGGER.exception(
+                    "Agent Tool action failed: action=%s automation=%s",
+                    action, identity.role_id)
+                error = AgentToolError(
+                    "internal_error", "MissionCrew 执行动作时发生内部错误", 500,
+                    retryable=True,
+                )
+                self._audit_call(identity, action, request_id, 0, "failed", error.code)
+                raise error from exc
+            self._audit_call(identity, action, request_id, 0, "success", "")
+            return result
         bound_run_id = identity.run_id
         if bound_run_id <= 0:
             error = AgentToolError(
@@ -528,10 +624,23 @@ class AgentActionService:
 
     def _identity_project(self, identity: AgentIdentity) -> Project:
         project = self.store.get_project(identity.project_id)
+        if identity.is_automation:
+            automation = self.store.get_automation(identity.role_id)
+            if project is None or automation is None:
+                raise AgentToolError("stale_identity", "项目或自动化脚本已不存在", 401)
+            return project
         role = self.store.get_role(identity.project_id, identity.role_id)
         if project is None or role is None:
             raise AgentToolError("stale_identity", "项目或角色已不存在", 401)
         return project
+
+    def _identity_actions(self, project: Project,
+                          identity: AgentIdentity) -> list[str]:
+        """身份可用动作:脚本身份只看白名单,角色身份按主控权限位过滤。"""
+        if identity.is_automation:
+            return [action for action in identity.issued_scopes
+                    if action in ACTION_DEFINITIONS]
+        return self.allowed_actions(project, identity.role_id)
 
     def _execute_action(self, identity: AgentIdentity, action: str,
                         arguments: dict, context: AgentRunContext) -> dict:
@@ -545,11 +654,12 @@ class AgentActionService:
             raise AgentToolError(
                 "invalid_arguments", f"{action} 包含未知参数: {', '.join(sorted(unknown))}")
         project = self._identity_project(identity)
-        allowed = self.allowed_actions(project, identity.role_id)
+        allowed = self._identity_actions(project, identity)
         if action not in allowed or action not in identity.issued_scopes:
+            subject = ("自动化脚本" if identity.is_automation
+                       else f"角色 @{identity.role_id}")
             raise AgentToolError(
-                "permission_denied",
-                f"角色 @{identity.role_id} 无权执行 {action}", 403,
+                "permission_denied", f"{subject} 无权执行 {action}", 403,
             )
         handlers = {
             "task.create": self._create_task,
@@ -567,6 +677,8 @@ class AgentActionService:
             "guideline.delete": self._delete_guideline,
             "skill.save": self._save_skill,
             "skill.delete": self._delete_skill,
+            "automation.save": self._save_automation,
+            "automation.delete": self._delete_automation,
             "recycle.list": self._list_recycle_bin,
             "recycle.restore": self._restore_recycle_item,
             "recycle.purge": self._purge_recycle_item,
@@ -575,22 +687,33 @@ class AgentActionService:
 
     def _create_task(self, project: Project, identity: AgentIdentity,
                      arguments: dict, _context: AgentRunContext) -> dict:
-        from .tasks import create_task
+        from types import SimpleNamespace
+        from .tasks import auto_process_task, create_task
 
         task = create_task(
             self.store, project.id, **arguments,
-            actor=f"role:{identity.role_id}",
+            actor=identity.actor,
             fallback_channel_id=identity.channel_id,
         )
         self._refresh_task_snapshot(project.id, identity)
         self.store.audit(
-            f"role:{identity.role_id}", "agent_task_created", task.id,
+            identity.actor, "agent_task_created", task.id,
             f"project={project.id}")
+        # 新建 Task 命中项目自动处理规则时立即派发(常见于脚本同步外部任务)
+        auto = auto_process_task(
+            self.store, SimpleNamespace(post=self._post_message), task)
         url = task_resource_url(project.id, task.id)
-        return {
-            "summary": f"已创建任务 [{task.title}]({url})",
+        summary = f"已创建任务 [{task.title}]({url})"
+        if auto:
+            summary += f";已按自动规则(label `{auto['rule_label']}`)派发"
+        result = {
+            "summary": summary,
             "task": task.to_dict(), "resource_url": url,
         }
+        if auto:
+            result["auto_dispatch"] = {
+                "rule_label": auto["rule_label"], "sent": auto["sent"]}
+        return result
 
     def _update_task(self, project: Project, identity: AgentIdentity,
                      arguments: dict, _context: AgentRunContext) -> dict:
@@ -606,7 +729,7 @@ class AgentActionService:
             update_task(
                 self.store, task,
                 snapshot_updated_at=arguments.get("snapshot_updated_at"),
-                changes=changes, actor=f"role:{identity.role_id}",
+                changes=changes, actor=identity.actor,
             )
         except ValueError as exc:
             if "重新读取" in str(exc):
@@ -616,7 +739,7 @@ class AgentActionService:
             raise AgentToolError("invalid_arguments", str(exc), 400) from exc
         self._refresh_task_snapshot(project.id, identity)
         self.store.audit(
-            f"role:{identity.role_id}", "agent_task_updated", task.id,
+            identity.actor, "agent_task_updated", task.id,
             f"project={project.id}")
         url = task_resource_url(project.id, task.id)
         return {
@@ -656,7 +779,7 @@ class AgentActionService:
         if task is None or task.project_id != project.id:
             raise AgentToolError("task_not_found", f"任务不存在: {task_id}", 404)
         item = recycle_task(
-            self.store, project, task, actor=f"role:{identity.role_id}")
+            self.store, project, task, actor=identity.actor)
         self._refresh_task_snapshot(project.id, identity)
         return {
             "summary": f"已将任务 {task.title} 移入项目回收站",
@@ -667,6 +790,8 @@ class AgentActionService:
 
     def _refresh_task_snapshot(self, project_id: str,
                                identity: AgentIdentity) -> None:
+        if identity.is_automation:
+            return   # 脚本没有聊天工作区;角色快照在其下一轮装配时刷新
         tasks_dir = (chat_workspace_dir(
             project_id, identity.channel_id, identity.role_id) / "tasks")
         write_task_files(self.store, project_id, tasks_dir)
@@ -697,7 +822,7 @@ class AgentActionService:
         overwrite = arguments.get("overwrite", False)
         if not isinstance(overwrite, bool):
             raise AgentToolError("invalid_arguments", "overwrite 必须是布尔值")
-        actor = f"role:{identity.role_id}"
+        actor = identity.actor
         try:
             revision = library_for(project.id).write_bytes(
                 path, payload, actor=actor,
@@ -739,7 +864,7 @@ class AgentActionService:
             raise AgentToolError(
                 "channel_conflict", f"目标文档已有独立对话: {target}", 409)
 
-        actor = f"role:{identity.role_id}"
+        actor = identity.actor
         try:
             revision = library_for(project.id).rename(
                 source, target, actor=actor)
@@ -764,7 +889,7 @@ class AgentActionService:
     def _delete_document(self, project: Project, identity: AgentIdentity,
                          arguments: dict, _context: AgentRunContext) -> dict:
         path = safe_relative_path(str(arguments.get("path", "")))
-        actor = f"role:{identity.role_id}"
+        actor = identity.actor
         try:
             item = recycle_document(self.store, project, path, actor=actor)
         except FileNotFoundError as exc:
@@ -797,7 +922,7 @@ class AgentActionService:
             raise AgentToolError("invalid_arguments", "mentions 必须是角色 id 数组")
         unique_mentions: list[str] = []
         for role_id in mentions:
-            if role_id == identity.role_id:
+            if not identity.is_automation and role_id == identity.role_id:
                 raise AgentToolError("invalid_arguments", "主控不能调度自己")
             target_role = self.store.get_role(project.id, role_id)
             if target_role is None or not target_role.enabled:
@@ -817,16 +942,25 @@ class AgentActionService:
         publish_content = normalize_document_resource_urls(
             publish_content, project.id, [library_for(project.id).root])
         try:
-            message_id = self._post_message(
-                channel.id, identity.role_id, publish_content, author_type="agent",
-                root_id=context.root_id, depth=context.depth + 1,
-                mention_spans=mention_spans,
-                origin_run_id=context.run_id or None,
-            )
+            if identity.is_automation:
+                # 脚本消息自成协作链;author_type=automation 让路由按人类
+                # 规则处理提及(单角色直达、多角色收敛主控),但无提及不派发。
+                message_id = self._post_message(
+                    channel.id, identity.role_id, publish_content,
+                    author_type="automation", mention_spans=mention_spans,
+                )
+            else:
+                message_id = self._post_message(
+                    channel.id, identity.role_id, publish_content,
+                    author_type="agent",
+                    root_id=context.root_id, depth=context.depth + 1,
+                    mention_spans=mention_spans,
+                    origin_run_id=context.run_id or None,
+                )
         except DispatchInactiveError as exc:
             raise AgentToolError("run_inactive", str(exc), 409) from exc
         self.store.audit(
-            f"role:{identity.role_id}", "agent_message_published",
+            identity.actor, "agent_message_published",
             detail=(f"project={project.id} channel={channel.id} message={message_id} "
                     f"run={context.run_id}"),
         )
@@ -870,7 +1004,7 @@ class AgentActionService:
         )
         self.store.put_channel(channel)
         self.store.audit(
-            f"role:{identity.role_id}", "channel_created",
+            identity.actor, "channel_created",
             detail=f"project={project.id} channel={channel_id}")
         url = channel_resource_url(project.id, channel.id)
         where = f"(工作目录 {workdir})" if workdir else ""
@@ -902,7 +1036,7 @@ class AgentActionService:
         board.description = str(arguments.get("description", board.description))
         self.store.put_board(board)
         self.store.audit(
-            f"role:{identity.role_id}", "dashboard_saved",
+            identity.actor, "dashboard_saved",
             detail=f"project={project.id} board={board_id}")
         url = dashboard_resource_url(project.id, board.id)
         return {
@@ -918,9 +1052,52 @@ class AgentActionService:
         if board is None or board.project_id != project.id:
             raise AgentToolError("not_found", "面板不存在", 404)
         item = recycle_dashboard(
-            self.store, project, board_id, actor=f"role:{identity.role_id}")
+            self.store, project, board_id, actor=identity.actor)
         return {"summary": f"已将面板 {board.name} 移入项目回收站",
                 "deleted": True, "recycle_item": item}
+
+    def _save_automation(self, project: Project, identity: AgentIdentity,
+                         arguments: dict, _context: AgentRunContext) -> dict:
+        from .automations import save_automation
+
+        try:
+            automation, created = save_automation(
+                self.store, project.id,
+                id=str(arguments.get("id", "")),
+                name=arguments.get("name"),
+                description=arguments.get("description"),
+                script=arguments.get("script"),
+                cron=arguments.get("cron"),
+                enabled=arguments.get("enabled"),
+                actions=arguments.get("actions"),
+                timeout_seconds=arguments.get("timeout_seconds"),
+                actor=identity.actor,
+                created_by_role_id=identity.role_id,
+            )
+        except ValueError as exc:
+            raise AgentToolError("invalid_arguments", str(exc), 400) from exc
+        schedule = (f"cron `{automation.cron}`" if automation.cron
+                    else "仅手动触发")
+        return {
+            "summary": (f"已{'创建' if created else '更新'}自动化脚本 "
+                        f"{automation.name}({schedule})"),
+            "automation": automation.to_dict(),
+        }
+
+    def _delete_automation(self, project: Project, identity: AgentIdentity,
+                           arguments: dict, _context: AgentRunContext) -> dict:
+        from .automations import delete_automation
+
+        try:
+            automation = delete_automation(
+                self.store, self, project.id,
+                str(arguments.get("id", "")), actor=identity.actor)
+        except ValueError as exc:
+            raise AgentToolError("not_found", str(exc), 404) from exc
+        return {
+            "summary": f"已删除自动化脚本 {automation.name}",
+            "deleted": True,
+        }
 
     def _save_guideline(self, project: Project, identity: AgentIdentity,
                         arguments: dict, _context: AgentRunContext) -> dict:
@@ -934,7 +1111,7 @@ class AgentActionService:
         try:
             guideline, revision = save_guideline(
                 self.store, project, markdown, enabled=enabled,
-                actor=f"role:{identity.role_id}", original_name=original_name)
+                actor=identity.actor, original_name=original_name)
         except FileExistsError as exc:
             raise AgentToolError("already_exists", str(exc), 409) from exc
         url = guideline_resource_url(project.id, guideline.name)
@@ -949,7 +1126,7 @@ class AgentActionService:
         name = self._control_id(arguments.get("name"))
         try:
             item = recycle_guideline(
-                self.store, project, name, actor=f"role:{identity.role_id}")
+                self.store, project, name, actor=identity.actor)
         except FileNotFoundError as exc:
             raise AgentToolError("not_found", str(exc), 404) from exc
         return {
@@ -967,7 +1144,7 @@ class AgentActionService:
         if not isinstance(enabled, bool):
             raise AgentToolError("invalid_arguments", "enabled 必须是布尔值")
         markdown = arguments.get("markdown")
-        actor = f"role:{identity.role_id}"
+        actor = identity.actor
         if markdown is not None:
             if not isinstance(markdown, str):
                 raise AgentToolError("invalid_arguments", "markdown 必须是字符串")
@@ -993,7 +1170,7 @@ class AgentActionService:
         try:
             item = recycle_skill(
                 self.store, project, skill_id,
-                actor=f"role:{identity.role_id}")
+                actor=identity.actor)
         except FileNotFoundError as exc:
             raise AgentToolError("not_found", str(exc), 404) from exc
         return {
@@ -1019,7 +1196,7 @@ class AgentActionService:
         item_id = str(arguments.get("id", "")).strip()
         try:
             item = restore_recycle_item(
-                self.store, project, item_id, actor=f"role:{identity.role_id}")
+                self.store, project, item_id, actor=identity.actor)
         except RecycleConflictError as exc:
             raise AgentToolError("already_exists", str(exc), 409) from exc
         except FileNotFoundError as exc:
@@ -1038,7 +1215,7 @@ class AgentActionService:
         item_id = str(arguments.get("id", "")).strip()
         try:
             item = purge_recycle_item(
-                self.store, project, item_id, actor=f"role:{identity.role_id}")
+                self.store, project, item_id, actor=identity.actor)
         except FileNotFoundError as exc:
             raise AgentToolError("not_found", str(exc), 404) from exc
         return {
@@ -1102,7 +1279,7 @@ class AgentActionService:
     def _audit_call(self, identity: AgentIdentity, action: str, request_id: str,
                     run_id: int, status: str, code: str) -> None:
         self.store.audit(
-            f"role:{identity.role_id}", "agent_tool_called",
+            identity.actor, "agent_tool_called",
             detail=(f"project={identity.project_id} channel={identity.channel_id} "
                     f"role={identity.role_id} token={identity.token_id} run={run_id} "
                     f"request={request_id} action={action} status={status} code={code}"),

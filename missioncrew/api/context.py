@@ -9,6 +9,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 
+from ..collab.automations import AutomationScheduler, AutomationService
 from ..collab.chat import ChatEngine
 from ..collab.content_channels import content_channel
 from ..collab.guidelines import sync_all_guideline_libraries
@@ -33,6 +34,8 @@ class ApiContext:
     store: Store
     chat: ChatEngine
     role_usage_linkage: RoleUsageLinkage | None = None
+    automations: AutomationService | None = None
+    automation_scheduler: AutomationScheduler | None = None
     # 更新互斥与"更新中"标记:与 ChatEngine 共享同一集合,更新期间不派发该后端
     updating_backends: set[str] = field(default_factory=set)
     updating_guard: threading.Lock = field(default_factory=threading.Lock)
@@ -66,6 +69,8 @@ class ApiContext:
                 detail=f"paths={resource_links}")
         ctx = cls(store=store, chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends
+        ctx.automations = AutomationService(store, ctx.chat.agent_tools)
+        ctx.automation_scheduler = AutomationScheduler(store, ctx.automations)
         ctx.role_usage_linkage = RoleUsageLinkage(
             store,
             lambda refresh=True: runtime_manager.account_usage(

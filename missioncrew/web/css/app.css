@@ -345,17 +345,22 @@
            transition: border-color .15s, box-shadow .15s; }
   #input:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
   #input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
-  #mention-picker { position: absolute; z-index: 30; left: 0; bottom: calc(100% + 7px);
+  #mention-picker, .task-dispatch-picker {
+                    position: absolute; z-index: 30; left: 0; bottom: calc(100% + 7px);
                     width: min(360px, 100%); max-height: 240px; overflow-y: auto;
                     padding: 6px; border: 1px solid var(--line); border-radius: 10px;
                     background: var(--card); box-shadow: var(--shadow); }
-  #mention-picker[hidden] { display: none; }
-  #mention-picker button { display: flex; width: 100%; align-items: center; gap: 8px;
+  #mention-picker[hidden], .task-dispatch-picker[hidden] { display: none; }
+  #mention-picker button, .task-dispatch-picker button {
+                           display: flex; width: 100%; align-items: center; gap: 8px;
                            padding: 7px 9px; border: 0; border-radius: 7px;
                            background: transparent; color: var(--text); text-align: left;
                            cursor: pointer; }
-  #mention-picker button:hover, #mention-picker button.active { background: var(--accent-soft); }
-  #mention-picker small { margin-left: auto; color: var(--muted); overflow: hidden;
+  #mention-picker button:hover, #mention-picker button.active,
+  .task-dispatch-picker button:hover, .task-dispatch-picker button.active {
+    background: var(--accent-soft); }
+  #mention-picker small, .task-dispatch-picker small {
+                          margin-left: auto; color: var(--muted); overflow: hidden;
                           text-overflow: ellipsis; white-space: nowrap; }
   textarea { flex: 1; resize: none; background: var(--card-2); color: var(--text);
              border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px;
@@ -1106,3 +1111,30 @@
   @media (max-width: 640px) {
     main.board { grid-template-columns: 1fr; padding: 12px 14px; }
   }
+
+/* ---- Task 派发弹窗:复用聊天输入框形态,选择器改为向下展开 ---- */
+.composer-wrap { position: relative; }
+.task-dispatch-input { box-sizing: border-box; width: 100%; min-height: 84px; max-height: 220px;
+  overflow-y: auto; background: var(--card-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px;
+  white-space: pre-wrap; word-break: break-word; outline: none;
+  transition: border-color .15s, box-shadow .15s; }
+.task-dispatch-input:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
+.task-dispatch-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.task-dispatch-picker { top: calc(100% + 7px); bottom: auto; }
+
+/* ---- 自动化脚本(项目设置页) ---- */
+.automation-actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 4px 12px; margin: 4px 0 8px; }
+.automation-action-option { display: flex; align-items: center; gap: 6px;
+  font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.automation-script { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px; height: auto; white-space: pre; overflow-x: auto; }
+.automation-output { max-height: 300px; overflow: auto; background: var(--card-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px;
+  font-size: 12px; white-space: pre-wrap; word-break: break-word; }
+.automation-error { color: var(--bad); }
+.pill.automation-st-succeeded { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
+.pill.automation-st-failed, .pill.automation-st-timeout { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
+.pill.automation-st-running { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
+.task-rule-prompt { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

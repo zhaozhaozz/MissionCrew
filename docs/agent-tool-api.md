@@ -68,6 +68,7 @@ Runtime
 | `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
 | `guideline.save` / `guideline.delete` | 禁止 | 允许 |
 | `skill.save` / `skill.delete` | 禁止 | 允许 |
+| `automation.save` / `automation.delete` | 禁止 | 允许 |
 | `recycle.list` / `recycle.restore` / `recycle.purge` | 禁止 | 允许 |
 
 `guideline.save` 与 Web 准则编辑器共用准则 Git 版本库。`skill.save` 同样把当前完整 Skill 目录提交到项目 Skill 版本库，因此已有 `scripts/`、`references/`、`assets/` 等辅助文件会与更新后的 `SKILL.md` 一起构成版本；两个动作成功后都返回 `revision`，并记录当前角色。准则重命名会继续原文件的历史链。删除属于主控权限：文档、准则、Skill 和面板都会进入项目统一回收站，文档、准则与 Skill 删除同时形成新 Git 提交，历史不会被抹除。`recycle.restore` 在原标识已被占用时返回 `already_exists` 并保留回收项；`recycle.purge` 是不可撤销的永久删除，只应在用户明确要求时调用。工具响应不会暴露回收目录的本地路径。
@@ -75,6 +76,12 @@ Runtime
 `message.publish` 的 `mentions` 是独立的角色 ID 数组，也是**唯一**的派发通道：只有数组中的合法角色会被调度；正文里出现的 `@reviewer`、`@[reviewer]` 等文本一律只是普通内容。主控的 Runtime 最终回复会由平台自动发布到当前 Channel；普通答复、结论和状态汇总不应再通过空 `mentions` 的 `message.publish` 重复发布。派工仍使用 `message.publish` 并显式传入目标 `mentions`。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。至少一个角色实际启动时，结果还会返回 `handoff: "end_turn"` 和后续恢复说明；主控应立即在 Runtime 最终回复中简短说明已派发并结束当前 turn，不再为这条说明调用一次 `message.publish`；同时不用 `sleep` 或轮询频道、工作树、运行状态来等待，也不应向执行中的同一角色再次派发“报告中间状态”之类的消息。同一频道同一角色的持久会话不能在执行中插入第二个 turn，这类请求只会排在原任务后面，不能提供实时进度。角色完成或失败后，平台会自动启动新的主控 turn 并交回完整结果。协作链预算导致无人启动时，`dispatched` 为空且不会返回该 handoff。
 
 成功执行写操作后，平台会在发起调用的 Channel 会话中追加一条 `agent_tool` 类型的平台回执，显示调用角色、动作名和动作摘要。失败调用和 `recycle.list` 等只读调用不生成回执；`message.publish` 已经直接产生可见消息，因此不会再重复插入一条工具回执。
+
+### 自动化脚本身份（`kind=automation`）
+
+除逐 Run 绑定的角色令牌外，还有一类**自动化脚本令牌**：`automation.save` 定义的项目脚本经统一定时入口（cron 或手动）触发时，平台为该次运行签发一次性令牌（`kind=automation`，不绑定 Run），写入脚本工作目录的 `.agent-tool-token` 并在运行结束后立即撤销。脚本身份的可用动作以脚本自身的 `actions` 白名单为事实源（默认 `task.create`、`task.update`、`task.brief`、`message.publish`、`document.publish`、`dashboard.save`），与主控权限位无关；审计 actor 记为 `automation:<脚本id>`，可与角色触发区分。
+
+脚本身份的 `message.publish` 以 `author_type=automation` 发布：不传 `mentions` 时只发消息、不触发任何角色；显式提及单个角色时直接派发该角色（结果不自动交回主控），提及多个角色时与人类消息一致收敛为只启动主控。脚本经 `task.create` 同步 Task 时，若项目配置的 Task 自动处理规则命中 label，会按规则的默认提示词和处理角色立即派发。
 
 ## 动作和并发规则
 
@@ -100,6 +107,7 @@ Runtime
 - `task.create` 和 `task.update` 使用 `title`、`summary`、`body`、`status`、`labels`、`channel_ids`；每个 Task 至少绑定一个当前项目的可用 Channel。
 - `task.brief` 追加状态简报，可用 `status` 同时更新 `open`、`in_progress`、`blocked`、`done` 状态。简报是追加记录，不覆盖正文。
 - `task.delete` 把 Task 正文和全部状态简报一起移入项目回收站；恢复后保留原 Task id、字段、简报作者、内容和时间。
+- `automation.save` 按短 id 新建或按字段合并更新脚本：`script` 是脚本全文（有 shebang 按可执行文件运行，否则用 bash），`cron` 是五段 crontab（空字符串 = 仅手动触发），`actions` 是脚本令牌的动作白名单，`timeout_seconds` 是单次运行超时。`automation.delete` 删除脚本并撤销其令牌、清除运行记录。
 - 频道、面板、准则和 Skill 的 ID、项目归属、工作目录和 Markdown 属性都在统一动作实现中校验。
 - 成功结果包含规范 `/resources/...` URL；Agent 应把该 URL 放入频道回复，不应发布 `.missioncrew` 的真实路径。
 

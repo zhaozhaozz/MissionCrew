@@ -1,6 +1,8 @@
 """项目端点:创建、更新与删除。"""
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from fastapi import FastAPI, HTTPException
 
 from ..collab.documents import archive_library, library_for
@@ -55,6 +57,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                              (existing.resources if existing else []))
         data["required_env"] = (body.required_env if body.required_env is not None else
                                 (existing.required_env if existing else None))
+        data["task_auto_rules"] = (
+            body.task_auto_rules if body.task_auto_rules is not None else
+            ([asdict(rule) for rule in existing.task_auto_rules]
+             if existing else []))
         try:
             project = Project.from_dict(data)
         except (TypeError, ValueError) as exc:

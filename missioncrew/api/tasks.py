@@ -6,8 +6,8 @@ from fastapi import FastAPI, HTTPException
 from ..collab.recycle_bin import recycle_task
 from ..collab.resource_urls import channel_resource_url, task_resource_url
 from ..collab.tasks import (TaskDispatchError, add_task_brief, archive_task,
-                            create_task, dispatch_task, restore_task,
-                            update_task)
+                            auto_process_task, create_task, dispatch_task,
+                            restore_task, update_task)
 from .context import ApiContext
 from .schemas import TaskBriefInput, TaskCreate, TaskProcessInput, TaskUpdate
 
@@ -43,8 +43,11 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        auto = auto_process_task(store, ctx.chat, task)
         return {**task.to_dict(),
-                "resource_url": task_resource_url(task.project_id, task.id)}
+                "resource_url": task_resource_url(task.project_id, task.id),
+                "auto_dispatch": auto and {
+                    "rule_label": auto["rule_label"], "sent": auto["sent"]}}
 
     @app.get("/api/tasks/{task_id}")
     def detail(task_id: str):
@@ -115,7 +118,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, "任务不存在")
         try:
             sent, brief = dispatch_task(
-                store, ctx.chat, task, message=body.message)
+                store, ctx.chat, task, message=body.message,
+                mention_spans=[item.model_dump() for item in body.mentions])
         except TaskDispatchError as exc:
             raise HTTPException(409, f"Task 仅部分派发：{exc}") from exc
         except ValueError as exc:

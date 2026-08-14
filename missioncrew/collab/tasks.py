@@ -137,9 +137,37 @@ def add_task_brief(store: Store, task: Task, *, content: object,
     return brief
 
 
+def _task_block(task: Task) -> str:
+    return (
+        f"请处理 Task [{task.id} · {task.title}]"
+        f"({task_resource_url(task.project_id, task.id)})。\n\n"
+        f"**简介**\n{task.summary or '（无）'}\n\n"
+        f"**正文**\n{task.body or '（无）'}\n\n"
+        "请在本 Channel 中协调处理，并通过 Task 编辑或状态简报同步进展。"
+    )
+
+
+def _require_enabled_role(store: Store, project_id: str, role_id: str) -> None:
+    role = store.get_role(project_id, role_id)
+    if role is None:
+        raise ValueError(f"角色不存在: @{role_id}")
+    if not role.enabled:
+        raise ValueError(f"角色已停用，请先启用: @{role_id}")
+
+
 def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
-                  author: str = "human") -> tuple[list[dict], dict]:
-    """把 Task 作为普通 Channel 消息交给每个绑定 Channel 的项目主控。"""
+                  mention_spans: Optional[list[dict]] = None,
+                  target_role_ids: Optional[list[str]] = None,
+                  author: str = "human",
+                  author_type: str = "human") -> tuple[list[dict], dict]:
+    """把 Task 作为普通 Channel 消息派发。
+
+    三种派发形态:
+    - ``mention_spans``:message 内含角色选择器生成的结构化提及,提及目标
+      即派发目标(单角色直达、多角色由聊天路由收敛给主控);
+    - ``target_role_ids``:自动规则等程序化调用,由平台生成 ``@角色`` 前缀;
+    - 两者都为空:默认交给项目主控,message 作为本次补充。
+    """
     if task.archived:
         raise ValueError("Task 已归档，请先恢复后再派发")
     if task.status == "done":
@@ -147,43 +175,67 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
     project = store.get_project(task.project_id)
     if project is None:
         raise ValueError("项目不存在")
-    lead_id = project.orchestrator_role_id
-    lead = store.get_role(project.id, lead_id)
-    if lead is None:
-        raise ValueError(f"项目主控角色不存在: @{lead_id}")
-    if not lead.enabled:
-        raise ValueError(f"项目主控角色已停用，请先启用: @{lead_id}")
+    extra = message.strip()
+    spans = [dict(item) for item in mention_spans or []]
+    targets = [str(item) for item in dict.fromkeys(target_role_ids or [])]
+
+    if spans:
+        target_ids = list(dict.fromkeys(
+            str(span.get("role_id", "")) for span in spans))
+        for role_id in target_ids:
+            _require_enabled_role(store, task.project_id, role_id)
+        # 用户消息在前,提及范围保持原位;Task 详情追加在后
+        content = (extra + "\n\n" if extra else "") + _task_block(task)
+        legal_spans: Optional[list[dict]] = spans
+    elif targets:
+        for role_id in targets:
+            _require_enabled_role(store, task.project_id, role_id)
+        prefix = " ".join(f"@{role_id}" for role_id in targets)
+        content = prefix + " " + _task_block(task)
+        if extra:
+            content += f"\n\n**处理要求**\n{extra}"
+        legal_spans = []
+        offset = 0
+        for role_id in targets:
+            legal_spans.append({"role_id": role_id, "start": offset,
+                                "end": offset + len(role_id) + 1})
+            offset += len(role_id) + 2   # "@role" + 分隔空格
+        target_ids = targets
+    else:
+        lead_id = project.orchestrator_role_id
+        lead = store.get_role(project.id, lead_id)
+        if lead is None:
+            raise ValueError(f"项目主控角色不存在: @{lead_id}")
+        if not lead.enabled:
+            raise ValueError(f"项目主控角色已停用，请先启用: @{lead_id}")
+        content = f"@{lead_id} " + _task_block(task)
+        if extra:
+            content += f"\n\n**本次补充**\n{extra}"
+        legal_spans = [{
+            "role_id": lead_id, "start": 0, "end": len(lead_id) + 1,
+        }]
+        target_ids = [lead_id]
+
     channels = task_channels(store, task.project_id, task.channel_ids)
     task.channel_ids = [channel.id for channel in channels]
-    extra = message.strip()
-    content = (
-        f"@{lead_id} 请处理 Task [{task.id} · {task.title}]"
-        f"({task_resource_url(task.project_id, task.id)})。\n\n"
-        f"**简介**\n{task.summary or '（无）'}\n\n"
-        f"**正文**\n{task.body or '（无）'}\n\n"
-        "请在本 Channel 中协调处理，并通过 Task 编辑或状态简报同步进展。"
-    )
-    if extra:
-        content += f"\n\n**本次补充**\n{extra}"
-
     previous_status = task.status
     task.status = "in_progress"
     store.put_task(task)
+    handled_by = "、".join(f"@{role_id}" for role_id in target_ids)
     sent: list[dict] = []
     try:
         for channel in channels:
             message_id = chat.post(
-                channel.id, author, content,
-                mention_spans=[{
-                    "role_id": lead_id, "start": 0, "end": len(lead_id) + 1,
-                }],
+                channel.id, author, content, author_type=author_type,
+                mention_spans=legal_spans,
             )
             sent.append({"channel_id": channel.id, "message_id": message_id})
     except ValueError as exc:
         if sent:
             store.add_task_brief(
                 task.id, "platform", "system",
-                f"已向 {len(sent)} 个 Channel 的 @{lead_id} 派发；后续派发失败：{exc}",
+                f"已向 {len(sent)} 个 Channel 的 {handled_by} 派发；"
+                f"后续派发失败：{exc}",
                 task.status,
             )
             store.put_task(task)
@@ -194,15 +246,53 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
             raise
 
     brief = store.add_task_brief(
-        task.id, author, "human",
-        f"已交给 @{lead_id} 处理：" + "、".join(channel.name or channel.id
-                                              for channel in channels),
+        task.id, author, author_type,
+        f"已交给 {handled_by} 处理：" + "、".join(channel.name or channel.id
+                                                for channel in channels),
         task.status,
     )
     store.put_task(task)
     store.audit(author, "task_dispatched", task.id,
-                f"project={task.project_id} channels={','.join(task.channel_ids)}")
+                f"project={task.project_id} targets={','.join(target_ids)} "
+                f"channels={','.join(task.channel_ids)}")
     return sent, brief
+
+
+def matching_auto_rule(project, task: Task):
+    """返回第一条命中 Task label 的启用规则;不命中返回 None。"""
+    labels = {label.lower() for label in task.labels}
+    for rule in getattr(project, "task_auto_rules", []):
+        if rule.enabled and rule.label and rule.label.lower() in labels:
+            return rule
+    return None
+
+
+def auto_process_task(store: Store, chat, task: Task) -> Optional[dict]:
+    """新建 Task 命中自动处理规则时立即派发;派发失败不影响 Task 创建。"""
+    project = store.get_project(task.project_id)
+    if project is None or task.archived or task.status == "done":
+        return None
+    rule = matching_auto_rule(project, task)
+    if rule is None:
+        return None
+    try:
+        sent, brief = dispatch_task(
+            store, chat, task, message=rule.prompt,
+            target_role_ids=rule.role_ids,
+            author="task-rule", author_type="automation",
+        )
+    except (TaskDispatchError, ValueError) as exc:
+        store.add_task_brief(
+            task.id, "platform", "system",
+            f"自动处理规则(label `{rule.label}`)派发失败：{exc}", task.status)
+        store.put_task(task)
+        store.audit("platform", "task_auto_dispatch_failed", task.id,
+                    f"project={task.project_id} label={rule.label} error={exc}")
+        return None
+    store.audit("platform", "task_auto_dispatched", task.id,
+                f"project={task.project_id} label={rule.label} "
+                f"roles={','.join(rule.role_ids) or '(orchestrator)'}")
+    return {"rule_label": rule.label, "sent": sent, "brief": brief}
 
 
 def archive_task(store: Store, task: Task, *, actor: str = "human") -> Task:

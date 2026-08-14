@@ -177,7 +177,7 @@ function isNearScrollBottom(element, threshold = 40) {
 
 let overview = {
   projects: [], tasks: [], roles: [], role_templates: [],
-  channels: [], backends: [], boards: [],
+  channels: [], backends: [], boards: [], automations: [],
 };
 let currentProject = localStorage.getItem("mc.project") || null;
 let currentTab = "chat";

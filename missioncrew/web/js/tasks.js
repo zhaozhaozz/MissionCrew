@@ -123,7 +123,7 @@ async function openTask(id, updateRoute = true) {
   ];
   if (!task.archived && task.status !== "done")
     actions.push(
-      `<button class="action" onclick="processTask('${task.id}')">交给 Lead 处理</button>`);
+      `<button class="action" onclick="processTask('${task.id}')">交给主控处理</button>`);
   document.getElementById("dlg-actions").innerHTML = actions.join("");
   if (!dlg.open) dlg.showModal();
   if (updateRoute) syncUrl();
@@ -244,12 +244,44 @@ async function saveTaskBrief(id) {
   toast("状态简报已添加", "success");
 }
 
-async function processTask(id) {
-  if (!await uiConfirm("将在所有绑定 Channel 中向项目主控发送这条 Task。", "交给 Lead 处理")) return;
-  await api("POST", `/api/tasks/${id}/process`, { message: "" });
+function processTask(id) {
+  const task = currentTaskDetail?.task;
+  if (!task || task.id !== id) return;
+  closeTaskDialog(false);
+  openFormDialog(`交给主控处理 · ${task.id}`, `
+    <p class="muted" style="margin-top:0">将在所有绑定 Channel 中发送这条 Task。
+      可补充处理要求;输入 @ 从列表选择角色可指定处理人:单个角色直接执行
+      (不经主控),多个角色由主控协调。不 @ 任何角色则交给项目主控。</p>
+    <div class="composer-wrap task-dispatch-wrap">
+      <div id="task-dispatch-input" class="task-dispatch-input" contenteditable="true"
+        role="textbox" aria-multiline="true" aria-label="处理要求"
+        data-placeholder="补充要求或 @指定角色…(可留空;Enter 发送,Shift+Enter 换行)"></div>
+      <div id="task-dispatch-picker" class="task-dispatch-picker" role="listbox" hidden></div>
+    </div>`,
+    `<button class="action" onclick="submitProcessTask('${id}')">发送</button>
+     <button class="ghost" onclick="cancelProcessTask('${id}')">取消</button>`);
+  bindComposerEvents("task-dispatch-input", "task-dispatch-picker",
+    () => submitProcessTask(id));
+  setTimeout(() => document.getElementById("task-dispatch-input")?.focus(), 60);
+}
+
+function cancelProcessTask(id) {
+  activateComposer("input", "mention-picker");
+  fdlg.close();
+  openTask(id);
+}
+
+async function submitProcessTask(id) {
+  const box = document.getElementById("task-dispatch-input");
+  const { content, mentions } = composerPayload(box);
+  await api("POST", `/api/tasks/${id}/process`, { message: content, mentions });
+  activateComposer("input", "mention-picker");
+  fdlg.close();
   await loadOverview();
   await openTask(id, false);
-  toast("Task 已发送给绑定 Channel 的 Lead", "success");
+  const named = [...new Set(mentions.map(item => `@${item.role_id}`))];
+  toast(named.length ? `Task 已派发给 ${named.join("、")}`
+    : "Task 已发送给绑定 Channel 的主控", "success");
 }
 
 async function archiveTask(id) {

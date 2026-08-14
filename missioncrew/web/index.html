@@ -191,6 +191,8 @@
         <a onclick="scrollToSec('sec-proj-res')">本地代码仓</a>
         <a onclick="scrollToSec('sec-proj-roles')">角色</a>
         <a onclick="scrollToSec('sec-proj-chans')">频道</a>
+        <a onclick="scrollToSec('sec-proj-automations')">自动化脚本</a>
+        <a onclick="scrollToSec('sec-proj-task-rules')">Task 自动规则</a>
         <a onclick="switchTab('guidelines')">准则文档 ↗</a>
         <a onclick="switchTab('skills')">Skills ↗</a>
         <a onclick="switchTab('recycle-bin')">回收站 ↗</a>
@@ -216,6 +218,18 @@
         <h2>频道 <span class="muted" id="chan-proj-label"></span>
           <button class="ghost" style="margin-left:8px" onclick="openChannelDialog()">+ 新建频道</button></h2>
         <table class="mgr" id="chan-table"></table>
+      </div>
+      <div class="section" id="sec-proj-automations">
+        <h2>自动化脚本 <span class="muted" id="automation-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="openAutomationEditor(null)">+ 新建脚本</button></h2>
+        <p class="muted">脚本由统一定时入口按 crontab 触发,也可手动运行;运行时通过专属 token 调用平台动作(发消息、建 Task、更新面板/文档等),动作范围受白名单约束。主控也可以在频道中用 automation.save 编写脚本。</p>
+        <table class="mgr" id="automation-table"></table>
+      </div>
+      <div class="section" id="sec-proj-task-rules">
+        <h2>Task 自动处理规则 <span class="muted" id="task-rule-proj-label"></span>
+          <button class="ghost" style="margin-left:8px" onclick="openTaskRuleEditor(-1)">+ 新建规则</button></h2>
+        <p class="muted">新建 Task(含脚本同步的 Task)命中规则 label 时,按配置的默认提示词自动派发给指定角色或项目主控;每个 Task 只应用第一条命中的规则。</p>
+        <table class="mgr" id="task-rule-table"></table>
       </div>
     </div>
 
@@ -462,6 +476,7 @@
 <script src="/assets/js/recycle-bin.js"></script>
 <script src="/assets/js/roles.js"></script>
 <script src="/assets/js/channels.js"></script>
+<script src="/assets/js/automations.js"></script>
 <script src="/assets/js/settings-runtime.js"></script>
 <script src="/assets/js/settings-models.js"></script>
 <script src="/assets/js/runtime-status.js"></script>

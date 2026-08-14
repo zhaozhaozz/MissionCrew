@@ -31,14 +31,27 @@ class TaskBriefInput(BaseModel):
     status: Optional[str] = None
 
 
-class TaskProcessInput(BaseModel):
-    message: str = ""
-
-
 class MessageMentionInput(BaseModel):
     role_id: str = Field(min_length=1, max_length=100, pattern=r"^[\w-]+$")
     start: int = Field(ge=0)
     end: int = Field(gt=0)
+
+
+class TaskProcessInput(BaseModel):
+    message: str = ""
+    # message 内由角色选择器生成的结构化提及;为空时按默认流程交给项目主控
+    mentions: list[MessageMentionInput] = Field(default_factory=list, max_length=50)
+
+
+class AutomationInput(BaseModel):
+    id: str
+    name: Optional[str] = None
+    description: Optional[str] = None
+    script: Optional[str] = None
+    cron: Optional[str] = None           # 五段 crontab;空字符串 = 仅手动触发
+    enabled: Optional[bool] = None
+    actions: Optional[list[str]] = None  # None = 保留现值
+    timeout_seconds: Optional[int] = Field(None, ge=1)
 
 
 class MessageInput(BaseModel):
@@ -178,6 +191,7 @@ class ProjectInput(BaseModel):
     skills: Optional[list[dict | str]] = None
     resources: Optional[list[str]] = None
     required_env: Optional[str] = None
+    task_auto_rules: Optional[list[dict]] = None   # None = 保留现值
 
 
 class ResourceAdd(BaseModel):

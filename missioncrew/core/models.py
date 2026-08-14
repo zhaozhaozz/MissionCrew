@@ -287,6 +287,29 @@ class ProjectResource:
 
 
 @dataclass
+class TaskAutoRule:
+    """Task 自动处理规则:新建 Task 命中 label 时按配置自动派发。
+
+    role_ids 为空表示交给项目主控;prompt 作为派发消息里的默认处理要求。
+    """
+
+    label: str
+    role_ids: list[str] = field(default_factory=list)
+    prompt: str = ""
+    enabled: bool = True
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TaskAutoRule":
+        return cls(
+            label=str(d.get("label", "")).strip(),
+            role_ids=[str(item).strip() for item in d.get("role_ids", [])
+                      if str(item).strip()],
+            prompt=str(d.get("prompt", "")),
+            enabled=bool(d.get("enabled", True)),
+        )
+
+
+@dataclass
 class Project:
     """项目中心条目:领域知识的主要载体，并显式指定唯一主控角色。"""
 
@@ -302,11 +325,15 @@ class Project:
     skills: list[ProjectSkill] = field(default_factory=list)
     resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
+    task_auto_rules: list[TaskAutoRule] = field(default_factory=list)
 
     def __post_init__(self):
         # 代码仓条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
         self.repos = [r if isinstance(r, ProjectResource) else ProjectResource.from_dict(r)
                       for r in self.repos]
+        self.task_auto_rules = [
+            rule if isinstance(rule, TaskAutoRule) else TaskAutoRule.from_dict(rule)
+            for rule in self.task_auto_rules]
         if (isinstance(self.max_chain_runs, bool)
                 or not isinstance(self.max_chain_runs, int)
                 or self.max_chain_runs < 1):
@@ -625,6 +652,57 @@ class Board:
     def from_dict(cls, d: dict) -> "Board":
         d = dict(d)
         d["layout"] = [BoardWidget(**item) for item in d.get("layout", [])]
+        return cls(**d)
+
+
+# 自动化脚本 token 的默认动作白名单;完整可选集是 Agent Tool 的动作注册表。
+AUTOMATION_DEFAULT_ACTIONS = (
+    "task.create", "task.update", "task.brief",
+    "message.publish", "document.publish", "dashboard.save",
+)
+AUTOMATION_DEFAULT_TIMEOUT = 600
+AUTOMATION_MAX_TIMEOUT = 6 * 3600
+
+
+@dataclass
+class Automation:
+    """项目自动化脚本:由主控或人类编写,经统一定时入口按 cron 或手动触发。
+
+    脚本以子进程运行,通过专属 Agent Tool token(按 actions 白名单授权)
+    调用平台动作;script 有 shebang 时按可执行文件运行,否则用 bash 解释。
+    """
+
+    id: str                        # 全局唯一,约定为 "<project>:<name>"
+    project_id: str
+    name: str = ""
+    description: str = ""
+    script: str = ""
+    cron: str = ""                 # 五段 crontab;空 = 仅手动触发
+    enabled: bool = True
+    actions: list[str] = field(
+        default_factory=lambda: list(AUTOMATION_DEFAULT_ACTIONS))
+    timeout_seconds: int = AUTOMATION_DEFAULT_TIMEOUT
+    created_by_role_id: str = ""   # 为空表示人类创建
+    last_run_at: float = 0.0
+    last_status: str = ""          # running / succeeded / failed / timeout
+    created_at: float = field(default_factory=now)
+    updated_at: float = field(default_factory=now)
+
+    def __post_init__(self):
+        if (isinstance(self.timeout_seconds, bool)
+                or not isinstance(self.timeout_seconds, int)
+                or not 1 <= self.timeout_seconds <= AUTOMATION_MAX_TIMEOUT):
+            raise ValueError(
+                f"timeout_seconds 必须是 1..{AUTOMATION_MAX_TIMEOUT} 的整数")
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Automation":
+        d = dict(d)
+        d["actions"] = [str(item) for item in d.get("actions", [])
+                        if isinstance(item, str)]
         return cls(**d)
 
 

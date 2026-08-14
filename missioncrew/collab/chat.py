@@ -196,6 +196,13 @@ ORCHESTRATOR_TEMPLATE = """\
   角色。触发消息 JSON 的 `mentions` 和 `mention_spans` 保留了用户选择的完整名单；
   请理解整体目标后决定并行、顺序或调整人选，再用 `message.publish` 的
   `mentions` 分别写清任务并派发。
+- `automation.save` 创建或更新项目自动化脚本：script 是脚本全文（有 shebang 按
+  可执行文件运行，否则用 bash），cron 是五段 crontab（空字符串 = 仅手动触发），
+  actions 是脚本 token 允许调用的动作白名单。脚本由平台统一定时入口触发，
+  运行时可用 `missioncrew.agent_tool` CLI 调用平台动作（如定时刷新面板数据、
+  同步外部系统生成 Task、向频道发布巡检报告）。脚本内 `message.publish` 只有
+  显式传 mentions 才会触发角色；用户可在项目设置中按 Task label 配置自动处理
+  规则，脚本同步进来的 Task 会按规则自动派发。删除用 `automation.delete`。
 - 协作链预算：本项目单条协作链最多 {max_runs} 次 Agent 执行。这只是防止失控循环的
   总次数兜底，不限制调度层级；请在预算内自主拆解、分派、验收并推进任务。
 
@@ -213,6 +220,9 @@ ORCHESTRATOR_TEMPLATE = """\
 
 ## 现有 Skills
 {skills}
+
+## 现有自动化脚本
+{automations}
 
 ## 现有 Runtime
 {runtimes}
@@ -357,6 +367,14 @@ class ChatEngine:
             else:
                 mentions, legal_spans = self._validate_mention_spans(
                     content, mention_spans, channel.project_id or "")
+        elif author_type == "automation":
+            # 自动化脚本消息:提及规则与人类一致(单角色直达、多角色收敛主控),
+            # 但没有"无提及默认交给主控"——脚本不显式点名就只发消息不触发。
+            if mention_spans:
+                mentions, legal_spans = self._validate_mention_spans(
+                    content, mention_spans, channel.project_id or "")
+            else:
+                mentions = []
         else:
             # 平台消息只用于展示状态和操作回执，不解析提及，也不触发角色。
             mentions = []
@@ -364,7 +382,7 @@ class ChatEngine:
             if orchestrator_available and author != orchestrator:
                 mentions = [orchestrator]
         dispatch_targets = list(mentions)
-        if (author_type == "human" and len(mentions) > 1
+        if (author_type in ("human", "automation") and len(mentions) > 1
                 and orchestrator_available and author != orchestrator):
             # 保留原始 mentions/mention_spans 供主控理解用户指定的角色，
             # 但多人协作只启动主控，由主控决定顺序、并行方式和具体简报。
@@ -407,17 +425,18 @@ class ChatEngine:
 
     def _is_direct_human_dispatch(
             self, trigger_message_id: Optional[int], role_id: str) -> bool:
-        """判断角色是否由人类在触发消息中直接选择。
+        """判断角色是否由人类或自动化脚本在触发消息中直接选择。
 
         只看可信的落库 mentions，不解析正文中的普通 ``@role``。这样主控派发
-        的执行结果仍会自动回传，而人类直接点名角色后的结果只保留在频道中。
+        的执行结果仍会自动回传，而人类/脚本直接点名角色后的结果只保留在
+        频道中,不再自动触发主控。
         """
         if trigger_message_id is None:
             return False
         trigger = self.store.get_message(trigger_message_id)
         return bool(
             trigger
-            and trigger.get("author_type") == "human"
+            and trigger.get("author_type") in ("human", "automation")
             and role_id in self._decoded_mentions(trigger)
         )
 
@@ -1481,6 +1500,11 @@ class ChatEngine:
             f"- {s.id}({s.name or s.id}){'[停用]' if not s.enabled else ''}"
             f";Web {skill_resource_url(project.id, s.id)}"
             for s in project.skills) or "(无)"
+        automations = "\n".join(
+            f"- {_short(a.id)}({a.name}):{a.description or '无描述'};"
+            + (f"cron `{a.cron}`" if a.cron else "仅手动触发")
+            + f"{'[停用]' if not a.enabled else ''}"
+            for a in self.store.list_automations(project.id)) or "(无)"
         runtimes = "\n".join(
             f"- {backend.id}: adapter={backend.adapter};"
             f"{'启用' if backend.enabled else '停用'}"
@@ -1488,7 +1512,8 @@ class ChatEngine:
         return ORCHESTRATOR_TEMPLATE.format(
             max_runs=project.max_chain_runs,
             repos=repos, channels=channels, boards=boards,
-            guidelines=guidelines, skills=skills, runtimes=runtimes)
+            guidelines=guidelines, skills=skills, automations=automations,
+            runtimes=runtimes)
 
     def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
                                     root_id: int, depth: int) -> str:

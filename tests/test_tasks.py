@@ -173,6 +173,113 @@ def test_processing_task_posts_to_each_bound_channel_and_triggers_lead(seeded):
         assert [row["role_id"] for row in runs] == ["lead"]
 
 
+def test_processing_task_with_mentions_dispatches_named_role_directly(seeded):
+    task = create_task(
+        seeded, "webshop", title="修复登录", channel_ids=["general"])
+    chat = ChatEngine(seeded, max_workers=2)
+    message = "@dev 优先处理,今天上线"
+    sent, brief = dispatch_task(
+        seeded, chat, task, message=message,
+        mention_spans=[{"role_id": "dev", "start": 0, "end": 4}])
+    chat.wait_idle()
+
+    stored = seeded.get_message(sent[0]["message_id"])
+    assert stored["content"].startswith(message)
+    assert f"请处理 Task [{task.id}" in stored["content"]
+    assert json.loads(stored["mentions"]) == ["dev"]
+    assert "@dev" in brief["content"]
+    runs = seeded._query("SELECT role_id FROM chat_runs ORDER BY id")
+    # 人类直接点名:只启动 dev,结果不再自动交回主控
+    assert [row["role_id"] for row in runs] == ["dev"]
+
+
+def test_processing_task_with_multiple_mentions_collapses_to_lead(seeded):
+    task = create_task(
+        seeded, "webshop", title="联调结算", channel_ids=["general"])
+    chat = ChatEngine(seeded, max_workers=2)
+    message = "@dev @tester 一起排查"
+    sent, _ = dispatch_task(
+        seeded, chat, task, message=message,
+        mention_spans=[{"role_id": "dev", "start": 0, "end": 4},
+                       {"role_id": "tester", "start": 5, "end": 12}])
+    chat.wait_idle()
+    runs = seeded._query(
+        "SELECT role_id FROM chat_runs WHERE trigger_message_id=?",
+        (sent[0]["message_id"],))
+    assert [row["role_id"] for row in runs] == ["lead"]
+
+
+def test_processing_task_rejects_disabled_mentioned_role(seeded):
+    dev = seeded.get_role("webshop", "dev")
+    dev.enabled = False
+    seeded.put_role(dev)
+    task = create_task(
+        seeded, "webshop", title="不可派发", channel_ids=["general"])
+    chat = ChatEngine(seeded)
+    with pytest.raises(ValueError, match="角色已停用"):
+        dispatch_task(
+            seeded, chat, task, message="@dev 处理",
+            mention_spans=[{"role_id": "dev", "start": 0, "end": 4}])
+    assert seeded.get_task(task.id).status == "open"
+
+
+def test_task_auto_rule_dispatches_matching_new_task(seeded):
+    project = seeded.get_project("webshop")
+    project.task_auto_rules = [
+        {"label": "sync", "role_ids": ["dev"],
+         "prompt": "请分析并给出处理建议", "enabled": True},
+        {"label": "ignored", "role_ids": [], "prompt": "", "enabled": True},
+    ]
+    seeded.put_project(project)
+    chat = ChatEngine(seeded, max_workers=2)
+
+    from missioncrew.collab.tasks import auto_process_task
+    task = create_task(
+        seeded, "webshop", title="外部同步任务", labels=["Sync"],
+        channel_ids=["general"])
+    result = auto_process_task(seeded, chat, task)
+    chat.wait_idle()
+
+    assert result and result["rule_label"] == "sync"
+    assert seeded.get_task(task.id).status == "in_progress"
+    stored = seeded.get_message(result["sent"][0]["message_id"])
+    assert stored["author_type"] == "automation"
+    assert stored["content"].startswith("@dev ")
+    assert "请分析并给出处理建议" in stored["content"]
+    runs = seeded._query("SELECT role_id FROM chat_runs ORDER BY id")
+    assert [row["role_id"] for row in runs] == ["dev"]
+
+    # 不命中或规则停用时不派发
+    project.task_auto_rules[0]["enabled"] = False
+    seeded.put_project(seeded.get_project("webshop"))
+    plain = create_task(
+        seeded, "webshop", title="普通任务", labels=["other"],
+        channel_ids=["general"])
+    assert auto_process_task(seeded, chat, plain) is None
+    assert seeded.get_task(plain.id).status == "open"
+
+
+def test_task_api_create_applies_auto_rule(seeded):
+    project = seeded.get_project("webshop")
+    project.task_auto_rules = [
+        {"label": "auto", "role_ids": [], "prompt": "按默认流程处理",
+         "enabled": True}]
+    seeded.put_project(project)
+    with TestClient(create_app()) as client:
+        created = client.post("/api/tasks", json={
+            "project_id": "webshop", "title": "自动流转",
+            "labels": ["auto"], "channel_ids": ["general"],
+        }).json()
+        assert created["auto_dispatch"]["rule_label"] == "auto"
+        assert created["auto_dispatch"]["sent"]
+        detail = client.get(f"/api/tasks/{created['id']}").json()
+        assert detail["task"]["status"] == "in_progress"
+
+        rules = client.get("/api/overview").json()["projects"][0].get(
+            "task_auto_rules")
+        assert rules and rules[0]["label"] == "auto"
+
+
 def test_processing_task_rejects_disabled_orchestrator(seeded):
     lead = seeded.get_role("webshop", "lead")
     lead.enabled = False

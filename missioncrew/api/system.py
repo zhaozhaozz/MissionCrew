@@ -67,13 +67,18 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             "boards": [{**b.to_dict(),
                         "resource_url": dashboard_resource_url(b.project_id, b.id)}
                        for b in store.list_boards()],
+            "automations": [a.to_dict() for a in store.list_automations()],
         }
 
     @app.get("/api/traits")
     def traits():
+        from ..collab.agent_tools import ACTION_DEFINITIONS
+        from ..core.models import AUTOMATION_DEFAULT_ACTIONS
         return {"abilities": ROLE_ABILITIES, "tiers": TIER_ORDER,
                 "board_widget_types": sorted(BOARD_WIDGET_TYPES),
-                "effort_options": runtime_manager.effort_catalog()}
+                "effort_options": runtime_manager.effort_catalog(),
+                "automation_actions": sorted(ACTION_DEFINITIONS),
+                "automation_default_actions": list(AUTOMATION_DEFAULT_ACTIONS)}
 
     @app.get("/api/runtime/status")
     def runtime_status():

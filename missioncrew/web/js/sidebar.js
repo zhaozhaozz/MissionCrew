@@ -147,6 +147,18 @@ async function openDocFromSidebar(path) {
 let savedComposerRange = null;
 let mentionPickerRoles = [];
 let mentionPickerIndex = 0;
+// 当前活跃的输入框实例:聊天主输入框与 Task 派发弹窗共用同一套提及选择器逻辑
+let activeComposer = { boxId: "input", pickerId: "mention-picker" };
+
+function composerBox() { return document.getElementById(activeComposer.boxId); }
+function composerPicker() { return document.getElementById(activeComposer.pickerId); }
+
+function activateComposer(boxId, pickerId) {
+  if (activeComposer.boxId === boxId) return;
+  hideMentionPicker();
+  savedComposerRange = null;
+  activeComposer = { boxId, pickerId };
+}
 
 function roleInfo(id) {
   return projRoles().find(role => role.id === id) || null;
@@ -178,7 +190,8 @@ function composerContainsNode(box, node) {
 }
 
 function rememberComposerSelection() {
-  const box = document.getElementById("input");
+  const box = composerBox();
+  if (!box) return;
   const selection = window.getSelection();
   if (!selection?.rangeCount) return;
   const range = selection.getRangeAt(0);
@@ -187,7 +200,7 @@ function rememberComposerSelection() {
 }
 
 function composerInsertionRange() {
-  const box = document.getElementById("input");
+  const box = composerBox();
   const selection = window.getSelection();
   if (savedComposerRange && composerContainsNode(box, savedComposerRange.commonAncestorContainer)) {
     selection.removeAllRanges();
@@ -201,7 +214,8 @@ function composerInsertionRange() {
 }
 
 function activeMentionQuery() {
-  const box = document.getElementById("input");
+  const box = composerBox();
+  if (!box) return null;
   const selection = window.getSelection();
   if (!selection?.rangeCount) return null;
   const range = selection.getRangeAt(0);
@@ -216,15 +230,15 @@ function activeMentionQuery() {
 }
 
 function hideMentionPicker() {
-  const picker = document.getElementById("mention-picker");
-  picker.hidden = true;
-  picker.innerHTML = "";
+  const picker = composerPicker();
+  if (picker) { picker.hidden = true; picker.innerHTML = ""; }
   mentionPickerRoles = [];
   mentionPickerIndex = 0;
 }
 
 function renderMentionPicker(query) {
-  const picker = document.getElementById("mention-picker");
+  const picker = composerPicker();
+  if (!picker) return;
   mentionPickerRoles = activeProjRoles().filter(role => !query
     || role.id.toLowerCase().includes(query)
     || String(role.name || "").toLowerCase().includes(query));
@@ -252,11 +266,11 @@ function moveMentionPicker(delta) {
   mentionPickerIndex = (mentionPickerIndex + delta + mentionPickerRoles.length)
     % mentionPickerRoles.length;
   renderMentionPicker(activeMentionQuery()?.query || "");
-  document.querySelector("#mention-picker button.active")?.scrollIntoView({ block: "nearest" });
+  composerPicker()?.querySelector("button.active")?.scrollIntoView({ block: "nearest" });
 }
 
 function insertComposerMention(id) {
-  const box = document.getElementById("input");
+  const box = composerBox();
   const mention = createComposerMention(id);
   if (!mention) return;
   box.focus();
@@ -306,6 +320,7 @@ function insertMention(id) {
     return;
   }
   if (currentTab !== "chat") switchTab("chat");
+  activateComposer("input", "mention-picker");
   insertComposerMention(id);
 }
 
@@ -349,6 +364,13 @@ function fmtBody(text, markdown = false, mentionSpans = []) {
 let lastMsgDate = "";   // 聊天流的日期分隔线:与上一条消息不同天时插入
 const MESSAGE_FOLD_AT = 4000;
 
+/* automation 消息的作者是脚本 id 或平台内置来源;显示名尽量取脚本名称。 */
+function automationAuthorLabel(author) {
+  if (author === "task-rule") return "Task 自动规则";
+  const automation = (overview.automations || []).find(item => item.id === author);
+  return automation ? `⚙ ${automation.name || automation.id}` : author;
+}
+
 function agentExecutionLabel(message) {
   return `runtime=${message.runtime_id || "未记录"} · ` +
     `model=${message.model || "CLI 默认"} · ` +
@@ -387,16 +409,20 @@ function appendMessagesToSurface(list, surface) {
     }
     const isAgent = m.author_type === "agent";
     const isHuman = m.author_type === "human";
+    const isAutomation = m.author_type === "automation";
     const isToolReceipt = m.author_type === "platform" && m.kind === "agent_tool";
     const color = isAgent ? (roleColor[m.author] || "#888")
-                : isHuman ? "var(--accent)" : "var(--muted)";
+                : isHuman ? "var(--accent)"
+                : isAutomation ? "#b45309" : "var(--muted)";
     const name = isAgent ? "@" + m.author
+      : isAutomation ? automationAuthorLabel(m.author)
       : isToolReceipt ? "MissionCrew Tool"
       : m.author_type === "platform" ? "系统" : m.author;
-    const initial = isAgent || isHuman ? (m.author[0] || "?").toUpperCase() : "⚙";
+    const initial = isAgent || isHuman ? (m.author[0] || "?").toUpperCase()
+      : isAutomation ? "⚡" : "⚙";
     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const longReply = isAgent && m.content.length > MESSAGE_FOLD_AT;
-    const renderMarkdown = isAgent || isToolReceipt;
+    const renderMarkdown = isAgent || isToolReceipt || isAutomation;
     const div = document.createElement("div");
     div.className = `msg ${m.author_type}`;
     div.dataset.msgId = m.id;   // 运行过程卡片按触发消息内联定位
@@ -782,8 +808,7 @@ async function pollMessages() {
   } catch (e) { /* 服务重启间隙,忽略 */ }
 }
 
-function composerPayload() {
-  const box = document.getElementById("input");
+function composerPayload(box = document.getElementById("input")) {
   let content = "";
   let codePoints = 0;
   const mentions = [];
@@ -822,8 +847,8 @@ function composerPayload() {
   };
 }
 
-function restoreComposerPayload(content, mentionSpans = []) {
-  const box = document.getElementById("input");
+function restoreComposerPayload(content, mentionSpans = [],
+                                box = document.getElementById("input")) {
   const chars = Array.from(String(content || ""));
   const fragment = document.createDocumentFragment();
   let cursor = 0;
@@ -910,37 +935,48 @@ async function stopChannelAgents() {
   }
 }
 
-const inputBox = document.getElementById("input");
-inputBox.addEventListener("keydown", e => {
-  if (imeComposing(e)) return;
-  const pickerOpen = !document.getElementById("mention-picker").hidden;
-  if (pickerOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
-    e.preventDefault(); moveMentionPicker(e.key === "ArrowDown" ? 1 : -1); return;
-  }
-  if (pickerOpen && e.key === "Escape") { e.preventDefault(); hideMentionPicker(); return; }
-  if (pickerOpen && e.key === "Enter" && !e.shiftKey && mentionPickerRoles.length) {
-    e.preventDefault(); chooseComposerMention(mentionPickerRoles[mentionPickerIndex].id); return;
-  }
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); return; }
-  if (e.key === "Enter" && e.shiftKey) {
-    e.preventDefault(); document.execCommand("insertText", false, "\n");
-  }
-});
-inputBox.addEventListener("input", () => {
-  if (!inputBox.textContent && !inputBox.querySelector(".mention-compose"))
-    inputBox.replaceChildren();
-  rememberComposerSelection();
-  updateMentionPicker();
-});
-inputBox.addEventListener("keyup", rememberComposerSelection);
-inputBox.addEventListener("mouseup", rememberComposerSelection);
-inputBox.addEventListener("paste", event => {
-  event.preventDefault();
-  document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
-});
+/* 给一个 contenteditable 输入框绑定完整的提及选择器与提交行为;
+   聊天主输入框和 Task 派发弹窗都通过它接入同一套逻辑。 */
+function bindComposerEvents(boxId, pickerId, onSubmit) {
+  const box = document.getElementById(boxId);
+  box.addEventListener("focus", () => activateComposer(boxId, pickerId));
+  box.addEventListener("keydown", e => {
+    if (imeComposing(e)) return;
+    activateComposer(boxId, pickerId);
+    const pickerOpen = !composerPicker().hidden;
+    if (pickerOpen && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault(); moveMentionPicker(e.key === "ArrowDown" ? 1 : -1); return;
+    }
+    if (pickerOpen && e.key === "Escape") { e.preventDefault(); hideMentionPicker(); return; }
+    if (pickerOpen && e.key === "Enter" && !e.shiftKey && mentionPickerRoles.length) {
+      e.preventDefault(); chooseComposerMention(mentionPickerRoles[mentionPickerIndex].id); return;
+    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmit(); return; }
+    if (e.key === "Enter" && e.shiftKey) {
+      e.preventDefault(); document.execCommand("insertText", false, "\n");
+    }
+  });
+  box.addEventListener("input", () => {
+    activateComposer(boxId, pickerId);
+    if (!box.textContent && !box.querySelector(".mention-compose"))
+      box.replaceChildren();
+    rememberComposerSelection();
+    updateMentionPicker();
+  });
+  box.addEventListener("keyup", rememberComposerSelection);
+  box.addEventListener("mouseup", rememberComposerSelection);
+  box.addEventListener("mousedown", () => activateComposer(boxId, pickerId));
+  box.addEventListener("paste", event => {
+    event.preventDefault();
+    document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+  });
+}
+
+bindComposerEvents("input", "mention-picker", () => send());
 document.addEventListener("selectionchange", rememberComposerSelection);
 document.addEventListener("mousedown", event => {
-  if (!event.target.closest("#input-wrap") && !event.target.closest("#role-bar")
+  if (!event.target.closest(".composer-wrap") && !event.target.closest("#input-wrap")
+      && !event.target.closest("#role-bar")
       && !event.target.closest("#role-list")) hideMentionPicker();
 });
 document.getElementById("board-request").addEventListener("keydown", e => {

@@ -10,8 +10,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from . import (agent_tools, backends, boards, chat, documents, guidelines, projects,
-               recycle_bin, resources, roles, spa, system, tasks)
+from . import (agent_tools, automations, backends, boards, chat, documents,
+               guidelines, projects, recycle_bin, resources, roles, spa, system,
+               tasks)
 from .context import ApiContext
 
 
@@ -24,16 +25,18 @@ def create_app() -> FastAPI:
         runtime_manager.set_usage_refresh_handler(
             ctx.role_usage_linkage.request_refresh)
         ctx.role_usage_linkage.start()
+        ctx.automation_scheduler.start()
         try:
             yield
         finally:
             runtime_manager.set_usage_refresh_handler(None)
+            ctx.automation_scheduler.stop()
             ctx.role_usage_linkage.stop()
             runtime_manager.shutdown()
 
     app = FastAPI(title="MissionCrew", version="0.2.0", lifespan=lifespan)
     for module in (system, chat, agent_tools, roles, projects, resources, guidelines,
-                   documents, boards, recycle_bin, backends, tasks):
+                   documents, boards, recycle_bin, backends, tasks, automations):
         module.register(app, ctx)
     spa.register(app, ctx)   # catch-all 兜底,必须最后
     return app

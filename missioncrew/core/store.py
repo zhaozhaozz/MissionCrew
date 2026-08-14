@@ -9,7 +9,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .models import Backend, Board, Channel, Project, Resource, Role, Task
+from .models import (Automation, Backend, Board, Channel, Project, Resource,
+                     Role, Task)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -83,6 +84,17 @@ CREATE TABLE IF NOT EXISTS agent_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_tokens_identity
   ON agent_tokens(project_id, channel, role_id, created_at DESC);
+CREATE TABLE IF NOT EXISTS automations (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS automation_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  automation_id TEXT NOT NULL, project_id TEXT NOT NULL,
+  trigger TEXT NOT NULL DEFAULT 'manual',
+  status TEXT NOT NULL DEFAULT 'running',
+  exit_code INTEGER, stdout TEXT DEFAULT '', stderr TEXT DEFAULT '',
+  error TEXT DEFAULT '', started_at REAL NOT NULL, finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
+  ON automation_runs(automation_id, id DESC);
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
@@ -263,14 +275,19 @@ class Store:
         return changed
 
     def _migrate_agent_tokens(self) -> int:
-        """为旧的 channel×role 令牌补充逐 Run 绑定字段。"""
+        """为旧令牌补充逐 Run 绑定字段与身份类型字段。"""
         columns = {row["name"] for row in self._conn.execute(
             "PRAGMA table_info(agent_tokens)").fetchall()}
-        if "run_id" in columns:
-            return 0
-        self._conn.execute(
-            "ALTER TABLE agent_tokens ADD COLUMN run_id INTEGER NOT NULL DEFAULT 0")
-        return 1
+        changed = 0
+        if "run_id" not in columns:
+            self._conn.execute(
+                "ALTER TABLE agent_tokens ADD COLUMN run_id INTEGER NOT NULL DEFAULT 0")
+            changed += 1
+        if "kind" not in columns:
+            self._conn.execute(
+                "ALTER TABLE agent_tokens ADD COLUMN kind TEXT NOT NULL DEFAULT 'run'")
+            changed += 1
+        return changed
 
     def _migrate_runtime_usage(self) -> None:
         """为已有使用历史补齐项目与角色归属列。"""
@@ -428,6 +445,9 @@ class Store:
         for task in self.list_tasks():
             if task.project_id == id:
                 self.delete_task(task.id)
+        for automation in self.list_automations(id):
+            self.delete_automation(automation.id)
+        self.revoke_agent_tokens(project_id=id)
         self._delete("projects", id)
 
     # ---- Projects / Backends / Resources / Tasks ----
@@ -646,11 +666,11 @@ class Store:
     def put_agent_token(self, *, token_hash: str, token_id: str,
                         project_id: str, channel: str, role_id: str,
                         scopes: list[str], expires_at: float,
-                        run_id: int = 0) -> None:
+                        run_id: int = 0, kind: str = "run") -> None:
         self._execute(
             "INSERT INTO agent_tokens(token_hash,token_id,project_id,channel,role_id,"
-            "run_id,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?)",
-            (token_hash, token_id, project_id, channel, role_id, run_id,
+            "run_id,kind,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (token_hash, token_id, project_id, channel, role_id, run_id, kind,
              json.dumps(scopes, ensure_ascii=False), time.time(), expires_at),
         )
 
@@ -673,12 +693,12 @@ class Store:
         )
 
     def revoke_agent_tokens(self, *, project_id: str = "", channel: str = "",
-                            role_id: str = "",
+                            role_id: str = "", kind: str = "",
                             run_id: Optional[int] = None) -> int:
         clauses = ["revoked_at IS NULL"]
         params: list[object] = []
         for column, value in (("project_id", project_id), ("channel", channel),
-                              ("role_id", role_id)):
+                              ("role_id", role_id), ("kind", kind)):
             if value:
                 clauses.append(f"{column}=?")
                 params.append(value)
@@ -888,6 +908,71 @@ class Store:
 
     def delete_board(self, id: str) -> None:
         self._delete("boards", id)
+
+    # ---- 自动化脚本 ----
+    def put_automation(self, automation: Automation) -> None:
+        automation.updated_at = time.time()
+        self._put("automations", automation.id, automation.to_dict())
+
+    def get_automation(self, id: str) -> Optional[Automation]:
+        d = self._get("automations", id)
+        return Automation.from_dict(d) if d else None
+
+    def list_automations(self, project_id: Optional[str] = None) -> list[Automation]:
+        items = [Automation.from_dict(d) for d in self._list("automations")]
+        if project_id is not None:
+            items = [item for item in items if item.project_id == project_id]
+        return sorted(items, key=lambda item: (item.project_id, item.created_at))
+
+    def delete_automation(self, id: str) -> None:
+        self._execute("DELETE FROM automation_runs WHERE automation_id=?", (id,))
+        self._delete("automations", id)
+
+    def touch_automation_run_state(self, id: str, status: str) -> None:
+        """只更新最近运行状态字段，不覆盖脚本内容的并发编辑。"""
+        with self._lock, self._conn:
+            row = self._conn.execute(
+                "SELECT data FROM automations WHERE id=?", (id,)).fetchone()
+            if row is None:
+                return
+            data = json.loads(row["data"])
+            data["last_run_at"] = time.time()
+            data["last_status"] = status
+            self._conn.execute(
+                "UPDATE automations SET data=? WHERE id=?",
+                (json.dumps(data, ensure_ascii=False), id))
+
+    def start_automation_run(self, automation_id: str, project_id: str,
+                             trigger: str) -> int:
+        return self._execute(
+            "INSERT INTO automation_runs(automation_id,project_id,trigger,"
+            "status,started_at) VALUES(?,?,?,'running',?)",
+            (automation_id, project_id, trigger, time.time()),
+        )
+
+    def finish_automation_run(self, run_id: int, status: str,
+                              exit_code: Optional[int] = None,
+                              stdout: str = "", stderr: str = "",
+                              error: str = "") -> None:
+        self._execute(
+            "UPDATE automation_runs SET status=?, exit_code=?, stdout=?, "
+            "stderr=?, error=?, finished_at=? WHERE id=?",
+            (status, exit_code, stdout, stderr, error, time.time(), run_id),
+        )
+
+    def get_automation_run(self, run_id: int) -> Optional[dict]:
+        rows = self._query(
+            "SELECT * FROM automation_runs WHERE id=?", (run_id,))
+        return dict(rows[0]) if rows else None
+
+    def list_automation_runs(self, automation_id: str,
+                             limit: int = 20) -> list[dict]:
+        rows = self._query(
+            "SELECT * FROM automation_runs WHERE automation_id=? "
+            "ORDER BY id DESC LIMIT ?",
+            (automation_id, max(1, min(int(limit), 200))),
+        )
+        return [dict(row) for row in rows]
 
     # ---- 聊天:消息 ----
     def add_message(self, channel: str, author: str, author_type: str, content: str,
