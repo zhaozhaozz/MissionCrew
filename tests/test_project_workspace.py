@@ -1224,7 +1224,10 @@ def test_background_refresh_preserves_scrollable_view_state(seeded):
     assert 'data-scroll-key="widget:' in boards
     assert "restoreKeyedScrollPositions(preview, scrollState)" in boards
     assert 'captureScrollPositions(["#side-scroll"])' in router
-    assert 'captureScrollPositions(["#board-view"])' in tasks
+    # 看板横向 + 每列纵向滚动分别保持
+    assert 'captureScrollPositions(["#board"])' in tasks
+    assert 'data-scroll-key="col:' in tasks
+    assert "restoreKeyedScrollPositions(board, columnScroll)" in tasks
 
 
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----

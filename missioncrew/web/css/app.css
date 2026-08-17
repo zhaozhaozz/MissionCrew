@@ -379,20 +379,29 @@
   .send:disabled, #composer button:disabled { opacity: .45; cursor: not-allowed; }
   #composer.channel-archived #input { opacity: .65; cursor: not-allowed; }
 
-  /* ---- 看板 ---- */
-  #board-view { flex: 1; overflow-y: auto; display: none; }
-  .task-board-toolbar { padding: 14px 22px 0; display: flex; gap: 10px;
+  /* ---- 看板:列横向滚动,列内卡片纵向滚动,整页锁定视口高度 ---- */
+  #board-view { flex: 1; display: none; flex-direction: column;
+                min-width: 0; min-height: 0; overflow: hidden; }
+  .task-board-toolbar { flex: none; padding: 14px 22px 0; display: flex; gap: 10px;
                         align-items: center; flex-wrap: wrap; }
   .task-board-toolbar label { color: var(--muted); font-size: 12px; display: flex;
                               align-items: center; gap: 6px; }
   .task-board-toolbar select { background: var(--card); color: var(--text);
                                border: 1px solid var(--line); border-radius: 8px;
                                padding: 6px 9px; font: inherit; }
-  main.board { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
-               padding: 16px 22px; align-items: start; }
-  @media (max-width: 1000px) { main.board { grid-template-columns: repeat(2, 1fr); } }
-  .col { background: var(--bg-soft); border-radius: 14px; padding: 10px 10px 2px; }
-  .col h2 { font-size: 12px; color: var(--text-2); margin: 2px 4px 10px;
+  main.board { flex: 1; min-height: 0; display: grid; grid-auto-flow: column;
+               grid-auto-columns: 320px; gap: 14px; align-items: stretch;
+               padding: 16px 22px; overflow-x: auto;
+               overscroll-behavior-x: contain; }
+  main.board::-webkit-scrollbar { height: 10px; }
+  main.board::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--line); }
+  .col { display: flex; flex-direction: column; min-height: 0; min-width: 0;
+         overflow: hidden; background: var(--bg-soft); border-radius: 14px;
+         padding: 10px 10px 2px; }
+  .col-list { flex: 1; min-height: 0; overflow-y: auto;
+              overscroll-behavior-y: contain; padding: 0 2px;
+              scrollbar-width: thin; }
+  .col h2 { flex: none; font-size: 12px; color: var(--text-2); margin: 2px 4px 10px;
             text-transform: uppercase; letter-spacing: .06em; display: flex;
             align-items: center; gap: 7px; }
   .col h2 .col-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
@@ -1113,8 +1122,11 @@
     .form .row { flex-direction: column; gap: 0; }
     dialog { width: 96vw; }
   }
-  @media (max-width: 640px) {
-    main.board { grid-template-columns: 1fr; padding: 12px 14px; }
+  @media (max-width: 760px) {
+    /* 窄屏:一屏约一列,横向滑动切换并按列吸附 */
+    main.board { grid-auto-columns: minmax(84vw, 1fr); padding: 12px 14px;
+                 scroll-snap-type: x proximity; }
+    .col { scroll-snap-align: start; }
   }
 
 /* ---- Task 派发弹窗:复用聊天输入框形态,选择器改为向下展开 ---- */

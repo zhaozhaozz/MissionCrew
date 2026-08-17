@@ -224,7 +224,7 @@ function switchTab(tab) {
   currentTab = tab;
   if (previousTab !== tab) configChatSelection = null;
   document.getElementById("chat-view").style.display = tab === "chat" ? "flex" : "none";
-  document.getElementById("board-view").style.display = tab === "board" ? "block" : "none";
+  document.getElementById("board-view").style.display = tab === "board" ? "flex" : "none";
   document.getElementById("custom-view").style.display = tab === "custom" ? "block" : "none";
   document.getElementById("docs-view").style.display = tab === "docs" ? "block" : "none";
   document.getElementById("guidelines-view").style.display = tab === "guidelines" ? "block" : "none";

@@ -74,14 +74,18 @@ function taskCardHtml(task, { showStatus = false } = {}) {
 }
 
 function renderBoard() {
-  const scrollState = captureScrollPositions(["#board-view"]);
+  // 看板横向滚动、每列内部纵向滚动:分别按列 key 保持重渲染前的滚动位置
+  const board = document.getElementById("board");
+  const outerScroll = captureScrollPositions(["#board"]);
+  const columnScroll = captureKeyedScrollPositions(board);
   renderTaskFilter();
   const statusCols = COLS.map(col => {
     const items = visibleProjTasks().filter(col.match);
     const cards = items.map(task => taskCardHtml(task)).join("")
       || `<div class="empty" style="padding:6px 4px">暂无 Task</div>`;
     return `<section class="col"><h2><span class="col-dot" style="background:${col.color}"></span>
-      ${col.title}<span class="col-count">${items.length}</span></h2>${cards}</section>`;
+      ${col.title}<span class="col-count">${items.length}</span></h2>
+      <div class="col-list" data-scroll-key="col:${esc(col.title)}">${cards}</div></section>`;
   });
   const labelCols = labelBoardEntries().map(entry => {
     const items = visibleProjTasks().filter(task => taskHasLabel(task, entry.label));
@@ -100,10 +104,12 @@ function renderBoard() {
       <span class="badge">${esc(entry.label)}</span><span class="col-count">${items.length}</span>
       <button class="col-tool col-rule ${ruleState}" title="${esc(ruleTitle)}"
         data-label="${esc(entry.label)}"
-        onclick="openLabelRule(this.dataset.label)">⚡</button>${removeBtn}</h2>${cards}</section>`;
+        onclick="openLabelRule(this.dataset.label)">⚡</button>${removeBtn}</h2>
+      <div class="col-list" data-scroll-key="col-label:${esc(entry.label)}">${cards}</div></section>`;
   });
-  document.getElementById("board").innerHTML = statusCols.concat(labelCols).join("");
-  restoreScrollPositions(scrollState);
+  board.innerHTML = statusCols.concat(labelCols).join("");
+  restoreScrollPositions(outerScroll);
+  restoreKeyedScrollPositions(board, columnScroll);
 }
 
 async function openTask(id, updateRoute = true) {
