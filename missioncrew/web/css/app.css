@@ -398,9 +398,10 @@
   .col { display: flex; flex-direction: column; min-height: 0; min-width: 0;
          overflow: hidden; background: var(--bg-soft); border-radius: 14px;
          padding: 10px 10px 2px; }
-  .col-list { flex: 1; min-height: 0; overflow-y: auto;
+  .col-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden;
               overscroll-behavior-y: contain; padding: 0 2px;
               scrollbar-width: thin; }
+  .col-list .card { min-width: 0; overflow-wrap: anywhere; }
   .col h2 { flex: none; font-size: 12px; color: var(--text-2); margin: 2px 4px 10px;
             text-transform: uppercase; letter-spacing: .06em; display: flex;
             align-items: center; gap: 7px; }
@@ -1165,5 +1166,6 @@
 .col h2 .col-rule.rule-off { color: var(--warn); }
 .widget-taskboard-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .widget-taskboard-head button { margin-left: auto; font-size: 12px; padding: 2px 10px; }
-.widget-taskboard-cards { overflow-y: auto; max-height: 100%; }
+.widget-taskboard-cards { overflow-y: auto; overflow-x: hidden; max-height: 100%; }
+.widget-taskboard-cards .card { min-width: 0; overflow-wrap: anywhere; }
 .widget-taskboard-cards .card:last-child { margin-bottom: 4px; }
