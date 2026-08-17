@@ -11,6 +11,7 @@ CONTENT_KIND_LABELS = {
     "docs": "文档",
     "guidelines": "准则",
     "skills": "Skill",
+    "custom": "面板",
 }
 
 

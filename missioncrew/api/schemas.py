@@ -92,7 +92,7 @@ class ChannelCreate(BaseModel):
 
 
 class ContentChannelInput(BaseModel):
-    content_kind: str = Field(pattern=r"^(docs|guidelines|skills)$")
+    content_kind: str = Field(pattern=r"^(docs|guidelines|skills|custom)$")
     content_key: str = Field(min_length=1, max_length=1000)
     label: str = Field(default="", max_length=1000)
 
@@ -226,6 +226,8 @@ class BoardInput(BaseModel):
     description: Optional[str] = None    # None = 更新时保留现值
     layout: Optional[list[dict]] = None  # None = 更新时保留现有布局
     actor_role_id: Optional[str] = None
+    kind: Optional[str] = None           # widgets | taskboard;None = 保留现值
+    query: Optional[str] = None          # taskboard 的标签表达式;None = 保留现值
 
 
 class WidgetDataInput(BaseModel):

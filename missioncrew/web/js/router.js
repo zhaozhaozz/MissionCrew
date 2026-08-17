@@ -187,7 +187,7 @@ async function setProject(id, updateRoute = true) {
   localStorage.setItem("mc.project", id);
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
   firstMsgId = 0; chanHasEarlier = false;
-  currentCustomBoard = null; customBoardEditing = false;
+  currentCustomBoard = null; customBoardEditing = false; boardEditMode = false;
   selectedGuidelineName = undefined;
   guidelineViewer.reset();
   selectedSkillId = undefined;
@@ -333,12 +333,14 @@ function renderSidebar() {
       : `<div class="side-item panel-item ${panel.id === currentCustomBoard && currentTab === "custom" ? "selected" : ""}"
               data-kind="custom" data-id="${esc(panel.id)}"
               onclick="openPanelFromSidebar(this.dataset.kind,this.dataset.id)"
-              title="${esc(panel.description || "")}">▦ ${esc(panel.name || panel.id)}</div>`
+              title="${esc(panel.description || "")}">${panel.kind === "taskboard" ? "▤" : "▦"} ${esc(panel.name || panel.id)}
+          <button class="icon-btn side-item-edit" title="编辑面板" data-id="${esc(panel.id)}"
+            onclick="event.stopPropagation();editPanelFromSidebar(this.dataset.id)">✎</button></div>`
     ).join("");
     const emptyAction = !currentProject
       ? `<div class="empty" style="padding-left:20px">暂无面板</div>`
       : projBoards().length ? ""
-      : `<div class="side-item" onclick="requestBoardFocus()">＋ 向主控提一个面板需求…</div>`;
+      : `<div class="side-item" onclick="openNewBoardDialog()">＋ 新建面板…</div>`;
     document.getElementById("board-list").innerHTML = panelItems + emptyAction;
   }
   // 文档 -> 文档库视图

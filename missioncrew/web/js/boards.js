@@ -1,69 +1,49 @@
 /* ---------------- 自定义面板 ----------------
-   面板由主控 Agent 创建与维护:人类提需求 -> 主控通过 Agent Tool 落地。
-   卡片是通用展示原语(markdown/table/card/chart/list/log/code),
-   content.source 可绑定平台实时数据源;"手动编辑"仅作应急入口。 */
+   两种形态:widgets(主控 Agent 通过 dashboard.save 创建维护的组件网格)与
+   taskboard(用户按标签表达式自建的任务看板)。日常只读渲染;编辑模式从侧栏
+   面板列表的 ✎ 进入——widgets 面板可继续与主控在面板专属频道对话,或直接改
+   布局 JSON;taskboard 面板直接改名称与表达式。 */
 let currentCustomBoard = null;
 let customBoardEditing = false;
-let boardEditorVisible = false;
+let boardEditorVisible = false;   // JSON 编辑表单是否展开(仅编辑模式内)
+let boardEditMode = false;        // 编辑模式:侧栏 ✎ 进入,"完成编辑"退出
 let customBoardRenderSignature = null;
 let boardWidgetRenderToken = 0;
 
 function currentCustomBoardStateSignature() {
   const board = projBoards().find(value => value.id === currentCustomBoard) || null;
-  return JSON.stringify([currentProject, currentCustomBoard, boardEditorVisible, board]);
+  return JSON.stringify([currentProject, currentCustomBoard, boardEditorVisible,
+                         boardEditMode, board]);
 }
 
 function boardHasLiveWidgets(board) {
-  // taskboard 直接读 overview 里的任务数据,同样需要随轮询重绘
+  // taskboard(组件或整板)直接读 overview 里的任务数据,需随轮询重绘
+  if (board?.kind === "taskboard") return true;
   return (board?.layout || []).some(widget =>
     widget.content?.source || widget.type === "taskboard");
-}
-
-// 把面板需求交给项目主控:发到项目的 general 频道,全程可见
-async function requestBoard() {
-  const box = document.getElementById("board-request");
-  const text = box.value.trim();
-  const p = projObj();
-  if (!text || !p) return;
-  const channel = projChannels().find(c =>
-    c.id.endsWith(":general") || c.id === "general") || projChannels()[0];
-  if (!channel) { uiAlert("本项目还没有频道,请先在项目设置中创建"); return; }
-  const board = projBoards().find(b => b.id === currentCustomBoard);
-  const context = board ? `当前正在查看面板「${board.name}」(id: ${board.id.split(":").pop()})。` : "";
-  const content = `@${p.orchestrator_role_id} 自定义面板需求:${text}\n` +
-    `${context}请用 MissionCrew Agent Tool 的 dashboard.save 完成,面板 id 用英文短横线命名。`;
-  box.value = "";
-  try {
-    await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`,
-              { author: "human", content });
-    document.getElementById("board-request-status").textContent =
-      `已交给主控 @${p.orchestrator_role_id}(频道 #${channel.name});完成后面板会自动出现在下方,过程可在聊天页查看。`;
-  } catch (e) { box.value = text; }
 }
 
 function renderCustomBoards(force = false) {
   if (customBoardEditing && !force) return;
   const boards = projBoards();
-  if (currentCustomBoard && !boards.some(b => b.id === currentCustomBoard))
+  if (currentCustomBoard && !boards.some(b => b.id === currentCustomBoard)) {
     currentCustomBoard = null;
+    boardEditMode = false;
+  }
   if (!currentCustomBoard && boards.length) currentCustomBoard = boards[0].id;
   const board = boards.find(value => value.id === currentCustomBoard);
   const signature = currentCustomBoardStateSignature();
   if (!force && signature === customBoardRenderSignature) {
-    if (boardHasLiveWidgets(board)) renderBoardWidgets(board.layout || []);
+    if (boardHasLiveWidgets(board)) renderBoardContent(board);
     return;
   }
-  const sel = document.getElementById("custom-board-select");
-  if (!sel) return;
-  sel.innerHTML = boards.length ? boards.map(b =>
-    `<option value="${esc(b.id)}" ${b.id === currentCustomBoard ? "selected" : ""}>${esc(b.name || b.id)}</option>`
-  ).join("") : `<option value="">(暂无面板,向主控提一个需求吧)</option>`;
   renderCustomBoardEditor();
 }
 
 function selectCustomBoard(id) {
   customBoardEditing = false;
   boardEditorVisible = false;
+  boardEditMode = false;
   currentCustomBoard = id || null;
   renderCustomBoardEditor();
   syncUrl();
@@ -75,34 +55,148 @@ function toggleBoardEditor() {
   renderCustomBoardEditor();
 }
 
+function exitBoardEditMode() {
+  boardEditMode = false;
+  boardEditorVisible = false;
+  customBoardEditing = false;
+  renderCustomBoardEditor();
+}
+
 function renderCustomBoardEditor() {
   const form = document.getElementById("custom-board-form");
   const preview = document.getElementById("custom-board-preview");
   if (!form || !preview) return;
   const board = projBoards().find(b => b.id === currentCustomBoard);
   customBoardRenderSignature = currentCustomBoardStateSignature();
+  const title = document.getElementById("custom-board-title");
+  const desc = document.getElementById("custom-board-desc");
+  const jsonBtn = document.getElementById("custom-board-json-btn");
+  const doneBtn = document.getElementById("custom-board-done-btn");
   if (!board) {
+    if (title) title.textContent = "自定义面板";
+    if (desc) desc.textContent = "";
+    if (jsonBtn) jsonBtn.hidden = true;
+    if (doneBtn) doneBtn.hidden = true;
     form.style.display = "none";
-    preview.innerHTML = `<div class="empty" style="grid-column:1/-1">还没有面板:在上方描述你想要的面板,交给主控创建。</div>`;
+    preview.classList.remove("taskboard-mode");
+    preview.innerHTML = `<div class="empty" style="grid-column:1/-1">还没有面板:点击侧栏「面板」的 ＋ 新建。</div>`;
+    if (typeof updateConfigChatContext === "function") updateConfigChatContext();
     return;
   }
-  if (!boardEditorVisible) {   // 默认只看渲染结果;手动编辑是应急入口
+  const editable = boardEditMode && board.kind !== "taskboard";
+  if (title) title.textContent = (board.name || board.id)
+    + (boardEditMode ? " · 编辑中" : "");
+  if (desc) desc.textContent = board.kind === "taskboard"
+    ? `标签表达式:${board.query || "(空)"}` : (board.description || "");
+  if (jsonBtn) jsonBtn.hidden = !editable;
+  if (doneBtn) doneBtn.hidden = !boardEditMode;
+  if (!editable || !boardEditorVisible) {
     form.style.display = "none";
-    renderBoardWidgets(board.layout || []);
+  } else {
+    form.style.display = "block";
+    form.innerHTML = `
+      <div class="row">
+        <div><label>面板 id</label><input id="cb-id" value="${esc(board.id.split(":").pop())}" disabled></div>
+        <div><label>名称</label><input id="cb-name" oninput="customBoardEditing=true" value="${esc(board.name)}"></div>
+      </div>
+      <label>用途说明</label><input id="cb-desc" oninput="customBoardEditing=true" value="${esc(board.description || "")}">
+      <label>布局 JSON(应急手动编辑;日常修改建议在下方主控对话里提需求)</label>
+      <textarea id="cb-layout" rows="14" spellcheck="false" oninput="previewBoardDraft()">${esc(JSON.stringify(board.layout || [], null, 2))}</textarea>
+      <div class="form-actions"><button class="action" onclick="saveCustomBoard()">保存面板</button>
+        <button class="danger" onclick="deleteCustomBoard()">删除面板</button></div>`;
+  }
+  renderBoardContent(board);
+  if (typeof updateConfigChatContext === "function") updateConfigChatContext();
+}
+
+function renderBoardContent(board) {
+  if (!board) return;
+  if (board.kind === "taskboard") renderTaskboardBoard(board);
+  else renderBoardWidgets(board.layout || []);
+}
+
+/* ---- 标签表达式:与 & 或 | 非 ! 与括号;标签不区分大小写,&&/|| 同义 ---- */
+function compileLabelQuery(expr) {
+  const tokens = [];
+  let buffer = "";
+  const flush = () => {
+    const text = buffer.trim();
+    if (text) tokens.push({ label: text.toLowerCase() });
+    buffer = "";
+  };
+  for (let i = 0; i < expr.length; i++) {
+    const ch = expr[i];
+    if ("&|!()".includes(ch)) {
+      flush();
+      if ((ch === "&" || ch === "|") && expr[i + 1] === ch) i++;
+      tokens.push(ch);
+    } else buffer += ch;
+  }
+  flush();
+  if (!tokens.length) throw new Error("表达式不能为空");
+  let pos = 0;
+  const peek = () => tokens[pos];
+  const parseOr = () => {
+    let node = parseAnd();
+    while (peek() === "|") {
+      pos++;
+      const left = node, right = parseAnd();
+      node = labels => left(labels) || right(labels);
+    }
+    return node;
+  };
+  const parseAnd = () => {
+    let node = parseNot();
+    while (peek() === "&") {
+      pos++;
+      const left = node, right = parseNot();
+      node = labels => left(labels) && right(labels);
+    }
+    return node;
+  };
+  const parseNot = () => {
+    const token = peek();
+    if (token === "!") { pos++; const inner = parseNot(); return labels => !inner(labels); }
+    if (token === "(") {
+      pos++;
+      const inner = parseOr();
+      if (peek() !== ")") throw new Error("缺少右括号");
+      pos++;
+      return inner;
+    }
+    if (!token || typeof token === "string") throw new Error("运算符后缺少标签");
+    pos++;
+    const label = token.label;
+    return labels => labels.has(label);
+  };
+  const matcher = parseOr();
+  if (pos !== tokens.length) throw new Error("表达式有多余内容");
+  return matcher;
+}
+
+function renderTaskboardBoard(board) {
+  const preview = document.getElementById("custom-board-preview");
+  if (!preview) return;
+  preview.classList.add("taskboard-mode");
+  let matcher;
+  try { matcher = compileLabelQuery(board.query || ""); }
+  catch (error) {
+    preview.innerHTML = `<div class="empty">标签表达式不合法:${esc(error.message)};点击侧栏 ✎ 修改。</div>`;
     return;
   }
-  form.style.display = "block";
-  form.innerHTML = `
-    <div class="row">
-      <div><label>面板 id</label><input id="cb-id" value="${esc(board.id.split(":").pop())}" disabled></div>
-      <div><label>名称</label><input id="cb-name" oninput="customBoardEditing=true" value="${esc(board.name)}"></div>
-    </div>
-    <label>用途说明</label><input id="cb-desc" oninput="customBoardEditing=true" value="${esc(board.description || "")}">
-    <label>布局 JSON(应急手动编辑;日常修改建议直接向主控提需求)</label>
-    <textarea id="cb-layout" rows="14" spellcheck="false" oninput="previewBoardDraft()">${esc(JSON.stringify(board.layout || [], null, 2))}</textarea>
-    <div class="form-actions"><button class="action" onclick="saveCustomBoard()">保存面板</button>
-      <button class="danger" onclick="deleteCustomBoard()">删除面板</button></div>`;
-  renderBoardWidgets(board.layout || []);
+  const matched = projTasks().filter(task =>
+    !task.archived && matcher(new Set(task.labels.map(label => label.toLowerCase()))));
+  const scrollState = captureKeyedScrollPositions(preview);
+  const columns = COLS.map(col => {
+    const items = matched.filter(col.match);
+    const cards = items.map(task => taskCardHtml(task)).join("")
+      || `<div class="empty" style="padding:6px 4px">暂无 Task</div>`;
+    return `<section class="col"><h2><span class="col-dot" style="background:${col.color}"></span>
+      ${col.title}<span class="col-count">${items.length}</span></h2>
+      <div class="col-list" data-scroll-key="tb:${esc(col.title)}">${cards}</div></section>`;
+  }).join("");
+  preview.innerHTML = `<div class="taskboard-grid">${columns}</div>`;
+  restoreKeyedScrollPositions(preview, scrollState);
 }
 
 let _previewTimer = null;
@@ -230,6 +324,7 @@ function renderWidgetContent(w, resolved) {
 async function renderBoardWidgets(layout) {
   const renderToken = ++boardWidgetRenderToken;
   const preview = document.getElementById("custom-board-preview");
+  preview?.classList.remove("taskboard-mode");
   const widgets = Array.isArray(layout) ? layout : [];
   // 有数据源的卡片:批量向平台解析(保存态与预览态共用同一端点)
   let resolved = {};
@@ -264,17 +359,125 @@ async function saveCustomBoard() {
   currentCustomBoard = `${currentProject}:${id}`;
   customBoardEditing = false;
   window._newBoardDraft = null;
-  await loadOverview(); renderCustomBoards();
+  await loadOverview(); renderCustomBoards(true);
   toast("面板已保存", "success");
 }
 
-async function deleteCustomBoard() {
-  const board = projBoards().find(b => b.id === currentCustomBoard);
+async function deleteCustomBoard(boardId = null) {
+  const board = projBoards().find(b => b.id === (boardId || currentCustomBoard));
   if (!board || !await uiConfirm(`将面板「${board.name}」移入项目回收站？`)) return;
   const shortId = board.id.replace(`${currentProject}:`, "");
   await api("DELETE", `/api/projects/${encodeURIComponent(currentProject)}/boards/${encodeURIComponent(shortId)}`);
-  currentCustomBoard = null;
+  if (currentCustomBoard === board.id) currentCustomBoard = null;
   customBoardEditing = false;
-  await loadOverview(); renderCustomBoards();
+  boardEditMode = false;
+  if (fdlg.open) fdlg.close();
+  await loadOverview(); renderCustomBoards(true);
   toast("面板已移入回收站", "success");
+}
+
+/* ---------------- 新建面板与 taskboard 编辑 ---------------- */
+
+function openNewBoardDialog() {
+  if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
+  openFormDialog("新建面板", `
+    <label>面板类型</label>
+    <div class="new-board-kinds">
+      <label><input type="radio" name="nb-kind" value="taskboard" checked
+        onchange="toggleNewBoardKind()"> 标签任务看板 <span class="muted">按标签表达式筛选 Task,按状态分列</span></label>
+      <label><input type="radio" name="nb-kind" value="agent"
+        onchange="toggleNewBoardKind()"> 主控创建面板 <span class="muted">一句话提需求,主控用组件搭建</span></label>
+    </div>
+    <div id="nb-taskboard">
+      <label>名称</label><input type="text" id="nb-name" placeholder="例如 缺陷追踪">
+      <label>标签表达式(& 与、| 或、! 非、括号;标签不区分大小写)</label>
+      <input type="text" id="nb-query" placeholder="例如 (bug | crash) & !wontfix">
+    </div>
+    <div id="nb-agent" style="display:none">
+      <label>需求描述</label>
+      <textarea id="nb-request" rows="4" style="height:auto"
+        placeholder="例如:建一个需求管理面板,上面是需求清单表格,下面实时显示进行中的任务"></textarea>
+      <p class="muted">需求会发到项目 general 频道交给主控,过程可在聊天页查看;创建完成后面板自动出现在侧栏,之后的修改在面板编辑模式的专属频道里继续对话。</p>
+    </div>`,
+    `<button class="action" onclick="submitNewBoard()">创建</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+}
+
+function toggleNewBoardKind() {
+  const kind = document.querySelector('input[name="nb-kind"]:checked')?.value;
+  document.getElementById("nb-taskboard").style.display =
+    kind === "taskboard" ? "block" : "none";
+  document.getElementById("nb-agent").style.display =
+    kind === "agent" ? "block" : "none";
+}
+
+async function submitNewBoard() {
+  const kind = document.querySelector('input[name="nb-kind"]:checked')?.value;
+  if (kind === "taskboard") {
+    const name = document.getElementById("nb-name").value.trim();
+    const query = document.getElementById("nb-query").value.trim();
+    if (!name) { uiAlert("名称不能为空"); return; }
+    try { compileLabelQuery(query); }
+    catch (error) { uiAlert(`标签表达式不合法:${error.message}`); return; }
+    const shortId = `tb-${Math.random().toString(36).slice(2, 8)}`;
+    await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
+      id: shortId, name, kind: "taskboard", query, layout: [],
+    });
+    fdlg.close();
+    currentCustomBoard = `${currentProject}:${shortId}`;
+    boardEditMode = false;
+    await loadOverview();
+    if (currentTab !== "custom") switchTab("custom");
+    else { renderCustomBoards(true); renderSidebar(); syncUrl(); }
+    toast(`已创建标签任务看板「${name}」`, "success");
+    return;
+  }
+  // 主控创建:需求发到 general 频道,创建过程全程可见
+  const project = projObj();
+  const request = document.getElementById("nb-request").value.trim();
+  if (!request) { uiAlert("请描述你想要的面板"); return; }
+  const channel = projChannels().find(c =>
+    c.id.endsWith(":general") || c.id === "general") || projChannels()[0];
+  if (!channel) { uiAlert("本项目还没有频道,请先在项目设置中创建"); return; }
+  await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
+    author: "human",
+    content: `@${project.orchestrator_role_id} 自定义面板需求:${request}\n` +
+      `请用 MissionCrew Agent Tool 的 dashboard.save 完成,面板 id 用英文短横线命名。`,
+  });
+  fdlg.close();
+  toast(`已交给主控 @${project.orchestrator_role_id}(频道 #${channel.name});完成后面板会出现在侧栏`, "success", 6000);
+}
+
+function openTaskboardDialog(boardId) {
+  const board = projBoards().find(item => item.id === boardId);
+  if (!board) return;
+  openFormDialog(`编辑任务看板 · ${board.name || board.id}`, `
+    <label>名称</label>
+    <input type="text" id="tbf-name" value="${esc(board.name || "")}">
+    <label>标签表达式(& 与、| 或、! 非、括号;标签不区分大小写)</label>
+    <input type="text" id="tbf-query" value="${esc(board.query || "")}"
+      placeholder="例如 (bug | crash) & !wontfix">`,
+    `<button class="action" data-id="${esc(board.id)}"
+       onclick="saveTaskboardDialog(this.dataset.id)">保存</button>
+     <button class="danger" data-id="${esc(board.id)}"
+       onclick="deleteCustomBoard(this.dataset.id)">删除面板</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+}
+
+async function saveTaskboardDialog(boardId) {
+  const board = projBoards().find(item => item.id === boardId);
+  if (!board) return;
+  const name = document.getElementById("tbf-name").value.trim();
+  const query = document.getElementById("tbf-query").value.trim();
+  if (!name) { uiAlert("名称不能为空"); return; }
+  try { compileLabelQuery(query); }
+  catch (error) { uiAlert(`标签表达式不合法:${error.message}`); return; }
+  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
+    id: board.id.replace(`${currentProject}:`, ""), name, query,
+  });
+  fdlg.close();
+  await loadOverview();
+  renderCustomBoards(true);
+  renderSidebar();
+  toast("任务看板已更新", "success");
 }

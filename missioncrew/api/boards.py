@@ -8,7 +8,8 @@ from fastapi import FastAPI, HTTPException
 from ..collab.documents import library_for
 from ..collab.recycle_bin import recycle_dashboard
 from ..collab.resource_urls import dashboard_resource_url
-from ..core.models import BOARD_WIDGET_TYPES, Board, BoardWidget
+from ..core import label_query
+from ..core.models import BOARD_KINDS, BOARD_WIDGET_TYPES, Board, BoardWidget
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import BoardInput, WidgetDataInput
 
@@ -127,6 +128,18 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             board.description = body.description
         if widgets is not None:
             board.layout = widgets
+        if body.kind is not None:
+            if body.kind not in BOARD_KINDS:
+                raise HTTPException(
+                    400, f"kind 必须是 {'/'.join(sorted(BOARD_KINDS))}")
+            board.kind = body.kind
+        if body.query is not None:
+            board.query = body.query.strip()
+        if board.kind == "taskboard":
+            try:
+                label_query.parse(board.query)
+            except ValueError as exc:
+                raise HTTPException(400, f"标签表达式不合法: {exc}")
         store.put_board(board)
         store.audit(actor, "board_saved", detail=f"project={project_id} board={board_id}")
         return {**board.to_dict(),

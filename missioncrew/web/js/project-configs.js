@@ -5,11 +5,12 @@ const GUIDELINE_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
 const configEditorDirty = { guidelines: false, skills: false };
 let skillLibraryInfo = null;
 let skillFolderImportOpen = false;
-const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "docs"]);
+const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "docs", "custom"]);
 const CONFIG_CHAT_TARGETS = {
   guidelines: { label: "准则文档", action: "guideline.save" },
   skills: { label: "Skill", action: "skill.save" },
   docs: { label: "版本化文档", action: "document.publish" },
+  custom: { label: "自定义面板", action: "dashboard.save" },
 };
 const CONFIG_FIELD_LABELS = {
   "gf-content": "准则 Markdown 文件",
@@ -120,6 +121,14 @@ function configChatContext() {
                              : (docSelected || "未选择文档");
     itemKey = docMode === "new" ? "new" : (docSelected || "none");
     contentKey = docMode === "new" ? null : docSelected;
+  } else if (currentTab === "custom") {
+    // 面板对话只在编辑模式出现;taskboard 面板直接改表达式,不经主控
+    const board = projBoards().find(value => value.id === currentCustomBoard);
+    if (!boardEditMode || !board || board.kind === "taskboard") return null;
+    const shortId = board.id.replace(`${project.id}:`, "");
+    item = `${board.name || shortId}（id: ${shortId}）`;
+    itemKey = shortId;
+    contentKey = shortId;
   }
   return {
     ...target, tab: currentTab, item, contentKey,
@@ -140,6 +149,17 @@ function guidelineFrontmatterValue(markdown, key) {
 }
 
 function currentConfigDraft(context) {
+  if (context.tab === "custom") {
+    const board = projBoards().find(value => value.id === currentCustomBoard);
+    if (!board) return null;
+    return {
+      board_id: board.id.replace(`${currentProject}:`, ""),
+      name: board.name,
+      description: board.description || "",
+      layout: board.layout || [],
+      unsaved_changes: customBoardEditing,
+    };
+  }
   if (context.tab === "skills") return {
     id: selectedSkillId ?? valueOf("sf-id").trim(),
     markdown: clippedConfigText(valueOf("sf-content")).text,
@@ -613,11 +633,16 @@ async function sendConfigChat() {
         `frontmatter 必须含 name、description，其他附加属性保持原样。保存时把修改后的完整文件放入 ` +
         `${context.action}.markdown，id 传 current_draft.id（Skill 目录名，不可修改）。`
       : "";
+    const dashboardEditingTip = context.tab === "custom"
+      ? `当前编辑对象是自定义面板，现有布局在 current_draft.layout（组件数组）。` +
+        `修改时用 ${context.action} 传 id=current_draft.board_id、mode=update 和修改后的完整 layout；` +
+        `不要新建面板或改动其他面板。`
+      : "";
     const instructions =
       `这是围绕当前页面的对话：若用户只是提问、解释或讨论，只需回答，不要写入；` +
       `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
       `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
-      guidelineEditingTip + documentEditingTip + skillEditingTip;
+      guidelineEditingTip + documentEditingTip + skillEditingTip + dashboardEditingTip;
     input.value = "";
     await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
       author: "human", content: request,

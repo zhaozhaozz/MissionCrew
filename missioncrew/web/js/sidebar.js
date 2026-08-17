@@ -3,9 +3,19 @@ function quickCreateChannel() {
   openChannelDialog();
 }
 
-function requestBoardFocus() {   // 面板由主控创建:跳到需求输入框
-  switchTab("custom");
-  setTimeout(() => document.getElementById("board-request")?.focus(), 80);
+function editPanelFromSidebar(id) {   // 面板列表右侧 ✎:进入该面板的编辑模式
+  const board = projBoards().find(item => item.id === id);
+  if (!board) return;
+  if (board.kind === "taskboard") { openTaskboardDialog(board.id); return; }
+  currentCustomBoard = id;
+  customBoardEditing = false;
+  boardEditorVisible = false;
+  boardEditMode = true;
+  if (currentTab === "custom") {
+    renderCustomBoards(true);
+    renderSidebar();
+    syncUrl();
+  } else switchTab("custom");
 }
 
 function quickNewDocument() {
@@ -120,6 +130,7 @@ function openBoardFromSidebar(id) {
   currentCustomBoard = id;
   customBoardEditing = false;
   boardEditorVisible = false;
+  boardEditMode = false;
   if (currentTab === "custom") {
     renderCustomBoards(true);
     renderSidebar();
@@ -1002,7 +1013,4 @@ document.addEventListener("mousedown", event => {
   if (!event.target.closest(".composer-wrap") && !event.target.closest("#input-wrap")
       && !event.target.closest("#role-bar")
       && !event.target.closest("#role-list")) hideMentionPicker();
-});
-document.getElementById("board-request").addEventListener("keydown", e => {
-  if (e.key === "Enter" && !e.shiftKey && !imeComposing(e)) { e.preventDefault(); requestBoard(); }
 });

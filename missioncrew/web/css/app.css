@@ -430,9 +430,18 @@
   .widget h3 { margin: 0 0 8px; color: var(--text); font-size: 13.5px; }
   .widget .widget-type { color: var(--muted); font-size: 11px; float: right; }
   .board-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  .board-toolbar select { min-width: 220px; background: var(--card); color: var(--text);
-                          border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px;
-                          font: inherit; cursor: pointer; }
+  .custom-board-actions { margin-left: auto; display: flex; gap: 8px; }
+  /* taskboard 形态的面板:preview 从 12 列网格切换成状态列横向排布 */
+  .custom-grid.taskboard-mode { display: flex; margin-top: 16px; }
+  .taskboard-grid { flex: 1; display: grid; grid-auto-flow: column;
+                    grid-auto-columns: 320px; gap: 14px; align-items: stretch;
+                    overflow-x: auto; overscroll-behavior-x: contain;
+                    height: calc(100dvh - 190px); }
+  .new-board-kinds { display: grid; gap: 6px; margin: 4px 0 10px; }
+  .new-board-kinds label { display: flex; align-items: baseline; gap: 8px;
+                           font-weight: 500; }
+  .side-item-edit { margin-left: 6px; visibility: hidden; }
+  .side-item:hover .side-item-edit { visibility: visible; }
   .skill-library-box { margin: 6px 0 0; padding: 6px 10px; border: 1px solid var(--line);
                        border-radius: 10px; background: var(--bg-soft); font-size: 12px;
                        overflow-wrap: anywhere; }

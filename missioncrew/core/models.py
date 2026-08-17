@@ -658,6 +658,10 @@ class BoardWidget:
     content: dict = field(default_factory=dict)
 
 
+# 面板形态:widgets(主控维护的组件网格) | taskboard(按标签表达式筛选的任务看板)
+BOARD_KINDS = {"widgets", "taskboard"}
+
+
 @dataclass
 class Board:
     """项目自定义面板；layout 同时保存位置、尺寸和组件内容。"""
@@ -670,6 +674,8 @@ class Board:
     created_by_role_id: str = ""
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
+    kind: str = "widgets"
+    query: str = ""          # taskboard:标签组合表达式(& | ! 与括号)
 
     def to_dict(self) -> dict:
         return asdict(self)

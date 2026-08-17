@@ -902,6 +902,38 @@ def test_update_board_without_layout_preserves_widgets(seeded):
     assert seeded.get_board("webshop:req") is None
 
 
+def test_taskboard_kind_board_saves_query_and_validates(seeded):
+    client = _client(seeded)
+    saved = client.post("/api/projects/webshop/boards", json={
+        "id": "bugs", "name": "缺陷追踪", "kind": "taskboard",
+        "query": "(bug | crash) & !wontfix", "layout": []})
+    assert saved.status_code == 200, saved.text
+    board = seeded.get_board("webshop:bugs")
+    assert board.kind == "taskboard"
+    assert board.query == "(bug | crash) & !wontfix"
+
+    # 只改名不带 kind/query -> 形态与表达式保留
+    client.post("/api/projects/webshop/boards",
+                json={"id": "bugs", "name": "缺陷追踪 v2"})
+    board = seeded.get_board("webshop:bugs")
+    assert board.kind == "taskboard" and board.query
+
+    # 非法表达式与非法 kind 都拒绝
+    bad_query = client.post("/api/projects/webshop/boards", json={
+        "id": "bugs", "name": "缺陷追踪", "query": "(bug"})
+    assert bad_query.status_code == 400
+    assert "标签表达式不合法" in bad_query.json()["detail"]
+    bad_kind = client.post("/api/projects/webshop/boards", json={
+        "id": "x", "name": "x", "kind": "unknown"})
+    assert bad_kind.status_code == 400
+
+    # 面板专属内容频道:custom 类型可创建
+    channel = client.post("/api/projects/webshop/content-channel", json={
+        "content_kind": "custom", "content_key": "bugs", "label": "缺陷追踪"})
+    assert channel.status_code == 200, channel.text
+    assert channel.json()["content_kind"] == "custom"
+
+
 def test_non_orchestrator_actions_are_stripped_end_to_end(seeded):
     """非主控回复中的控制动作:端到端验证被剥离且不生效(mock 回显动作块)。"""
     chat = ChatEngine(seeded)

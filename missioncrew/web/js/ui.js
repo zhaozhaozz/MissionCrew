@@ -219,8 +219,9 @@ const BUILTIN_TASK_PANEL = Object.freeze({
   id: "__missioncrew_tasks__", name: "任务看板", kind: "tasks", builtin: true,
   description: "平台内置 Issue 看板；处理任务会在绑定 Channel 中通知主控",
 });
+// board.kind 是面板形态(widgets/taskboard),侧栏点击分派用 builtin 区分
 const projPanels = () => currentProject ? [BUILTIN_TASK_PANEL,
-  ...projBoards().map(board => ({ ...board, kind: "custom", builtin: false }))] : [];
+  ...projBoards().map(board => ({ ...board, builtin: false }))] : [];
 
 /* ---- 本地代码仓（Project.repos）----
    git 管理的仓库用 git 分支图标区分，普通本地目录仍用文件夹图标。 */

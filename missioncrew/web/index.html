@@ -55,7 +55,7 @@
           <span class="caret">▾</span>面板<span class="count" id="cnt-boards"></span>
           <span class="sec-act">
             <button class="icon-btn" title="新建任务" onclick="event.stopPropagation();openNewTask()">✓</button>
-            <button class="icon-btn" title="新建面板(向主控提需求)" onclick="event.stopPropagation();requestBoardFocus()">＋</button>
+            <button class="icon-btn" title="新建面板" onclick="event.stopPropagation();openNewBoardDialog()">＋</button>
           </span></h2>
         <div id="board-list"></div>
       </div>
@@ -167,19 +167,15 @@
 
     <div id="custom-view" class="page">
       <div class="section">
-        <h2>自定义面板</h2>
-        <p class="muted">面板由项目主控创建和维护:用一句话提需求(例如"建一个需求管理面板,上面是需求清单表格,下面实时显示进行中的任务"),主控通过控制动作完成创建或修改,过程在聊天频道全程可见。</p>
-        <div class="form" style="max-width:none;margin-bottom:10px">
-          <div id="input-row">
-            <textarea id="board-request" style="height:48px"
-              placeholder="描述你想要的面板,或对当前面板的修改要求…(Enter 发送,Shift+Enter 换行)"></textarea>
-            <button class="send" onclick="requestBoard()">交给主控</button>
-          </div>
-          <div class="muted" id="board-request-status"></div>
-        </div>
-        <div class="board-toolbar">
-          <select id="custom-board-select" onchange="selectCustomBoard(this.value)"></select>
-          <button class="ghost" onclick="toggleBoardEditor()">手动编辑</button>
+        <div class="board-toolbar" id="custom-board-head">
+          <h2 id="custom-board-title" style="margin:0">自定义面板</h2>
+          <span class="muted" id="custom-board-desc"></span>
+          <span class="custom-board-actions">
+            <button class="ghost" id="custom-board-json-btn" hidden
+              onclick="toggleBoardEditor()">JSON 编辑</button>
+            <button class="action" id="custom-board-done-btn" hidden
+              onclick="exitBoardEditMode()">完成编辑</button>
+          </span>
         </div>
         <div class="form" id="custom-board-form" style="display:none"></div>
         <div class="custom-grid" id="custom-board-preview"></div>
