@@ -533,10 +533,34 @@ function runSummary(run) {
                done: "已完成", failed: "失败", stopped: "已停止" }[run.status] || run.status;
   const live = ["queued", "running", "waiting_user"].includes(run.status);
   const secs = run.finished_at ? ` · ${Math.max(1, Math.round(run.finished_at - run.created_at))}s` : "";
+  // 执行组合:runtime · model(/effort);旧记录没盖章时只显示 runtime
+  const combo = [
+    run.backend_id ? esc(run.backend_id) : "…",
+    run.model ? esc(run.model) + (run.effort ? `/${esc(run.effort)}` : "") : "",
+  ].filter(Boolean).join(" · ");
   return `<span class="rc-dot ${live ? "live" : run.status}">●</span>
     <b style="color:${roleColor[run.role_id] || "var(--muted)"}">@${esc(run.role_id)}</b>
-    <span class="muted">${run.backend_id ? esc(run.backend_id) : "…"} · ${st}${secs}</span>
-    ${run.error ? `<span class="rc-err">${esc(run.error).slice(0, 120)}</span>` : ""}`;
+    <span class="muted">${combo} · ${st}${secs}</span>
+    ${run.error ? `<span class="rc-err">${esc(run.error).slice(0, 120)}</span>` : ""}
+    ${live ? `<button class="rc-stop" data-run-id="${run.id}" title="停止本次运行并终止其 Runtime 进程(原生会话保留)"
+      onclick="stopChatRun(event, this.dataset.runId)">停止</button>` : ""}`;
+}
+
+async function stopChatRun(event, runId) {
+  // summary 上的点击默认会折叠/展开卡片,先拦下来
+  event.preventDefault();
+  event.stopPropagation();
+  if (!await uiConfirm(
+      "停止这次 Agent 运行,并终止它的 Runtime 进程?原生会话 ID 会保留,已完成的文件修改不会自动回滚。",
+      "停止本次运行")) return;
+  try {
+    const result = await api("POST", `/api/chat/runs/${runId}/stop`);
+    toast(result.stopped_runtimes
+      ? `已停止 @${result.role_id} 的运行,并终止 ${result.stopped_runtimes} 个 Runtime 进程`
+      : `已停止 @${result.role_id} 的运行`,
+      result.runtime_errors ? "error" : "success");
+  } catch (e) { /* api() 已提示错误 */ }
+  await pollMessages();
 }
 
 function parseStructuredRunEvent(event) {

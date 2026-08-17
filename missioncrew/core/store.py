@@ -56,6 +56,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_channel_created
 CREATE TABLE IF NOT EXISTS chat_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL, role_id TEXT NOT NULL, backend_id TEXT DEFAULT '',
+  model TEXT DEFAULT '', effort TEXT DEFAULT '',
   trigger_message_id INTEGER NOT NULL, root_id INTEGER NOT NULL,
   depth INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued',
   error TEXT DEFAULT '', created_at REAL NOT NULL, finished_at REAL
@@ -129,12 +130,22 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._migrate_backend_commands()
+        self._migrate_chat_runs()
         self._migrate_chat_messages()
         self._migrate_runtime_usage()
         self._migrate_chat_sessions()
         self._migrate_agent_tokens()
         self._migrate_tasks_to_issues()
         self._conn.commit()
+
+    def _migrate_chat_runs(self) -> None:
+        """旧数据库补齐 chat_runs 的执行组合列(运行卡片展示模型与推理力度)。"""
+        columns = {row["name"] for row in self._conn.execute(
+            "PRAGMA table_info(chat_runs)").fetchall()}
+        for name in ("model", "effort"):
+            if name not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE chat_runs ADD COLUMN {name} TEXT DEFAULT ''")
 
     def _migrate_backend_commands(self) -> int:
         """删除旧 Backend 记录中的命令覆盖，统一回到内置 Runtime 启动方式。"""
@@ -1032,14 +1043,22 @@ class Store:
         )
 
     def update_chat_run(self, run_id: int, status: str, backend_id: str = "",
-                        error: str = "") -> bool:
-        """更新未被用户停止的运行，避免迟到结果覆盖 ``stopped`` 终态。"""
+                        error: str = "", model: str = "",
+                        effort: str = "") -> bool:
+        """更新未被用户停止的运行，避免迟到结果覆盖 ``stopped`` 终态。
+
+        model/effort 只在传入非空时覆盖:转入 running 时盖章执行组合,
+        终态更新不回传就保留原值。
+        """
         finished = time.time() if status in ("done", "failed", "stopped") else None
         with self._lock:
             cursor = self._conn.execute(
-                "UPDATE chat_runs SET status=?, backend_id=?, error=?, finished_at=? "
+                "UPDATE chat_runs SET status=?, backend_id=?, error=?, finished_at=?, "
+                "model=CASE WHEN ?='' THEN model ELSE ? END, "
+                "effort=CASE WHEN ?='' THEN effort ELSE ? END "
                 "WHERE id=? AND status!='stopped'",
-                (status, backend_id, error, finished, run_id),
+                (status, backend_id, error, finished,
+                 model, model, effort, effort, run_id),
             )
             self._conn.commit()
             return cursor.rowcount > 0
@@ -1095,6 +1114,23 @@ class Store:
             )
             self._conn.commit()
             return [dict(row) for row in rows]
+
+    def stop_chat_run(self, run_id: int) -> Optional[dict]:
+        """原子地停止单个活动运行，返回停止前的快照;已结束返回 None。"""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM chat_runs WHERE id=? "
+                "AND status IN ('queued','running','waiting_user')",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            self._conn.execute(
+                "UPDATE chat_runs SET status='stopped', error='', finished_at=? "
+                "WHERE id=?", (time.time(), run_id),
+            )
+            self._conn.commit()
+            return dict(row)
 
     def active_chat_runs(self, channel: str) -> list[dict]:
         return [dict(r) for r in self._query(

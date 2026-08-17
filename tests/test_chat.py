@@ -1008,6 +1008,61 @@ def test_stop_channel_terminates_orphan_runtime_without_active_run(
     assert "终止 1 个 Runtime 进程" in marker["content"]
 
 
+def test_stop_single_run_only_affects_target_role(seeded, monkeypatch):
+    trigger = seeded.add_message("general", "human", "human", "并行任务", [])
+    dev_run = seeded.add_chat_run("general", "dev", trigger, trigger, 0)
+    expert_run = seeded.add_chat_run("general", "expert", trigger, trigger, 0)
+    seeded.update_chat_run(dev_run, "running", backend_id="std-1")
+    seeded.update_chat_run(expert_run, "running", backend_id="exp-1")
+
+    stopped = []
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda backend, session_key="": stopped.append(
+            (backend.id, session_key)) or 1)
+
+    client = TestClient(create_app())
+    response = client.post(f"/api/chat/runs/{dev_run}/stop")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["stopped_runs"] == 1 and body["role_id"] == "dev"
+    assert body["stopped_runtimes"] == 1
+    assert stopped == [("std-1", "general::dev")]
+    # 只停目标 run:同频道其他角色的运行不受影响
+    assert [run["id"] for run in seeded.active_chat_runs("general")] \
+        == [expert_run]
+    row = seeded.get_chat_run(dev_run)
+    assert row["status"] == "stopped" and row["finished_at"]
+    assert any(event["kind"] == "status" and "用户已停止本次" in event["content"]
+               for event in seeded.run_events(dev_run))
+    marker = seeded.list_messages("general")[-1]
+    assert marker["kind"] == "agent_stop" and "@dev" in marker["content"]
+    # 重复停止与不存在的 run 都返回冲突,不产生新的停止动作
+    assert client.post(f"/api/chat/runs/{dev_run}/stop").status_code == 409
+    assert client.post("/api/chat/runs/999999/stop").status_code == 409
+    assert stopped == [("std-1", "general::dev")]
+
+
+def test_run_records_execution_combo_on_start(seeded, monkeypatch):
+    """转入 running 时盖章 model/effort,运行卡片按执行当时组合展示。"""
+    role = seeded.get_role("webshop", "dev")
+    role.effort = "high"
+    seeded.put_role(role)
+    monkeypatch.setattr(
+        runtime_manager, "start",
+        lambda config: RunResult(True, "", output="完成"))
+    chat = ChatEngine(seeded, max_workers=1)
+    chat.post("general", "human", "@dev 干活",
+              mention_spans=[{"role_id": "dev", "start": 0, "end": 4}])
+    chat.wait_idle()
+
+    run = seeded.chat_runs_for_channel("general")[-1]
+    assert run["role_id"] == "dev" and run["status"] == "done"
+    assert run["model"] == seeded.get_role("webshop", "dev").model
+    assert run["effort"] == "high"
+
+
 def test_project_context_update_replaces_context_in_existing_session(chat, seeded):
     channel = seeded.get_channel("general")
     role = seeded.get_role("webshop", "dev")

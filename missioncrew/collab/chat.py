@@ -40,7 +40,8 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
 from .workspace import (chat_workspace_dir, platform_history_dir,
                         prepare_agent_workspace, write_task_files)
 from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, INJECTION_FULL_MODES,
-                           Channel, ExecutionConfig, Role, RuntimePolicy)
+                           Backend, Channel, ExecutionConfig, Role,
+                           RuntimePolicy)
 from .project_context import project_allowed_dirs, render_project_context
 from ..core.store import Store
 
@@ -592,6 +593,86 @@ class ChatEngine:
             result["marker_id"] = marker_id
         return result
 
+    def stop_run(self, run_id: int) -> dict:
+        """停止单个运行并终止其角色的 Runtime 实例,不影响频道内其他角色。
+
+        与频道级 stop 相同:先原子翻终态并释放交互回调,再在锁外终止
+        Runtime 进程;原生 session id 保留,可以续接。
+        """
+        with self._run_state_lock:
+            run = self.store.stop_chat_run(run_id)
+            if run is None:
+                raise ValueError("运行不存在或已结束")
+            channel = self.store.get_channel(run["channel"])
+            self.store.append_run_event(
+                run_id, "status", "用户已停止本次 Agent 运行")
+
+            with self._interaction_lock:
+                for pending in self._interactions.values():
+                    if pending.run_id != run_id:
+                        continue
+                    pending.stopped = True
+                    pending.response = {
+                        "decision": "cancel", "answers": {},
+                        "reason": "用户已停止本次 Agent 运行",
+                    }
+                    pending.ready.set()
+
+            # 只定位该 run 角色的 Runtime 实例:优先按 run 已记录的 backend,
+            # backend 尚未选定(排队早期)时从该角色的已保存会话兜底
+            targets: dict[tuple[str, str], Backend] = {}
+            if channel is not None:
+                backend = self.store.get_backend(run.get("backend_id") or "")
+                if backend is not None:
+                    targets[(backend.id, self._session_key(channel, run["role_id"]))] = backend
+                else:
+                    for session in self.store.chat_sessions_for_channel(channel.id):
+                        if session["role_id"] != run["role_id"]:
+                            continue
+                        saved = self.store.get_backend(session["backend_id"])
+                        if saved is not None:
+                            targets[(saved.id, session["session_key"])] = saved
+
+        stopped = runtime_errors = 0
+        for (_backend_id, session_key), backend in targets.items():
+            try:
+                stopped += runtime_manager.stop(backend, session_key)
+            except Exception as exc:
+                runtime_errors += 1
+                self.store.audit(
+                    "platform", "chat_stop_runtime_failed",
+                    detail=(f"channel={run['channel']} backend={backend.id} "
+                            f"session={session_key} error={exc}"),
+                )
+
+        marker_id = 0
+        if channel is not None:
+            with self._run_state_lock:
+                content = f"已停止 @{run['role_id']} 的本次运行"
+                if stopped:
+                    content += f"，并终止 {stopped} 个 Runtime 进程"
+                if runtime_errors:
+                    content += f"；其中 {runtime_errors} 个 Runtime 终止请求失败，请检查运行状态"
+                marker_id = self.store.add_message(
+                    channel.id, "platform", "platform", content + "。", [],
+                    kind="agent_stop",
+                )
+                self._write_channel_history(channel)
+        self.store.audit(
+            "human", "chat_run_stopped",
+            detail=(f"channel={run['channel']} run={run_id} "
+                    f"role={run['role_id']} stopped={stopped} "
+                    f"errors={runtime_errors} marker={marker_id}"),
+        )
+        return {
+            "ok": True,
+            "stopped_runs": 1,
+            "role_id": run["role_id"],
+            "stopped_runtimes": stopped,
+            "runtime_errors": runtime_errors,
+            "marker_id": marker_id,
+        }
+
     # ---- 内部:可信提及、触发与执行 ----
     def _parse_explicit_mentions(self, content: str,
                                  project_id: str) -> tuple[str, list[str], list[dict]]:
@@ -779,8 +860,10 @@ class ChatEngine:
                 channel.id, "platform", "platform", trigger_text, [])
             run_id = self.store.add_chat_run(
                 channel.id, role_id, trigger_id, trigger_id, 0)
-            self.store.update_chat_run(run_id, "running",
-                                       backend_id=backend_id)
+            self.store.update_chat_run(
+                run_id, "running", backend_id=backend_id,
+                model=(backend.model if backend else "") or "",
+                effort=role.effort or "")
         self._write_channel_history(channel)
         project = self.store.get_project(channel.project_id or "")
         document_roots = [library_for(channel.project_id or "").root]
@@ -877,7 +960,10 @@ class ChatEngine:
                     self.store.update_chat_run(run_id, "failed", error=trace)
             return
 
-        if not self.store.update_chat_run(run_id, "running", backend_id=backend.id):
+        # 转入 running 时盖章执行组合(模型/推理力度),运行卡片实时展示
+        if not self.store.update_chat_run(
+                run_id, "running", backend_id=backend.id,
+                model=backend.model or "", effort=role.effort or ""):
             return
         self.store.audit("platform", "chat_dispatch",
                          detail=f"channel={channel.id} role={role_id} "

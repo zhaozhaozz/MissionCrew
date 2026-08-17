@@ -259,6 +259,11 @@
   .rc-dot.failed { color: var(--bad); }
   .rc-dot.stopped { color: var(--warn); }
   .rc-err { color: var(--bad); font-size: 12px; }
+  .rc-stop { margin-left: auto; flex: none; border: 1px solid var(--line);
+             background: var(--card); color: var(--bad); font-size: 11px;
+             padding: 1px 10px; border-radius: 999px; cursor: pointer;
+             transition: border-color .15s, background .15s; }
+  .rc-stop:hover { border-color: var(--bad); background: var(--bad-soft); }
   .rc-events { max-height: 320px; overflow-y: auto; padding: 2px 12px 10px;
                border-top: 1px dashed var(--line); }
   .re { margin-top: 8px; white-space: pre-wrap; word-break: break-word;

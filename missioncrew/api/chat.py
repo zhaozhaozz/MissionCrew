@@ -222,6 +222,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from exc
 
+    @app.post("/api/chat/runs/{run_id}/stop")
+    def stop_chat_run(run_id: int):
+        try:
+            return chat.stop_run(run_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @app.post("/api/chat/{channel_id}/page-context")
     def write_page_context(channel_id: str, body: PageContextInput):
         channel = store.get_channel(channel_id)
