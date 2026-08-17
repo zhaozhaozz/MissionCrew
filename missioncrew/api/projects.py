@@ -61,6 +61,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             body.task_auto_rules if body.task_auto_rules is not None else
             ([asdict(rule) for rule in existing.task_auto_rules]
              if existing else []))
+        data["task_label_boards"] = (
+            body.task_label_boards if body.task_label_boards is not None else
+            (existing.task_label_boards if existing else []))
         try:
             project = Project.from_dict(data)
         except (TypeError, ValueError) as exc:

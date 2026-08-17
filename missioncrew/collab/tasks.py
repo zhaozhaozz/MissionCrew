@@ -276,9 +276,12 @@ def auto_process_task(store: Store, chat, task: Task) -> Optional[dict]:
     if rule is None:
         return None
     try:
+        # 新规则带结构化提及,与人工"交给主控处理"同一通道;
+        # 旧规则只有 role_ids,平台生成 @前缀保持兼容
         sent, brief = dispatch_task(
             store, chat, task, message=rule.prompt,
-            target_role_ids=rule.role_ids,
+            mention_spans=rule.mentions or None,
+            target_role_ids=None if rule.mentions else rule.role_ids,
             author="task-rule", author_type="automation",
         )
     except (TaskDispatchError, ValueError) as exc:

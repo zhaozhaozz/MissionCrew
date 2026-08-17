@@ -1,4 +1,4 @@
-/* ---------------- 自动化脚本 + Task 自动处理规则(项目设置页) ---------------- */
+/* ---------------- 自动化脚本(项目设置页) ---------------- */
 
 const AUTOMATION_STATUS = {
   running: "运行中", succeeded: "成功", failed: "失败", timeout: "超时",
@@ -170,89 +170,4 @@ async function openAutomationRunDetail(shortId, runId) {
      <button class="ghost" onclick="fdlg.close()">关闭</button>`);
 }
 
-/* ---------------- Task 自动处理规则 ---------------- */
-
-function projTaskRules() {
-  return projObj()?.task_auto_rules || [];
-}
-
-function renderTaskRuleTable() {
-  const rules = projTaskRules();
-  const rows = rules.map((rule, index) => `<tr>
-    <td><span class="badge">${esc(rule.label)}</span></td>
-    <td>${rule.role_ids.length
-      ? rule.role_ids.map(id => `@${esc(id)}`).join("、")
-      : '<span class="muted">项目主控</span>'}</td>
-    <td class="muted task-rule-prompt">${esc(rule.prompt || "(无默认提示词)")}</td>
-    <td>${rule.enabled ? '<span class="badge">启用</span>' : '<span class="muted">停用</span>'}</td>
-    <td>
-      <button class="ghost" data-index="${index}" onclick="openTaskRuleEditor(Number(this.dataset.index))">编辑</button>
-      <button class="danger" data-index="${index}" onclick="deleteTaskRule(Number(this.dataset.index))">删除</button>
-    </td></tr>`).join("");
-  const table = document.getElementById("task-rule-table");
-  if (table) table.innerHTML =
-    `<tr><th>命中 label</th><th>处理角色</th><th>默认提示词</th><th>状态</th><th></th></tr>` +
-    (rows || `<tr><td colspan="5" class="empty">暂无规则;新建 Task(含脚本同步的 Task)命中规则 label 时会自动派发。</td></tr>`);
-}
-
-function openTaskRuleEditor(index) {
-  const rule = index >= 0 ? projTaskRules()[index] : null;
-  if (index >= 0 && !rule) return;
-  const roleBoxes = activeProjRoles().map(role => `
-    <label class="automation-action-option"><input type="checkbox" value="${esc(role.id)}"
-      ${rule?.role_ids?.includes(role.id) ? "checked" : ""}>
-      @${esc(role.id)}(${esc(role.name || role.id)})</label>`).join("");
-  openFormDialog(rule ? `编辑规则 · ${rule.label}` : "新建 Task 自动处理规则", `
-    <label>命中 label(Task 含该标签即触发;不区分大小写)</label>
-    <input type="text" id="tr-label" placeholder="例如 sync/alert" value="${esc(rule?.label || "")}">
-    <label>处理角色(不勾选 = 交给项目主控;单角色直接执行,多角色由主控协调)</label>
-    <div class="automation-actions-grid">${roleBoxes || '<span class="empty">当前项目没有已启用角色</span>'}</div>
-    <label>默认提示词(作为派发消息里的处理要求)</label>
-    <textarea id="tr-prompt" rows="4" style="height:auto"
-      placeholder="例如:请分析这条告警的影响面,给出处理建议并更新状态简报">${esc(rule?.prompt || "")}</textarea>
-    <label><input type="checkbox" id="tr-enabled" ${rule ? (rule.enabled ? "checked" : "") : "checked"}>
-      启用本规则</label>`,
-    `<button class="action" onclick="saveTaskRule(${index})">${rule ? "保存修改" : "创建规则"}</button>
-     <button class="ghost" onclick="fdlg.close()">取消</button>`);
-}
-
-async function persistTaskRules(rules) {
-  const project = projObj();
-  await api("POST", "/api/projects", {
-    id: currentProject,
-    name: project.name,
-    description: project.description,
-    orchestrator_role_id: project.orchestrator_role_id,
-    max_chain_runs: project.max_chain_runs,
-    charter: project.charter,
-    task_auto_rules: rules,
-  });
-  await loadOverview();
-  renderTaskRuleTable();
-}
-
-async function saveTaskRule(index) {
-  const label = document.getElementById("tr-label").value.trim();
-  if (!label) { uiAlert("label 不能为空"); return; }
-  const rule = {
-    label,
-    role_ids: [...document.querySelectorAll(
-      "#fdlg-body .automation-actions-grid input:checked")].map(input => input.value),
-    prompt: document.getElementById("tr-prompt").value,
-    enabled: document.getElementById("tr-enabled").checked,
-  };
-  const rules = projTaskRules().map(item => ({ ...item }));
-  if (index >= 0) rules[index] = rule; else rules.push(rule);
-  await persistTaskRules(rules);
-  fdlg.close();
-  toast(index >= 0 ? "规则已更新" : "规则已创建", "success");
-}
-
-async function deleteTaskRule(index) {
-  const rules = projTaskRules().map(item => ({ ...item }));
-  const rule = rules[index];
-  if (!rule || !await uiConfirm(`删除 label「${rule.label}」的自动处理规则?`)) return;
-  rules.splice(index, 1);
-  await persistTaskRules(rules);
-  toast("规则已删除", "success");
-}
+/* Task 自动处理规则的配置入口在看板页的标签列(tasks.js)。 */

@@ -280,6 +280,49 @@ def test_task_api_create_applies_auto_rule(seeded):
         assert rules and rules[0]["label"] == "auto"
 
 
+def test_task_auto_rule_with_mentions_dispatches_like_composer(seeded):
+    """新版规则带结构化提及:派发与人工 @ 完全同构,role_ids 从提及派生。"""
+    project = seeded.get_project("webshop")
+    project.task_auto_rules = [
+        {"label": "alert", "prompt": "@dev 请先分析影响面",
+         "mentions": [{"role_id": "dev", "start": 0, "end": 4}],
+         "enabled": True}]
+    seeded.put_project(project)
+    rule = seeded.get_project("webshop").task_auto_rules[0]
+    assert rule.role_ids == ["dev"]   # 派生视图与提及一致
+
+    chat = ChatEngine(seeded, max_workers=2)
+    from missioncrew.collab.tasks import auto_process_task
+    task = create_task(
+        seeded, "webshop", title="线上告警", labels=["alert"],
+        channel_ids=["general"])
+    result = auto_process_task(seeded, chat, task)
+    chat.wait_idle()
+
+    assert result and result["rule_label"] == "alert"
+    stored = seeded.get_message(result["sent"][0]["message_id"])
+    # 提及走 mention_spans 通道:提示词保持原文原位,不再额外加 @前缀
+    assert stored["content"].startswith("@dev 请先分析影响面")
+    assert stored["content"].count("@dev") == 1
+    runs = seeded._query("SELECT role_id FROM chat_runs ORDER BY id")
+    assert [row["role_id"] for row in runs] == ["dev"]
+
+
+def test_project_task_label_boards_persist_and_normalize(seeded):
+    with TestClient(create_app()) as client:
+        saved = client.post("/api/projects", json={
+            "id": "webshop", "name": "网店",
+            "task_label_boards": [" Sync ", "alert", "sync", ""],
+        })
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["task_label_boards"] == ["Sync", "alert"]
+
+        # 未传该字段时保留现值
+        kept = client.post("/api/projects", json={
+            "id": "webshop", "name": "网店"}).json()
+        assert kept["task_label_boards"] == ["Sync", "alert"]
+
+
 def test_processing_task_rejects_disabled_orchestrator(seeded):
     lead = seeded.get_role("webshop", "lead")
     lead.enabled = False

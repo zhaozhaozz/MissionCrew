@@ -192,6 +192,7 @@ class ProjectInput(BaseModel):
     resources: Optional[list[str]] = None
     required_env: Optional[str] = None
     task_auto_rules: Optional[list[dict]] = None   # None = 保留现值
+    task_label_boards: Optional[list[str]] = None  # None = 保留现值
 
 
 class ResourceAdd(BaseModel):

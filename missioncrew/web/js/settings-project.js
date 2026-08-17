@@ -27,7 +27,6 @@ async function renderProjSettings() {
   document.getElementById("chan-proj-label").textContent = label;
   document.getElementById("res-proj-label").textContent = label;
   document.getElementById("automation-proj-label").textContent = label;
-  document.getElementById("task-rule-proj-label").textContent = label;
   const project = projObj();
   const form = document.getElementById("proj-form");
   if (!project) {
@@ -57,7 +56,6 @@ async function renderProjSettings() {
   renderChanTable();
   renderResourceTable();
   renderAutomationTable();
-  renderTaskRuleTable();
   loadDocFiles();
 }
 

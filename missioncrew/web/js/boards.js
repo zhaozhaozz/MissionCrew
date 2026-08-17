@@ -14,7 +14,9 @@ function currentCustomBoardStateSignature() {
 }
 
 function boardHasLiveWidgets(board) {
-  return (board?.layout || []).some(widget => widget.content?.source);
+  // taskboard 直接读 overview 里的任务数据,同样需要随轮询重绘
+  return (board?.layout || []).some(widget =>
+    widget.content?.source || widget.type === "taskboard");
 }
 
 // 把面板需求交给项目主控:发到项目的 general 频道,全程可见
@@ -203,6 +205,23 @@ function renderWidgetContent(w, resolved) {
     case "code":
       return `${c.language ? `<span class="pill">${esc(c.language)}</span>` : ""}
         <pre style="white-space:pre-wrap;margin:4px 0 0;font-size:12px">${esc(c.code || "")}</pre>`;
+    case "taskboard": {   // 标签任务看板:与看板页标签列同数据、同规则入口
+      const label = String(c.label || "").trim();
+      if (!label) return `<div class="empty">缺少 content.label(要聚合的 Task 标签)</div>`;
+      const tasks = projTasks().filter(task =>
+        !task.archived && taskHasLabel(task, label));
+      const rule = ruleForLabel(label);
+      const ruleText = rule
+        ? (rule.enabled ? "⚡ 自动规则已启用" : "⚡ 自动规则已停用") : "⚡ 设置自动规则";
+      const cards = tasks.map(task => taskCardHtml(task, { showStatus: true })).join("")
+        || `<div class="empty">暂无带此标签的 Task</div>`;
+      return `<div class="widget-taskboard-head">
+          <span class="badge">${esc(label)}</span>
+          <span class="muted">${tasks.length} 个 Task</span>
+          <button class="ghost" data-label="${esc(label)}"
+            onclick="openLabelRule(this.dataset.label)">${ruleText}</button>
+        </div><div class="widget-taskboard-cards">${cards}</div>`;
+    }
     default:
       return `<pre style="white-space:pre-wrap;margin:0">${esc(JSON.stringify(c, null, 2))}</pre>`;
   }

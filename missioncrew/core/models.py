@@ -42,6 +42,7 @@ BOARD_WIDGET_TYPES = {
     "list",       # 条目列表:content.items [str 或 {text,tone?}]
     "log",        # 日志尾部:content.lines [str] 或 content.text
     "code",       # 代码块:content.code + language?
+    "taskboard",  # 标签任务看板:content.label,前端按 label 实时渲染 Task 卡片
 }
 
 
@@ -290,22 +291,38 @@ class ProjectResource:
 class TaskAutoRule:
     """Task 自动处理规则:新建 Task 命中 label 时按配置自动派发。
 
-    role_ids 为空表示交给项目主控;prompt 作为派发消息里的默认处理要求。
+    prompt 是派发消息里的默认处理要求,mentions 是其中结构化提及的角色
+    (与聊天输入框同构:role_id + 在 prompt 中的 start/end 码点位置)。
+    旧数据只有 role_ids 没有 mentions,派发时走 @前缀通道保持兼容;
+    两者都为空表示交给项目主控。
     """
 
     label: str
     role_ids: list[str] = field(default_factory=list)
     prompt: str = ""
     enabled: bool = True
+    mentions: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, d: dict) -> "TaskAutoRule":
+        mentions = []
+        for item in d.get("mentions", []) or []:
+            role_id = str(item.get("role_id", "")).strip()
+            if not role_id:
+                continue
+            mentions.append({"role_id": role_id,
+                             "start": int(item.get("start", 0)),
+                             "end": int(item.get("end", 0))})
+        role_ids = [str(item).strip() for item in d.get("role_ids", [])
+                    if str(item).strip()]
+        if mentions:   # 有结构化提及时 role_ids 只是派生视图,保持一致
+            role_ids = list(dict.fromkeys(m["role_id"] for m in mentions))
         return cls(
             label=str(d.get("label", "")).strip(),
-            role_ids=[str(item).strip() for item in d.get("role_ids", [])
-                      if str(item).strip()],
+            role_ids=role_ids,
             prompt=str(d.get("prompt", "")),
             enabled=bool(d.get("enabled", True)),
+            mentions=mentions,
         )
 
 
@@ -326,6 +343,7 @@ class Project:
     resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
     task_auto_rules: list[TaskAutoRule] = field(default_factory=list)
+    task_label_boards: list[str] = field(default_factory=list)  # 看板页固定显示的标签列
 
     def __post_init__(self):
         # 代码仓条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
@@ -334,6 +352,14 @@ class Project:
         self.task_auto_rules = [
             rule if isinstance(rule, TaskAutoRule) else TaskAutoRule.from_dict(rule)
             for rule in self.task_auto_rules]
+        seen_labels = set()
+        normalized = []
+        for label in self.task_label_boards:
+            text = str(label).strip()
+            if text and text.lower() not in seen_labels:
+                seen_labels.add(text.lower())
+                normalized.append(text)
+        self.task_label_boards = normalized
         if (isinstance(self.max_chain_runs, bool)
                 or not isinstance(self.max_chain_runs, int)
                 or self.max_chain_runs < 1):

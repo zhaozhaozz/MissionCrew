@@ -1137,4 +1137,16 @@
 .pill.automation-st-succeeded { background: var(--ok-soft); color: var(--ok); border-color: transparent; }
 .pill.automation-st-failed, .pill.automation-st-timeout { background: var(--bad-soft); color: var(--bad); border-color: transparent; }
 .pill.automation-st-running { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
-.task-rule-prompt { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* ---- 标签看板列与自动处理规则入口 ---- */
+.col.col-label h2 { text-transform: none; letter-spacing: 0; }
+.col.col-label h2 .badge { font-size: 11px; }
+.col h2 .col-tool { flex: none; border: none; background: none; cursor: pointer;
+  color: var(--muted); font-size: 13px; line-height: 1; padding: 2px 3px;
+  border-radius: 6px; transition: color .15s, background .15s; }
+.col h2 .col-tool:hover { color: var(--text); background: var(--card); }
+.col h2 .col-rule.rule-on { color: var(--accent); }
+.col h2 .col-rule.rule-off { color: var(--warn); }
+.widget-taskboard-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.widget-taskboard-head button { margin-left: auto; font-size: 12px; padding: 2px 10px; }
+.widget-taskboard-cards { overflow-y: auto; max-height: 100%; }
+.widget-taskboard-cards .card:last-child { margin-bottom: 4px; }

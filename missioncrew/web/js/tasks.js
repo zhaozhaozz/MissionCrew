@@ -60,23 +60,49 @@ function setTaskFilter(value) {
   renderBoard();
 }
 
+function taskCardHtml(task, { showStatus = false } = {}) {
+  return `<div class="card ${task.archived ? "task-archived" : ""}"
+      data-task-id="${esc(task.id)}" onclick="openTask(this.dataset.taskId)">
+    <div class="title">${esc(task.title)}${showStatus
+      ? ` <span class="pill st-${esc(task.status)}">${esc(TASK_STATUS[task.status] || task.status)}</span>` : ""}${task.archived
+      ? '<span class="badge task-archived-badge">已归档</span>' : ""}</div>
+    ${task.summary ? `<div class="task-card-summary">${esc(task.summary)}</div>` : ""}
+    <div class="meta">更新 ${new Date(task.updated_at * 1000).toLocaleString()} ·
+      ${esc(task.id)} · ${task.channel_ids.map(id => esc(taskChannelLabel(id))).join(" · ")}</div>
+    <div class="meta">${task.labels.map(label => `<span class="badge">${esc(label)}</span>`).join("")}</div>
+  </div>`;
+}
+
 function renderBoard() {
   const scrollState = captureScrollPositions(["#board-view"]);
   renderTaskFilter();
-  document.getElementById("board").innerHTML = COLS.map(col => {
+  const statusCols = COLS.map(col => {
     const items = visibleProjTasks().filter(col.match);
-    const cards = items.map(task => `<div class="card ${task.archived ? "task-archived" : ""}"
-        onclick="openTask('${task.id}')">
-      <div class="title">${esc(task.title)}${task.archived
-        ? '<span class="badge task-archived-badge">已归档</span>' : ""}</div>
-      ${task.summary ? `<div class="task-card-summary">${esc(task.summary)}</div>` : ""}
-      <div class="meta">更新 ${new Date(task.updated_at * 1000).toLocaleString()} ·
-        ${esc(task.id)} · ${task.channel_ids.map(id => esc(taskChannelLabel(id))).join(" · ")}</div>
-      <div class="meta">${task.labels.map(label => `<span class="badge">${esc(label)}</span>`).join("")}</div>
-    </div>`).join("") || `<div class="empty" style="padding:6px 4px">暂无 Task</div>`;
+    const cards = items.map(task => taskCardHtml(task)).join("")
+      || `<div class="empty" style="padding:6px 4px">暂无 Task</div>`;
     return `<section class="col"><h2><span class="col-dot" style="background:${col.color}"></span>
       ${col.title}<span class="col-count">${items.length}</span></h2>${cards}</section>`;
-  }).join("");
+  });
+  const labelCols = labelBoardEntries().map(entry => {
+    const items = visibleProjTasks().filter(task => taskHasLabel(task, entry.label));
+    const cards = items.map(task => taskCardHtml(task, { showStatus: true })).join("")
+      || `<div class="empty" style="padding:6px 4px">暂无带此标签的 Task</div>`;
+    const ruleState = entry.rule
+      ? (entry.rule.enabled ? "rule-on" : "rule-off") : "";
+    const ruleTitle = entry.rule
+      ? (entry.rule.enabled ? "自动处理规则已启用,点击修改" : "自动处理规则已停用,点击修改")
+      : "为该标签设置自动处理规则";
+    const removeBtn = entry.rule ? "" : `
+      <button class="col-tool" title="移除该标签看板(不影响 Task)"
+        data-label="${esc(entry.label)}"
+        onclick="removeLabelBoard(this.dataset.label)">✕</button>`;
+    return `<section class="col col-label"><h2>
+      <span class="badge">${esc(entry.label)}</span><span class="col-count">${items.length}</span>
+      <button class="col-tool col-rule ${ruleState}" title="${esc(ruleTitle)}"
+        data-label="${esc(entry.label)}"
+        onclick="openLabelRule(this.dataset.label)">⚡</button>${removeBtn}</h2>${cards}</section>`;
+  });
+  document.getElementById("board").innerHTML = statusCols.concat(labelCols).join("");
   restoreScrollPositions(scrollState);
 }
 
@@ -313,4 +339,173 @@ async function deleteTask(id) {
   closeTaskDialog();
   await loadOverview();
   toast("Task 已移入项目回收站", "success");
+}
+
+/* ---------------- 标签看板与自动处理规则 ----------------
+   标签看板 = 看板页上按 label 聚合的任务列;绑定了自动处理规则的 label
+   必然显示为一列,规则从列头的 ⚡ 图标配置(自定义面板的 taskboard 组件同入口)。 */
+
+function projTaskRules() {
+  return projObj()?.task_auto_rules || [];
+}
+
+function taskHasLabel(task, label) {
+  return task.labels.some(item => item.toLowerCase() === label.toLowerCase());
+}
+
+function ruleForLabel(label) {
+  return projTaskRules().find(rule =>
+    rule.label.toLowerCase() === label.toLowerCase()) || null;
+}
+
+// 可见标签列 = 用户固定的标签 ∪ 已配置规则的标签(规则标签必须可见)
+function labelBoardEntries() {
+  const entries = [];
+  const seen = new Set();
+  const push = label => {
+    if (seen.has(label.toLowerCase())) return;
+    seen.add(label.toLowerCase());
+    entries.push({ label, rule: ruleForLabel(label) });
+  };
+  (projObj()?.task_label_boards || []).forEach(push);
+  projTaskRules().forEach(rule => { if (rule.label) push(rule.label); });
+  return entries;
+}
+
+// 看板/规则配置都持久化在项目对象上,复用项目保存端点(未传字段保留现值)
+async function persistTaskBoardConfig(patch) {
+  const project = projObj();
+  await api("POST", "/api/projects", {
+    id: currentProject,
+    name: project.name,
+    description: project.description,
+    orchestrator_role_id: project.orchestrator_role_id,
+    max_chain_runs: project.max_chain_runs,
+    charter: project.charter,
+    ...patch,
+  });
+  await loadOverview();
+  renderBoard();
+}
+
+function openLabelBoardAdder() {
+  if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
+  const shown = new Set(labelBoardEntries().map(entry => entry.label.toLowerCase()));
+  const candidates = [...new Set(projTasks().flatMap(task => task.labels))]
+    .filter(label => !shown.has(label.toLowerCase()));
+  openFormDialog("添加标签看板", `
+    <p class="muted" style="margin-top:0">标签看板汇总带某个 label 的全部 Task,
+      并可从列头 ⚡ 图标为该 label 配置自动处理规则。</p>
+    <label>标签</label>
+    <input type="text" id="lb-label" list="lb-label-options"
+      placeholder="输入或从已有标签中选择">
+    <datalist id="lb-label-options">${candidates.map(label =>
+      `<option value="${esc(label)}"></option>`).join("")}</datalist>`,
+    `<button class="action" onclick="addLabelBoard()">添加</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+  setTimeout(() => document.getElementById("lb-label")?.focus(), 60);
+}
+
+async function addLabelBoard(label) {
+  const value = (label ?? document.getElementById("lb-label").value).trim();
+  if (!value) { uiAlert("标签不能为空"); return; }
+  if (labelBoardEntries().some(entry =>
+      entry.label.toLowerCase() === value.toLowerCase())) {
+    uiAlert("该标签的看板已经存在"); return;
+  }
+  await persistTaskBoardConfig({
+    task_label_boards: [...(projObj()?.task_label_boards || []), value],
+  });
+  fdlg.close();
+  toast(`已添加标签看板「${value}」`, "success");
+}
+
+async function removeLabelBoard(label) {
+  if (ruleForLabel(label)) {
+    uiAlert("该标签绑定了自动处理规则;请先在 ⚡ 设置中删除规则,再移除看板。");
+    return;
+  }
+  await persistTaskBoardConfig({
+    task_label_boards: (projObj()?.task_label_boards || [])
+      .filter(item => item.toLowerCase() !== label.toLowerCase()),
+  });
+  toast(`已移除标签看板「${label}」`, "success");
+}
+
+function openLabelRule(label) {
+  const rule = ruleForLabel(label);
+  openFormDialog(`自动处理规则 · ${label}`, `
+    <p class="muted" style="margin-top:0">新建 Task(含脚本同步的 Task)带有
+      label「${esc(label)}」时,按下面的处理要求自动派发。输入 @ 从列表选择角色:
+      单个角色直接执行(不经主控),多个角色由主控协调;不 @ 任何角色则交给项目主控。</p>
+    <div class="composer-wrap task-dispatch-wrap">
+      <div id="task-rule-input" class="task-dispatch-input" contenteditable="true"
+        role="textbox" aria-multiline="true" aria-label="处理要求"
+        data-placeholder="处理要求,可 @指定角色…(Enter 保存,Shift+Enter 换行)"></div>
+      <div id="task-rule-picker" class="task-dispatch-picker" role="listbox" hidden></div>
+    </div>
+    <label><input type="checkbox" id="tr-enabled"
+      ${rule ? (rule.enabled ? "checked" : "") : "checked"}> 启用本规则</label>`,
+    `<button class="action" data-label="${esc(label)}"
+       onclick="saveLabelRule(this.dataset.label)">保存规则</button>
+     ${rule ? `<button class="danger" data-label="${esc(label)}"
+       onclick="deleteLabelRule(this.dataset.label)">删除规则</button>` : ""}
+     <button class="ghost" onclick="cancelLabelRule()">取消</button>`);
+  bindComposerEvents("task-rule-input", "task-rule-picker",
+    () => saveLabelRule(label));
+  const box = document.getElementById("task-rule-input");
+  if (rule) {
+    // 旧规则只有 role_ids:合成 "@角色 " 前缀提及,保存后自然升级成结构化提及
+    let content = rule.prompt || "";
+    let mentions = rule.mentions || [];
+    if (!mentions.length && rule.role_ids?.length) {
+      let prefix = "";
+      mentions = rule.role_ids.map(id => {
+        const start = Array.from(prefix).length;
+        prefix += `@${id} `;
+        return { role_id: id, start, end: start + id.length + 1 };
+      });
+      content = prefix + content;
+    }
+    restoreComposerPayload(content, mentions, box);
+  } else {
+    setTimeout(() => box?.focus(), 60);
+  }
+}
+
+function cancelLabelRule() {
+  activateComposer("input", "mention-picker");
+  fdlg.close();
+}
+
+async function saveLabelRule(label) {
+  const box = document.getElementById("task-rule-input");
+  const { content, mentions } = composerPayload(box);
+  const rules = projTaskRules().map(rule => ({ ...rule }));
+  const index = rules.findIndex(rule =>
+    rule.label.toLowerCase() === label.toLowerCase());
+  const rule = {
+    label,
+    prompt: content,
+    mentions,
+    role_ids: [...new Set(mentions.map(item => item.role_id))],
+    enabled: document.getElementById("tr-enabled").checked,
+  };
+  if (index >= 0) rules[index] = rule; else rules.push(rule);
+  await persistTaskBoardConfig({ task_auto_rules: rules });
+  activateComposer("input", "mention-picker");
+  fdlg.close();
+  toast(`label「${label}」的自动处理规则已保存`, "success");
+}
+
+async function deleteLabelRule(label) {
+  if (!await uiConfirm(`删除 label「${label}」的自动处理规则?`)) return;
+  await persistTaskBoardConfig({
+    task_auto_rules: projTaskRules()
+      .filter(rule => rule.label.toLowerCase() !== label.toLowerCase())
+      .map(rule => ({ ...rule })),
+  });
+  activateComposer("input", "mention-picker");
+  fdlg.close();
+  toast("自动处理规则已删除", "success");
 }

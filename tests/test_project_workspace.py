@@ -1569,7 +1569,7 @@ def test_widget_data_skips_static_widgets(seeded):
 def test_widget_types_are_display_primitives(seeded):
     from missioncrew.core.models import BOARD_WIDGET_TYPES
     assert BOARD_WIDGET_TYPES == {"markdown", "table", "card", "chart",
-                                  "list", "log", "code"}
+                                  "list", "log", "code", "taskboard"}
     # 旧领域类型已彻底移除,未知类型在 API 与聊天动作两条链路都被拒绝
     client = _client(seeded)
     bad = client.post("/api/projects/webshop/boards", json={
