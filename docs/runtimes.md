@@ -14,7 +14,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 | `codex` | `codex` | 原生 app-server | npm(`@openai/codex`) |
 | `grok` | `grok_build` | ACP stdio | `grok update` |
 | `opencode` | `opencode` | 打印模式 CLI | npm(`opencode-ai`)或 `opencode upgrade` |
-| `copilot` | `copilot` | 打印模式 CLI | npm(`@github/copilot`) |
+| `copilot` | `copilot` | ACP stdio | npm(`@github/copilot`) |
 | `cursor-agent` | `cursor` | 打印模式 CLI | `cursor-agent update` |
 | `codebuddy` | `codebuddy` | 打印模式 CLI | npm(`@tencent-ai/codebuddy-code`) |
 | `pi` | `pi` | 原生 RPC(vendored) | npm(`@mariozechner/pi-coding-agent`,仅写平台 vendor 目录) |
@@ -99,7 +99,7 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 | Codex / `codex` | 启动 `codex app-server`，调用 `initialize → thread/start` | 同一进程、同一 thread 调用 `turn/start`；进程或服务重启后先 `thread/resume` | app-server 返回 thread id；一个 `channel::role` 对应一个长驻进程。恢复失败会明确结束本轮，不会静默创建新 thread |
 | Grok / `grok_build` | `session/new` 创建会话，并在服务进程内保留 `grok agent stdio` | 同一服务进程直接续轮；重启后通过带 `_meta.noReplay=true` 的 `session/load` 恢复 | ACP session id；按 channel × role 长驻复用，恢复历史不进入当前 Run |
 | OpenCode / `opencode` | 使用 `--format json` 启动，并从 JSON 事件捕获 session id | 新进程使用 `--session <id>`，继续保持 JSON 输出 | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
-| GitHub Copilot / `copilot` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程继续传同一个 `--session-id <id>` | 固定 ID；每轮一个 CLI 进程 |
+| GitHub Copilot / `copilot` | 启动 `copilot --acp` serve 进程并调用 `session/new` | 服务存活时长驻复用；重启后 `session/load` 恢复(会回放历史,协议层在 load 后才 begin_turn,回放不进本轮回复) | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Cursor / `cursor` | 使用 `--output-format json` 启动，并从 JSON 结果捕获 session/chat id | 新进程使用 `--resume <id>` | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | CodeBuddy / `codebuddy` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
 | Pi / `pi` | 启动 `pi --mode rpc` 长驻进程，首轮回合后从 `get_state` 保存会话文件路径 | 服务存活时同一进程直接发下一条 `prompt`；进程或服务重启后以 `--session <file>` 恢复 | SQLite 保存会话 JSONL 绝对路径(位于 `MC_HOME/pi/sessions/`);一个 `channel::role` 对应一个长驻进程 |
@@ -249,11 +249,12 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 
 ## Effort(推理力度)
 
-部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到各 provider 声明的静态兜底档位。静态声明随 provider 走(`RuntimeProvider.effort_catalog()`):claude/codex/pi 在各自 provider 类里声明,内置 CLI/ACP 执行器负责的 adapter(grok、mock)集中在 `adapters.EFFORT_SUPPORT`;`RuntimeManager.effort_catalog()` 把所有声明合并成 `/api/traits` 用的全量目录,注册自定义 provider 即接管对应 adapter 的档位:
+部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到各 provider 声明的静态兜底档位。静态声明随 provider 走(`RuntimeProvider.effort_catalog()`):claude/codex/pi 在各自 provider 类里声明,内置 CLI/ACP 执行器负责的 adapter(grok、copilot、mock)集中在 `adapters.EFFORT_SUPPORT`;`RuntimeManager.effort_catalog()` 把所有声明合并成 `/api/traits` 用的全量目录,注册自定义 provider 即接管对应 adapter 的档位:
 
 - claude:原生 `--effort` 标志,档位 low/medium/high/xhigh/max;
 - codex:原生 `turn/start.effort`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 app-server 自行报错并照常回流到频道);
 - grok:ACP serve 命令上的 `grok agent --reasoning-effort`,静态兜底档位 low/medium/high/xhigh,实际档位按模型动态发现(见下);
+- copilot:ACP serve 命令上的 `--effort`,档位 none/minimal/low/medium/high/xhigh/max(模型目录不自报按模型档位,不支持的模型由 copilot 自行忽略);
 - pi:映射为 thinking level(`--thinking`/`set_thinking_level`),档位 off/minimal/low/medium/high/xhigh;
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。

@@ -88,7 +88,7 @@ def test_effort_support_is_declared_per_provider():
 
     manager = RuntimeManager()
     # 原生 provider 的档位不再进 adapters 的静态表
-    assert set(adapters.EFFORT_SUPPORT) == {"grok_build", "mock"}
+    assert set(adapters.EFFORT_SUPPORT) == {"grok_build", "copilot", "mock"}
     builtin = object.__new__(ClaudeRuntimeProvider)  # 只查声明,无需构造会话
     assert builtin.effort_catalog() == {
         "claude_code": ["low", "medium", "high", "xhigh", "max"]}
@@ -99,7 +99,8 @@ def test_effort_support_is_declared_per_provider():
 
     # manager 合并后对外形状不变(adapter -> 档位)
     catalog = manager.effort_catalog()
-    assert set(catalog) == {"claude_code", "codex", "pi", "grok_build", "mock"}
+    assert set(catalog) == {"claude_code", "codex", "pi", "grok_build",
+                            "copilot", "mock"}
 
     # effort_options 经 provider_for 路由;未声明档位的 provider 默认不支持
     class _NoEffortProvider(_RecordingProvider):

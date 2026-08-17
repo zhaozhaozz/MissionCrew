@@ -77,7 +77,6 @@ def test_resume_arguments_for_all_print_runtime_strategies(tmp_path):
     fixed = {
         "claude_code": "--resume",
         "codebuddy": "--resume",
-        "copilot": "--session-id",
     }
     for adapter_name, flag in fixed.items():
         command, structured = adapters._apply_cli_session_args(

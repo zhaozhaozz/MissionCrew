@@ -719,8 +719,6 @@ def test_all_runtime_commands_apply_directory_policy():
     for name in ("claude_code", "codex", "codebuddy"):
         assert rendered[name].count("--add-dir") == len(dirs)
         assert all(path in rendered[name] for path in dirs)
-    assert [arg for arg in rendered["copilot"] if arg.startswith("--add-dir=")] == [
-        f"--add-dir={path}" for path in dirs]
     assert rendered["opencode"][rendered["opencode"].index("--dir") + 1] == workdir
     assert "--force" in rendered["cursor"]
 
@@ -736,6 +734,12 @@ def test_all_runtime_commands_apply_directory_policy():
         acp_commands["grok_build"].index("--cwd") + 1] == workdir
     assert acp_commands["grok_build"][-1] == "stdio"
     assert "--trust-all-tools" in acp_commands["kiro"]
+    assert [arg for arg in acp_commands["copilot"]
+            if arg.startswith("--add-dir=")] == [
+        f"--add-dir={path}" for path in dirs]
+    # 模型走 session/set_model、effort 未选时剥掉 --effort 值对
+    assert "--allow-all-tools" in acp_commands["copilot"]
+    assert "--effort" not in acp_commands["copilot"]
 
 
 def test_runtime_environment_syncs_pwd_and_scopes_opencode_external_dirs(tmp_path):

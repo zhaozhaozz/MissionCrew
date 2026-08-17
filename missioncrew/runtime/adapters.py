@@ -304,7 +304,8 @@ EFFORT_SUPPORT: dict[str, list[str]] = {
 # 全平台档位的规范顺序(低到高)。runtime 自报的档位顺序各家不一(grok 按高到低
 # 返回),统一按这里排序后再进下拉,保证同一个下拉里方向一致;没见过的档位按
 # 原顺序排在已知档位之后,不丢弃。
-EFFORT_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]
+EFFORT_ORDER = ["off", "none", "minimal", "low", "medium", "high", "xhigh",
+                "max", "ultra"]
 
 
 def sort_efforts(levels: list[str]) -> list[str]:
