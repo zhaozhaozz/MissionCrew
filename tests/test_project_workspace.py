@@ -911,14 +911,16 @@ def test_taskboard_kind_board_saves_query_and_validates(seeded):
     board = seeded.get_board("webshop:bugs")
     assert board.kind == "taskboard"
     assert board.query == "(bug | crash) & !wontfix"
+    assert board.source == "tasks"   # 缺省数据源
 
-    # 只改名不带 kind/query -> 形态与表达式保留
+    # 只改名不带 kind/query/source -> 形态、表达式与数据源保留
     client.post("/api/projects/webshop/boards",
                 json={"id": "bugs", "name": "缺陷追踪 v2"})
     board = seeded.get_board("webshop:bugs")
     assert board.kind == "taskboard" and board.query
+    assert board.source == "tasks"
 
-    # 非法表达式与非法 kind 都拒绝
+    # 非法表达式、非法 kind 与未知数据源都拒绝
     bad_query = client.post("/api/projects/webshop/boards", json={
         "id": "bugs", "name": "缺陷追踪", "query": "(bug"})
     assert bad_query.status_code == 400
@@ -926,12 +928,53 @@ def test_taskboard_kind_board_saves_query_and_validates(seeded):
     bad_kind = client.post("/api/projects/webshop/boards", json={
         "id": "x", "name": "x", "kind": "unknown"})
     assert bad_kind.status_code == 400
+    bad_source = client.post("/api/projects/webshop/boards", json={
+        "id": "bugs", "name": "缺陷追踪", "source": "github"})
+    assert bad_source.status_code == 400
+    assert "未知数据源" in bad_source.json()["detail"]
 
     # 面板专属内容频道:custom 类型可创建
     channel = client.post("/api/projects/webshop/content-channel", json={
         "content_kind": "custom", "content_key": "bugs", "label": "缺陷追踪"})
     assert channel.status_code == 200, channel.text
     assert channel.json()["content_kind"] == "custom"
+
+
+def test_taskboard_source_registry_and_data_endpoint(seeded):
+    client = _client(seeded)
+    # 数据源清单:内置任务源带按状态分列的列定义
+    sources = client.get("/api/projects/webshop/board_sources").json()
+    assert [s["id"] for s in sources] == ["tasks"]
+    assert [c["key"] for c in sources[0]["columns"]] == [
+        "open", "in_progress", "blocked", "done"]
+
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "登录崩溃", "summary": "点登录闪退",
+        "labels": ["bug"], "status": "in_progress"})
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "文案优化", "labels": ["polish"]})
+
+    saved = client.post("/api/projects/webshop/boards", json={
+        "id": "bugs", "name": "缺陷", "kind": "taskboard",
+        "query": "bug", "source": "tasks", "layout": []})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["source"] == "tasks"
+
+    # 看板数据:数据源取数 + 标签表达式服务端过滤,卡片是标准化结构
+    data = client.get("/api/projects/webshop/boards/bugs/data")
+    assert data.status_code == 200, data.text
+    payload = data.json()
+    assert payload["source"] == {"id": "tasks", "name": "项目任务"}
+    assert [c["title"] for c in payload["cards"]] == ["登录崩溃"]
+    card = payload["cards"][0]
+    assert card["status"] == "in_progress" and card["task_id"] == card["id"]
+    assert card["labels"] == ["bug"] and card["summary"] == "点登录闪退"
+
+    # widgets 面板不提供看板数据;不存在的面板 404
+    client.post("/api/projects/webshop/boards", json={
+        "id": "grid", "name": "网格", "kind": "widgets", "layout": []})
+    assert client.get("/api/projects/webshop/boards/grid/data").status_code == 400
+    assert client.get("/api/projects/webshop/boards/nope/data").status_code == 404
 
 
 def test_non_orchestrator_actions_are_stripped_end_to_end(seeded):

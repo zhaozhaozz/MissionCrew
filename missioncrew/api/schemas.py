@@ -228,6 +228,7 @@ class BoardInput(BaseModel):
     actor_role_id: Optional[str] = None
     kind: Optional[str] = None           # widgets | taskboard;None = 保留现值
     query: Optional[str] = None          # taskboard 的标签表达式;None = 保留现值
+    source: Optional[str] = None         # taskboard 的数据源 id;None = 保留现值
 
 
 class WidgetDataInput(BaseModel):

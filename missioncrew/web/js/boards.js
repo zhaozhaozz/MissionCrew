@@ -1,14 +1,42 @@
 /* ---------------- 自定义面板 ----------------
    两种形态:widgets(主控 Agent 通过 dashboard.save 创建维护的组件网格)与
-   taskboard(用户按标签表达式自建的任务看板)。日常只读渲染;编辑模式从侧栏
-   面板列表的 ✎ 进入——widgets 面板可继续与主控在面板专属频道对话,或直接改
-   布局 JSON;taskboard 面板直接改名称与表达式。 */
+   taskboard(用户自建的任务看板:选数据源 + 标签表达式)。日常只读渲染;
+   编辑模式从侧栏面板列表的 ✎ 进入——widgets 面板可继续与主控在面板专属频道
+   对话,或直接改布局 JSON;taskboard 面板直接改名称、数据源与表达式。
+   taskboard 的列定义与卡片由服务端数据源注册表统一解析(/boards/{id}/data),
+   前端只按 status 归列做通用渲染,不感知数据来自任务还是外部同步列表。 */
 let currentCustomBoard = null;
 let customBoardEditing = false;
 let boardEditorVisible = false;   // JSON 编辑表单是否展开(仅编辑模式内)
 let boardEditMode = false;        // 编辑模式:侧栏 ✎ 进入,"完成编辑"退出
 let customBoardRenderSignature = null;
 let boardWidgetRenderToken = 0;
+let taskboardRenderToken = 0;
+
+/* ---- 看板数据源清单:按项目缓存;取不到时回退内置任务源 ---- */
+let boardSourcesCache = { project: null, list: null };
+
+async function loadBoardSources() {
+  if (boardSourcesCache.project !== currentProject || !boardSourcesCache.list) {
+    try {   // 静默取数:失败走回退,不弹窗
+      const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/board_sources`);
+      if (r.ok) boardSourcesCache = { project: currentProject, list: await r.json() };
+    } catch (_) { /* ignore */ }
+  }
+  return (boardSourcesCache.project === currentProject && boardSourcesCache.list)
+    || [{ id: "tasks", name: "项目任务", description: "" }];
+}
+
+function boardSourceName(id) {
+  const hit = (boardSourcesCache.list || []).find(s => s.id === id);
+  return hit ? hit.name : (id || "tasks");
+}
+
+function boardSourceOptionsHtml(selected) {
+  return (boardSourcesCache.list || [{ id: "tasks", name: "项目任务", description: "" }])
+    .map(s => `<option value="${esc(s.id)}"${s.id === selected ? " selected" : ""}>
+      ${esc(s.name)}${s.description ? ` — ${esc(s.description)}` : ""}</option>`).join("");
+}
 
 function currentCustomBoardStateSignature() {
   const board = projBoards().find(value => value.id === currentCustomBoard) || null;
@@ -87,7 +115,8 @@ function renderCustomBoardEditor() {
   if (title) title.textContent = (board.name || board.id)
     + (boardEditMode ? " · 编辑中" : "");
   if (desc) desc.textContent = board.kind === "taskboard"
-    ? `标签表达式:${board.query || "(空)"}` : (board.description || "");
+    ? `数据源:${boardSourceName(board.source)} · 标签表达式:${board.query || "(空)"}`
+    : (board.description || "");
   if (jsonBtn) jsonBtn.hidden = !editable;
   if (doneBtn) doneBtn.hidden = !boardEditMode;
   if (!editable || !boardEditorVisible) {
@@ -174,26 +203,53 @@ function compileLabelQuery(expr) {
   return matcher;
 }
 
-function renderTaskboardBoard(board) {
+/* 看板通用卡片:task_id 打开平台任务详情,url 打开外部页面(如 GitHub Issue) */
+function boardCardHtml(card) {
+  const click = card.task_id
+    ? `data-task-id="${esc(card.task_id)}" onclick="openTask(this.dataset.taskId)"`
+    : (card.url ? `data-url="${esc(card.url)}" onclick="window.open(this.dataset.url,'_blank','noopener')"` : "");
+  const meta = [`更新 ${new Date(card.updated_at * 1000).toLocaleString()}`,
+                ...(card.meta || [])];
+  return `<div class="card" ${click}>
+    <div class="title">${esc(card.title)}</div>
+    ${card.summary ? `<div class="task-card-summary">${esc(card.summary)}</div>` : ""}
+    <div class="meta">${meta.map(esc).join(" · ")}</div>
+    <div class="meta">${(card.labels || []).map(l => `<span class="badge">${esc(l)}</span>`).join("")}</div>
+  </div>`;
+}
+
+async function renderTaskboardBoard(board) {
   const preview = document.getElementById("custom-board-preview");
   if (!preview) return;
   preview.classList.add("taskboard-mode");
-  let matcher;
-  try { matcher = compileLabelQuery(board.query || ""); }
-  catch (error) {
-    preview.innerHTML = `<div class="empty">标签表达式不合法:${esc(error.message)};点击侧栏 ✎ 修改。</div>`;
+  const token = ++taskboardRenderToken;
+  const shortId = board.id.replace(`${currentProject}:`, "");
+  let data;
+  try {   // 服务端解析:数据源取数 + 表达式过滤;失败保留上一帧,首帧才提示
+    const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}/boards/${encodeURIComponent(shortId)}/data`);
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `请求失败 (${r.status})`);
+    }
+    data = await r.json();
+  } catch (error) {
+    if (token !== taskboardRenderToken) return;
+    if (!preview.querySelector(".taskboard-grid"))
+      preview.innerHTML = `<div class="empty">看板数据不可用:${esc(error.message)};点击侧栏 ✎ 修改。</div>`;
     return;
   }
-  const matched = projTasks().filter(task =>
-    !task.archived && matcher(new Set(task.labels.map(label => label.toLowerCase()))));
+  if (token !== taskboardRenderToken) return;
+  const desc = document.getElementById("custom-board-desc");
+  if (desc) desc.textContent =
+    `数据源:${data.source.name} · 标签表达式:${board.query || "(空)"}`;
   const scrollState = captureKeyedScrollPositions(preview);
-  const columns = COLS.map(col => {
-    const items = matched.filter(col.match);
-    const cards = items.map(task => taskCardHtml(task)).join("")
-      || `<div class="empty" style="padding:6px 4px">暂无 Task</div>`;
-    return `<section class="col"><h2><span class="col-dot" style="background:${col.color}"></span>
-      ${col.title}<span class="col-count">${items.length}</span></h2>
-      <div class="col-list" data-scroll-key="tb:${esc(col.title)}">${cards}</div></section>`;
+  const columns = data.columns.map(col => {
+    const items = data.cards.filter(card => card.status === col.key);
+    const cards = items.map(boardCardHtml).join("")
+      || `<div class="empty" style="padding:6px 4px">暂无条目</div>`;
+    return `<section class="col"><h2><span class="col-dot" style="background:${esc(col.color || "var(--muted)")}"></span>
+      ${esc(col.title)}<span class="col-count">${items.length}</span></h2>
+      <div class="col-list" data-scroll-key="tb:${esc(col.key)}">${cards}</div></section>`;
   }).join("");
   preview.innerHTML = `<div class="taskboard-grid">${columns}</div>`;
   restoreKeyedScrollPositions(preview, scrollState);
@@ -378,18 +434,21 @@ async function deleteCustomBoard(boardId = null) {
 
 /* ---------------- 新建面板与 taskboard 编辑 ---------------- */
 
-function openNewBoardDialog() {
+async function openNewBoardDialog() {
   if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
+  await loadBoardSources();
   openFormDialog("新建面板", `
     <label>面板类型</label>
     <div class="new-board-kinds">
       <label><input type="radio" name="nb-kind" value="taskboard" checked
-        onchange="toggleNewBoardKind()"> 标签任务看板 <span class="muted">按标签表达式筛选 Task,按状态分列</span></label>
+        onchange="toggleNewBoardKind()"> 任务看板 <span class="muted">选数据源,按标签表达式筛选,按状态分列</span></label>
       <label><input type="radio" name="nb-kind" value="agent"
         onchange="toggleNewBoardKind()"> 主控创建面板 <span class="muted">一句话提需求,主控用组件搭建</span></label>
     </div>
     <div id="nb-taskboard">
       <label>名称</label><input type="text" id="nb-name" placeholder="例如 缺陷追踪">
+      <label>数据源</label>
+      <select id="nb-source">${boardSourceOptionsHtml("tasks")}</select>
       <label>标签表达式(& 与、| 或、! 非、括号;标签不区分大小写)</label>
       <input type="text" id="nb-query" placeholder="例如 (bug | crash) & !wontfix">
     </div>
@@ -416,12 +475,13 @@ async function submitNewBoard() {
   if (kind === "taskboard") {
     const name = document.getElementById("nb-name").value.trim();
     const query = document.getElementById("nb-query").value.trim();
+    const source = document.getElementById("nb-source").value;
     if (!name) { uiAlert("名称不能为空"); return; }
     try { compileLabelQuery(query); }
     catch (error) { uiAlert(`标签表达式不合法:${error.message}`); return; }
     const shortId = `tb-${Math.random().toString(36).slice(2, 8)}`;
     await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
-      id: shortId, name, kind: "taskboard", query, layout: [],
+      id: shortId, name, kind: "taskboard", query, source, layout: [],
     });
     fdlg.close();
     currentCustomBoard = `${currentProject}:${shortId}`;
@@ -429,7 +489,7 @@ async function submitNewBoard() {
     await loadOverview();
     if (currentTab !== "custom") switchTab("custom");
     else { renderCustomBoards(true); renderSidebar(); syncUrl(); }
-    toast(`已创建标签任务看板「${name}」`, "success");
+    toast(`已创建任务看板「${name}」`, "success");
     return;
   }
   // 主控创建:需求发到 general 频道,创建过程全程可见
@@ -448,12 +508,15 @@ async function submitNewBoard() {
   toast(`已交给主控 @${project.orchestrator_role_id}(频道 #${channel.name});完成后面板会出现在侧栏`, "success", 6000);
 }
 
-function openTaskboardDialog(boardId) {
+async function openTaskboardDialog(boardId) {
   const board = projBoards().find(item => item.id === boardId);
   if (!board) return;
+  await loadBoardSources();
   openFormDialog(`编辑任务看板 · ${board.name || board.id}`, `
     <label>名称</label>
     <input type="text" id="tbf-name" value="${esc(board.name || "")}">
+    <label>数据源</label>
+    <select id="tbf-source">${boardSourceOptionsHtml(board.source || "tasks")}</select>
     <label>标签表达式(& 与、| 或、! 非、括号;标签不区分大小写)</label>
     <input type="text" id="tbf-query" value="${esc(board.query || "")}"
       placeholder="例如 (bug | crash) & !wontfix">`,
@@ -469,11 +532,12 @@ async function saveTaskboardDialog(boardId) {
   if (!board) return;
   const name = document.getElementById("tbf-name").value.trim();
   const query = document.getElementById("tbf-query").value.trim();
+  const source = document.getElementById("tbf-source").value;
   if (!name) { uiAlert("名称不能为空"); return; }
   try { compileLabelQuery(query); }
   catch (error) { uiAlert(`标签表达式不合法:${error.message}`); return; }
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
-    id: board.id.replace(`${currentProject}:`, ""), name, query,
+    id: board.id.replace(`${currentProject}:`, ""), name, query, source,
   });
   fdlg.close();
   await loadOverview();

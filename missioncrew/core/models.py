@@ -676,6 +676,7 @@ class Board:
     updated_at: float = field(default_factory=now)
     kind: str = "widgets"
     query: str = ""          # taskboard:标签组合表达式(& | ! 与括号)
+    source: str = "tasks"    # taskboard:数据源 id(collab/board_sources 注册表)
 
     def to_dict(self) -> dict:
         return asdict(self)

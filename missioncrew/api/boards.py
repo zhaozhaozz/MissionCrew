@@ -5,6 +5,7 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab import board_sources
 from ..collab.documents import library_for
 from ..collab.recycle_bin import recycle_dashboard
 from ..collab.resource_urls import dashboard_resource_url
@@ -23,6 +24,28 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         return [{**board.to_dict(),
                  "resource_url": dashboard_resource_url(project_id, board.id)}
                 for board in store.list_boards(project_id)]
+
+    @app.get("/api/projects/{project_id}/board_sources")
+    def list_board_sources(project_id: str):
+        """任务看板可选数据源清单(创建/编辑对话框用)。"""
+        ctx.must_project(project_id)
+        return board_sources.describe_sources()
+
+    @app.get("/api/projects/{project_id}/boards/{board_id}/data")
+    def taskboard_data(project_id: str, board_id: str):
+        """解析任务看板数据:数据源取数 + 标签表达式服务端过滤。"""
+        ctx.must_project(project_id)
+        full_id = ctx.namespaced_id(project_id, board_id, "面板")
+        board = store.get_board(full_id)
+        if board is None or board.project_id != project_id:
+            raise HTTPException(404, "面板不存在")
+        if board.kind != "taskboard":
+            raise HTTPException(400, "该面板不是任务看板")
+        try:
+            return board_sources.resolve_board_data(
+                store, project_id, board.source, board.query)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
     def _resolve_widget_source(project_id: str, source: dict):
         """解析卡片数据源:卡片是通用展示原语,领域数据从平台实时取。"""
@@ -135,6 +158,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             board.kind = body.kind
         if body.query is not None:
             board.query = body.query.strip()
+        if body.source is not None:
+            if body.source not in board_sources.SOURCES:
+                raise HTTPException(
+                    400, f"未知数据源 {body.source},"
+                         f"可用: {', '.join(sorted(board_sources.SOURCES))}")
+            board.source = body.source
         if board.kind == "taskboard":
             try:
                 label_query.parse(board.query)
