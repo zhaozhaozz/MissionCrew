@@ -27,7 +27,7 @@ from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider)
-from .native import RuntimeProtocolError, emit_json, safe_emit
+from .native import MESSAGE_DIVIDER, RuntimeProtocolError, emit_json, safe_emit
 
 # models.json 支持的 API 协议(与 pi 的 KnownApi 对齐,只放平台明确要
 # 支持的裸 API 形态;其余协议按需再放开)。
@@ -256,6 +256,7 @@ class _PiSession:
         self._active_config: Optional[ExecutionConfig] = None
         self._output: list[str] = []
         self._saw_text_delta = False
+        self._pending_divider = False
         self._turn_error = ""
         self._stop_reason = ""
         self._last_usage: dict = {}
@@ -397,6 +398,7 @@ class _PiSession:
                 self._turn_done.clear()
                 self._output = []
                 self._saw_text_delta = False
+                self._pending_divider = False
                 self._turn_error = ""
                 self._stop_reason = ""
                 self._last_usage = {}
@@ -484,8 +486,7 @@ class _PiSession:
         if sub_type == "text_delta" and delta:
             with self._state_lock:
                 self._saw_text_delta = True
-                self._output.append(delta)
-            safe_emit(emit, "text", delta)
+            self._append_output_text(emit, delta)
         elif sub_type == "thinking_delta" and delta:
             safe_emit(emit, "thinking", delta)
 
@@ -494,6 +495,7 @@ class _PiSession:
             return
         stop_reason = str(message.get("stopReason") or "")
         error_message = str(message.get("errorMessage") or "")
+        fallback_text = ""
         with self._state_lock:
             if stop_reason:
                 self._stop_reason = stop_reason
@@ -508,12 +510,27 @@ class _PiSession:
                     for item in message.get("content") or []
                     if isinstance(item, dict) and item.get("type") == "text")
                 if text.strip():
-                    self._output.append(text)
-                    safe_emit(emit, "text", text)
-        if self._output and not "".join(self._output).endswith("\n"):
-            with self._state_lock:
-                self._output.append("\n")
-            safe_emit(emit, "text", "\n")
+                    fallback_text = text
+        if fallback_text:
+            self._append_output_text(emit, fallback_text)
+        # 一条 assistant 消息结束:下一条输出到来时先插横线分隔
+        with self._state_lock:
+            if self._output:
+                self._pending_divider = True
+
+    def _append_output_text(self, emit, text: str) -> None:
+        """输出正文统一入口:消息之间补 Markdown 横线,过程与结论可区分。"""
+        if not text:
+            return
+        with self._state_lock:
+            divider = self._pending_divider
+            self._pending_divider = False
+            if divider:
+                self._output.append(MESSAGE_DIVIDER)
+            self._output.append(text)
+        if divider:
+            safe_emit(emit, "text", MESSAGE_DIVIDER)
+        safe_emit(emit, "text", text)
 
     def _schedule_finish(self) -> None:
         """agent_end 后延迟判终:静默期内出现 auto_retry_start 则继续等待。"""

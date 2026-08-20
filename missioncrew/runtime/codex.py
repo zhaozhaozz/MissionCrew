@@ -14,7 +14,7 @@ from .base import host_isolated_environ
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageMetric, RuntimeUsageSnapshot,
                    RuntimeUsageWindow)
-from .native import (JsonLineProcess, RuntimeProtocolError, emit_json,
+from .native import (MESSAGE_DIVIDER, JsonLineProcess, RuntimeProtocolError, emit_json,
                      safe_emit)
 
 
@@ -169,6 +169,7 @@ class _CodexSession:
         self._output: list[str] = []
         self._saw_text_delta = False
         self._message_item_id = ""
+        self._pending_divider = False
         self._restarting_client = False
         self.created_at = time.time()
         self.last_activity = self.created_at
@@ -286,6 +287,7 @@ class _CodexSession:
             self._output = []
             self._saw_text_delta = False
             self._message_item_id = ""
+            self._pending_divider = False
             try:
                 self._ensure_client(config)
                 assert self.client
@@ -384,12 +386,11 @@ class _CodexSession:
             if delta:
                 item_id = str(params.get("itemId") or "")
                 if item_id != self._message_item_id:
-                    # 新的一条 agentMessage 开始:先给上一条补换行
-                    self._finish_message_line(emit)
+                    # 新的一条 agentMessage 开始:与上一条之间插横线分隔
+                    self._finish_message_line()
                     self._message_item_id = item_id
                 self._saw_text_delta = True
-                self._output.append(delta)
-                safe_emit(emit, "text", delta)
+                self._append_output(emit, delta)
             return
         if method in ("item/reasoning/summaryTextDelta", "item/reasoning/textDelta"):
             safe_emit(emit, "thinking", str(params.get("delta") or ""))
@@ -436,28 +437,37 @@ class _CodexSession:
                 self._turn_error = str(
                     error.get("message") if isinstance(error, dict) else error)
             if not self._output:
-                # 兜底聚合 turn.items 时多条消息按行分隔,不拼在同一行
-                self._output.append("\n".join(
+                # 兜底聚合 turn.items 时多条消息之间同样用横线分隔
+                self._output.append(MESSAGE_DIVIDER.join(
                     str(item["text"]) for item in turn.get("items") or []
                     if item.get("type") == "agentMessage" and item.get("text")))
             safe_emit(emit, "status", f"Codex turn {self._turn_status}\n")
             self._turn_done.set()
 
-    def _finish_message_line(self, emit) -> None:
-        """一条完整输出结束后补换行,下一条消息不与它拼在同一行。"""
-        if self._output and not self._output[-1].endswith("\n"):
-            self._output.append("\n")
-            safe_emit(emit, "text", "\n")
+    def _finish_message_line(self) -> None:
+        """一条完整输出结束:下一条输出到来时先插横线分隔。"""
+        if self._output:
+            self._pending_divider = True
+
+    def _append_output(self, emit, text: str) -> None:
+        """输出正文统一入口:消息之间补 Markdown 横线,过程与结论可区分。"""
+        if not text:
+            return
+        if self._pending_divider:
+            self._pending_divider = False
+            self._output.append(MESSAGE_DIVIDER)
+            safe_emit(emit, "text", MESSAGE_DIVIDER)
+        self._output.append(text)
+        safe_emit(emit, "text", text)
 
     def _emit_item(self, emit, item: dict, *, completed: bool) -> None:
         item_type = str(item.get("type") or "")
         if item_type == "agentMessage":
             text = str(item.get("text") or "")
             if completed and text and not self._saw_text_delta:
-                self._output.append(text)
-                safe_emit(emit, "text", text)
+                self._append_output(emit, text)
             if completed:
-                self._finish_message_line(emit)
+                self._finish_message_line()
         elif item_type == "commandExecution":
             if completed:
                 safe_emit(emit, "status", f"命令结束 exit={item.get('exitCode')} status={item.get('status')}\n")

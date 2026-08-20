@@ -15,7 +15,7 @@ from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageSnapshot)
-from .native import RuntimeProtocolError, emit_json, safe_emit
+from .native import MESSAGE_DIVIDER, RuntimeProtocolError, emit_json, safe_emit
 from .usage import probe_claude_usage
 
 # 后台任务结束后 Claude CLI 会自发开启新 turn(无用户输入)汇报结果。
@@ -36,6 +36,7 @@ class _TurnSink:
     output: list[str] = field(default_factory=list)
     saw_partial_text: bool = False
     saw_partial_thinking: bool = False
+    pending_divider: bool = False
     events: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -611,10 +612,20 @@ class _ClaudeSession:
         )
 
     def _finish_output_line(self, sink: _TurnSink) -> None:
-        """一条完整输出结束后补换行,避免多条消息在结果里拼成一行。"""
-        if sink.output and not sink.output[-1].endswith("\n"):
-            sink.output.append("\n")
-            safe_emit(sink.emit, "text", "\n")
+        """一条完整输出结束:下一条输出到来时先插横线分隔。"""
+        if sink.output:
+            sink.pending_divider = True
+
+    def _append_output_text(self, sink: _TurnSink, text: str) -> None:
+        """输出正文统一入口:消息之间补 Markdown 横线,过程与结论可区分。"""
+        if not text:
+            return
+        if sink.pending_divider:
+            sink.pending_divider = False
+            sink.output.append(MESSAGE_DIVIDER)
+            safe_emit(sink.emit, "text", MESSAGE_DIVIDER)
+        sink.output.append(text)
+        safe_emit(sink.emit, "text", text)
 
     def _current_sink(self, begin_wake: bool = False) -> Optional[_TurnSink]:
         """事件归属:自唤醒 turn 进行中时优先归它——即使新运行已把用户消息
@@ -649,10 +660,8 @@ class _ClaudeSession:
                 return
             delta = event.get("delta") or {}
             if delta.get("type") == "text_delta":
-                text = str(delta.get("text") or "")
                 sink.saw_partial_text = True
-                sink.output.append(text)
-                safe_emit(emit, "text", text)
+                self._append_output_text(sink, str(delta.get("text") or ""))
             elif delta.get("type") == "thinking_delta":
                 sink.saw_partial_thinking = True
                 safe_emit(emit, "thinking", str(delta.get("thinking") or ""))
@@ -663,9 +672,7 @@ class _ClaudeSession:
             for block in (message.get("message") or {}).get("content") or []:
                 block_type = block.get("type")
                 if block_type == "text" and not sink.saw_partial_text:
-                    text = str(block.get("text") or "")
-                    sink.output.append(text)
-                    safe_emit(emit, "text", text)
+                    self._append_output_text(sink, str(block.get("text") or ""))
                 elif block_type == "thinking" and not sink.saw_partial_thinking:
                     safe_emit(emit, "thinking", str(block.get("thinking") or ""))
                 elif block_type == "tool_use":

@@ -14,6 +14,11 @@ class RuntimeProtocolError(RuntimeError):
     """原生 Runtime 返回协议错误或连接提前退出。"""
 
 
+# 同一 turn 内多条完整输出之间的分隔。发布成 Agent 消息后按 Markdown
+# 渲染为横线,读者可以分清工具调用间隙的过程输出与最后的结论。
+MESSAGE_DIVIDER = "\n\n---\n\n"
+
+
 def safe_emit(emit: Optional[Callable[[str, str], None]],
               kind: str, text: str) -> None:
     """过程事件失败只能丢弃，不能阻塞 Runtime 的 stdout 读取线程。"""
