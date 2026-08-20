@@ -184,10 +184,13 @@ ORCHESTRATOR_TEMPLATE = """\
   正文（包括最终回复）里的 @角色ID、@[角色ID] 都只是普通文字，永不触发执行，
   可放心用于描述已完成工作或引用其他角色。
 - `message.publish` 返回非空 `dispatched` 时，当前 turn 的派发职责已经完成。
-  不要使用 `sleep`，不要轮询频道历史、工作树或运行状态来等待执行角色，也不要
+  不要使用 `sleep`，不要周期性轮询频道历史、工作树或运行状态来等待执行角色，也不要
   代替执行角色继续其任务。也不要向仍在执行的角色再次 `message.publish` 追问
   中间状态或重复派发；同一频道同一角色的持久会话无法中途插入新 turn，这类请求
   只会排在原任务后面，不能提供实时进度。
+  活动 Run 状态不会自动写入你的上下文；只有人类询问当前运行情况，或要求停止角色时，
+  才调用 `channel.runs.list` 获取当前 Channel 的一次性快照，并用返回的 `run_id` 调用
+  `channel.run.stop`。不要把按需查询变成等待循环。
   立即在当前 Runtime 的最终回复中简短说明已派发，然后结束当前 turn；
   不要为这条说明再调用一次 `message.publish`。执行角色完成或失败后，平台会
   自动启动新的主控 turn 并交回完整结果，
@@ -250,7 +253,7 @@ class ChatEngine:
         self._stopping_channels: set[str] = set()
         self._interaction_lock = threading.Lock()
         self._interactions: dict[str, _PendingInteraction] = {}
-        self.agent_tools = AgentActionService(store, self.post)
+        self.agent_tools = AgentActionService(store, self.post, self.stop_run)
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
@@ -593,7 +596,8 @@ class ChatEngine:
             result["marker_id"] = marker_id
         return result
 
-    def stop_run(self, run_id: int) -> dict:
+    def stop_run(self, run_id: int, *, actor: str = "human",
+                 actor_label: str = "用户") -> dict:
         """停止单个运行并终止其角色的 Runtime 实例,不影响频道内其他角色。
 
         与频道级 stop 相同:先原子翻终态并释放交互回调,再在锁外终止
@@ -604,8 +608,9 @@ class ChatEngine:
             if run is None:
                 raise ValueError("运行不存在或已结束")
             channel = self.store.get_channel(run["channel"])
-            self.store.append_run_event(
-                run_id, "status", "用户已停止本次 Agent 运行")
+            actor_prefix = actor_label.strip() + (" " if actor != "human" else "")
+            stopped_reason = f"{actor_prefix}已停止本次 Agent 运行"
+            self.store.append_run_event(run_id, "status", stopped_reason)
 
             with self._interaction_lock:
                 for pending in self._interactions.values():
@@ -614,24 +619,17 @@ class ChatEngine:
                     pending.stopped = True
                     pending.response = {
                         "decision": "cancel", "answers": {},
-                        "reason": "用户已停止本次 Agent 运行",
+                        "reason": stopped_reason,
                     }
                     pending.ready.set()
 
-            # 只定位该 run 角色的 Runtime 实例:优先按 run 已记录的 backend,
-            # backend 尚未选定(排队早期)时从该角色的已保存会话兜底
+            # 只定位该 run 已记录的 Runtime 实例。排队 Run 尚无 backend_id，
+            # 此时只取消队列项，不能根据同角色旧会话误停另一个执行中的 Run。
             targets: dict[tuple[str, str], Backend] = {}
             if channel is not None:
                 backend = self.store.get_backend(run.get("backend_id") or "")
                 if backend is not None:
                     targets[(backend.id, self._session_key(channel, run["role_id"]))] = backend
-                else:
-                    for session in self.store.chat_sessions_for_channel(channel.id):
-                        if session["role_id"] != run["role_id"]:
-                            continue
-                        saved = self.store.get_backend(session["backend_id"])
-                        if saved is not None:
-                            targets[(saved.id, session["session_key"])] = saved
 
         stopped = runtime_errors = 0
         for (_backend_id, session_key), backend in targets.items():
@@ -648,7 +646,7 @@ class ChatEngine:
         marker_id = 0
         if channel is not None:
             with self._run_state_lock:
-                content = f"已停止 @{run['role_id']} 的本次运行"
+                content = f"{actor_prefix}已停止 @{run['role_id']} 的本次运行"
                 if stopped:
                     content += f"，并终止 {stopped} 个 Runtime 进程"
                 if runtime_errors:
@@ -659,7 +657,7 @@ class ChatEngine:
                 )
                 self._write_channel_history(channel)
         self.store.audit(
-            "human", "chat_run_stopped",
+            actor, "chat_run_stopped",
             detail=(f"channel={run['channel']} run={run_id} "
                     f"role={run['role_id']} stopped={stopped} "
                     f"errors={runtime_errors} marker={marker_id}"),

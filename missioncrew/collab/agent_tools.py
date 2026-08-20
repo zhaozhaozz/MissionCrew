@@ -169,6 +169,21 @@ ACTION_DEFINITIONS = {
             "mentions": "要显式调度的角色 id 数组；不传则只发消息不派发",
         },
     },
+    "channel.runs.list": {
+        "description": (
+            "按需查询当前 Channel 中 queued/running/waiting_user 的角色运行；"
+            "状态不会预先写入聊天上下文"
+        ),
+        "orchestrator_only": True,
+        "automation_allowed": False,
+        "arguments": {},
+    },
+    "channel.run.stop": {
+        "description": "停止当前 Channel 中指定的活动角色运行；应先查询取得 run_id",
+        "orchestrator_only": True,
+        "automation_allowed": False,
+        "arguments": {"run_id": "channel.runs.list 返回的正整数 Run id"},
+    },
     "channel.create": {
         "description": "创建项目频道",
         "orchestrator_only": True,
@@ -245,6 +260,10 @@ ACTION_DEFINITIONS = {
     },
 }
 
+AUTOMATION_ACTIONS = frozenset(
+    name for name, definition in ACTION_DEFINITIONS.items()
+    if definition.get("automation_allowed", True))
+
 ACTION_ARGUMENTS = {
     "task.create": {
         "title", "summary", "body", "labels", "channel_ids", "status",
@@ -261,6 +280,8 @@ ACTION_ARGUMENTS = {
     "document.rename": {"source", "target"},
     "document.delete": {"path"},
     "message.publish": {"channel", "content", "mentions"},
+    "channel.runs.list": set(),
+    "channel.run.stop": {"run_id"},
     "channel.create": {"id", "name", "purpose", "workdir"},
     "dashboard.save": {"id", "name", "description", "layout", "mode"},
     "dashboard.delete": {"id"},
@@ -280,19 +301,23 @@ ACTION_ARGUMENTS = {
     "recycle.purge": {"id"},
 }
 
-# 成功的写操作要在发起调用的会话中留下可见回执。message.publish 本身已经
-# 生成聊天消息；recycle.list 是当前唯一只读动作，两者都不额外插入回执。
+# 成功的写操作要在发起调用的会话中留下可见回执。message.publish 和停止动作
+# 本身已经生成聊天消息；查询动作是只读操作，这些动作都不额外插入回执。
 CONVERSATION_RECEIPT_ACTIONS = (
-    frozenset(ACTION_DEFINITIONS) - {"message.publish", "recycle.list"}
+    frozenset(ACTION_DEFINITIONS) - {
+        "message.publish", "channel.runs.list", "channel.run.stop", "recycle.list",
+    }
 )
 
 
 class AgentActionService:
     """统一执行 Agent 可请求的 MissionCrew 平台动作。"""
 
-    def __init__(self, store: Store, post_message: Callable[..., int]):
+    def __init__(self, store: Store, post_message: Callable[..., int],
+                 stop_run: Callable[..., dict]):
         self.store = store
         self._post_message = post_message
+        self._stop_run = stop_run
 
     @staticmethod
     def _hash_token(token: str) -> str:
@@ -426,7 +451,7 @@ class AgentActionService:
                 "stale_identity", "Token 对应的自动化脚本或项目已不存在", 401)
         self.store.touch_agent_token(token_hash)
         scopes = tuple(action for action in automation.actions
-                       if action in ACTION_DEFINITIONS)
+                       if action in AUTOMATION_ACTIONS)
         return AgentIdentity(
             token_id=str(row["token_id"]), project_id=project.id,
             channel_id="", role_id=automation.id,
@@ -460,7 +485,7 @@ class AgentActionService:
             "token_id": identity.token_id,
             "actions": {
                 name: {key: value for key, value in ACTION_DEFINITIONS[name].items()
-                       if key != "orchestrator_only"}
+                       if key not in {"orchestrator_only", "automation_allowed"}}
                 for name in allowed
             },
         }
@@ -639,7 +664,7 @@ class AgentActionService:
         """身份可用动作:脚本身份只看白名单,角色身份按主控权限位过滤。"""
         if identity.is_automation:
             return [action for action in identity.issued_scopes
-                    if action in ACTION_DEFINITIONS]
+                    if action in AUTOMATION_ACTIONS]
         return self.allowed_actions(project, identity.role_id)
 
     def _execute_action(self, identity: AgentIdentity, action: str,
@@ -670,6 +695,8 @@ class AgentActionService:
             "document.rename": self._rename_document,
             "document.delete": self._delete_document,
             "message.publish": self._publish_message,
+            "channel.runs.list": self._list_channel_runs,
+            "channel.run.stop": self._stop_channel_run,
             "channel.create": self._create_channel,
             "dashboard.save": self._save_dashboard,
             "dashboard.delete": self._delete_dashboard,
@@ -684,6 +711,71 @@ class AgentActionService:
             "recycle.purge": self._purge_recycle_item,
         }
         return handlers[action](project, identity, arguments, context)
+
+    @staticmethod
+    def _require_chat_identity(identity: AgentIdentity) -> None:
+        if identity.is_automation or not identity.channel_id:
+            raise AgentToolError(
+                "permission_denied", "该动作只允许当前 Channel 的项目主控调用", 403)
+
+    def _list_channel_runs(self, project: Project, identity: AgentIdentity,
+                           _arguments: dict, context: AgentRunContext) -> dict:
+        """只在显式调用时返回当前频道的活动 Run 快照。"""
+        self._require_chat_identity(identity)
+        runs = []
+        for row in self.store.active_chat_runs(identity.channel_id):
+            role = self.store.get_role(project.id, str(row["role_id"]))
+            run_id = int(row["id"])
+            runs.append({
+                "run_id": run_id,
+                "role_id": str(row["role_id"]),
+                "role_name": role.name if role is not None else "",
+                "status": str(row["status"]),
+                "backend_id": str(row.get("backend_id") or ""),
+                "model": str(row.get("model") or ""),
+                "effort": str(row.get("effort") or ""),
+                "created_at": float(row["created_at"]),
+                "is_current_run": run_id == context.run_id,
+                "stoppable": run_id != context.run_id,
+            })
+        return {
+            "summary": f"当前 Channel 有 {len(runs)} 个活动角色运行",
+            "channel_id": identity.channel_id,
+            "runs": runs,
+        }
+
+    def _stop_channel_run(self, _project: Project, identity: AgentIdentity,
+                          arguments: dict, context: AgentRunContext) -> dict:
+        """停止当前频道内显式选中的 Run，不允许当前主控终止自身调用。"""
+        self._require_chat_identity(identity)
+        run_id = arguments.get("run_id")
+        if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
+            raise AgentToolError("invalid_arguments", "run_id 必须是正整数")
+        if run_id == context.run_id:
+            raise AgentToolError(
+                "cannot_stop_self",
+                "主控不能通过当前工具调用停止自己的 Run；请直接结束当前 turn",
+                409,
+            )
+        target = self.store.get_chat_run(run_id)
+        if target is None or str(target["channel"]) != identity.channel_id:
+            # 不区分不存在与属于其他频道，避免通过 run_id 探测频道外运行。
+            raise AgentToolError(
+                "run_not_found", "当前 Channel 中不存在指定的 Run", 404)
+        if str(target["status"]) not in {"queued", "running", "waiting_user"}:
+            raise AgentToolError(
+                "run_inactive", "指定 Run 已结束，不能再次停止", 409)
+        try:
+            result = self._stop_run(
+                run_id, actor=identity.actor,
+                actor_label=f"主控 @{identity.role_id}")
+        except ValueError as exc:
+            # 校验后目标可能恰好自然结束；向调用者返回稳定的并发冲突语义。
+            raise AgentToolError("run_inactive", str(exc), 409) from exc
+        result["summary"] = (
+            f"已停止当前 Channel 中 @{result['role_id']} 的运行 {run_id}")
+        result["run_id"] = run_id
+        return result
 
     def _create_task(self, project: Project, identity: AgentIdentity,
                      arguments: dict, _context: AgentRunContext) -> dict:

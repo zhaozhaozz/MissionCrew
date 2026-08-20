@@ -64,6 +64,7 @@ Runtime
 | `document.rename` | 允许 | 允许 |
 | `document.delete` | 禁止 | 允许 |
 | `message.publish` | 禁止 | 允许 |
+| `channel.runs.list` / `channel.run.stop` | 禁止 | 允许 |
 | `channel.create` | 禁止 | 允许 |
 | `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
 | `guideline.save` / `guideline.delete` | 禁止 | 允许 |
@@ -74,6 +75,8 @@ Runtime
 `guideline.save` 与 Web 准则编辑器共用准则 Git 版本库。`skill.save` 同样把当前完整 Skill 目录提交到项目 Skill 版本库，因此已有 `scripts/`、`references/`、`assets/` 等辅助文件会与更新后的 `SKILL.md` 一起构成版本；两个动作成功后都返回 `revision`，并记录当前角色。准则重命名会继续原文件的历史链。删除属于主控权限：文档、准则、Skill 和面板都会进入项目统一回收站，文档、准则与 Skill 删除同时形成新 Git 提交，历史不会被抹除。`recycle.restore` 在原标识已被占用时返回 `already_exists` 并保留回收项；`recycle.purge` 是不可撤销的永久删除，只应在用户明确要求时调用。工具响应不会暴露回收目录的本地路径。
 
 `message.publish` 的 `mentions` 是独立的角色 ID 数组，也是**唯一**的派发通道：只有数组中的合法角色会被调度；正文里出现的 `@reviewer`、`@[reviewer]` 等文本一律只是普通内容。主控的 Runtime 最终回复会由平台自动发布到当前 Channel；普通答复、结论和状态汇总不应再通过空 `mentions` 的 `message.publish` 重复发布。派工仍使用 `message.publish` 并显式传入目标 `mentions`。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。至少一个角色实际启动时，结果还会返回 `handoff: "end_turn"` 和后续恢复说明；主控应立即在 Runtime 最终回复中简短说明已派发并结束当前 turn，不再为这条说明调用一次 `message.publish`；同时不用 `sleep` 或轮询频道、工作树、运行状态来等待，也不应向执行中的同一角色再次派发“报告中间状态”之类的消息。同一频道同一角色的持久会话不能在执行中插入第二个 turn，这类请求只会排在原任务后面，不能提供实时进度。角色完成或失败后，平台会自动启动新的主控 turn 并交回完整结果。协作链预算导致无人启动时，`dispatched` 为空且不会返回该 handoff。
+
+当前 Channel 的活动 Run 状态不会直接注入主控上下文。人类询问当前运行情况或要求停止角色时，主控可按需调用只读动作 `channel.runs.list`，取得 `queued`、`running`、`waiting_user` 的一次性快照；每项包含 `run_id`、角色、执行组合、是否为当前主控 Run 以及是否可停止。随后可用 `channel.run.stop` 和选定的 `run_id` 停止同一 Channel 内的目标。服务端拒绝跨 Channel、已结束和当前主控自停请求；停止排队 Run 只取消队列项，不终止同角色的其他 Runtime。查询不产生会话回执，停止动作自身会生成 `agent_stop` 平台消息，因此也不重复生成工具回执。主控不应把按需查询用于等待循环。
 
 成功执行写操作后，平台会在发起调用的 Channel 会话中追加一条 `agent_tool` 类型的平台回执，显示调用角色、动作名和动作摘要。失败调用和 `recycle.list` 等只读调用不生成回执；`message.publish` 已经直接产生可见消息，因此不会再重复插入一条工具回执。
 
@@ -103,6 +106,7 @@ Runtime
 - `document.rename` 使用文档库内的 `source` 和 `target` 相对路径；源文件必须存在、目标路径必须不存在。移动和仅修改文件名使用同一动作，并以一次 Git 提交保留原文件的历史链。若源文档已有页面对话绑定，该频道、消息和 Runtime 会话会迁移到新路径。
 - `task.delete`、`document.delete`、`dashboard.delete`、`guideline.delete` 和 `skill.delete` 都要求项目主控身份。目标不存在时返回 `task_not_found` 或 `not_found`，不会把删除不存在的资源误报为成功；成功结果包含 `recycle_item`。
 - `recycle.list` 返回当前项目全部类型的回收项；`recycle.restore` 和 `recycle.purge` 使用回收项 `id`，均要求项目主控身份。
+- `channel.runs.list` 不接受 Channel 参数，只查询 token 绑定的当前 Channel；`channel.run.stop` 只接受该查询返回的正整数 `run_id`，不能停止当前主控自身的 Run。
 - `task.update` 必须带读取任务时得到的 `snapshot_updated_at`。任务已经被其他执行更新时返回 `version_conflict`，防止旧快照覆盖新状态。
 - `task.create` 和 `task.update` 使用 `title`、`summary`、`body`、`status`、`labels`、`channel_ids`；每个 Task 至少绑定一个当前项目的可用 Channel。
 - `task.brief` 追加状态简报，可用 `status` 同时更新 `open`、`in_progress`、`blocked`、`done` 状态。简报是追加记录，不覆盖正文。

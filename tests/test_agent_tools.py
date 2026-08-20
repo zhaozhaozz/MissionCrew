@@ -51,11 +51,17 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert "不要使用 `sleep`" in lead.common_prompt
     assert "不要向仍在执行的角色再次 `message.publish` 追问" in lead.common_prompt
     assert "不能提供实时进度" in lead.common_prompt
+    assert "channel.runs.list" in lead.common_prompt
+    assert "channel.run.stop" in lead.common_prompt
+    assert "活动 Run 状态不会自动写入你的上下文" in lead.common_prompt
     assert "不要为这条说明再调用一次 `message.publish`" in lead.common_prompt
     assert "document.publish" in dev.common_prompt
     assert "document.rename" in dev.common_prompt
     assert "message.publish" not in dev.common_prompt
+    assert "channel.runs.list" not in dev.common_prompt
+    assert "channel.run.stop" not in dev.common_prompt
     assert "返回非空 `dispatched` 时" not in dev.common_prompt
+    assert "is_current_run" not in lead.common_prompt
     assert "missioncrew-action>" not in lead.common_prompt
     assert "不要传 `--run-id`" in lead.turn_prompt
     assert "MISSIONCREW_AGENT_RUN_ID" not in lead.env
@@ -435,6 +441,132 @@ def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seed
     assert "不要向仍在执行的角色追问中间状态" in result["resume"]
     assert "自动启动新的主控 turn" in result["resume"]
     assert "not_dispatched" not in result
+
+
+def test_orchestrator_queries_and_stops_only_current_channel_runs(
+        seeded, monkeypatch):
+    chat = ChatEngine(seeded)
+    _config, lead_run, lead_token = _run_config(seeded, chat, "lead")
+
+    trigger = seeded.add_message("general", "human", "human", "并行任务", [])
+    dev_run = seeded.add_chat_run("general", "dev", trigger, trigger, 0)
+    queued_dev_run = seeded.add_chat_run(
+        "general", "dev", trigger, trigger, 0)
+    seeded.update_chat_run(dev_run, "running", backend_id="std-1",
+                           model="model-a", effort="high")
+
+    seeded.put_channel(Channel(
+        id="private", name="其他频道", project_id="webshop"))
+    private_trigger = seeded.add_message(
+        "private", "human", "human", "私有任务", [])
+    private_run = seeded.add_chat_run(
+        "private", "expert", private_trigger, private_trigger, 0)
+    seeded.update_chat_run(private_run, "running", backend_id="exp-1")
+
+    stopped = []
+    monkeypatch.setattr(
+        runtime_manager, "stop",
+        lambda backend, session_key="": stopped.append(
+            (backend.id, session_key)) or 1)
+    client = TestClient(create_app())
+    headers = {"Authorization": f"Bearer {lead_token}"}
+
+    listed = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "channel.runs.list",
+        "request_id": "list-current-channel-runs",
+        "arguments": {},
+    })
+    assert listed.status_code == 200
+    result = listed.json()["result"]
+    assert result["channel_id"] == "general"
+    assert [run["run_id"] for run in result["runs"]] == [
+        lead_run, dev_run, queued_dev_run]
+    assert private_run not in {run["run_id"] for run in result["runs"]}
+    current = next(run for run in result["runs"] if run["run_id"] == lead_run)
+    target = next(run for run in result["runs"] if run["run_id"] == dev_run)
+    assert current["is_current_run"] is True and current["stoppable"] is False
+    assert target == {
+        "run_id": dev_run,
+        "role_id": "dev",
+        "role_name": "开发",
+        "status": "running",
+        "backend_id": "std-1",
+        "model": "model-a",
+        "effort": "high",
+        "created_at": target["created_at"],
+        "is_current_run": False,
+        "stoppable": True,
+    }
+
+    # 排队项没有绑定 Runtime，只取消该 Run，不能误停同角色正在执行的实例。
+    queued_stop = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "channel.run.stop",
+        "request_id": "stop-queued-current-channel-run",
+        "arguments": {"run_id": queued_dev_run},
+    })
+    assert queued_stop.status_code == 200
+    assert queued_stop.json()["result"]["stopped_runtimes"] == 0
+    assert stopped == []
+    assert seeded.get_chat_run(dev_run)["status"] == "running"
+
+    running_stop = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "channel.run.stop",
+        "request_id": "stop-running-current-channel-run",
+        "arguments": {"run_id": dev_run},
+    })
+    assert running_stop.status_code == 200
+    assert running_stop.json()["result"]["role_id"] == "dev"
+    assert stopped == [("std-1", "general::dev")]
+    assert seeded.get_chat_run(dev_run)["status"] == "stopped"
+    assert seeded.get_chat_run(lead_run)["status"] == "running"
+    assert seeded.get_chat_run(private_run)["status"] == "running"
+
+    self_stop = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "channel.run.stop", "request_id": "reject-self-stop",
+        "arguments": {"run_id": lead_run},
+    })
+    assert self_stop.status_code == 409
+    assert self_stop.json()["error"]["code"] == "cannot_stop_self"
+    cross_channel = client.post(
+        "/api/agent/v1/actions", headers=headers, json={
+            "action": "channel.run.stop",
+            "request_id": "reject-cross-channel-stop",
+            "arguments": {"run_id": private_run},
+        })
+    assert cross_channel.status_code == 404
+    assert cross_channel.json()["error"]["code"] == "run_not_found"
+    repeated = client.post("/api/agent/v1/actions", headers=headers, json={
+        "action": "channel.run.stop", "request_id": "reject-repeat-stop",
+        "arguments": {"run_id": dev_run},
+    })
+    assert repeated.status_code == 409
+    assert repeated.json()["error"]["code"] == "run_inactive"
+
+    audits = seeded.list_audit(limit=100)
+    assert any(row["action"] == "chat_run_stopped"
+               and row["actor"] == "role:lead"
+               and f"run={dev_run}" in row["detail"] for row in audits)
+    stop_messages = [message for message in seeded.list_messages("general")
+                     if message["kind"] == "agent_stop"]
+    assert len(stop_messages) == 2
+    assert all("主控 @lead 已停止 @dev" in message["content"]
+               for message in stop_messages)
+
+
+def test_non_orchestrator_cannot_query_or_stop_channel_runs(seeded):
+    chat = ChatEngine(seeded)
+    _config, dev_run, dev_token = _run_config(seeded, chat, "dev")
+    identity = chat.agent_tools.authenticate(dev_token)
+
+    assert "channel.runs.list" not in chat.agent_tools.capabilities(identity)["actions"]
+    for action, arguments in (
+            ("channel.runs.list", {}),
+            ("channel.run.stop", {"run_id": dev_run})):
+        with pytest.raises(AgentToolError) as caught:
+            chat.agent_tools.execute(
+                identity, action, arguments, dev_run,
+                f"deny-{action.replace('.', '-')}")
+        assert caught.value.code == "permission_denied"
 
 
 def test_message_tool_reports_budget_dropped_dispatch(seeded):

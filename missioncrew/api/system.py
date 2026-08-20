@@ -72,12 +72,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/traits")
     def traits():
-        from ..collab.agent_tools import ACTION_DEFINITIONS
+        from ..collab.agent_tools import AUTOMATION_ACTIONS
         from ..core.models import AUTOMATION_DEFAULT_ACTIONS
         return {"abilities": ROLE_ABILITIES, "tiers": TIER_ORDER,
                 "board_widget_types": sorted(BOARD_WIDGET_TYPES),
                 "effort_options": runtime_manager.effort_catalog(),
-                "automation_actions": sorted(ACTION_DEFINITIONS),
+                "automation_actions": sorted(AUTOMATION_ACTIONS),
                 "automation_default_actions": list(AUTOMATION_DEFAULT_ACTIONS)}
 
     @app.get("/api/runtime/status")

@@ -72,6 +72,9 @@ def test_save_automation_validates_and_merges(seeded):
     with pytest.raises(ValueError, match="未知动作"):
         save_automation(seeded, "webshop", id="bad", script="x",
                         actions=["task.create", "no.such"])
+    with pytest.raises(ValueError, match="未知动作"):
+        save_automation(seeded, "webshop", id="chat-only", script="x",
+                        actions=["channel.runs.list", "channel.run.stop"])
     with pytest.raises(ValueError, match="script 不能为空"):
         save_automation(seeded, "webshop", id="empty")
 

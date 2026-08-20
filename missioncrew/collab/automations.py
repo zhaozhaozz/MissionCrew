@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Callable, Optional
 
-from .agent_tools import (ACTION_DEFINITIONS, AgentActionService,
+from .agent_tools import (AUTOMATION_ACTIONS, AgentActionService,
                           CONTROL_ID_RE, default_agent_tool_url)
 from ..core.config import mc_home
 from ..core.cron import next_cron_time, validate_cron
@@ -85,7 +85,7 @@ def save_automation(store: Store, project_id: str, *, id: str,
         if (not isinstance(actions, list)
                 or not all(isinstance(item, str) for item in actions)):
             raise ValueError("actions 必须是动作名数组")
-        unknown = sorted(set(actions) - set(ACTION_DEFINITIONS))
+        unknown = sorted(set(actions) - AUTOMATION_ACTIONS)
         if unknown:
             raise ValueError(f"actions 含未知动作: {', '.join(unknown)}")
         automation.actions = list(dict.fromkeys(actions))
