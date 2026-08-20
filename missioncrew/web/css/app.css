@@ -904,14 +904,23 @@
   .role-transfer-toolbar > span.has-overwrite { color: var(--bad); }
   .role-transfer-list { display: grid; max-height: min(54vh, 480px); overflow: auto;
                         border: 1px solid var(--line); border-radius: 9px; }
-  .role-transfer-item { display: flex; align-items: center; gap: 10px; margin: 0;
-                        padding: 9px 11px; cursor: pointer; background: var(--card); }
+  /* 覆盖 .form label 的默认外边距，确保每个角色是紧凑的单行条目。 */
+  .form .role-transfer-item { display: flex; align-items: center; gap: 7px; min-height: 29px;
+                              margin: 0; padding: 3px 8px; color: var(--text); cursor: pointer;
+                              background: var(--card); font-size: 12px; font-weight: 400; }
   .role-transfer-item + .role-transfer-item { border-top: 1px solid var(--line); }
   .role-transfer-item:hover { background: var(--bg-soft); }
   .role-transfer-item.will-overwrite { background: color-mix(in srgb, var(--bad) 7%, var(--card)); }
   .role-transfer-item input { flex: none; width: auto; }
-  .role-transfer-main { display: grid; flex: 1; min-width: 0; gap: 2px; }
-  .role-transfer-main small { color: var(--muted); font-weight: 400; }
+  .role-transfer-main { display: flex; align-items: center; flex: 1; min-width: 0; gap: 5px;
+                        overflow: hidden; white-space: nowrap; line-height: 1.35; }
+  .role-transfer-main b { flex: none; }
+  .role-transfer-name { flex: none; max-width: 180px; overflow: hidden;
+                        text-overflow: ellipsis; white-space: nowrap; }
+  .role-transfer-main small { flex: 1; min-width: 0; overflow: hidden; color: var(--muted);
+                              font-size: 11px; font-weight: 400; text-overflow: ellipsis;
+                              white-space: nowrap; }
+  .role-transfer-item > .pill { flex: none; margin: 0; padding: 0 6px; font-size: 10.5px; }
   .role-overwrite-pill { color: var(--bad); border-color: var(--bad); }
   .role-chip[aria-disabled="true"] { opacity: .5; cursor: not-allowed; }
   .muted { color: var(--muted); font-size: 12px; }

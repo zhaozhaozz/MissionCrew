@@ -34,8 +34,9 @@ function roleTransferRows(roles, conflicts = null) {
     return `<label class="role-transfer-item ${conflict ? "will-overwrite" : ""}">
       <input type="checkbox" data-role-transfer-index="${index}" checked
         onchange="updateRoleTransferSummary()">
-      <span class="role-transfer-main"><b>@${esc(role.id)}</b>${role.name ? ` · ${esc(role.name)}` : ""}
-        <small>${execution}</small></span>
+      <span class="role-transfer-main"><b>@${esc(role.id)}</b>
+        ${role.name ? `<span class="role-transfer-name">· ${esc(role.name)}</span>` : ""}
+        <small>· ${execution}</small></span>
       ${conflicts ? (conflict ? `<span class="pill role-overwrite-pill">将覆盖现有角色</span>`
         : `<span class="pill">新增</span>`) : ""}
     </label>`;

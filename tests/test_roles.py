@@ -727,6 +727,7 @@ def test_project_role_form_can_import_global_template(client):
 def test_role_settings_expose_selective_file_import_export_with_overwrite_preview(client):
     html = client.get("/").text
     js = client.get("/assets/js/roles.js").text
+    css = client.get("/assets/css/app.css").text
     openapi = client.get("/openapi.json").json()["paths"]
     assert "chooseRoleImportFile('project')" in html
     assert "openRoleExportDialog('project')" in html
@@ -737,6 +738,9 @@ def test_role_settings_expose_selective_file_import_export_with_overwrite_previe
     assert "将覆盖现有角色" in js
     assert "不会覆盖现有角色" in js
     assert "overwrite_ids" in js
+    assert "role-transfer-name" in js
+    assert ".form .role-transfer-item { display: flex" in css
+    assert ".role-transfer-main { display: flex" in css
     assert "/api/roles/import" in openapi
     assert "/api/role-templates/import" in openapi
 
