@@ -4,6 +4,208 @@ function abilityPills(role) {
     `<span class="pill">${esc(traitMeta.abilities[c] || c)}</span>`).join("");
 }
 
+/* ---- 角色配置文件导入/导出(全局模板与项目角色共用格式) ---- */
+const ROLE_FILE_FORMAT = "missioncrew.roles";
+const ROLE_FILE_VERSION = 1;
+const ROLE_FILE_FIELDS = [
+  "id", "name", "description", "runtime_id", "model", "effort",
+  "usage_linkage_enabled", "capabilities", "preference", "color",
+];
+let roleTransferState = null;
+
+function roleTransferSource(scope) {
+  return scope === "global"
+    ? { roles: globalRoleTemplates(), label: "全局角色模板", projectId: "" }
+    : { roles: projRoles(), label: `项目「${currentProject}」角色`, projectId: currentProject };
+}
+
+function roleFileItem(role) {
+  return Object.fromEntries(ROLE_FILE_FIELDS.map(field => {
+    const fallback = field === "capabilities" ? []
+      : field === "usage_linkage_enabled" ? false : "";
+    return [field, role[field] ?? fallback];
+  }));
+}
+
+function roleTransferRows(roles, conflicts = null) {
+  return roles.map((role, index) => {
+    const conflict = conflicts?.has(role.id) === true;
+    const execution = `${esc(role.runtime_id || "未绑定")} / ${esc(role.model || "CLI 默认")}`;
+    return `<label class="role-transfer-item ${conflict ? "will-overwrite" : ""}">
+      <input type="checkbox" data-role-transfer-index="${index}" checked
+        onchange="updateRoleTransferSummary()">
+      <span class="role-transfer-main"><b>@${esc(role.id)}</b>${role.name ? ` · ${esc(role.name)}` : ""}
+        <small>${execution}</small></span>
+      ${conflicts ? (conflict ? `<span class="pill role-overwrite-pill">将覆盖现有角色</span>`
+        : `<span class="pill">新增</span>`) : ""}
+    </label>`;
+  }).join("");
+}
+
+function selectedRoleTransferIndexes() {
+  return [...document.querySelectorAll("[data-role-transfer-index]:checked")]
+    .map(input => Number(input.dataset.roleTransferIndex));
+}
+
+function setAllRoleTransferSelections(checked) {
+  document.querySelectorAll("[data-role-transfer-index]").forEach(input => {
+    input.checked = checked;
+  });
+  updateRoleTransferSummary();
+}
+
+function updateRoleTransferSummary() {
+  const summary = document.getElementById("role-transfer-summary");
+  if (!summary || !roleTransferState) return;
+  const indexes = selectedRoleTransferIndexes();
+  if (roleTransferState.mode === "export") {
+    summary.textContent = `已选择 ${indexes.length} / ${roleTransferState.roles.length} 个角色`;
+    return;
+  }
+  const overwritten = indexes
+    .map(index => roleTransferState.roles[index].id)
+    .filter(id => roleTransferState.conflicts.has(id));
+  summary.textContent = overwritten.length
+    ? `已选择 ${indexes.length} 个；其中 ${overwritten.length} 个会覆盖：` +
+      overwritten.map(id => `@${id}`).join("、")
+    : `已选择 ${indexes.length} 个；不会覆盖现有角色`;
+  summary.classList.toggle("has-overwrite", overwritten.length > 0);
+}
+
+function openRoleExportDialog(scope) {
+  const source = roleTransferSource(scope);
+  if (!source.roles.length) {
+    uiAlert(`${source.label}为空，没有可导出的角色。`);
+    return;
+  }
+  roleTransferState = {
+    mode: "export", scope, roles: source.roles.map(roleFileItem),
+    projectId: source.projectId, conflicts: new Set(),
+  };
+  openFormDialog(`导出${source.label}`, `
+    <div class="role-transfer-toolbar">
+      <span id="role-transfer-summary"></span>
+      <button type="button" class="ghost compact" onclick="setAllRoleTransferSelections(true)">全选</button>
+      <button type="button" class="ghost compact" onclick="setAllRoleTransferSelections(false)">全不选</button>
+    </div>
+    <div class="role-transfer-list">${roleTransferRows(roleTransferState.roles)}</div>
+    <p class="muted">导出文件只包含角色配置和当前顺序，不包含项目归属与实时启停状态。</p>`,
+    `<button class="action" onclick="downloadSelectedRoles()">导出所选</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+  updateRoleTransferSummary();
+}
+
+function downloadSelectedRoles() {
+  const indexes = selectedRoleTransferIndexes();
+  if (!indexes.length) {
+    uiAlert("请至少勾选一个要导出的角色。");
+    return;
+  }
+  const state = roleTransferState;
+  const payload = {
+    format: ROLE_FILE_FORMAT,
+    version: ROLE_FILE_VERSION,
+    scope: state.scope,
+    exported_at: new Date().toISOString(),
+    roles: indexes.map(index => state.roles[index]),
+  };
+  if (state.projectId) payload.project_id = state.projectId;
+  const blob = new Blob([JSON.stringify(payload, null, 2) + "\n"],
+    { type: "application/json;charset=utf-8" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  const prefix = state.scope === "global" ? "global" : state.projectId;
+  link.download = `missioncrew-${prefix}-roles-${new Date().toISOString().slice(0, 10)}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+  fdlg.close();
+  toast(`已导出 ${indexes.length} 个角色`, "success");
+}
+
+function chooseRoleImportFile(scope) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,application/json";
+  input.onchange = () => input.files?.[0] && previewRoleImportFile(scope, input.files[0]);
+  input.click();
+}
+
+async function previewRoleImportFile(scope, file) {
+  if (file.size > 2 * 1024 * 1024) {
+    await uiAlert("角色配置文件不能超过 2 MiB。");
+    return;
+  }
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch (error) {
+    await uiAlert("无法解析 JSON 文件，请确认文件内容完整。", "导入失败");
+    return;
+  }
+  if (payload?.format !== ROLE_FILE_FORMAT || payload?.version !== ROLE_FILE_VERSION ||
+      !["global", "project"].includes(payload?.scope) || !Array.isArray(payload?.roles)) {
+    await uiAlert("不是受支持的 MissionCrew 角色配置文件。", "导入失败");
+    return;
+  }
+  if (!payload.roles.length || payload.roles.length > 500) {
+    await uiAlert("角色配置文件必须包含 1–500 个角色。", "导入失败");
+    return;
+  }
+  const ids = payload.roles.map(role => role?.id);
+  if (ids.some(id => typeof id !== "string" || !id) || new Set(ids).size !== ids.length) {
+    await uiAlert("角色配置文件包含空 id 或重复 id。", "导入失败");
+    return;
+  }
+  const target = roleTransferSource(scope);
+  const conflicts = new Set(target.roles.map(role => role.id).filter(id => ids.includes(id)));
+  roleTransferState = {
+    mode: "import", scope, projectId: target.projectId,
+    roles: payload.roles.map(roleFileItem), conflicts,
+  };
+  const sourceLabel = payload.scope === "global"
+    ? "全局角色模板" : `项目角色${payload.project_id ? `（${esc(payload.project_id)}）` : ""}`;
+  openFormDialog(`导入到${target.label}`, `
+    <p class="muted">文件来源：${sourceLabel}。请勾选要导入的角色；红色项目会覆盖目标中的同 id 角色。</p>
+    <div class="role-transfer-toolbar">
+      <span id="role-transfer-summary"></span>
+      <button type="button" class="ghost compact" onclick="setAllRoleTransferSelections(true)">全选</button>
+      <button type="button" class="ghost compact" onclick="setAllRoleTransferSelections(false)">全不选</button>
+    </div>
+    <div class="role-transfer-list">${roleTransferRows(roleTransferState.roles, conflicts)}</div>
+    <p class="muted">已有角色保留原排序和实时启停状态；新增角色按文件顺序追加并默认启用。</p>`,
+    `<button class="action" onclick="importSelectedRoles()">导入所选</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+  updateRoleTransferSummary();
+}
+
+async function importSelectedRoles() {
+  const state = roleTransferState;
+  const indexes = selectedRoleTransferIndexes();
+  if (!indexes.length) {
+    uiAlert("请至少勾选一个要导入的角色。");
+    return;
+  }
+  const roles = indexes.map(index => state.roles[index]);
+  const overwrite_ids = roles.map(role => role.id).filter(id => state.conflicts.has(id));
+  const endpoint = state.scope === "global" ? "/api/role-templates/import" : "/api/roles/import";
+  const body = { roles, overwrite_ids };
+  if (state.scope === "project") body.project_id = state.projectId;
+  const result = await api("POST", endpoint, body);
+  await loadOverview();
+  fdlg.close();
+  if (state.scope === "global") {
+    renderGlobalRoleTable();
+    await renderBackendTable();
+  } else {
+    renderRoleTable();
+    renderSidebar();
+    refreshProjectOrchestratorOptions();
+  }
+  const suffix = result.overwritten_ids.length
+    ? `，覆盖 ${result.overwritten_ids.length} 个现有角色` : "";
+  toast(`已导入 ${result.imported_ids.length} 个角色${suffix}`, "success");
+}
+
 function renderRoleTable() {
   const project = overview.projects.find(p => p.id === currentProject);
   const rows = projRoles().map(r => {   // 已按 sort_order 排好(服务端顺序)

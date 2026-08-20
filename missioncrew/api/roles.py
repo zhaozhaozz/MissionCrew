@@ -7,8 +7,8 @@ from ..collab.recycle_bin import recycle_role
 from ..core.models import ROLE_ABILITIES, Role
 from ..runtime import runtime_manager
 from .context import MENTION_ID_RE, ApiContext
-from .schemas import (RoleEnabledInput, RoleInput, RoleReorder, RoleTemplateInput,
-                      RoleTemplateReorder)
+from .schemas import (RoleEnabledInput, RoleImport, RoleInput, RoleReorder,
+                      RoleTemplateImport, RoleTemplateInput, RoleTemplateReorder)
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -46,6 +46,25 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 raise HTTPException(
                     400, f"模型 {body.model or '(CLI 默认)'} 的 effort "
                          f"必须是 {'/'.join(allowed)} 之一")
+
+    def validate_import_roles(
+            roles: list[RoleTemplateInput], existing_ids: set[str],
+            overwrite_ids: list[str]) -> set[str]:
+        """先完整校验批次，再写库；覆盖名单必须与当前数据一致。"""
+        ids = [role.id for role in roles]
+        if len(ids) != len(set(ids)):
+            raise HTTPException(400, "导入列表包含重复角色 id")
+        acknowledged = set(overwrite_ids)
+        if not acknowledged <= set(ids):
+            raise HTTPException(400, "overwrite_ids 只能包含本次导入的角色 id")
+        conflicts = set(ids) & existing_ids
+        unconfirmed = conflicts - acknowledged
+        if unconfirmed:
+            names = ", ".join(f"@{role_id}" for role_id in sorted(unconfirmed))
+            raise HTTPException(409, f"以下角色会覆盖现有配置，请确认后重试: {names}")
+        for role in roles:
+            validate_config(role)
+        return conflicts
 
     @app.get("/api/roles")
     def roles():
@@ -100,6 +119,40 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                     detail=f"project={body.project_id} order={','.join(body.ids)}")
         return {"ok": True, "ids": body.ids}
 
+    @app.post("/api/roles/import")
+    def import_roles(body: RoleImport):
+        project = ctx.must_project(body.project_id)
+        current = {role.id: role for role in store.list_roles(project.id)}
+        overwritten = validate_import_roles(
+            body.roles, set(current), body.overwrite_ids)
+        next_order = 10 + max((role.sort_order for role in current.values()), default=0)
+        imported: list[str] = []
+        for item in body.roles:
+            previous = current.get(item.id)
+            data = item.model_dump(exclude={"sort_order"})
+            role = Role(
+                **data,
+                project_id=project.id,
+                # 启停是项目的实时运行状态，不随配置文件迁移。
+                enabled=previous.enabled if previous else True,
+                sort_order=previous.sort_order if previous else next_order,
+            )
+            if previous is None:
+                next_order += 10
+            store.put_role(role)
+            ctx.role_usage_linkage.role_updated(role, previous=previous)
+            imported.append(role.id)
+        store.audit(
+            "human", "roles_imported",
+            detail=(f"project={project.id} imported={','.join(imported)} "
+                    f"overwritten={','.join(sorted(overwritten))}"),
+        )
+        return {
+            "ok": True,
+            "imported_ids": imported,
+            "overwritten_ids": sorted(overwritten),
+        }
+
     @app.delete("/api/roles/{role_id}")
     def delete_role(role_id: str, project_id: str):
         if store.get_role(project_id, role_id) is None:
@@ -140,6 +193,36 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         store.audit("human", "role_templates_reordered",
                     detail=f"order={','.join(body.ids)}")
         return {"ok": True, "ids": body.ids}
+
+    @app.post("/api/role-templates/import")
+    def import_role_templates(body: RoleTemplateImport):
+        current = {role.id: role for role in store.list_role_templates()}
+        overwritten = validate_import_roles(
+            body.roles, set(current), body.overwrite_ids)
+        next_order = 10 + max((role.sort_order for role in current.values()), default=0)
+        imported: list[str] = []
+        for item in body.roles:
+            previous = current.get(item.id)
+            data = item.model_dump(exclude={"sort_order"})
+            role = Role(
+                **data,
+                project_id="",
+                sort_order=previous.sort_order if previous else next_order,
+            )
+            if previous is None:
+                next_order += 10
+            store.put_role_template(role)
+            imported.append(role.id)
+        store.audit(
+            "human", "role_templates_imported",
+            detail=(f"imported={','.join(imported)} "
+                    f"overwritten={','.join(sorted(overwritten))}"),
+        )
+        return {
+            "ok": True,
+            "imported_ids": imported,
+            "overwritten_ids": sorted(overwritten),
+        }
 
     @app.delete("/api/role-templates/{role_id}")
     def delete_role_template(role_id: str):

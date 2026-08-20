@@ -129,6 +129,18 @@ class RoleTemplateReorder(BaseModel):
     ids: list[str]                 # 全部全局角色模板 id,按目标显示顺序排列
 
 
+class RoleImport(BaseModel):
+    project_id: str
+    roles: list[RoleTemplateInput] = Field(min_length=1, max_length=500)
+    # 前端预览时明确提示过的覆盖项；服务端复核，避免预览后出现新同名角色。
+    overwrite_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
+class RoleTemplateImport(BaseModel):
+    roles: list[RoleTemplateInput] = Field(min_length=1, max_length=500)
+    overwrite_ids: list[str] = Field(default_factory=list, max_length=500)
+
+
 class GuidelineInput(BaseModel):
     markdown: str
     enabled: bool = True

@@ -87,6 +87,87 @@ def test_role_crud_api(client):
     assert "writer" not in {r["id"] for r in client.get("/api/roles").json()}
 
 
+def test_project_role_batch_import_requires_confirmed_overwrites_and_preserves_live_state(
+        client, seeded):
+    original = seeded.get_role("webshop", "dev")
+    original_order = original.sort_order
+    assert client.post("/api/roles/dev/enabled", json={
+        "project_id": "webshop", "enabled": False,
+    }).status_code == 200
+    roles = [
+        {
+            "id": "imported-writer", "name": "导入写手", "runtime_id": "std-1",
+            "model": "pro", "capabilities": ["coding"], "preference": "文档",
+        },
+        {
+            "id": "dev", "name": "导入开发者", "runtime_id": "std-1",
+            "model": "pro", "capabilities": ["coding"], "preference": "后端",
+        },
+    ]
+
+    denied = client.post("/api/roles/import", json={
+        "project_id": "webshop", "roles": roles, "overwrite_ids": [],
+    })
+    assert denied.status_code == 409
+    assert "@dev" in denied.json()["detail"]
+    # 整批先校验再落库，前面的新增项不会留下半批数据。
+    assert seeded.get_role("webshop", "imported-writer") is None
+
+    imported = client.post("/api/roles/import", json={
+        "project_id": "webshop", "roles": roles, "overwrite_ids": ["dev"],
+    })
+    assert imported.status_code == 200
+    assert imported.json() == {
+        "ok": True,
+        "imported_ids": ["imported-writer", "dev"],
+        "overwritten_ids": ["dev"],
+    }
+    dev = seeded.get_role("webshop", "dev")
+    writer = seeded.get_role("webshop", "imported-writer")
+    assert dev.name == "导入开发者"
+    assert dev.enabled is False               # 实时启停状态不随配置导入改变
+    assert dev.sort_order == original_order   # 覆盖不改变现有位置
+    assert writer.project_id == "webshop" and writer.enabled is True
+    assert writer.sort_order > max(
+        role.sort_order for role in seeded.list_roles("webshop") if role.id != writer.id)
+
+
+def test_global_role_batch_import_requires_confirmed_overwrites_and_keeps_order(
+        client, seeded):
+    original = seeded.get_role_template("lead")
+    roles = [
+        {"id": "imported-lead", "name": "新模板", "runtime_id": "std-1", "model": "pro"},
+        {"id": "lead", "name": "导入主控", "runtime_id": "exp-1", "model": "ultra"},
+    ]
+    denied = client.post("/api/role-templates/import", json={
+        "roles": roles, "overwrite_ids": [],
+    })
+    assert denied.status_code == 409
+    assert seeded.get_role_template("imported-lead") is None
+
+    imported = client.post("/api/role-templates/import", json={
+        "roles": roles, "overwrite_ids": ["lead"],
+    })
+    assert imported.status_code == 200
+    assert imported.json()["overwritten_ids"] == ["lead"]
+    lead = seeded.get_role_template("lead")
+    added = seeded.get_role_template("imported-lead")
+    assert lead.name == "导入主控" and lead.project_id == ""
+    assert lead.sort_order == original.sort_order
+    assert added.sort_order > max(
+        role.sort_order for role in seeded.list_role_templates() if role.id != added.id)
+
+
+def test_role_batch_import_rejects_duplicate_ids_before_writing(client, seeded):
+    duplicate = {"id": "batch-dup", "runtime_id": "std-1", "model": "pro"}
+    response = client.post("/api/roles/import", json={
+        "project_id": "webshop", "roles": [duplicate, duplicate], "overwrite_ids": [],
+    })
+    assert response.status_code == 400
+    assert "重复角色 id" in response.json()["detail"]
+    assert seeded.get_role("webshop", "batch-dup") is None
+
+
 def test_role_can_be_temporarily_disabled_without_stopping_existing_run(
         client, seeded):
     role = seeded.get_role("webshop", "dev")
@@ -641,6 +722,23 @@ def test_project_role_form_can_import_global_template(client):
     settings_runtime = client.get("/assets/js/settings-runtime.js").text
     assert "roleUsageLinkageField(role)" in settings_runtime
     assert "usage_linkage_enabled" in settings_runtime
+
+
+def test_role_settings_expose_selective_file_import_export_with_overwrite_preview(client):
+    html = client.get("/").text
+    js = client.get("/assets/js/roles.js").text
+    openapi = client.get("/openapi.json").json()["paths"]
+    assert "chooseRoleImportFile('project')" in html
+    assert "openRoleExportDialog('project')" in html
+    assert "chooseRoleImportFile('global')" in html
+    assert "openRoleExportDialog('global')" in html
+    assert 'const ROLE_FILE_FORMAT = "missioncrew.roles"' in js
+    assert 'data-role-transfer-index="${index}"' in js
+    assert "将覆盖现有角色" in js
+    assert "不会覆盖现有角色" in js
+    assert "overwrite_ids" in js
+    assert "/api/roles/import" in openapi
+    assert "/api/role-templates/import" in openapi
 
 
 # ---- 模型清单来自 runtime(仿 Multica 动态发现) ----
