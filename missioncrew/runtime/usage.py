@@ -303,6 +303,10 @@ def parse_kimi_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
             duration_minutes=duration_minutes,
         ))
 
+    # 与 claude/codex 展示顺序一致:短周期(5 小时)排在周限额之前。
+    windows.sort(key=lambda window: (
+        window.duration_minutes is None, window.duration_minutes or 0))
+
     metrics: list[RuntimeUsageMetric] = []
     wallet = payload.get("boosterWallet")
     if isinstance(wallet, dict):
