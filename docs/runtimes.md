@@ -53,7 +53,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 快照区分两种生命周期：
 
-- `persistent`：服务进程内长驻并可复用的 Claude stream-json、Codex app-server 或 ACP stdio session。运行中显示 `running`，轮次结束但进程仍在时显示 `idle`，进程异常退出但实例记录尚在时显示 `disconnected`。
+- `persistent`：服务进程内长驻并可复用的 Claude stream-json、Codex app-server 或 ACP stdio session。运行中显示 `running`，轮次结束但进程仍在时显示 `idle`，进程异常退出但实例记录尚在时显示 `disconnected`。`RuntimeManager` 的周期回收线程每 60 秒扫描一次，空闲超过 30 分钟的长驻会话被关闭；仍有活动 turn、wake turn、后台命令或未完成后台 Agent 的会话不回收。原生 session/thread id 已持久化，被回收的会话下一轮以新进程按各自的恢复机制继续。
 - `one_shot`：打印模式和无 session key 的 ACP 调用。子进程存在时显示 `running`，退出后立即从状态页移除。
 
 每个实例统一提供 backend、adapter、transport、PID、session key、原生 session/thread id、项目、角色、模型、工作目录、启动时间和最近活动时间。打印模式通过活动进程注册表上报；ACP 同时上报长驻池与一次性 client；Claude/Codex 原生 provider 直接上报其会话对象。页面的后端概览始终列出全部已注册 Runtime，即使当前没有进程，也会明确显示未运行或已停用。
@@ -95,14 +95,14 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 
 | Runtime / adapter | 首轮如何创建 | 后续轮次如何复用 | 会话 ID 来源与进程生命周期 |
 |---|---|---|---|
-| Claude / `claude_code` | 启动双向 stream-json 进程，从 `system/init` 保存原生 session id | 服务存活时把下一条 user message 写入同一进程；进程或服务重启后以 `--resume <id>` 恢复 | Runtime 返回 ID；一个 `channel::role` 对应一个长驻进程。模型、effort、目录或环境变化时重启进程，但恢复同一 session |
-| Codex / `codex` | 启动 `codex app-server`，调用 `initialize → thread/start` | 同一进程、同一 thread 调用 `turn/start`；进程或服务重启后先 `thread/resume` | app-server 返回 thread id；一个 `channel::role` 对应一个长驻进程。恢复失败会明确结束本轮，不会静默创建新 thread |
-| Grok / `grok_build` | `session/new` 创建会话，并在服务进程内保留 `grok agent stdio` | 同一服务进程直接续轮；重启后通过带 `_meta.noReplay=true` 的 `session/load` 恢复 | ACP session id；按 channel × role 长驻复用，恢复历史不进入当前 Run |
+| Claude / `claude_code` | 启动双向 stream-json 进程，从 `system/init` 保存原生 session id | 服务存活时把下一条 user message 写入同一进程；进程或服务重启后以 `--resume <id>` 恢复 | Runtime 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收(有后台命令或后台 Agent 时不回收)。模型、effort、目录或环境变化时重启进程，但恢复同一 session |
+| Codex / `codex` | 启动 `codex app-server`，调用 `initialize → thread/start` | 同一进程、同一 thread 调用 `turn/start`；进程或服务重启后先 `thread/resume` | app-server 返回 thread id；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收。恢复失败会明确结束本轮，不会静默创建新 thread |
+| Grok / `grok_build` | `session/new` 创建会话，并在服务进程内保留 `grok agent stdio` | 同一服务进程直接续轮；重启后通过带 `_meta.noReplay=true` 的 `session/load` 恢复 | ACP session id；按 channel × role 长驻复用，空闲 30 分钟回收，恢复历史不进入当前 Run |
 | OpenCode / `opencode` | 使用 `--format json` 启动，并从 JSON 事件捕获 session id | 新进程使用 `--session <id>`，继续保持 JSON 输出 | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | GitHub Copilot / `copilot` | 启动 `copilot --acp` serve 进程并调用 `session/new` | 服务存活时长驻复用；重启后 `session/load` 恢复(会回放历史,协议层在 load 后才 begin_turn,回放不进本轮回复) | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Cursor / `cursor` | 使用 `--output-format json` 启动，并从 JSON 结果捕获 session/chat id | 新进程使用 `--resume <id>` | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | CodeBuddy / `codebuddy` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
-| Pi / `pi` | 启动 `pi --mode rpc` 长驻进程，首轮回合后从 `get_state` 保存会话文件路径 | 服务存活时同一进程直接发下一条 `prompt`；进程或服务重启后以 `--session <file>` 恢复 | SQLite 保存会话 JSONL 绝对路径(位于 `MC_HOME/pi/sessions/`);一个 `channel::role` 对应一个长驻进程 |
+| Pi / `pi` | 启动 `pi --mode rpc` 长驻进程，首轮回合后从 `get_state` 保存会话文件路径 | 服务存活时同一进程直接发下一条 `prompt`；进程或服务重启后以 `--session <file>` 恢复 | SQLite 保存会话 JSONL 绝对路径(位于 `MC_HOME/pi/sessions/`);一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Kimi / `kimi` | 启动 ACP serve 进程并调用 `session/new` | 服务存活时直接在同一进程、同一 `sessionId` 调用 `session/prompt`；MissionCrew 重启后仅在 Runtime 声明 `loadSession` 时调用 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Kiro / `kiro` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Qoder / `qoder` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |

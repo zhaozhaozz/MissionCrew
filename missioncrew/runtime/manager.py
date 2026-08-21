@@ -82,6 +82,9 @@ class RuntimeManager:
     """主程序唯一可见的 Runtime 控制面。"""
 
     ACCOUNT_USAGE_CACHE_TTL = 60
+    # 长驻会话空闲回收:与 ACP 池同一口径(acp._SESSION_IDLE_SECONDS)。
+    SESSION_IDLE_SECONDS = 1800
+    IDLE_REAPER_INTERVAL = 60
 
     def __init__(self):
         self._providers: dict[str, RuntimeProvider] = {}
@@ -89,6 +92,8 @@ class RuntimeManager:
         self._account_usage_cache: dict[str, tuple[float, RuntimeUsageSnapshot]] = {}
         self._account_usage_guard = threading.Lock()
         self._usage_refresh_handler = None
+        self._reaper_guard = threading.Lock()
+        self._reaper_stop: Optional[threading.Event] = None
         self._builtin = _BuiltinProvider()
         # 延迟导入避免 provider 与 manager 初始化互相依赖。业务层只会看到
         # RuntimeManager，Claude/Codex 原生协议类不会越过 runtime 包边界。
@@ -230,8 +235,54 @@ class RuntimeManager:
     def interrupt(self, backend: Backend, session_key: str = "") -> int:
         return self.provider_for(backend).interrupt(backend, session_key)
 
+    def cleanup_idle(self, idle_seconds: Optional[float] = None) -> int:
+        """回收所有 provider 中空闲超时的长驻会话,返回回收数量。
+
+        provider 各自跳过仍有活动 turn、后台命令或后台 Agent 的会话;
+        ACP 池的同名惰性清理也在此一并触发。"""
+        ttl = self.SESSION_IDLE_SECONDS if idle_seconds is None else idle_seconds
+        cutoff = time.time() - ttl
+        cleaned = 0
+        seen: set[int] = set()
+        for provider in self._providers.values():
+            if id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            try:
+                cleaned += provider.cleanup_idle(cutoff)
+            except Exception:
+                pass
+        try:
+            _executors.acp.cleanup_idle_sessions()
+        except Exception:
+            pass
+        return cleaned
+
+    def start_idle_reaper(self) -> None:
+        """启动周期空闲回收线程;重复调用无副作用。"""
+        with self._reaper_guard:
+            if self._reaper_stop is not None:
+                return
+            stop = threading.Event()
+            self._reaper_stop = stop
+
+        def loop() -> None:
+            while not stop.wait(self.IDLE_REAPER_INTERVAL):
+                self.cleanup_idle()
+
+        threading.Thread(target=loop, daemon=True,
+                         name="runtime-idle-reaper").start()
+
+    def stop_idle_reaper(self) -> None:
+        with self._reaper_guard:
+            stop = self._reaper_stop
+            self._reaper_stop = None
+        if stop is not None:
+            stop.set()
+
     def shutdown(self) -> None:
         """停止所有内置 Runtime 进程，供服务生命周期调用。"""
+        self.stop_idle_reaper()
         seen: set[int] = set()
         for provider in self._providers.values():
             if id(provider) in seen:

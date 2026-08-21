@@ -217,6 +217,13 @@ class RuntimeProvider(ABC):
     def shutdown(self) -> None:
         """释放 provider 持有的所有长驻进程；无状态 provider 无需实现。"""
 
+    def cleanup_idle(self, cutoff: float) -> int:
+        """回收 last_activity 早于 cutoff 且无活动工作的长驻会话。
+
+        活动 turn、后台命令或后台 Agent 存活的会话不回收;原生会话 ID 已
+        持久化,被回收的会话下一轮以新进程恢复。返回回收数量。"""
+        return 0
+
     def interrupt(self, backend: Backend, session_key: str = "") -> int:
         """中断匹配会话的当前 turn，但保留可继续复用的会话。"""
         return 0

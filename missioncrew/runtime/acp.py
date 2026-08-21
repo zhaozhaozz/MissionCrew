@@ -650,6 +650,12 @@ def _cleanup_idle_sessions() -> None:
         live.client.close()
 
 
+def cleanup_idle_sessions() -> None:
+    """回收空闲超时的长驻 ACP 会话;供 RuntimeManager 的周期回收调用,
+    否则只有下一次 ACP 执行才会触发惰性清理。"""
+    _cleanup_idle_sessions()
+
+
 def close_sessions() -> None:
     """关闭全部长驻 ACP 会话，供服务退出和测试清理。"""
     with _LIVE_SESSIONS_GUARD:

@@ -350,6 +350,10 @@ class _CodexSession:
                 self.last_activity = time.time()
                 self._active_config = None
 
+    def reclaimable(self, cutoff: float) -> bool:
+        """空闲回收判定:turn 进行中不回收;thread id 已持久化可恢复。"""
+        return self._active_config is None and self.last_activity < cutoff
+
     def snapshot(self) -> RuntimeInstance:
         client = self.client
         alive = bool(client and client.alive)
@@ -729,6 +733,15 @@ class CodexRuntimeProvider(RuntimeProvider):
             sessions = [session for session in self._sessions.values()
                         if session.backend_id == backend.id]
         return [session.snapshot() for session in sessions]
+
+    def cleanup_idle(self, cutoff: float) -> int:
+        with self._guard:
+            stale = [key for key, session in self._sessions.items()
+                     if session.persistent and session.reclaimable(cutoff)]
+            sessions = [self._sessions.pop(key) for key in stale]
+        for session in sessions:
+            session.close()
+        return len(sessions)
 
     def shutdown(self) -> None:
         with self._guard:

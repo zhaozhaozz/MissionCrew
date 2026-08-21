@@ -927,6 +927,16 @@ class _ClaudeSession:
         with self._turn_condition:
             return self._active_config is not None
 
+    def reclaimable(self, cutoff: float) -> bool:
+        """空闲回收判定:显式 turn、wake turn、后台命令或未完成的后台
+        Agent 存活时都不回收——关进程会连带杀掉它们。"""
+        with self._turn_condition:
+            busy = (self._active_config is not None
+                    or self._wake_sink is not None
+                    or bool(self._background_tasks)
+                    or bool(self._pending_native_agents))
+        return not busy and self.last_activity < cutoff
+
     def close(self) -> None:
         process = self.process
         self.process = None
@@ -1035,6 +1045,15 @@ class ClaudeRuntimeProvider(RuntimeProvider):
             sessions = [session for session in self._sessions.values()
                         if session.backend_id == backend.id]
         return [session.snapshot() for session in sessions]
+
+    def cleanup_idle(self, cutoff: float) -> int:
+        with self._guard:
+            stale = [key for key, session in self._sessions.items()
+                     if session.persistent and session.reclaimable(cutoff)]
+            sessions = [self._sessions.pop(key) for key in stale]
+        for session in sessions:
+            session.close()
+        return len(sessions)
 
     def shutdown(self) -> None:
         with self._guard:

@@ -24,6 +24,7 @@ def create_app() -> FastAPI:
         from ..runtime import runtime_manager
         runtime_manager.set_usage_refresh_handler(
             ctx.role_usage_linkage.request_refresh)
+        runtime_manager.start_idle_reaper()
         ctx.role_usage_linkage.start()
         ctx.automation_scheduler.start()
         try:
