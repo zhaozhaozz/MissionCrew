@@ -164,6 +164,108 @@ def test_automation_token_scopes_and_message_publish(seeded):
     assert result["dispatched"] == ["dev"]
 
 
+def test_automation_refreshes_custom_board_source_and_board_binds_it(seeded):
+    """脚本身份创建/整体刷新自定义数据源,看板绑定后按状态标签分列筛选。"""
+    chat = ChatEngine(seeded, max_workers=2)
+    tools = chat.agent_tools
+    automation, _ = save_automation(
+        seeded, "webshop", id="issue-sync", script="true",
+        actions=["board_source.save", "board_source.delete"])
+    token = tools.issue_automation_token(automation, 600)
+    identity = tools.authenticate(token)
+
+    result = tools.execute(identity, "board_source.save", {
+        "id": "gitcode-issues", "name": "GitCode Issues",
+        "description": "定时同步的 Issue 列表",
+        "cards": [
+            {"id": "42", "title": "登录页崩溃", "status": "in_progress",
+             "labels": ["bug"], "url": "https://gitcode.com/x/y/issues/42"},
+            {"id": "43", "title": "支持导出", "labels": ["feature"]},
+        ],
+    }, None, "req-src")
+    assert "GitCode Issues" in result["summary"]
+    record = seeded.get_board_datasource("webshop:gitcode-issues")
+    assert record is not None and len(record.cards) == 2
+    assert record.cards[1]["status"] == "open"   # 缺省落到第一个状态列
+
+    with TestClient(create_app()) as client:
+        # 数据源清单包含自定义源;看板可直接绑定
+        sources = client.get("/api/projects/webshop/board_sources").json()
+        custom = next(s for s in sources if s["id"] == "gitcode-issues")
+        assert custom["custom"] is True and custom["cards"] == 2
+
+        saved = client.post("/api/projects/webshop/boards", json={
+            "id": "issues", "name": "Issue 看板", "kind": "taskboard",
+            "source": "gitcode-issues", "layout": []})
+        assert saved.status_code == 200, saved.text
+        data = client.get("/api/projects/webshop/boards/issues/data").json()
+        assert data["source"]["name"] == "GitCode Issues"
+        by_title = {c["title"]: [x["title"] for x in c["cards"]]
+                    for c in data["columns"]}
+        assert by_title["处理中"] == ["登录页崩溃"]
+        assert by_title["待处理"] == ["支持导出"]
+        assert data["columns"][1]["cards"][0]["url"].endswith("/issues/42")
+
+        # 卡片校验:未知状态拒绝,数据源内容不被破坏
+        with pytest.raises(AgentToolError) as bad:
+            tools.execute(identity, "board_source.save", {
+                "id": "gitcode-issues",
+                "cards": [{"id": "1", "title": "x", "status": "closed"}],
+            }, None, "req-bad")
+        assert bad.value.code == "invalid_arguments"
+        assert len(seeded.get_board_datasource("webshop:gitcode-issues").cards) == 2
+
+        # 仍被面板引用时删除拒绝;面板移除后可删除
+        with pytest.raises(AgentToolError) as in_use:
+            tools.execute(identity, "board_source.delete",
+                          {"id": "gitcode-issues"}, None, "req-del-1")
+        assert in_use.value.code == "in_use"
+        client.delete("/api/projects/webshop/boards/issues")
+        result = tools.execute(identity, "board_source.delete",
+                               {"id": "gitcode-issues"}, None, "req-del-2")
+        assert result["deleted"] is True
+        assert seeded.get_board_datasource("webshop:gitcode-issues") is None
+
+
+def test_orchestrator_creates_taskboard_bound_to_custom_source(seeded):
+    """主控经 dashboard.save 传 kind/source/filters 创建任务看板。"""
+    chat = ChatEngine(seeded, max_workers=2)
+    tools = chat.agent_tools
+    project = seeded.get_project("webshop")
+    channel = seeded.get_channel("general")
+    from missioncrew.collab.agent_tools import AgentIdentity, AgentRunContext
+    identity = AgentIdentity(
+        token_id="t", project_id="webshop", channel_id=channel.id,
+        role_id=project.orchestrator_role_id,
+        issued_scopes=tuple(tools.allowed_actions(
+            project, project.orchestrator_role_id)))
+    context = AgentRunContext(run_id=0, channel_id=channel.id, root_id=0, depth=0)
+
+    tools._execute_action(identity, "board_source.save", {
+        "id": "sync-list", "name": "同步列表",
+        "cards": [{"id": "a", "title": "条目A", "labels": ["p0"]}],
+    }, context)
+    # 内置源 id 不可覆盖
+    with pytest.raises(AgentToolError):
+        tools._execute_action(identity, "board_source.save",
+                              {"id": "tasks", "name": "x"}, context)
+
+    result = tools._execute_action(identity, "dashboard.save", {
+        "id": "sync-board", "name": "同步看板", "kind": "taskboard",
+        "source": "sync-list",
+        "filters": [{"title": "P0", "query": "p0 & !已完成"}],
+    }, context)
+    board = seeded.get_board("webshop:sync-board")
+    assert board.kind == "taskboard" and board.source == "sync-list"
+    assert board.filters == [{"title": "P0", "query": "p0 & !已完成",
+                              "color": ""}]
+    assert "同步看板" in result["summary"]
+    # 未知数据源拒绝
+    with pytest.raises(AgentToolError):
+        tools._execute_action(identity, "dashboard.save", {
+            "id": "sync-board", "source": "nope"}, context)
+
+
 def test_automation_token_rejected_after_delete(seeded):
     chat = ChatEngine(seeded, max_workers=2)
     tools = chat.agent_tools

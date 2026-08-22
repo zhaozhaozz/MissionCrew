@@ -658,8 +658,49 @@ class BoardWidget:
     content: dict = field(default_factory=dict)
 
 
-# 面板形态:widgets(主控维护的组件网格) | taskboard(按标签表达式筛选的任务看板)
+# 面板形态:widgets(主控维护的组件网格) | taskboard(按标签筛选列分列的任务看板)
 BOARD_KINDS = {"widgets", "taskboard"}
+
+# 看板默认状态列:内置任务源与自定义数据源共用;key 对应卡片 status,
+# title(待处理/处理中/已阻塞/已完成)同时作为可筛选的状态标签参与表达式匹配。
+DEFAULT_BOARD_COLUMNS = (
+    {"key": "open", "title": "待处理", "color": "var(--muted)"},
+    {"key": "in_progress", "title": "处理中", "color": "var(--accent)"},
+    {"key": "blocked", "title": "已阻塞", "color": "var(--bad)"},
+    {"key": "done", "title": "已完成", "color": "var(--ok)"},
+)
+
+
+@dataclass
+class BoardDataSource:
+    """脚本可维护的自定义看板数据源。
+
+    卡片结构与内置任务源一致(id/title/summary/status/labels/updated_at/meta,
+    外链卡片带 url);由主控 board_source.save 创建,自动化脚本整体刷新 cards,
+    适合定时同步 GitCode/GitHub Issue 这类外部列表。
+    """
+
+    id: str                    # 全局唯一,约定为 "<project>:<short_id>"
+    project_id: str
+    name: str = ""
+    description: str = ""
+    columns: list[dict] = field(
+        default_factory=lambda: [dict(c) for c in DEFAULT_BOARD_COLUMNS])
+    cards: list[dict] = field(default_factory=list)
+    created_by_role_id: str = ""   # 为空表示人类/平台创建
+    created_at: float = field(default_factory=now)
+    updated_at: float = field(default_factory=now)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "BoardDataSource":
+        d = dict(d)
+        d["columns"] = ([dict(c) for c in d.get("columns") or []]
+                        or [dict(c) for c in DEFAULT_BOARD_COLUMNS])
+        d["cards"] = [dict(c) for c in d.get("cards") or []]
+        return cls(**d)
 
 
 @dataclass
@@ -675,8 +716,11 @@ class Board:
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
     kind: str = "widgets"
-    query: str = ""          # taskboard:标签组合表达式(& | ! 与括号)
+    query: str = ""          # taskboard:全局标签表达式(& | ! 与括号),先于分列过滤
     source: str = "tasks"    # taskboard:数据源 id(collab/board_sources 注册表)
+    # taskboard:筛选列 [{title,query,color}],每列一个标签表达式;
+    # 空列表 = 按数据源状态列分列(创建看板时默认物化为状态标签筛选列)
+    filters: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -692,6 +736,7 @@ class Board:
 AUTOMATION_DEFAULT_ACTIONS = (
     "task.create", "task.update", "task.brief",
     "message.publish", "document.publish", "dashboard.save",
+    "board_source.save",
 )
 AUTOMATION_DEFAULT_TIMEOUT = 600
 AUTOMATION_MAX_TIMEOUT = 6 * 3600

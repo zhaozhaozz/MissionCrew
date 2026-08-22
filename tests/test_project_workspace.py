@@ -959,16 +959,41 @@ def test_taskboard_source_registry_and_data_endpoint(seeded):
         "query": "bug", "source": "tasks", "layout": []})
     assert saved.status_code == 200, saved.text
     assert saved.json()["source"] == "tasks"
+    # 新建看板未显式给筛选列:按数据源状态列物化默认筛选列(标题即状态标签)
+    assert [f["title"] for f in saved.json()["filters"]] == [
+        "待处理", "处理中", "已阻塞", "已完成"]
 
-    # 看板数据:数据源取数 + 标签表达式服务端过滤,卡片是标准化结构
+    # 看板数据:数据源取数 + 全局表达式过滤,再按筛选列分列,卡片是标准化结构
     data = client.get("/api/projects/webshop/boards/bugs/data")
     assert data.status_code == 200, data.text
     payload = data.json()
     assert payload["source"] == {"id": "tasks", "name": "项目任务"}
-    assert [c["title"] for c in payload["cards"]] == ["登录崩溃"]
-    card = payload["cards"][0]
+    assert [c["title"] for c in payload["columns"]] == [
+        "待处理", "处理中", "已阻塞", "已完成"]
+    in_progress = payload["columns"][1]
+    assert [c["title"] for c in in_progress["cards"]] == ["登录崩溃"]
+    card = in_progress["cards"][0]
     assert card["status"] == "in_progress" and card["task_id"] == card["id"]
     assert card["labels"] == ["bug"] and card["summary"] == "点登录闪退"
+    # 状态标签与卡片标签都进筛选建议全集
+    assert {"bug", "处理中", "待处理"} <= set(payload["labels"])
+
+    # 状态即标签:筛选列表达式可组合状态与业务标签
+    combo = client.post("/api/projects/webshop/boards", json={
+        "id": "bugs", "name": "缺陷", "query": "",
+        "filters": [{"title": "阻塞或进行中的缺陷",
+                     "query": "(处理中 | 已阻塞) & bug"},
+                    {"title": "非缺陷", "query": "!bug"}]})
+    assert combo.status_code == 200, combo.text
+    payload = client.get("/api/projects/webshop/boards/bugs/data").json()
+    assert [c["title"] for c in payload["columns"]] == ["阻塞或进行中的缺陷", "非缺陷"]
+    assert [c["title"] for c in payload["columns"][0]["cards"]] == ["登录崩溃"]
+    assert [c["title"] for c in payload["columns"][1]["cards"]] == ["文案优化"]
+
+    # 非法筛选列表达式拒绝
+    bad = client.post("/api/projects/webshop/boards", json={
+        "id": "bugs", "name": "缺陷", "filters": [{"query": "(bug"}]})
+    assert bad.status_code == 400 and "筛选列表达式不合法" in bad.json()["detail"]
 
     # widgets 面板不提供看板数据;不存在的面板 404
     client.post("/api/projects/webshop/boards", json={
@@ -1203,6 +1228,9 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "markdownPreviewHtml(markdown)" in js
     assert "markdownPreviewHtml(" in viewer
     assert "markdownPreviewHtml(c.markdown || c.text" in boards
+    # 新建看板对话框无标签表达式输入;筛选列在看板顶部工具条增删
+    assert 'id="nb-query"' not in boards
+    assert "tb-filter-bar" in boards and "addTaskboardFilter" in boards
     assert js.count("markdownPreviewHtml(") >= 2
     assert "markdownContentWithoutFrontmatter" not in js
     assert "skillMarkdownPreviewHtml" not in js

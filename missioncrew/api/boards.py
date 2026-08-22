@@ -27,13 +27,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/projects/{project_id}/board_sources")
     def list_board_sources(project_id: str):
-        """任务看板可选数据源清单(创建/编辑对话框用)。"""
+        """任务看板可选数据源清单(内置 + 本项目自定义,创建/编辑对话框用)。"""
         ctx.must_project(project_id)
-        return board_sources.describe_sources()
+        return board_sources.describe_sources(store, project_id)
 
     @app.get("/api/projects/{project_id}/boards/{board_id}/data")
     def taskboard_data(project_id: str, board_id: str):
-        """解析任务看板数据:数据源取数 + 标签表达式服务端过滤。"""
+        """解析任务看板数据:数据源取数 + 服务端按筛选列分列。"""
         ctx.must_project(project_id)
         full_id = ctx.namespaced_id(project_id, board_id, "面板")
         board = store.get_board(full_id)
@@ -43,7 +43,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, "该面板不是任务看板")
         try:
             return board_sources.resolve_board_data(
-                store, project_id, board.source, board.query)
+                store, project_id, board.source, board.query, board.filters)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
@@ -140,7 +140,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                     widgets.append(widget)
             except (TypeError, ValueError) as exc:
                 raise HTTPException(400, f"面板布局不合法: {exc}")
-        board = store.get_board(board_id) or Board(
+        existing = store.get_board(board_id)
+        board = existing or Board(
             id=board_id, project_id=project_id,
             created_by_role_id=body.actor_role_id or "",
         )
@@ -159,16 +160,29 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if body.query is not None:
             board.query = body.query.strip()
         if body.source is not None:
-            if body.source not in board_sources.SOURCES:
+            if not board_sources.source_exists(store, project_id, body.source):
+                known = [s["id"] for s in
+                         board_sources.describe_sources(store, project_id)]
                 raise HTTPException(
                     400, f"未知数据源 {body.source},"
-                         f"可用: {', '.join(sorted(board_sources.SOURCES))}")
+                         f"可用: {', '.join(sorted(known))}")
             board.source = body.source
-        if board.kind == "taskboard":
+        if body.filters is not None:
             try:
-                label_query.parse(board.query)
+                board.filters = board_sources.validate_filters(body.filters)
             except ValueError as exc:
-                raise HTTPException(400, f"标签表达式不合法: {exc}")
+                raise HTTPException(400, str(exc))
+        if board.kind == "taskboard":
+            if board.query:
+                try:
+                    label_query.parse(board.query)
+                except ValueError as exc:
+                    raise HTTPException(400, f"标签表达式不合法: {exc}")
+            # 新建看板未显式给筛选列时,把数据源状态列物化为默认筛选列,
+            # 用户后续可在看板上直接增删列
+            if existing is None and body.filters is None:
+                board.filters = board_sources.default_filters(
+                    board_sources.source_columns(store, project_id, board.source))
         store.put_board(board)
         store.audit(actor, "board_saved", detail=f"project={project_id} board={board_id}")
         return {**board.to_dict(),

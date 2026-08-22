@@ -9,8 +9,8 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .models import (Automation, Backend, Board, Channel, Project, Resource,
-                     Role, Task)
+from .models import (Automation, Backend, Board, BoardDataSource, Channel,
+                     Project, Resource, Role, Task)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS role_usage_blocks (
   PRIMARY KEY(project_id, role_id)
 );
 CREATE TABLE IF NOT EXISTS boards   (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS board_sources (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   channel TEXT NOT NULL, author TEXT NOT NULL, author_type TEXT NOT NULL,
@@ -453,6 +454,8 @@ class Store:
             self.delete_channel(c.id)
         for board in self.list_boards(id):
             self.delete_board(board.id)
+        for source in self.list_board_datasources(id):
+            self.delete_board_datasource(source.id)
         for task in self.list_tasks():
             if task.project_id == id:
                 self.delete_task(task.id)
@@ -919,6 +922,26 @@ class Store:
 
     def delete_board(self, id: str) -> None:
         self._delete("boards", id)
+
+    # ---- 自定义看板数据源 ----
+    def put_board_datasource(self, source: BoardDataSource) -> None:
+        source.updated_at = time.time()
+        self._put("board_sources", source.id, source.to_dict())
+
+    def get_board_datasource(self, id: str) -> Optional[BoardDataSource]:
+        d = self._get("board_sources", id)
+        return BoardDataSource.from_dict(d) if d else None
+
+    def list_board_datasources(
+            self, project_id: Optional[str] = None) -> list[BoardDataSource]:
+        sources = [BoardDataSource.from_dict(d)
+                   for d in self._list("board_sources")]
+        if project_id is not None:
+            sources = [s for s in sources if s.project_id == project_id]
+        return sorted(sources, key=lambda s: (s.project_id, s.created_at))
+
+    def delete_board_datasource(self, id: str) -> None:
+        self._delete("board_sources", id)
 
     # ---- 自动化脚本 ----
     def put_automation(self, automation: Automation) -> None:

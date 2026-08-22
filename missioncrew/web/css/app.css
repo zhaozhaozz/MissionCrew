@@ -431,12 +431,22 @@
   .widget .widget-type { color: var(--muted); font-size: 11px; float: right; }
   .board-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .custom-board-actions { margin-left: auto; display: flex; gap: 8px; }
-  /* taskboard 形态的面板:preview 从 12 列网格切换成状态列横向排布 */
-  .custom-grid.taskboard-mode { display: flex; margin-top: 16px; }
-  .taskboard-grid { flex: 1; display: grid; grid-auto-flow: column;
+  /* taskboard 形态的面板:preview 切换成 筛选列工具条 + 列横向排布 */
+  .custom-grid.taskboard-mode { display: flex; flex-direction: column;
+                                margin-top: 16px; height: calc(100dvh - 152px); }
+  .tb-filter-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center;
+                   gap: 8px; margin-bottom: 12px; }
+  .tb-filter-bar input { width: 220px; }
+  .tb-chip { display: inline-flex; align-items: center; gap: 4px;
+             padding: 2px 6px 2px 10px; border-radius: 999px;
+             background: var(--bg-soft); border: 1px solid var(--line);
+             font-size: 12px; color: var(--text-2); }
+  .tb-chip-x { border: none; background: none; cursor: pointer;
+               color: var(--muted); font-size: 13px; padding: 0 2px; }
+  .tb-chip-x:hover { color: var(--bad); }
+  .taskboard-grid { flex: 1; min-height: 0; display: grid; grid-auto-flow: column;
                     grid-auto-columns: 320px; gap: 14px; align-items: stretch;
-                    overflow-x: auto; overscroll-behavior-x: contain;
-                    height: calc(100dvh - 190px); }
+                    overflow-x: auto; overscroll-behavior-x: contain; }
   .new-board-kinds { display: grid; gap: 6px; margin: 4px 0 10px; }
   .new-board-kinds label { display: flex; align-items: baseline; gap: 8px;
                            font-weight: 500; }

@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from . import board_sources
 from .content_channels import content_channel, rebind_content_channel
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
@@ -34,7 +35,9 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             task_resource_url)
 from .skills import save_project_skill, save_project_skill_markdown
 from .workspace import chat_workspace_dir, write_task_files
-from ..core.models import (BOARD_WIDGET_TYPES, Board, BoardWidget,
+from ..core import label_query
+from ..core.models import (BOARD_KINDS, BOARD_WIDGET_TYPES, Board,
+                           BoardDataSource, BoardWidget,
                            Channel, Project, ProjectSkill,
                            Task)
 from ..core.store import Store
@@ -191,15 +194,45 @@ ACTION_DEFINITIONS = {
                       "workdir": "可选项目仓库目录"},
     },
     "dashboard.save": {
-        "description": "创建或更新项目面板",
+        "description": "创建或更新项目面板(组件网格或任务看板)",
         "orchestrator_only": True,
-        "arguments": {"id": "面板短 id", "name": "名称",
-                      "description": "用途", "layout": "可选组件数组"},
+        "arguments": {
+            "id": "面板短 id", "name": "名称", "description": "用途",
+            "layout": "可选组件数组(widgets 形态)",
+            "kind": "可选 widgets/taskboard",
+            "source": "taskboard 数据源 id(内置 tasks 或自定义源短 id)",
+            "filters": ("taskboard 筛选列数组 [{title,query,color}],query 是"
+                        "标签表达式(& | ! 与括号),状态列标题也是可筛选标签;"
+                        "新建时缺省按数据源状态列生成"),
+            "query": "可选全局标签表达式,先于分列过滤",
+        },
     },
     "dashboard.delete": {
         "description": "把项目面板移入统一回收站",
         "orchestrator_only": True,
         "arguments": {"id": "面板短 id"},
+    },
+    "board_source.save": {
+        "description": (
+            "创建或更新自定义看板数据源;cards 整体替换卡片列表,"
+            "适合配自动化脚本定时同步 GitCode/GitHub Issue 等外部列表,"
+            "再用 dashboard.save 建任务看板绑定该源"
+        ),
+        "orchestrator_only": True,
+        "arguments": {
+            "id": "数据源短 id(不能与内置源重名)",
+            "name": "名称", "description": "用途",
+            "columns": "可选状态列数组 [{key,title,color}],缺省四态列",
+            "cards": ("可选卡片数组,整体替换;每张必须有 id、title,可选 "
+                      "summary、status(状态列 key)、labels、updated_at、"
+                      "meta、url(外部链接)"),
+            "mode": "create/update/upsert,缺省 upsert",
+        },
+    },
+    "board_source.delete": {
+        "description": "删除自定义看板数据源(仍被面板引用时拒绝)",
+        "orchestrator_only": True,
+        "arguments": {"id": "数据源短 id"},
     },
     "guideline.save": {
         "description": "保存完整准则 Markdown",
@@ -283,8 +316,12 @@ ACTION_ARGUMENTS = {
     "channel.runs.list": set(),
     "channel.run.stop": {"run_id"},
     "channel.create": {"id", "name", "purpose", "workdir"},
-    "dashboard.save": {"id", "name", "description", "layout", "mode"},
+    "dashboard.save": {"id", "name", "description", "layout", "mode",
+                       "kind", "source", "filters", "query"},
     "dashboard.delete": {"id"},
+    "board_source.save": {"id", "name", "description", "columns", "cards",
+                          "mode"},
+    "board_source.delete": {"id"},
     "guideline.save": {"markdown", "enabled", "original_name"},
     "guideline.delete": {"name"},
     "skill.save": {
@@ -700,6 +737,8 @@ class AgentActionService:
             "channel.create": self._create_channel,
             "dashboard.save": self._save_dashboard,
             "dashboard.delete": self._delete_dashboard,
+            "board_source.save": self._save_board_source,
+            "board_source.delete": self._delete_board_source,
             "guideline.save": self._save_guideline,
             "guideline.delete": self._delete_guideline,
             "skill.save": self._save_skill,
@@ -1126,6 +1165,29 @@ class AgentActionService:
             board.layout = self._validate_board_layout(arguments["layout"])
         board.name = str(arguments.get("name", board.name or raw_id))
         board.description = str(arguments.get("description", board.description))
+        if "kind" in arguments:
+            if arguments["kind"] not in BOARD_KINDS:
+                raise AgentToolError(
+                    "invalid_arguments",
+                    f"kind 必须是 {'/'.join(sorted(BOARD_KINDS))}")
+            board.kind = arguments["kind"]
+        if "source" in arguments:
+            source = str(arguments["source"] or "").strip()
+            if not board_sources.source_exists(self.store, project.id, source):
+                raise AgentToolError("invalid_arguments", f"未知数据源: {source}")
+            board.source = source
+        if "query" in arguments:
+            board.query = str(arguments["query"] or "").strip()
+        if "filters" in arguments:
+            board.filters = board_sources.validate_filters(arguments["filters"])
+        if board.kind == "taskboard":
+            if board.query:
+                label_query.parse(board.query)
+            # 与 Web 端一致:新建看板未显式给筛选列时按数据源状态列物化默认列
+            if created and "filters" not in arguments:
+                board.filters = board_sources.default_filters(
+                    board_sources.source_columns(
+                        self.store, project.id, board.source))
         self.store.put_board(board)
         self.store.audit(
             identity.actor, "dashboard_saved",
@@ -1147,6 +1209,71 @@ class AgentActionService:
             self.store, project, board_id, actor=identity.actor)
         return {"summary": f"已将面板 {board.name} 移入项目回收站",
                 "deleted": True, "recycle_item": item}
+
+    def _save_board_source(self, project: Project, identity: AgentIdentity,
+                           arguments: dict, _context: AgentRunContext) -> dict:
+        raw_id = self._control_id(arguments.get("id"))
+        if raw_id in board_sources.SOURCES:
+            raise AgentToolError(
+                "invalid_arguments", f"{raw_id} 是内置数据源,不能覆盖")
+        full_id = board_sources.custom_source_full_id(project.id, raw_id)
+        record = self.store.get_board_datasource(full_id)
+        mode = arguments.get("mode", "upsert")
+        if mode not in ("create", "update", "upsert"):
+            raise AgentToolError(
+                "invalid_arguments", "mode 必须是 create/update/upsert")
+        if mode == "create" and record:
+            raise AgentToolError("already_exists", "数据源已存在", 409)
+        if mode == "update" and record is None:
+            raise AgentToolError("not_found", "数据源不存在", 404)
+        created = record is None
+        record = record or BoardDataSource(
+            id=full_id, project_id=project.id,
+            created_by_role_id=identity.role_id)
+        if "name" in arguments:
+            record.name = str(arguments.get("name") or "").strip()
+        if not record.name:
+            record.name = raw_id
+        if "description" in arguments:
+            record.description = str(arguments.get("description") or "")
+        if "columns" in arguments:
+            record.columns = board_sources.validate_source_columns(
+                arguments["columns"])
+        if "cards" in arguments:
+            record.cards = board_sources.validate_source_cards(
+                arguments["cards"], record.columns)
+        self.store.put_board_datasource(record)
+        self.store.audit(
+            identity.actor, "board_source_saved",
+            detail=(f"project={project.id} source={full_id} "
+                    f"cards={len(record.cards)}"))
+        return {
+            "summary": (f"已{'创建' if created else '更新'}看板数据源 "
+                        f"{record.name}({len(record.cards)} 张卡片)"),
+            "source": record.to_dict(),
+        }
+
+    def _delete_board_source(self, project: Project, identity: AgentIdentity,
+                             arguments: dict,
+                             _context: AgentRunContext) -> dict:
+        raw_id = self._control_id(arguments.get("id"))
+        full_id = board_sources.custom_source_full_id(project.id, raw_id)
+        record = self.store.get_board_datasource(full_id)
+        if record is None or record.project_id != project.id:
+            raise AgentToolError("not_found", "数据源不存在", 404)
+        used_by = [b for b in self.store.list_boards(project.id)
+                   if b.kind == "taskboard" and b.source == raw_id]
+        if used_by:
+            names = "、".join(b.name or b.id for b in used_by)
+            raise AgentToolError(
+                "in_use", f"数据源仍被面板使用: {names};请先删除或改绑这些面板",
+                409)
+        self.store.delete_board_datasource(full_id)
+        self.store.audit(
+            identity.actor, "board_source_deleted",
+            detail=f"project={project.id} source={full_id}")
+        return {"summary": f"已删除看板数据源 {record.name or raw_id}",
+                "deleted": True}
 
     def _save_automation(self, project: Project, identity: AgentIdentity,
                          arguments: dict, _context: AgentRunContext) -> dict:

@@ -153,6 +153,18 @@ ORCHESTRATOR_TEMPLATE = """\
     {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
+- 任务看板面板:`dashboard.save` 传 `kind: "taskboard"` 与 `source`(数据源 id,
+  内置 `tasks` 或自定义源短 id)即可创建。看板按 `filters` 分列,每项
+  {{"title","query","color"}} 定义一列,query 是标签表达式(& | ! 与括号);
+  卡片状态(待处理/处理中/已阻塞/已完成 等状态列标题与状态 key)也作为标签
+  参与筛选,可写 `处理中 & bug` 这类组合;不传 filters 时新建看板按数据源
+  状态列生成默认列,用户也可在看板页直接增删筛选列。
+- `board_source.save` 创建或更新自定义看板数据源:cards 整体替换卡片列表,
+  每张必须有 id、title,可选 summary、status(状态列 key)、labels、
+  updated_at、meta、url(外部链接,点击卡片打开)。典型用法:配合
+  `automation.save` 的定时脚本同步 GitCode/GitHub Issue 等外部列表到数据源,
+  再用 `dashboard.save` 建任务看板绑定该源。删除用 `board_source.delete`
+  (仍被面板引用时会拒绝)。
 - `guideline.save` 接收完整 markdown，文件必须以只含 name、description 的 YAML
   frontmatter 开头；后端直接读取这两个属性，不使用 id/title/summary，也不做字段转换。
   修改并重命名现有准则时传 original_name。`skill.save` 按 id 新建或覆盖，markdown 是
@@ -218,6 +230,9 @@ ORCHESTRATOR_TEMPLATE = """\
 
 ## 现有面板
 {boards}
+
+## 现有看板数据源
+{board_sources}
 
 ## 现有准则文档
 {guidelines}
@@ -1570,11 +1585,21 @@ class ChatEngine:
             + f";Web {channel_resource_url(project.id, c.id)}"
             for c in self.store.list_channels(
                 project.id, include_archived=False)) or "(无)"
+        def _board_line(b) -> str:
+            body = (f"数据源 {b.source},{len(b.filters)} 个筛选列"
+                    if b.kind == "taskboard" else
+                    "组件 " + (", ".join(f"{w.id}/{w.type}" for w in b.layout)
+                               or "无"))
+            return (f"- {_short(b.id)}({b.name}):{b.description or '无描述'};"
+                    f"{body};Web {dashboard_resource_url(project.id, b.id)}")
+
         boards = "\n".join(
-            f"- {_short(b.id)}({b.name}):{b.description or '无描述'};组件 "
-            + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无")
-            + f";Web {dashboard_resource_url(project.id, b.id)}"
-            for b in self.store.list_boards(project.id)) or "(无)"
+            _board_line(b) for b in self.store.list_boards(project.id)) or "(无)"
+        datasources = "\n".join(
+            f"- {_short(s.id)}({s.name}):{s.description or '无描述'};"
+            f"{len(s.cards)} 张卡片"
+            for s in self.store.list_board_datasources(project.id)
+        ) or "(无自定义源;内置源 tasks 始终可用)"
         guidelines = "\n".join(
             f"- {g.name}:{g.description or '未填写 description'}"
             f"{'[停用]' if not g.enabled else ''}"
@@ -1596,6 +1621,7 @@ class ChatEngine:
         return ORCHESTRATOR_TEMPLATE.format(
             max_runs=project.max_chain_runs,
             repos=repos, channels=channels, boards=boards,
+            board_sources=datasources,
             guidelines=guidelines, skills=skills, automations=automations,
             runtimes=runtimes)
 
