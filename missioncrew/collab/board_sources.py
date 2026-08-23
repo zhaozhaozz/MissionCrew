@@ -241,9 +241,9 @@ def _status_tags(status: str, columns) -> list[str]:
     return tags
 
 
-def resolve_board_data(store, project_id: str, source_id: str, query: str,
+def resolve_board_data(store, project_id: str, source_id: str,
                        filters: Optional[list] = None) -> dict:
-    """解析看板数据:取数 -> 全局表达式过滤 -> 按筛选列分列。
+    """解析看板数据:取数 -> 按筛选列分列。
 
     卡片可命中多列(筛选列是标签视角,不是互斥状态);表达式非法抛 ValueError。
     """
@@ -260,14 +260,12 @@ def resolve_board_data(store, project_id: str, source_id: str, query: str,
         columns = [dict(c) for c in record.columns]
         cards = [dict(card) for card in record.cards]
 
-    base_ast = (label_query.parse(query)
-                if str(query or "").strip() else None)
-    matchable = []   # (card, 可筛选标签集合=labels + 状态标签)
-    for card in cards:
-        tags = (list(card.get("labels") or [])
-                + _status_tags(str(card.get("status") or ""), columns))
-        if base_ast is None or label_query.matches(base_ast, tags):
-            matchable.append((card, tags))
+    # (card, 可筛选标签集合=labels + 状态标签)
+    matchable = [
+        (card, list(card.get("labels") or [])
+         + _status_tags(str(card.get("status") or ""), columns))
+        for card in cards
+    ]
 
     column_filters = (validate_filters(filters) if filters
                       else default_filters(columns))

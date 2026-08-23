@@ -117,7 +117,6 @@ function renderCustomBoardEditor() {
     + (boardEditMode ? " · 编辑中" : "");
   if (desc) desc.textContent = board.kind === "taskboard"
     ? `数据源:${boardSourceName(board.source)}`
-      + (board.query ? ` · 全局表达式:${board.query}` : "")
     : (board.description || "");
   if (jsonBtn) jsonBtn.hidden = !editable;
   if (doneBtn) doneBtn.hidden = !boardEditMode;
@@ -297,9 +296,8 @@ async function renderTaskboardBoard(board) {
   if (token !== taskboardRenderToken) return;
   taskboardLastData = data;
   const desc = document.getElementById("custom-board-desc");
-  if (desc) desc.textContent = `数据源:${data.source.name}`
-    + ` · ${data.columns.length} 列`
-    + (board.query ? ` · 全局表达式:${board.query}` : "");
+  if (desc) desc.textContent =
+    `数据源:${data.source.name} · ${data.columns.length} 列`;
   const scrollState = captureKeyedScrollPositions(preview);
   // 轮询重绘会整体替换 DOM:保留筛选输入框的草稿与焦点
   const prevInput = preview.querySelector("#tb-new-filter");
@@ -574,15 +572,11 @@ async function openTaskboardDialog(boardId) {
   const board = projBoards().find(item => item.id === boardId);
   if (!board) return;
   await loadBoardSources();
-  // 旧版看板的全局表达式仅在已设置时展示,便于查看或清空;新看板用筛选列
-  const legacyQuery = board.query ? `
-    <label>全局标签表达式(旧版,清空后按筛选列展示)</label>
-    <input type="text" id="tbf-query" value="${esc(board.query)}">` : "";
   openFormDialog(`编辑任务看板 · ${board.name || board.id}`, `
     <label>名称</label>
     <input type="text" id="tbf-name" value="${esc(board.name || "")}">
     <label>数据源</label>
-    <select id="tbf-source">${boardSourceOptionsHtml(board.source || "tasks")}</select>${legacyQuery}
+    <select id="tbf-source">${boardSourceOptionsHtml(board.source || "tasks")}</select>
     <p class="muted">筛选列在看板顶部工具条直接增删,每列一个标签表达式。</p>`,
     `<button class="action" data-id="${esc(board.id)}"
        onclick="saveTaskboardDialog(this.dataset.id)">保存</button>
@@ -597,18 +591,9 @@ async function saveTaskboardDialog(boardId) {
   const name = document.getElementById("tbf-name").value.trim();
   const source = document.getElementById("tbf-source").value;
   if (!name) { uiAlert("名称不能为空"); return; }
-  const payload = {
+  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
     id: board.id.replace(`${currentProject}:`, ""), name, source,
-  };
-  const queryInput = document.getElementById("tbf-query");
-  if (queryInput) {   // 仅旧版看板有此输入;非空时先校验,空串即清除
-    payload.query = queryInput.value.trim();
-    if (payload.query) {
-      try { compileLabelQuery(payload.query); }
-      catch (error) { uiAlert(`标签表达式不合法:${error.message}`); return; }
-    }
-  }
-  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, payload);
+  });
   fdlg.close();
   await loadOverview();
   renderCustomBoards(true);

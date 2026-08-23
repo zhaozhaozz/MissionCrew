@@ -35,7 +35,6 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             task_resource_url)
 from .skills import save_project_skill, save_project_skill_markdown
 from .workspace import chat_workspace_dir, write_task_files
-from ..core import label_query
 from ..core.models import (BOARD_KINDS, BOARD_WIDGET_TYPES, Board,
                            BoardDataSource, BoardWidget,
                            Channel, Project, ProjectSkill,
@@ -204,7 +203,6 @@ ACTION_DEFINITIONS = {
             "filters": ("taskboard 筛选列数组 [{title,query,color}],query 是"
                         "标签表达式(& | ! 与括号),状态列标题也是可筛选标签;"
                         "新建时缺省按数据源状态列生成"),
-            "query": "可选全局标签表达式,先于分列过滤",
         },
     },
     "dashboard.delete": {
@@ -317,7 +315,7 @@ ACTION_ARGUMENTS = {
     "channel.run.stop": {"run_id"},
     "channel.create": {"id", "name", "purpose", "workdir"},
     "dashboard.save": {"id", "name", "description", "layout", "mode",
-                       "kind", "source", "filters", "query"},
+                       "kind", "source", "filters"},
     "dashboard.delete": {"id"},
     "board_source.save": {"id", "name", "description", "columns", "cards",
                           "mode"},
@@ -1176,18 +1174,14 @@ class AgentActionService:
             if not board_sources.source_exists(self.store, project.id, source):
                 raise AgentToolError("invalid_arguments", f"未知数据源: {source}")
             board.source = source
-        if "query" in arguments:
-            board.query = str(arguments["query"] or "").strip()
         if "filters" in arguments:
             board.filters = board_sources.validate_filters(arguments["filters"])
-        if board.kind == "taskboard":
-            if board.query:
-                label_query.parse(board.query)
-            # 与 Web 端一致:新建看板未显式给筛选列时按数据源状态列物化默认列
-            if created and "filters" not in arguments:
-                board.filters = board_sources.default_filters(
-                    board_sources.source_columns(
-                        self.store, project.id, board.source))
+        # 与 Web 端一致:新建看板未显式给筛选列时按数据源状态列物化默认列
+        if (board.kind == "taskboard" and created
+                and "filters" not in arguments):
+            board.filters = board_sources.default_filters(
+                board_sources.source_columns(
+                    self.store, project.id, board.source))
         self.store.put_board(board)
         self.store.audit(
             identity.actor, "dashboard_saved",

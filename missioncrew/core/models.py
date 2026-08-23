@@ -716,7 +716,6 @@ class Board:
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
     kind: str = "widgets"
-    query: str = ""          # taskboard:全局标签表达式(& | ! 与括号),先于分列过滤
     source: str = "tasks"    # taskboard:数据源 id(collab/board_sources 注册表)
     # taskboard:筛选列 [{title,query,color}],每列一个标签表达式;
     # 空列表 = 按数据源状态列分列(创建看板时默认物化为状态标签筛选列)
@@ -729,6 +728,8 @@ class Board:
     def from_dict(cls, d: dict) -> "Board":
         d = dict(d)
         d["layout"] = [BoardWidget(**item) for item in d.get("layout", [])]
+        # 旧版 taskboard 的全局标签表达式已退役,读取即丢弃(筛选列承载过滤)
+        d.pop("query", None)
         return cls(**d)
 
 

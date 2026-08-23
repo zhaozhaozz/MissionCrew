@@ -9,7 +9,6 @@ from ..collab import board_sources
 from ..collab.documents import library_for
 from ..collab.recycle_bin import recycle_dashboard
 from ..collab.resource_urls import dashboard_resource_url
-from ..core import label_query
 from ..core.models import BOARD_KINDS, BOARD_WIDGET_TYPES, Board, BoardWidget
 from .context import MENTION_ID_RE, ApiContext
 from .schemas import BoardInput, WidgetDataInput
@@ -43,7 +42,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, "该面板不是任务看板")
         try:
             return board_sources.resolve_board_data(
-                store, project_id, board.source, board.query, board.filters)
+                store, project_id, board.source, board.filters)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
@@ -157,8 +156,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 raise HTTPException(
                     400, f"kind 必须是 {'/'.join(sorted(BOARD_KINDS))}")
             board.kind = body.kind
-        if body.query is not None:
-            board.query = body.query.strip()
         if body.source is not None:
             if not board_sources.source_exists(store, project_id, body.source):
                 known = [s["id"] for s in
@@ -172,17 +169,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 board.filters = board_sources.validate_filters(body.filters)
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
-        if board.kind == "taskboard":
-            if board.query:
-                try:
-                    label_query.parse(board.query)
-                except ValueError as exc:
-                    raise HTTPException(400, f"标签表达式不合法: {exc}")
-            # 新建看板未显式给筛选列时,把数据源状态列物化为默认筛选列,
-            # 用户后续可在看板上直接增删列
-            if existing is None and body.filters is None:
-                board.filters = board_sources.default_filters(
-                    board_sources.source_columns(store, project_id, board.source))
+        # 新建看板未显式给筛选列时,把数据源状态列物化为默认筛选列,
+        # 用户后续可在看板上直接增删列
+        if (board.kind == "taskboard" and existing is None
+                and body.filters is None):
+            board.filters = board_sources.default_filters(
+                board_sources.source_columns(store, project_id, board.source))
         store.put_board(board)
         store.audit(actor, "board_saved", detail=f"project={project_id} board={board_id}")
         return {**board.to_dict(),

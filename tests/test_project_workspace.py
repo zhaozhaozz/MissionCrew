@@ -902,29 +902,30 @@ def test_update_board_without_layout_preserves_widgets(seeded):
     assert seeded.get_board("webshop:req") is None
 
 
-def test_taskboard_kind_board_saves_query_and_validates(seeded):
+def test_taskboard_kind_board_saves_and_validates(seeded):
     client = _client(seeded)
     saved = client.post("/api/projects/webshop/boards", json={
-        "id": "bugs", "name": "缺陷追踪", "kind": "taskboard",
-        "query": "(bug | crash) & !wontfix", "layout": []})
+        "id": "bugs", "name": "缺陷追踪", "kind": "taskboard", "layout": []})
     assert saved.status_code == 200, saved.text
     board = seeded.get_board("webshop:bugs")
     assert board.kind == "taskboard"
-    assert board.query == "(bug | crash) & !wontfix"
     assert board.source == "tasks"   # 缺省数据源
+    assert [f["title"] for f in board.filters] == [
+        "待处理", "处理中", "已阻塞", "已完成"]
 
-    # 只改名不带 kind/query/source -> 形态、表达式与数据源保留
+    # 只改名不带 kind/source/filters -> 形态、数据源与筛选列保留
     client.post("/api/projects/webshop/boards",
                 json={"id": "bugs", "name": "缺陷追踪 v2"})
     board = seeded.get_board("webshop:bugs")
-    assert board.kind == "taskboard" and board.query
-    assert board.source == "tasks"
+    assert board.kind == "taskboard" and board.source == "tasks"
+    assert len(board.filters) == 4
 
-    # 非法表达式、非法 kind 与未知数据源都拒绝
-    bad_query = client.post("/api/projects/webshop/boards", json={
-        "id": "bugs", "name": "缺陷追踪", "query": "(bug"})
-    assert bad_query.status_code == 400
-    assert "标签表达式不合法" in bad_query.json()["detail"]
+    # 旧版全局表达式字段已退役:旧数据行读取即丢弃,不再进入模型
+    seeded._put("boards", "webshop:bugs",
+                {**board.to_dict(), "query": "bug"})
+    assert not hasattr(seeded.get_board("webshop:bugs"), "query")
+
+    # 非法 kind 与未知数据源都拒绝
     bad_kind = client.post("/api/projects/webshop/boards", json={
         "id": "x", "name": "x", "kind": "unknown"})
     assert bad_kind.status_code == 400
@@ -956,14 +957,14 @@ def test_taskboard_source_registry_and_data_endpoint(seeded):
 
     saved = client.post("/api/projects/webshop/boards", json={
         "id": "bugs", "name": "缺陷", "kind": "taskboard",
-        "query": "bug", "source": "tasks", "layout": []})
+        "source": "tasks", "layout": []})
     assert saved.status_code == 200, saved.text
     assert saved.json()["source"] == "tasks"
     # 新建看板未显式给筛选列:按数据源状态列物化默认筛选列(标题即状态标签)
     assert [f["title"] for f in saved.json()["filters"]] == [
         "待处理", "处理中", "已阻塞", "已完成"]
 
-    # 看板数据:数据源取数 + 全局表达式过滤,再按筛选列分列,卡片是标准化结构
+    # 看板数据:数据源取数后按筛选列分列,卡片是标准化结构
     data = client.get("/api/projects/webshop/boards/bugs/data")
     assert data.status_code == 200, data.text
     payload = data.json()
@@ -980,7 +981,7 @@ def test_taskboard_source_registry_and_data_endpoint(seeded):
 
     # 状态即标签:筛选列表达式可组合状态与业务标签
     combo = client.post("/api/projects/webshop/boards", json={
-        "id": "bugs", "name": "缺陷", "query": "",
+        "id": "bugs", "name": "缺陷",
         "filters": [{"title": "阻塞或进行中的缺陷",
                      "query": "(处理中 | 已阻塞) & bug"},
                     {"title": "非缺陷", "query": "!bug"}]})

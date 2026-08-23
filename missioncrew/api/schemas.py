@@ -239,7 +239,6 @@ class BoardInput(BaseModel):
     layout: Optional[list[dict]] = None  # None = 更新时保留现有布局
     actor_role_id: Optional[str] = None
     kind: Optional[str] = None           # widgets | taskboard;None = 保留现值
-    query: Optional[str] = None          # taskboard 的全局标签表达式;None = 保留现值
     source: Optional[str] = None         # taskboard 的数据源 id;None = 保留现值
     # taskboard 的筛选列 [{title,query,color}];None = 保留现值
     filters: Optional[list[dict]] = None
