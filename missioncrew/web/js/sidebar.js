@@ -395,6 +395,93 @@ function toggleMessageBody(button) {
   button.textContent = expanded ? "收起长回复" : `展开完整回复（${button.dataset.size} 字符）`;
 }
 
+function agentToolReceiptMeta(message) {
+  const context = message.context?.agent_tool || {};
+  const legacy = String(message.content || "").match(
+    /^@(\S+)\s+使用 MissionCrew Tool · `([^`]+)`：/);
+  return {
+    roleId: String(context.role_id || legacy?.[1] || "Agent"),
+    runId: String(context.run_id ?? ""),
+    action: String(context.action || legacy?.[2] || "MissionCrew Tool"),
+    prefix: legacy?.[0] || "",
+  };
+}
+
+function agentToolGroupsMatch(left, right) {
+  return left?.classList.contains("agent-tool-group")
+    && right?.classList.contains("agent-tool-group")
+    && left.dataset.roleId === right.dataset.roleId
+    && left.dataset.runId === right.dataset.runId;
+}
+
+function refreshAgentToolGroup(group) {
+  const items = [...group.querySelectorAll(".agent-tool-item")];
+  if (!items.length) return;
+  const count = items.length;
+  const first = new Date(Number(items[0].dataset.createdAt) * 1000);
+  const last = new Date(Number(items[count - 1].dataset.createdAt) * 1000);
+  const format = date => date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  group.querySelector(".agent-tool-group-role").textContent =
+    `@${group.dataset.roleId} · ${count} 次${count > 1 ? "连续" : ""}调用`;
+  group.querySelector("summary > .time").textContent = count > 1
+    ? `${format(first)}–${format(last)}` : format(first);
+}
+
+function appendAgentToolReceipt(message, pane, date) {
+  const meta = agentToolReceiptMeta(message);
+  let group = pane.lastElementChild;
+  const probe = document.createElement("div");
+  probe.className = "agent-tool-group";
+  probe.dataset.roleId = meta.roleId;
+  probe.dataset.runId = meta.runId;
+  if (!agentToolGroupsMatch(group, probe)) {
+    group = document.createElement("div");
+    group.className = "msg platform agent-tool-group";
+    group.dataset.roleId = meta.roleId;
+    group.dataset.runId = meta.runId;
+    group.innerHTML = `<span class="avatar agent-tool-avatar">⚙</span>
+      <div class="msg-main"><details class="agent-tool-details">
+        <summary><span class="author">MissionCrew Tool</span>
+          <span class="via agent-tool-group-role"></span><span class="time"></span></summary>
+        <div class="agent-tool-items"></div>
+      </details></div>`;
+    pane.appendChild(group);
+  }
+  const item = document.createElement("div");
+  item.className = "agent-tool-item";
+  item.dataset.msgId = message.id;
+  item.dataset.createdAt = message.created_at;
+  const content = meta.prefix && message.content.startsWith(meta.prefix)
+    ? message.content.slice(meta.prefix.length) : message.content;
+  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  item.innerHTML = `<div class="agent-tool-item-head">
+      <code>${esc(meta.action)}</code><span class="time">${time}</span></div>
+    <div class="body markdown-body">${fmtBody(content, true, message.mention_spans)}</div>`;
+  group.querySelector(".agent-tool-items").appendChild(item);
+  refreshAgentToolGroup(group);
+}
+
+function mergeAdjacentAgentToolGroups(pane) {
+  let previous = null;
+  for (const child of [...pane.children]) {
+    if (!child.classList.contains("agent-tool-group")) {
+      previous = null;
+      continue;
+    }
+    if (!agentToolGroupsMatch(previous, child)) {
+      previous = child;
+      continue;
+    }
+    const keepOpen = previous.querySelector("details").open
+      || child.querySelector("details").open;
+    previous.querySelector(".agent-tool-items").append(
+      ...child.querySelector(".agent-tool-items").children);
+    previous.querySelector("details").open = keepOpen;
+    child.remove();
+    refreshAgentToolGroup(previous);
+  }
+}
+
 function appendMessagesToSurface(list, surface) {
   const pane = surface.pane;
   if (list.length) pane.querySelector(".chat-empty")?.remove();
@@ -422,18 +509,22 @@ function appendMessagesToSurface(list, surface) {
     const isHuman = m.author_type === "human";
     const isAutomation = m.author_type === "automation";
     const isToolReceipt = m.author_type === "platform" && m.kind === "agent_tool";
+    if (isToolReceipt) {
+      appendAgentToolReceipt(m, pane, d);
+      surface.lastMsgId = Math.max(surface.lastMsgId, m.id);
+      continue;
+    }
     const color = isAgent ? (roleColor[m.author] || "#888")
                 : isHuman ? "var(--accent)"
                 : isAutomation ? "#b45309" : "var(--muted)";
     const name = isAgent ? "@" + m.author
       : isAutomation ? automationAuthorLabel(m.author)
-      : isToolReceipt ? "MissionCrew Tool"
       : m.author_type === "platform" ? "系统" : m.author;
     const initial = isAgent || isHuman ? (m.author[0] || "?").toUpperCase()
       : isAutomation ? "⚡" : "⚙";
     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const longReply = isAgent && m.content.length > MESSAGE_FOLD_AT;
-    const renderMarkdown = isAgent || isToolReceipt || isAutomation;
+    const renderMarkdown = isAgent || isAutomation;
     const div = document.createElement("div");
     div.className = `msg ${m.author_type}`;
     div.dataset.msgId = m.id;   // 运行过程卡片按触发消息内联定位
@@ -448,6 +539,7 @@ function appendMessagesToSurface(list, surface) {
     pane.appendChild(div);
     surface.lastMsgId = Math.max(surface.lastMsgId, m.id);
   }
+  mergeAdjacentAgentToolGroups(pane);
   if (list.length && surface.channelId) {
     const channel = overview.channels.find(item => item.id === surface.channelId);
     if (channel)
@@ -486,6 +578,8 @@ function prependMessages(list) {
       && first.textContent.trim() === surface.lastMsgDate) first.remove();
   const prevHeight = pane.scrollHeight, prevTop = pane.scrollTop;
   pane.prepend(...holder.childNodes);
+  // 分页边界可能正好切在同一 Agent 的连续 Tool 回执中间；拼回完整分组。
+  mergeAdjacentAgentToolGroups(pane);
   pane.scrollTop = prevTop + (pane.scrollHeight - prevHeight);
   firstMsgId = list[0].id;
 }

@@ -404,9 +404,12 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert "mention legal-mention mention-compose" in js
     assert "单个角色直接执行，多个角色交给主控协调" in html
     assert "多选由主控协调" in js
-    assert 'const renderMarkdown = isAgent || isToolReceipt' in js
+    assert "appendAgentToolReceipt" in js and "mergeAdjacentAgentToolGroups" in js
+    assert "agentToolGroupsMatch" in js and "message.context?.agent_tool" in js
     assert 'm.kind === "agent_tool"' in js
     assert '"MissionCrew Tool"' in js
+    assert "count > 1 ? \"连续\"" in js
+    assert ".agent-tool-details" in css and ".agent-tool-item + .agent-tool-item" in css
     assert ".msg .body.markdown-body { white-space: normal; }" in css
     assert ".mention.legal-mention" in css and "cursor: default" in css
     assert ".re-backend-agent" in css and ".rba-status.completed" in css

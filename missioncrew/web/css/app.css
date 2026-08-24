@@ -231,6 +231,29 @@
   .message-fold-toggle { display: block; margin: 5px 4px 0; padding: 2px 0; border: 0;
                          background: transparent; color: var(--accent); font-size: 11.5px;
                          cursor: pointer; }
+  /* 连续 MissionCrew Tool 回执按 Agent 运行合并，避免批量发布文件时淹没对话。 */
+  .agent-tool-group .agent-tool-avatar { background: var(--muted); }
+  .agent-tool-details { overflow: hidden; border: 1px dashed var(--line);
+                        border-radius: 4px 12px 12px 12px; background: var(--bg-soft); }
+  .agent-tool-details > summary { display: flex; align-items: baseline; gap: 8px;
+                                  padding: 7px 11px; cursor: pointer; user-select: none;
+                                  color: var(--text-2); list-style: none; }
+  .agent-tool-details > summary::-webkit-details-marker { display: none; }
+  .agent-tool-details > summary::before { content: "▸"; flex: none; font-size: 10px;
+                                          color: var(--muted); transition: transform .15s; }
+  .agent-tool-details[open] > summary::before { transform: rotate(90deg); }
+  .agent-tool-details > summary .author { font-size: 12.5px; }
+  .agent-tool-details > summary .via { margin-left: 0; }
+  .agent-tool-details > summary .time { margin-left: auto; white-space: nowrap; }
+  .agent-tool-items { padding: 0 11px 9px; border-top: 1px dashed var(--line); }
+  .agent-tool-item { padding: 8px 0 2px; }
+  .agent-tool-item + .agent-tool-item { border-top: 1px solid var(--line); }
+  .agent-tool-item-head { display: flex; align-items: baseline; gap: 8px;
+                          margin-bottom: 3px; }
+  .agent-tool-item-head code { color: var(--accent); font-size: 11.5px; }
+  .agent-tool-item-head .time { margin-left: auto; }
+  .msg.platform.agent-tool-group .agent-tool-item .body { padding: 0; border: 0;
+                                                          background: transparent; }
   .mention.legal-mention { display: inline-block; padding: 0 5px; border: 1px solid currentColor;
                            border-radius: 999px; background: var(--accent-soft);
                            font-weight: 650; line-height: 1.35; cursor: default; white-space: nowrap; }
