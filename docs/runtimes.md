@@ -103,7 +103,7 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 | Cursor / `cursor` | 使用 `--output-format json` 启动，并从 JSON 结果捕获 session/chat id | 新进程使用 `--resume <id>` | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | CodeBuddy / `codebuddy` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
 | Pi / `pi` | 启动 `pi --mode rpc` 长驻进程，首轮回合后从 `get_state` 保存会话文件路径 | 服务存活时同一进程直接发下一条 `prompt`；进程或服务重启后以 `--session <file>` 恢复 | SQLite 保存会话 JSONL 绝对路径(位于 `MC_HOME/pi/sessions/`);一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
-| Kimi / `kimi` | 启动 ACP serve 进程并调用 `session/new` | 服务存活时直接在同一进程、同一 `sessionId` 调用 `session/prompt`；MissionCrew 重启后仅在 Runtime 声明 `loadSession` 时调用 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
+| Kimi / `kimi` | 启动 ACP serve 进程并调用 `session/new` | 服务存活时直接在同一进程、同一 `sessionId` 调用 `session/prompt`(模型与 effort 每轮经 `session/set_model`/`session/set_config_option` 在会话内对齐,改档位不重启进程)；MissionCrew 重启后仅在 Runtime 声明 `loadSession` 时调用 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Kiro / `kiro` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Qoder / `qoder` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Trae / `trae` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
@@ -249,23 +249,24 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 
 ## Effort(推理力度)
 
-部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到各 provider 声明的静态兜底档位。静态声明随 provider 走(`RuntimeProvider.effort_catalog()`):claude/codex/pi 在各自 provider 类里声明,内置 CLI/ACP 执行器负责的 adapter(grok、copilot、mock)集中在 `adapters.EFFORT_SUPPORT`;`RuntimeManager.effort_catalog()` 把所有声明合并成 `/api/traits` 用的全量目录,注册自定义 provider 即接管对应 adapter 的档位:
+部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到各 provider 声明的静态兜底档位。静态声明随 provider 走(`RuntimeProvider.effort_catalog()`):claude/codex/pi 在各自 provider 类里声明,内置 CLI/ACP 执行器负责的 adapter(grok、copilot、kimi、mock)集中在 `adapters.EFFORT_SUPPORT`;`RuntimeManager.effort_catalog()` 把所有声明合并成 `/api/traits` 用的全量目录,注册自定义 provider 即接管对应 adapter 的档位:
 
 - claude:原生 `--effort` 标志,档位 low/medium/high/xhigh/max;
 - codex:原生 `turn/start.effort`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 app-server 自行报错并照常回流到频道);
 - grok:ACP serve 命令上的 `grok agent --reasoning-effort`,静态兜底档位 low/medium/high/xhigh,实际档位按模型动态发现(见下);
 - copilot:ACP serve 命令上的 `--effort`,档位 none/minimal/low/medium/high/xhigh/max(模型目录不自报按模型档位,不支持的模型由 copilot 自行忽略);
+- kimi:没有命令行档位,走 ACP 标准的会话配置项——`session/new`/`session/load` 应答的 `configOptions` 里 category=`thought_level` 的 `thinking` 选项,每轮 prompt 前经 `session/set_config_option` 在存活会话内切换,改档位不重启长驻进程;静态兜底档位 low/high/max(K3),实际档位按模型动态发现(K2.7 系列只有 on/high,见下);越界档位 kimi 报错(`-32602 Unknown thinking value`)并作为本轮失败回流到频道;
 - pi:映射为 thinking level(`--thinking`/`set_thinking_level`),档位 off/minimal/low/medium/high/xhigh;
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。
 
-effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 默认，总是合法；打印模式执行时经内置命令模板的 `{effort}` 占位符注入，为空时连同紧邻标志一起移除。
+effort 与模型一样属于角色定义时固定的执行组合：空值 = CLI 默认，总是合法；打印模式执行时经内置命令模板的 `{effort}` 占位符注入，为空时连同紧邻标志一起移除。ACP 工具二选一:serve 命令模板带 `{effort}` 的(grok/copilot)随命令注入,协议层不再重复设置;模板不带的(kimi)由 `AcpAdapter.run` 交给 `acp.run_prompt(effort=…)`,协议层在会话自报了 thought_level 配置项时切换档位,没自报则上报「effort 未生效」状态而不是静默吞掉。
 
 ### 按模型动态发现档位
 
 同一个工具的不同模型支持的档位并不一样：grok-4.6 有 low/medium/high/xhigh，grok-4.5 只有 low/medium/high。因此档位不能只按 adapter 记死。
 
-ACP 工具在 `session/new` 响应的 `models.availableModels[]._meta` 里自报 `supportsReasoningEffort` 与 `reasoningEfforts`，`acp.list_model_catalog()` 把它和模型目录**在同一次探测里**一起取回——档位表是模型目录的副产品，不额外起进程。往上依次是 `adapters.list_runtime_model_catalog()`（按 `EFFORT_ORDER` 规范成低到高，grok 自己按高到低返回）、`RuntimeManager.list_model_catalog()`，最后由 `ApiContext.discovered_catalog()` 连同模型目录一起缓存 10 分钟。
+ACP 工具自报按模型档位有两条路,`acp.list_model_catalog()` 都把它和模型目录**在同一次探测里**一起取回——档位表是模型目录的副产品，不额外起进程:grok 在 `session/new` 响应的 `models.availableModels[]._meta` 里自报 `supportsReasoningEffort` 与 `reasoningEfforts`(厂商私有扩展,由 `clis/grok.py` 的 `parse_model_efforts` 钩子解析);kimi 用 ACP 标准的 `configOptions`,但 `session/new` 只给**当前模型**的 `thinking` 取值,而取值随模型变化(K3/K3-256k 为 low/high/max,K2.7 系列为 on/high),所以协议层在同一探测会话里逐模型 `session/set_config_option(model)` 并从应答的 `configOptions` 读回该模型的档位,不需要工具钩子。往上依次是 `adapters.list_runtime_model_catalog()`（按 `EFFORT_ORDER` 规范成低到高，grok 自己按高到低返回）、`RuntimeManager.list_model_catalog()`，最后由 `ApiContext.discovered_catalog()` 连同模型目录一起缓存 10 分钟。
 
 `RuntimeManager.effort_options(backend, model, model_efforts)` 决定最终清单：给定模型在自报表里有档位就用它，否则经 `provider_for()` 回退到该 Backend 的 provider 声明的静态档位。模型留空（CLI 默认模型）也走回退，因为此时并不知道 CLI 最终选哪个模型。自报表由调用方传入（API 用缓存，CLI 现查），这个函数本身不探测 runtime。
 
@@ -273,7 +274,7 @@ ACP 工具在 `session/new` 响应的 `models.availableModels[]._meta` 里自报
 
 这一层校验是必需的，因为 **`grok agent` 不校验档位**：与 codex（app-server 报错并回流到频道）不同，grok 对越界档位不报错，而是静默回落到该模型默认档位（xhigh + grok-4.5 实测落到 high）。放过去用户在频道里看不到任何提示，只能在保存角色时按所选模型拦住。
 
-effort 进的是 ACP serve 命令，改档位会改变 `acp.py` 的 client signature，长驻会话按新命令重启进程，不会沿用旧档位。
+grok/copilot 的 effort 进的是 ACP serve 命令，改档位会改变 `acp.py` 的 client signature，长驻会话按新命令重启进程，不会沿用旧档位。kimi 的档位不在命令里,每轮 prompt 前 `set_config_option` 覆盖,存活会话直接切换;与模型一样,effort 改回空值(CLI 默认)时不再下发,会话沿用上次设置的档位直到进程回收。
 
 ## 升级
 

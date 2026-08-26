@@ -147,12 +147,100 @@ def test_acp_catalog_reads_per_model_reasoning_efforts():
 
 
 def test_acp_catalog_empty_efforts_without_parser():
-    """没有解析回调的工具(kimi/trae 等)档位表恒为空 = 回退静态档位。"""
+    """既无解析回调、也不自报 thought_level 的工具(trae 等)档位表恒为空
+    = 回退静态档位。"""
     from missioncrew.runtime import acp
     models, efforts = acp.list_model_catalog(
         [sys.executable, FAKE, "trae"], timeout=15)
 
     assert models == ["GLM-5.2", "Kimi-K2.6"] and efforts == {}
+
+
+def test_acp_catalog_reads_thought_level_per_model_from_config_options():
+    """kimi 形态:档位是 ACP 标准会话配置项(category=thought_level),取值随
+    模型变化,session/new 只给当前模型的;探测在同一会话里逐模型切换读回。"""
+    from missioncrew.runtime import acp
+    models, efforts = acp.list_model_catalog([sys.executable, FAKE], timeout=15)
+
+    assert models == ["fake/base", "fake/pro"]
+    # 协议原样顺序;规范排序由 adapters 层负责
+    assert efforts == {"fake/base": ["low", "high", "max"],
+                       "fake/pro": ["on", "high"]}
+
+
+def test_kimi_model_catalog_sorts_thought_levels(monkeypatch):
+    """经 adapters 走 kimi 的通用 ACP 探测:不需要解析钩子,档位按
+    EFFORT_ORDER 规范化(K2.7 的 on 排在 high 之前)。"""
+    monkeypatch.setitem(
+        adapters.ACP_SERVE_COMMANDS, "kimi", [sys.executable, FAKE])
+    backend = Backend(id="kimi", name="k", adapter="kimi")
+    models, efforts = adapters.list_runtime_model_catalog(backend, timeout=15)
+
+    assert models == ["fake/base", "fake/pro"]
+    assert efforts == {"fake/base": ["low", "high", "max"],
+                       "fake/pro": ["on", "high"]}
+    # 静态兜底 = K3 的档位;按模型清单优先于静态兜底
+    assert runtime_manager.effort_options(backend) == ["low", "high", "max"]
+    assert runtime_manager.effort_options(
+        backend, "fake/pro", efforts) == ["on", "high"]
+
+
+def _effort_cfg(tmp_path, backend, effort, events=None):
+    return ExecutionConfig(
+        task_id="t", stage_name="chat", backend=backend,
+        prompt="# 聊天协作请求\n修一下登录问题", workdir=str(tmp_path),
+        timeout=30, effort=effort,
+        emit=(lambda kind, text: events.append((kind, text)))
+        if events is not None else None)
+
+
+def test_acp_effort_switches_thought_level_in_session(tmp_path):
+    """kimi 的 effort 不在 serve 命令里:每轮先 set_model 再
+    set_config_option(thinking),同一会话内切换档位。"""
+    backend = Backend(id="kimi", name="k", adapter="kimi", model="fake/base")
+    result = _adapter("kimi").run(_effort_cfg(tmp_path, backend, "max"))
+
+    assert result.success, result.summary
+    assert "模型=fake/base" in result.output and "思考=max" in result.output
+
+
+def test_acp_effort_rejected_by_runtime_fails_the_turn(tmp_path):
+    """越界档位(K2.7 形态的模型没有 max)由 Runtime 报错,本轮失败并把
+    原因回流,不静默回落。"""
+    backend = Backend(id="kimi", name="k", adapter="kimi", model="fake/pro")
+    result = _adapter("kimi").run(_effort_cfg(tmp_path, backend, "max"))
+
+    assert not result.success
+    assert "effort=max" in result.output
+    assert "Unknown thinking value: max" in result.output
+
+
+def test_acp_effort_in_serve_command_is_not_sent_over_protocol(tmp_path):
+    """grok/copilot 形态:effort 已随 {effort} 占位符进 serve 命令,协议层
+    不再发 set_config_option,也不告警。"""
+    events = []
+    backend = Backend(id="grok", name="g", adapter="grok_build")
+    result = _adapter("grok_build", "efforts", "--effort", "{effort}").run(
+        _effort_cfg(tmp_path, backend, "high", events))
+
+    assert result.success, result.summary
+    assert "思考=" not in result.output
+    statuses = "".join(t for k, t in events if k == "status")
+    assert "未生效" not in statuses
+    assert "--effort high" in "".join(t for k, t in events if k == "command")
+
+
+def test_acp_effort_without_thought_level_option_warns(tmp_path):
+    """既不在命令里、Runtime 也不自报 thought_level 的组合:本轮照常执行,
+    但明确上报 effort 未生效,不静默吞掉配置。"""
+    events = []
+    backend = Backend(id="trae", name="t", adapter="trae")
+    result = _adapter("trae", "trae").run(
+        _effort_cfg(tmp_path, backend, "high", events))
+
+    assert result.success, result.summary
+    statuses = "".join(t for k, t in events if k == "status")
+    assert "effort=high 未生效" in statuses
 
 
 def test_acp_one_shot_execution_appears_in_runtime_status(tmp_path):

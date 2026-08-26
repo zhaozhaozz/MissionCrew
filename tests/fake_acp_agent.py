@@ -5,8 +5,10 @@
 再反向发起 session/request_permission(验证客户端会从 options 里选
 allow_once),收到应答后把所选 optionId 写进第二个文本块,最后结束回合。
 
-argv[1] 控制 session/new 的模型目录形态:缺省 = kimi 形态(configOptions);
-"trae" = trae 形态(models.availableModels + currentModelId,无 configOptions)。
+argv[1] 控制 session/new 的模型目录形态:缺省 = kimi 形态(configOptions,含
+category=thought_level 的 `thinking` 档位选项,取值随当前模型变化,经
+session/set_config_option 切换模型/档位);"trae" = trae 形态
+(models.availableModels + currentModelId,无 configOptions)。
 """
 import json
 import sys
@@ -28,7 +30,25 @@ def chunk(text, meta=None):
     send({"jsonrpc": "2.0", "method": "session/update", "params": params})
 
 
-def _session_new_result(shape):
+# kimi 形态的按模型档位:与真实 kimi 一致,K3 系列 low/high/max,K2.7 系列 on/high
+_THINKING_LEVELS = {"fake/base": ["low", "high", "max"],
+                    "fake/pro": ["on", "high"]}
+
+
+def _config_options(model, thinking):
+    model = model or "fake/base"
+    return [{
+        "type": "select", "id": "model", "category": "model",
+        "currentValue": model,
+        "options": [{"value": "fake/base", "name": "Base"},
+                    {"value": "fake/pro", "name": "Pro"}]},
+        {"type": "select", "id": "thinking", "name": "Thinking",
+         "category": "thought_level", "currentValue": thinking or "high",
+         "options": [{"value": v, "name": f"Thinking {v}"}
+                     for v in _THINKING_LEVELS[model]]}]
+
+
+def _session_new_result(shape, model="", thinking=""):
     if shape == "efforts":  # 真实 grok 的形态:每个模型自报推理力度(高到低)
         return {"sessionId": "s-test",
                 "models": {"availableModels": [
@@ -56,16 +76,13 @@ def _session_new_result(shape):
                     {"modelId": "Kimi-K2.6", "name": "Kimi K2.6", "description": ""}],
                     "currentModelId": "GLM-5.2"}}
     return {"sessionId": "s-test",
-            "configOptions": [{
-                "type": "select", "id": "model", "category": "model",
-                "currentValue": "fake/base",
-                "options": [{"value": "fake/base", "name": "Base"},
-                            {"value": "fake/pro", "name": "Pro"}]}]}
+            "configOptions": _config_options(model, thinking)}
 
 
 def main():
     shape = sys.argv[1] if len(sys.argv) > 1 else "config"
     model = ""
+    thinking = ""
     new_count = 0
     load_count = 0
     load_no_replay = False
@@ -112,11 +129,30 @@ def main():
                 (msg["params"].get("_meta") or {}).get("noReplay"))
             if shape == "replay" and not load_no_replay:
                 chunk("不应进入当前回合的历史", {"isReplay": True})
+            # 与真实 kimi 一致:load 应答同样带 configOptions(含档位选项)
             send({"jsonrpc": "2.0", "id": mid,
-                  "result": {"sessionId": msg["params"]["sessionId"]}})
+                  "result": {**_session_new_result(shape, model, thinking),
+                             "sessionId": msg["params"]["sessionId"]}})
         elif method == "session/set_model":
             model = msg["params"]["modelId"]
             send({"jsonrpc": "2.0", "id": mid, "result": {}})
+        elif method == "session/set_config_option":
+            # ACP 标准会话配置项:model 切换后档位选项随之变化;thinking 只认
+            # 当前模型的取值,越界返回 -32602(真实 kimi 的报错形态)
+            config_id = msg["params"]["configId"]
+            value = msg["params"]["value"]
+            if config_id == "model":
+                model = value
+            elif config_id == "thinking":
+                if value not in _THINKING_LEVELS.get(model or "fake/base", []):
+                    send({"jsonrpc": "2.0", "id": mid, "error": {
+                        "code": -32602,
+                        "message": f"Invalid params: Unknown thinking value: {value}",
+                        "data": {"configId": config_id, "value": value}}})
+                    continue
+                thinking = value
+            send({"jsonrpc": "2.0", "id": mid, "result": {
+                "configOptions": _config_options(model, thinking)}})
         elif method == "session/prompt":
             prompt_count += 1
             if shape == "slow":
@@ -234,7 +270,8 @@ def main():
                 if resp.get("id") == 900:
                     opt = resp["result"]["outcome"]["optionId"]
                     break
-            chunk(f";权限选择={opt}" + (f";模型={model}" if model else ""))
+            chunk(f";权限选择={opt}" + (f";模型={model}" if model else "")
+                  + (f";思考={thinking}" if thinking else ""))
             send({"jsonrpc": "2.0", "id": mid, "result": {"stopReason": "end_turn"}})
 
 

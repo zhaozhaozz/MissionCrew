@@ -3,8 +3,12 @@
 Grok / kimi / kiro / qoder / trae 等 CLI 不走"命令行传 prompt"的打印模式,而是作为
 JSON-RPC 服务挂在 stdio 上(换行分隔的 JSON-RPC 2.0)。流程:
 
-    initialize -> session/new|session/load -> [session/set_model] -> session/prompt
+    initialize -> session/new|session/load -> [session/set_model]
+        -> [session/set_config_option(thought_level)] -> session/prompt
     期间收集 session/update 通知里的 agent_message_chunk 作为回复文本;
+    推理力度(effort)若不在 serve 命令里,则按 ACP 标准的会话配置项在会话内
+    切换:session/new|load 应答的 configOptions 中 category=thought_level 的
+    选项(kimi 的 `thinking`)即档位,每轮 prompt 前 set_config_option 对齐;
     agent 反向发来的 session/request_permission 必须应答(选它提供的安全
     选项),否则 agent 会阻塞到内部超时,任务假死。
 """
@@ -165,6 +169,9 @@ class _AcpClient:
         )
         self.deadline = time.time() + timeout if timeout is not None else None
         self.chunks: list[str] = []          # agent_message_chunk 文本
+        # session/new|load 自报的推理力度配置项 id(ACP category=thought_level,
+        # kimi 为 "thinking");空 = 该 Runtime 不经会话配置项切换档位
+        self.thought_level_option = ""
         self._raw_emit = emit or (lambda kind, text: None)
         try:
             permissions = json.loads(env.get("MISSIONCREW_RUNTIME_PERMISSIONS", "{}"))
@@ -764,11 +771,32 @@ def _initialize(client: _AcpClient) -> dict:
     })
 
 
+def _thought_level_option(result: dict) -> tuple[str, list[str]]:
+    """从 session/new|load|set_config_option 应答里取推理力度配置项。
+
+    ACP 标准的 configOptions 里 category=thought_level 的 select 选项就是
+    档位(kimi: id="thinking",K3 为 low/high/max,K2.7 为 on/high)。返回
+    (配置项 id, 取值列表,按协议原顺序);没有该选项时返回 ("", [])。
+    """
+    for opt in result.get("configOptions") or []:
+        if not isinstance(opt, dict):
+            continue
+        if opt.get("category") == "thought_level" or opt.get("id") == "thought_level":
+            values = [str(o.get("value", "")) if isinstance(o, dict) else str(o)
+                      for o in opt.get("options") or []]
+            return str(opt.get("id") or ""), [v for v in values if v]
+    return "", []
+
+
 def _new_or_load_session(client: _AcpClient, workdir: str,
                          requested_session_id: str,
                          initialize_result: dict,
                          load_meta: Optional[dict] = None) -> tuple[str, bool]:
-    """返回 (会话 id, 是否成功恢复)。不支持/无法 load 时创建新会话。"""
+    """返回 (会话 id, 是否成功恢复)。不支持/无法 load 时创建新会话。
+
+    顺带记下应答里的推理力度配置项 id(client.thought_level_option),供
+    每轮 prompt 前按 effort 切换档位。
+    """
     capabilities = initialize_result.get("agentCapabilities") or {}
     can_load = bool(isinstance(capabilities, dict)
                     and capabilities.get("loadSession") is True)
@@ -782,6 +810,7 @@ def _new_or_load_session(client: _AcpClient, workdir: str,
             if load_meta:
                 params["_meta"] = dict(load_meta)
             result = client.request("session/load", params)
+            client.thought_level_option = _thought_level_option(result)[0]
             return (result.get("sessionId") or result.get("session_id")
                     or requested_session_id), True
         except AcpError as exc:
@@ -793,14 +822,29 @@ def _new_or_load_session(client: _AcpClient, workdir: str,
     session_id = result.get("sessionId") or result.get("session_id") or ""
     if not session_id:
         raise AcpError("session/new 未返回 sessionId")
+    client.thought_level_option = _thought_level_option(result)[0]
     return session_id, False
 
 
 def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
-                 model: str) -> str:
+                 model: str, effort: str = "") -> str:
     if model:
         client.request("session/set_model", {"sessionId": session_id,
                                               "modelId": model})
+    if effort:
+        # 先定模型再定档位:可选档位随模型变化(kimi K2.7 没有 max)。越界值由
+        # Runtime 自己报错(kimi 返回 -32602),照常作为本轮失败回流到频道
+        if client.thought_level_option:
+            try:
+                client.request("session/set_config_option", {
+                    "sessionId": session_id,
+                    "configId": client.thought_level_option,
+                    "value": effort})
+            except AcpError as exc:
+                raise AcpError(f"ACP Runtime 拒绝推理力度 effort={effort}: {exc}") from exc
+        else:
+            client.emit("status", f"ACP Runtime 未声明推理力度配置项(thought_level)，"
+                                  f"effort={effort} 未生效。\n")
     client.emit("input", prompt)
     client.request("session/prompt", {
         "sessionId": session_id,
@@ -846,7 +890,8 @@ def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
                   model: str, timeout: Optional[float], runtime_id: str,
                   emit: Optional[Callable[[str, str], None]],
                   task_id: str = "", stage_name: str = "",
-                  project_id: str = "", role_id: str = "") -> tuple[bool, str]:
+                  project_id: str = "", role_id: str = "",
+                  effort: str = "") -> tuple[bool, str]:
     try:
         client = _AcpClient(cmd, workdir, env, timeout, emit=emit)
     except OSError as e:
@@ -857,7 +902,7 @@ def _run_one_shot(cmd: list[str], prompt: str, workdir: str, env: dict,
     try:
         initialize_result = _initialize(client)
         session_id, _ = _new_or_load_session(client, workdir, "", initialize_result)
-        return True, _prompt_turn(client, session_id, prompt, model)
+        return True, _prompt_turn(client, session_id, prompt, model, effort)
     except AcpError as e:
         return False, str(e)
     finally:
@@ -879,19 +924,23 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                project_id: str = "", role_id: str = "",
                cancelled: Optional[Callable[[], bool]] = None,
                load_session_meta: Optional[dict] = None,
-               trigger_message_id: int = 0) -> tuple[bool, str]:
+               trigger_message_id: int = 0,
+               effort: str = "") -> tuple[bool, str]:
     """完成一轮 ACP prompt，并按 channel×role 复用长驻原生会话。
 
     无 ``session_key`` 时保持一次性调用。长驻进程不存在（包括服务重启）时，
     仅在 Runtime 声明 loadSession 能力后恢复持久化 id；否则创建新会话并使用
     ``recovery_prompt``，避免把缺失的历史当成已恢复。
+
+    ``effort`` 是要经会话配置项(thought_level)切换的推理力度;serve 命令里
+    已带档位的工具(grok/copilot)不要再传,它们改档位靠命令签名变化重启进程。
     """
     if cancelled and cancelled():
         return False, "执行已停止"
     if not session_key:
         return _run_one_shot(
             cmd, prompt, workdir, env, model, timeout, runtime_id, emit,
-            task_id, stage_name, project_id, role_id)
+            task_id, stage_name, project_id, role_id, effort=effort)
 
     _cleanup_idle_sessions()
     signature = _client_signature(cmd, workdir, env)
@@ -956,7 +1005,8 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
             label = (mode_labels or {}).get(actual_mode)
             if label:
                 live.client.emit("status", f"公共上下文:{label}\n")
-            reply = _prompt_turn(live.client, live.session_id, actual_prompt, model)
+            reply = _prompt_turn(live.client, live.session_id, actual_prompt,
+                                 model, effort)
             live.last_used = time.time()
             if save_session:
                 try:
@@ -997,10 +1047,15 @@ def list_model_catalog(
     (对齐 Multica parseACPSessionNewModels,兼容 snake_case 与旧的
     {available:[...]} 及裸数组)。查不到返回空目录与空档位表。
 
-    按模型的推理力度是厂商私有扩展,不属于 ACP 标准:协议层只把 models 块
-    透传给 ``parse_efforts`` 回调(来自该工具的 clis 声明,如 grok 解析
-    `_meta.reasoningEfforts`);不传回调 = 档位表恒为空。两份信息来自同一个
-    session/new 响应,合并在一次探测里取回,避免为了档位再启一个 CLI 进程。
+    按模型的推理力度有两条路:
+    - ACP 标准的会话配置项:configOptions 里有 category=thought_level 的选项
+      (kimi 的 `thinking`)时,其取值就是档位;但 session/new 只给当前模型的
+      取值,而档位随模型变化(K3 low/high/max,K2.7 on/high),所以在同一会话里
+      逐模型 session/set_config_option(model) 并从应答读回该模型的档位;
+    - 厂商私有扩展(grok 的 models[]._meta.reasoningEfforts):协议层不认识,
+      只把 models 块透传给 ``parse_efforts`` 回调(来自该工具的 clis 声明)。
+    两条路都不通 = 档位表为空,调用方回退静态档位。全部信息来自同一次探测
+    会话,避免为了档位再启一个 CLI 进程。
     """
     import tempfile
     workdir = tempfile.mkdtemp(prefix="mc-acp-models-")
@@ -1020,8 +1075,10 @@ def list_model_catalog(
         })
         sess = client.request("session/new", {"cwd": workdir, "mcpServers": []})
         models: list[str] = []
+        model_option_id = ""
         for opt in sess.get("configOptions") or []:
             if opt.get("category") == "model" or opt.get("id") == "model":
+                model_option_id = str(opt.get("id") or "model")
                 models = [str(o.get("value", "")) for o in opt.get("options", [])]
                 break
         block = sess.get("models")
@@ -1032,14 +1089,40 @@ def list_model_catalog(
             models = [str(m.get("modelId") or m.get("model_id") or m.get("id")
                           or m.get("value") or "")
                       if isinstance(m, dict) else str(m) for m in block]
-        return ([m for m in models if m],
-                parse_efforts(block) if parse_efforts else {})
+        models = [m for m in models if m]
+        efforts = parse_efforts(block) if parse_efforts else {}
+        if not efforts and model_option_id and _thought_level_option(sess)[0]:
+            efforts = _probe_thought_levels(
+                client, str(sess.get("sessionId") or sess.get("session_id") or ""),
+                model_option_id, models)
+        return models, efforts
     except AcpError:
         return [], {}
     finally:
         with _ONE_SHOT_CLIENTS_GUARD:
             _ONE_SHOT_CLIENTS.pop(id(client), None)
         client.close()
+
+
+def _probe_thought_levels(client: _AcpClient, session_id: str,
+                          model_option_id: str,
+                          models: list[str]) -> dict[str, list[str]]:
+    """在探测会话里逐模型切换,读回各模型的 thought_level 取值。
+
+    某个模型切换失败就跳过(不入表 = 回退静态档位),不影响其他模型。
+    """
+    efforts: dict[str, list[str]] = {}
+    for model in models:
+        try:
+            result = client.request("session/set_config_option", {
+                "sessionId": session_id, "configId": model_option_id,
+                "value": model})
+        except AcpError:
+            continue
+        levels = _thought_level_option(result)[1]
+        if levels:
+            efforts[model] = levels
+    return efforts
 
 
 def list_models(cmd: list[str], env: Optional[dict] = None,

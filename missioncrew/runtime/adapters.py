@@ -297,14 +297,17 @@ KNOWN_MODELS: dict[str, list[str]] = {
 
 # 内置执行器负责的适配器的 effort(推理力度)静态兜底:adapter -> 档位(低到高)。
 # 只覆盖没有原生 provider 的 adapter;claude/codex/pi 的档位由各自 provider 类
-# 的 effort_catalog() 声明。注入方式见命令模板的 {effort} 占位符。
+# 的 effort_catalog() 声明。注入方式:命令模板里有 {effort} 占位符的走命令行
+# (grok/copilot);没有的 ACP 工具(kimi)由协议层经会话配置项 thought_level
+# 每轮 session/set_config_option 切换,见 AcpAdapter.run。
 EFFORT_SUPPORT: dict[str, list[str]] = {
     s.adapter: list(s.efforts) for s in _clis.SPECS if s.efforts}
 
 # 全平台档位的规范顺序(低到高)。runtime 自报的档位顺序各家不一(grok 按高到低
 # 返回),统一按这里排序后再进下拉,保证同一个下拉里方向一致;没见过的档位按
 # 原顺序排在已知档位之后,不丢弃。
-EFFORT_ORDER = ["off", "none", "minimal", "low", "medium", "high", "xhigh",
+# "on" 是 kimi K2.7 的「开启思考」(默认深度),只与更高的 high 并列出现
+EFFORT_ORDER = ["off", "none", "minimal", "low", "medium", "on", "high", "xhigh",
                 "max", "ultra"]
 
 
@@ -710,6 +713,11 @@ class AcpAdapter:
         )
         if self.command is None:
             cmd = _apply_permission_policy(cmd, self.adapter_name, cfg)
+        # 推理力度二选一:serve 命令模板带 {effort} 的(grok/copilot)已随命令
+        # 注入,改档位靠命令签名变化重启长驻进程;模板不带的(kimi)交给协议层,
+        # 每轮经 ACP 会话配置项 thought_level 在存活会话内切换,不重启进程
+        protocol_effort = ("" if any("{effort}" in tok for tok in template)
+                           else cfg.effort)
         # ACP 的真实输入由协议层在确定“复用 / load / 新建恢复”后上报；这里
         # 只打印 serve 命令，避免先展示一个最终没有发送的 Prompt。
         if cfg.emit is not None:
@@ -736,6 +744,7 @@ class AcpAdapter:
             cancelled=cfg.cancelled,
             load_session_meta=_load_session_meta(self.adapter_name),
             trigger_message_id=cfg.trigger_message_id,
+            effort=protocol_effort,
         )
         try:
             _diagnostic_log_path(cfg, self.adapter_name).write_text(text)
@@ -1324,7 +1333,8 @@ def _list_acp_model_catalog(
     models, efforts = acp.list_model_catalog(
         cmd, timeout=timeout, runtime_id=backend.id,
         # 厂商私有的按模型档位扩展(grok 的 _meta.reasoningEfforts)
-        # 由工具声明钩子解析，协议层只透传 models 块。
+        # 由工具声明钩子解析，协议层只透传 models 块;ACP 标准的会话配置项
+        # thought_level(kimi)由协议层自己按模型读回,不需要钩子。
         parse_efforts=parse_efforts)
     return models, {model: sort_efforts(levels)
                     for model, levels in efforts.items()}
@@ -1338,7 +1348,8 @@ def list_runtime_model_catalog(
     discover_models 回调里;没有回调但声明了 acp_serve 的工具走通用 ACP
     探测(一次性会话,session/new 返回目录)。两者都无 = 不支持模型枚举。
 
-    第二个返回值只有 ACP 工具会自报(目前只有 grok):模型 -> 档位(低到高)。
+    第二个返回值只有 ACP 工具会自报(grok 的私有扩展、kimi 的会话配置项):
+    模型 -> 档位(低到高)。
     为空表示该 runtime 说不出按模型的差异,调用方回退到 provider 声明的
     静态档位(effort_support)。查不到一律返回空目录与空档位表。
     """
