@@ -214,11 +214,6 @@ async function selectDocument(path) {
   renderSidebar(); renderDocPane(); syncUrl();
 }
 
-function documentLibraryButtons() {
-  return `<button class="ghost compact" type="button" onclick="beginDocumentUpload()">上传文件</button>
-    <button class="ghost compact" type="button" onclick="newDocument()">＋ 新建</button>`;
-}
-
 function beginDocumentUpload() {
   if (!currentProject) return;
   if (currentTab !== "docs") switchTab("docs");
@@ -436,8 +431,7 @@ const docViewer = createTextViewer({
     toast(`已恢复,新版本 ${r.revision.slice(0, 10)}`, "success");
   },
   extrasHtml: mode => mode === "view"
-    ? `${documentLibraryButtons()}
-       <button class="danger" type="button" onclick="deleteDocument()">删除</button>`
+    ? `<button class="danger" type="button" onclick="deleteDocument()">删除</button>`
     : "",
   downloadUrl: (revision, inline) => documentDownloadUrl(docSelected, revision, inline),
   imageResolver: src => {
@@ -473,9 +467,7 @@ async function renderDocPane(preserveScroll = false) {
     docPaneContent = null;
     docPaneContentIdentity = null;
     docPaneContentType = null;
-    pane.innerHTML = `<div class="doc-head"><span class="guideline-toolbar-spacer"></span>
-        ${documentLibraryButtons()}</div>
-      <div class="empty">从左侧目录树选择一个文档查看，或上传已有文件。</div>`;
+    pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看，或用侧栏「文档」分区的按钮上传、新建文档。</div>`;
     docPaneRenderSignature = currentDocPaneSignature();
     updateConfigChatContext();
     return;
