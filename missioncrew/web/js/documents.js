@@ -332,6 +332,17 @@ function isMarkdownDoc(path) {
   return /\.(md|markdown)$/i.test(path || "");
 }
 
+function isHtmlDoc(path) {
+  return /\.html?$/i.test(path || "");
+}
+
+// 文档查看类型：Markdown 与 HTML 支持原始/预览切换，其余 UTF-8 文本按行号显示。
+function docViewKind(path) {
+  if (isMarkdownDoc(path)) return "markdown";
+  if (isHtmlDoc(path)) return "html";
+  return "text";
+}
+
 function documentDownloadUrl(path = docSelected, revision = docViewer.viewingRevision,
                              inline = false) {
   let url = `/api/projects/${encodeURIComponent(currentProject)}/documents/download/${docEncode(path)}`;
@@ -387,7 +398,7 @@ const docViewer = createTextViewer({
     docPaneContent = payload.data.content;
     docPaneContentType = "text";
     return {
-      kind: isMarkdownDoc(docSelected) ? "markdown" : "text",
+      kind: docViewKind(docSelected),
       content: payload.data.content,
     };
   },

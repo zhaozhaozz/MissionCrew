@@ -1,5 +1,5 @@
 /* ---- 统一文本查看/编辑组件：版本化文档库与准则文档共用 ----
-   查看模式：Markdown 原始/预览切换、纯文本行号、图片预览、下载原文件、历史版本与
+   查看模式：Markdown/HTML 原始/预览切换、纯文本行号、图片预览、下载原文件、历史版本与
    行内/左右两种版本对比（对比视图直接替换正文区）。
    编辑模式：独立「编辑」按钮进入，修改后显示「已修改」徽标，
    离开（切换条目/项目/关闭页面）前统一提醒保存。 */
@@ -89,7 +89,9 @@ function viewerSplitDiffHtml(ops) {
    identity()             — 当前条目唯一标识（含项目、路径、版本），用于竞态防护与缓存
    title() / metaLine()   — 头部标题（原始文本，组件负责转义）与元信息
    editKind()             — 编辑对象类型："markdown" | "text"
-   loadView(revision)     — {kind: "markdown"|"text"|"image"|"binary", content?}
+   loadView(revision)     — {kind: "markdown"|"html"|"text"|"image"|"binary", content?}
+                            html 预览用 downloadUrl(revision, true) 装进沙箱 iframe，
+                            相对路径的图片/样式由文档库同目录文件解析
    loadEdit()             — 进入编辑模式的初始文本
    save(content)          — 保存（宿主负责 API/刷新/toast，抛错则留在编辑模式）
    listHistory()          — 版本历史行 [{revision, created_at, actor, message}]
@@ -182,8 +184,8 @@ function createTextViewer(config) {
     return `<span class="viewer-dirty-badge" ${V.dirty ? "" : "hidden"}>已修改</span>`;
   }
 
-  function rawToggleHtml() {
-    return `<div class="guideline-view-toggle" aria-label="Markdown 显示方式">
+  function rawToggleHtml(kind) {
+    return `<div class="guideline-view-toggle" aria-label="${kind === "html" ? "HTML" : "Markdown"} 显示方式">
       <button class="ghost compact ${V.raw ? "active" : ""}" type="button"
         data-vact="set-raw" data-raw="1">原始</button>
       <button class="ghost compact ${V.raw ? "" : "active"}" type="button"
@@ -194,6 +196,8 @@ function createTextViewer(config) {
   function viewHeadHtml(kind) {
     const historical = V.viewingRevision;
     const meta = config.metaLine();
+    const editable = kind === "markdown" || kind === "text" || kind === "html";
+    const previewable = kind === "markdown" || kind === "html";
     return `<div class="viewer-head">
       <b>${esc(config.title())}</b>
       ${meta ? `<span class="muted">${esc(meta)}</span>` : ""}
@@ -205,12 +209,12 @@ function createTextViewer(config) {
         <button class="action compact" type="button" data-vact="restore-rev"
           data-rev="${esc(historical)}">恢复此版本</button>
         <button class="ghost compact" type="button" data-vact="close-rev">返回最新</button>` : `
-        ${kind === "markdown" || kind === "text"
+        ${editable
           ? `<button class="action compact" type="button" data-vact="enter-edit">编辑</button>` : ""}`}
       <button class="ghost compact" type="button" data-vact="toggle-history"
         ${(config.hasHistory?.() ?? true) ? "" : "hidden"}>
         ${V.historyOpen ? "收起历史" : "版本历史"}</button>
-      ${kind === "markdown" ? rawToggleHtml() : ""}
+      ${previewable ? rawToggleHtml(kind) : ""}
       ${config.downloadUrl
         ? `<button class="ghost compact" type="button" data-vact="download"
             title="下载当前查看版本的原文件">下载</button>` : ""}
@@ -257,6 +261,15 @@ function createTextViewer(config) {
       return V.raw ? lineNumberedTextHtml(data.content)
         : `<article class="doc-body markdown-body">${markdownPreviewHtml(
             data.content, { imageResolver: config.imageResolver || null })}</article>`;
+    if (data.kind === "html" && !V.raw && config.downloadUrl) {
+      // 用文件自身 URL 装入 iframe，页面内相对路径的图片/样式按文档库同目录解析。
+      // sandbox 不含 allow-same-origin：页面脚本运行在不透明源，拿不到本应用的
+      // 存储与同源 API 权限；子资源仍按普通 HTTP 请求加载。
+      return `<div class="doc-html-preview"><iframe
+        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        referrerpolicy="no-referrer" title="${esc(config.title())}"
+        src="${esc(config.downloadUrl(V.viewingRevision, true))}"></iframe></div>`;
+    }
     return lineNumberedTextHtml(data.content);
   }
 
@@ -357,7 +370,7 @@ function createTextViewer(config) {
       if (!stillCurrent()) return;
       V.viewData = data;
     }
-    V.canCompare = data.kind === "markdown" || data.kind === "text";
+    V.canCompare = data.kind === "markdown" || data.kind === "text" || data.kind === "html";
     if (!V.canCompare) { V.compareRevisions = []; V.compareResult = null; }
     container.innerHTML = viewHeadHtml(data.kind) + historyPanelHtml() + viewBodyHtml(data);
     restoreScrollPositions(scrollState);

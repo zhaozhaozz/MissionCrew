@@ -134,3 +134,22 @@ def test_document_download_inline_disposition(seeded):
     assert inline.status_code == 200
     assert inline.headers["Content-Disposition"].startswith("inline")
     assert inline.headers["X-Content-Type-Options"] == "nosniff"
+    assert "Content-Security-Policy" not in inline.headers
+
+
+def test_document_download_inline_html_is_sandboxed(seeded):
+    """HTML 内联预览在沙箱 iframe 中渲染；响应头同样声明 CSP sandbox 作为兜底。"""
+    client = _client()
+    client.put("/api/projects/webshop/documents/file/reports/index.html",
+               json={"content": "<!doctype html><p>report</p>"})
+    base = "/api/projects/webshop/documents/download/reports/index.html"
+
+    inline = client.get(base, params={"inline": 1})
+    assert inline.status_code == 200
+    assert inline.headers["Content-Type"].startswith("text/html")
+    assert inline.headers["Content-Security-Policy"].startswith("sandbox")
+    assert "allow-same-origin" not in inline.headers["Content-Security-Policy"]
+
+    attachment = client.get(base)
+    assert attachment.headers["Content-Disposition"].startswith("attachment")
+    assert "Content-Security-Policy" not in attachment.headers

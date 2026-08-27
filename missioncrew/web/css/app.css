@@ -1037,6 +1037,11 @@
   .doc-image { display: flex; justify-content: center; padding: 14px;
                background: var(--bg-soft); border-radius: 10px; }
   .doc-image img { max-width: 100%; max-height: 68vh; object-fit: contain; }
+  /* HTML 文档预览：沙箱 iframe 填满头部以下区域，页面在 iframe 内自行滚动；
+     iframe 底色固定为白，未声明背景的页面在深色主题下也保持可读 */
+  .doc-html-preview { height: calc(100% - 64px); min-height: 320px; }
+  .doc-html-preview iframe { display: block; width: 100%; height: 100%; border: 1px solid var(--line);
+                             border-radius: 10px; background: #fff; }
   /* git 仓图标:跟随文字大小与基线,保持 git 品牌橙色以便和普通目录一眼区分 */
   .git-icon { width: 1.05em; height: 1.05em; vertical-align: -.16em;
               color: #f05133; flex: 0 0 auto; }

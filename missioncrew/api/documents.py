@@ -18,6 +18,9 @@ from .schemas import DocumentCompare, DocumentRestore, DocumentWrite
 
 
 MAX_DOCUMENT_UPLOAD_BYTES = 50 * 1024 * 1024
+# 内联渲染时会以“文档”身份执行脚本的类型：交给浏览器 CSP sandbox 隔离到不透明源，
+# 即便直接在标签页打开 inline URL，页面脚本也拿不到本应用同源权限。
+_SANDBOXED_INLINE_TYPES = {"text/html", "application/xhtml+xml", "image/svg+xml"}
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -116,15 +119,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         filename = PurePosixPath(file_path).name
         media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         disposition = "inline" if inline else "attachment"
-        return Response(
-            content=content,
-            media_type=media_type,
-            headers={
-                "Content-Disposition": (
-                    f"{disposition}; filename*=UTF-8''{quote(filename, safe='')}"),
-                "X-Content-Type-Options": "nosniff",
-            },
-        )
+        headers = {
+            "Content-Disposition": (
+                f"{disposition}; filename*=UTF-8''{quote(filename, safe='')}"),
+            "X-Content-Type-Options": "nosniff",
+        }
+        if inline and media_type in _SANDBOXED_INLINE_TYPES:
+            headers["Content-Security-Policy"] = (
+                "sandbox allow-scripts allow-popups allow-popups-to-escape-sandbox")
+        return Response(content=content, media_type=media_type, headers=headers)
 
     @app.get("/api/projects/{project_id}/documents/file/{file_path:path}")
     def read_document(project_id: str, file_path: str, revision: Optional[str] = None):
