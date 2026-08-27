@@ -1,5 +1,5 @@
 /* ---- 统一文本查看/编辑组件：版本化文档库与准则文档共用 ----
-   查看模式：Markdown 原始/预览切换、纯文本行号、图片预览、历史版本与
+   查看模式：Markdown 原始/预览切换、纯文本行号、图片预览、下载原文件、历史版本与
    行内/左右两种版本对比（对比视图直接替换正文区）。
    编辑模式：独立「编辑」按钮进入，修改后显示「已修改」徽标，
    离开（切换条目/项目/关闭页面）前统一提醒保存。 */
@@ -96,7 +96,7 @@ function viewerSplitDiffHtml(ops) {
    compare(a, b)          — {from_revision, to_revision, additions, deletions, identical, ops}
    restore(revision)      — 恢复版本（宿主负责确认/API/刷新/toast）
    extrasHtml(mode, kind) — 头部宿主按钮（上传/新建/删除、启用开关…）
-   downloadUrl(revision, inline) — 可选；提供时 image/binary 显示下载按钮
+   downloadUrl(revision, inline) — 可选；提供时查看模式头部右上角显示下载按钮（下载当前查看的版本）
    imageResolver(src)     — 可选；Markdown 相对图片路径 → 可加载 URL
    scrollSelectors()      — preserveScroll 时记录/恢复位置的滚动容器
    onChange() / onDirty() — 状态/脏标记变化钩子 */
@@ -211,8 +211,9 @@ function createTextViewer(config) {
         ${(config.hasHistory?.() ?? true) ? "" : "hidden"}>
         ${V.historyOpen ? "收起历史" : "版本历史"}</button>
       ${kind === "markdown" ? rawToggleHtml() : ""}
-      ${(kind === "image" || kind === "binary") && config.downloadUrl
-        ? `<button class="ghost compact" type="button" data-vact="download">下载</button>` : ""}
+      ${config.downloadUrl
+        ? `<button class="ghost compact" type="button" data-vact="download"
+            title="下载当前查看版本的原文件">下载</button>` : ""}
     </div>`;
   }
 
