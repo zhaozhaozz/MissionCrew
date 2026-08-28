@@ -12,7 +12,7 @@ from fastapi import FastAPI
 
 from . import (agent_tools, automations, backends, boards, chat, documents,
                guidelines, projects, recycle_bin, resources, roles, spa, system,
-               tasks)
+               tasks, uploads)
 from .context import ApiContext
 
 
@@ -37,7 +37,8 @@ def create_app() -> FastAPI:
 
     app = FastAPI(title="MissionCrew", version="0.2.0", lifespan=lifespan)
     for module in (system, chat, agent_tools, roles, projects, resources, guidelines,
-                   documents, boards, recycle_bin, backends, tasks, automations):
+                   documents, boards, recycle_bin, backends, tasks, automations,
+                   uploads):
         module.register(app, ctx)
     spa.register(app, ctx)   # catch-all 兜底,必须最后
     return app

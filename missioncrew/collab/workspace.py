@@ -77,6 +77,13 @@ def platform_history_dir(project_id: str, channel_id: str) -> Path:
             / ".missioncrew").resolve()
 
 
+def channel_uploads_dir(project_id: str, channel_id: str) -> Path:
+    """人类经频道输入框上传的附件目录；装配时授权给该频道的所有角色。"""
+    channel_name = channel_id.removeprefix(f"{project_id}:")
+    return (mc_home() / "agent-workspaces" / _safe_segment(project_id)
+            / "channels" / _safe_segment(channel_name) / "uploads").resolve()
+
+
 def purge_channel_workspaces(project_id: str, channel_id: str) -> int:
     """删除平台持有的频道历史、角色工作区和默认 Runtime 工作目录。"""
     removed = 0

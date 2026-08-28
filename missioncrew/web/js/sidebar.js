@@ -339,6 +339,8 @@ function selectChannel(id, jump = true) {
   currentChan = id; lastMsgId = 0; lastMsgDate = "";
   firstMsgId = 0; chanHasEarlier = false;
   runCards.clear();
+  pendingUploads = [];
+  renderPendingUploads();
   updateChatRunControls([]);
   document.getElementById("msgs").innerHTML = "";
   if (jump && currentTab !== "chat") switchTab("chat");
@@ -525,6 +527,8 @@ function appendMessagesToSurface(list, surface) {
     const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
     const longReply = isAgent && m.content.length > MESSAGE_FOLD_AT;
     const renderMarkdown = isAgent || isAutomation;
+    const attachments = Array.isArray(m.context?.attachments) ? m.context.attachments : [];
+    const images = attachments.filter(a => a && a.is_image && a.url);
     const div = document.createElement("div");
     div.className = `msg ${m.author_type}`;
     div.dataset.msgId = m.id;   // 运行过程卡片按触发消息内联定位
@@ -533,6 +537,8 @@ function appendMessagesToSurface(list, surface) {
         <div class="head"><span class="author" style="color:${isAgent ? color : "var(--text)"}">${esc(name)}</span>
           ${isAgent ? `<span class="via">${esc(agentExecutionLabel(m))}</span>` : ""}<span class="time">${time}</span></div>
         <div class="body${renderMarkdown ? " markdown-body" : ""}${longReply ? " folded" : ""}">${fmtBody(m.content, renderMarkdown, m.mention_spans)}</div>
+        ${images.length ? `<div class="msg-attachments">${images.map(a =>
+          `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img src="${esc(a.url)}" alt="${esc(uploadDisplayName(a.name))}" loading="lazy"></a>`).join("")}</div>` : ""}
         ${longReply ? `<button type="button" class="message-fold-toggle" data-size="${m.content.length}"
           aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;
@@ -1004,23 +1010,91 @@ function restoreComposerPayload(content, mentionSpans = [],
   box.focus();
 }
 
+/* ---------------- 频道附件:上传后随消息告知 Agent 本地路径 ---------------- */
+let pendingUploads = [];   // 已上传待随下一条消息发送的附件
+
+function uploadDisplayName(name) { return String(name || "").replace(/^\d+(?:-\d+)?-/, ""); }
+
+async function uploadChatFile(file) {
+  const filename = encodeURIComponent(file.name || "pasted-image.png");
+  const r = await fetch(`/api/chat/${currentChan}/uploads?filename=${filename}`, {
+    method: "POST",
+    headers: { "Content-Type": file.type || "application/octet-stream" },
+    body: file,
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({}));
+    toast(err.detail || `附件上传失败 (${r.status})`, "error", 5000);
+    return null;
+  }
+  return r.json();
+}
+
+async function addChatAttachments(files) {
+  if (!currentChan || !files.length) return;
+  for (const file of files) {
+    const item = await uploadChatFile(file);
+    if (item) pendingUploads.push(item);
+  }
+  renderPendingUploads();
+}
+
+function handleChatFileInput(input) {
+  addChatAttachments([...input.files]);
+  input.value = "";
+}
+
+function removePendingUpload(index) {
+  pendingUploads.splice(index, 1);
+  renderPendingUploads();
+}
+
+function renderPendingUploads() {
+  const wrap = document.getElementById("composer-attachments");
+  if (!wrap) return;
+  wrap.hidden = !pendingUploads.length;
+  wrap.innerHTML = pendingUploads.map((a, i) => `
+    <span class="attachment-chip" title="${esc(a.path)}">
+      ${a.is_image ? `<img src="${esc(a.url)}" alt="">`
+                   : `<span class="attachment-kind">📄</span>`}
+      <span class="attachment-name">${esc(uploadDisplayName(a.name))}</span>
+      <button type="button" class="attachment-remove" title="移除附件"
+        onclick="removePendingUpload(${i})">×</button>
+    </span>`).join("");
+}
+
+function attachmentBlock(attachments) {
+  const lines = attachments.map(a => `- ${a.is_image ? "图片" : "文件"}: ${a.path}`);
+  return "[附件] 用户上传了以下本地文件，需要时直接按路径读取：\n" + lines.join("\n");
+}
+
 async function send() {
   const box = document.getElementById("input");
   const payload = composerPayload();
-  const { content, mentions } = payload;
-  if (!content || !currentChan) return;
+  const { mentions } = payload;
+  const attachments = pendingUploads.slice();
+  let content = payload.content;
+  if ((!content && !attachments.length) || !currentChan) return;
   if (projChannels().find(channel => channel.id === currentChan)?.archived) {
     toast("频道已归档，请先恢复后再发送消息", "error");
     return;
   }
+  // 附件路径追加在正文尾部，不影响前面提及范围的字符偏移
+  if (attachments.length)
+    content = (content ? content + "\n\n" : "") + attachmentBlock(attachments);
   box.replaceChildren();
+  pendingUploads = [];
+  renderPendingUploads();
   savedComposerRange = null;
   hideMentionPicker();
   try {
     await api("POST", `/api/chat/${currentChan}/messages`,
-              { author: "human", content, mentions });
+              { author: "human", content, mentions,
+                context: attachments.length ? { attachments } : {} });
   } catch (e) {
-    restoreComposerPayload(content, mentions);  // 发送失败时还原结构化提及，不降级成文本
+    pendingUploads = attachments;   // 发送失败时附件退回待发区
+    renderPendingUploads();
+    restoreComposerPayload(payload.content, mentions);  // 还原结构化提及，不降级成文本
     return;
   }
   await pollMessages();
@@ -1097,6 +1171,9 @@ function bindComposerEvents(boxId, pickerId, onSubmit) {
   box.addEventListener("mousedown", () => activateComposer(boxId, pickerId));
   box.addEventListener("paste", event => {
     event.preventDefault();
+    // 聊天输入框支持直接粘贴图片/文件；其他 composer 仍只收纯文本
+    const files = [...(event.clipboardData?.files || [])];
+    if (files.length && boxId === "input") { addChatAttachments(files); return; }
     document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
   });
 }

@@ -373,6 +373,20 @@
            transition: border-color .15s, box-shadow .15s; }
   #input:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
   #input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  #attach-btn { flex: none; padding: 8px 11px; font-size: 15px; }
+  #composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  #composer-attachments[hidden] { display: none; }
+  .attachment-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 260px;
+                     padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px;
+                     background: var(--card-2); font-size: 12px; color: var(--text); }
+  .attachment-chip img { width: 26px; height: 26px; object-fit: cover; border-radius: 5px; }
+  .attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attachment-remove { border: 0; background: transparent; color: var(--muted);
+                       cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+  .attachment-remove:hover { color: var(--accent); }
+  .msg-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+  .msg-attachments img { max-width: 260px; max-height: 180px; border-radius: 10px;
+                         border: 1px solid var(--line); display: block; }
   #mention-picker, .task-dispatch-picker {
                     position: absolute; z-index: 30; left: 0; bottom: calc(100% + 7px);
                     width: min(360px, 100%); max-height: 240px; overflow-y: auto;
