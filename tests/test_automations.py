@@ -200,6 +200,7 @@ def test_automation_refreshes_custom_board_source_and_board_binds_it(seeded):
         assert saved.status_code == 200, saved.text
         data = client.get("/api/projects/webshop/boards/issues/data").json()
         assert data["source"]["name"] == "GitCode Issues"
+        assert data["source"]["updated_at"] == record.updated_at
         by_title = {c["title"]: [x["title"] for x in c["cards"]]
                     for c in data["columns"]}
         assert by_title["处理中"] == ["登录页崩溃"]

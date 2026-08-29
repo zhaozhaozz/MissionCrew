@@ -296,8 +296,10 @@ async function renderTaskboardBoard(board) {
   if (token !== taskboardRenderToken) return;
   taskboardLastData = data;
   const desc = document.getElementById("custom-board-desc");
+  const sourceUpdated = data.source.updated_at
+    ? ` · 最后更新 ${new Date(data.source.updated_at * 1000).toLocaleString()}` : "";
   if (desc) desc.textContent =
-    `数据源:${data.source.name} · ${data.columns.length} 列`;
+    `数据源:${data.source.name}${sourceUpdated}`;
   const scrollState = captureKeyedScrollPositions(preview);
   // 轮询重绘会整体替换 DOM:保留筛选输入框的草稿与焦点
   const prevInput = preview.querySelector("#tb-new-filter");

@@ -249,14 +249,18 @@ def resolve_board_data(store, project_id: str, source_id: str,
     """
     if source_id in SOURCES:
         source = SOURCES[source_id]
-        name = source.name
+        source_info = {"id": source_id, "name": source.name}
         columns = [dict(c) for c in source.columns]
         cards = source.fetch(store, project_id)
     else:
         record = get_custom_source(store, project_id, source_id)
         if record is None:
             raise ValueError(f"未知数据源: {source_id}")
-        name = record.name or source_id
+        source_info = {
+            "id": source_id,
+            "name": record.name or source_id,
+            "updated_at": record.updated_at,
+        }
         columns = [dict(c) for c in record.columns]
         cards = [dict(card) for card in record.cards]
 
@@ -282,7 +286,7 @@ def resolve_board_data(store, project_id: str, source_id: str,
     labels = {str(tag) for _, tags in matchable for tag in tags}
     labels.update(str(c.get("title") or "") for c in columns)
     labels.discard("")
-    return {"source": {"id": source_id, "name": name},
+    return {"source": source_info,
             "columns": out_columns,
             "labels": sorted(labels),
             "filters": column_filters if filters else []}
