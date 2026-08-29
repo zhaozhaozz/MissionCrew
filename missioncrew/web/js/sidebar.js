@@ -3,7 +3,21 @@ function quickCreateChannel() {
   openChannelDialog();
 }
 
-function editPanelFromSidebar(id) {   // 面板列表右侧 ✎:进入该面板的编辑模式
+function closePanelActions() {
+  document.querySelectorAll(".channel-actions-menu").forEach(item => { item.hidden = true; });
+}
+
+function togglePanelActions(event, button) {
+  event.stopPropagation();
+  const menu = button.nextElementSibling;
+  const opening = menu.hidden;
+  closePanelActions();
+  document.getElementById("channel-filter-menu").hidden = true;
+  menu.hidden = !opening;
+}
+
+function editPanelFromSidebar(id) {
+  closePanelActions();
   const board = projBoards().find(item => item.id === id);
   if (!board) return;
   if (board.kind === "taskboard") { openTaskboardDialog(board.id); return; }
@@ -16,6 +30,11 @@ function editPanelFromSidebar(id) {   // 面板列表右侧 ✎:进入该面板�
     renderSidebar();
     syncUrl();
   } else switchTab("custom");
+}
+
+function deletePanelFromSidebar(id) {
+  closePanelActions();
+  deleteCustomBoard(id);
 }
 
 function quickNewDocument() {

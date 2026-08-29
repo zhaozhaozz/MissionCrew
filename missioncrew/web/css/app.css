@@ -154,9 +154,10 @@
                text-overflow: ellipsis; white-space: nowrap; transition: all .15s; }
   .side-item:hover { background: var(--card-2); color: var(--text); }
   .side-item.selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
-  .channel-item { position: relative; display: flex; align-items: center; overflow: visible; gap: 5px; }
+  .channel-item, .panel-item { position: relative; display: flex; align-items: center;
+                               overflow: visible; gap: 5px; }
   .channel-item.archived { opacity: .72; }
-  .channel-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .channel-name, .panel-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .channel-state { flex: none; padding: 0 5px; border: 1px solid var(--line);
                    border-radius: 999px; color: var(--muted); font-size: 9.5px; font-weight: 500; }
   /* 有 Agent 在跑的频道亮一个呼吸圆点；用 --ok 与选中态的 accent 区分开 */
@@ -170,7 +171,7 @@
   .channel-more:hover { color: var(--accent); background: var(--accent-soft); }
   .channel-actions-menu { top: calc(100% + 3px); right: 0; width: 112px; }
   .channel-actions-menu .danger-text { color: var(--bad); }
-  .panel-item .builtin-badge { float: right; margin-top: 1px; padding: 0 6px;
+  .panel-item .builtin-badge { flex: none; margin-left: auto; padding: 0 6px;
                                border: 1px solid var(--line); border-radius: 999px;
                                color: var(--muted); font-size: 10px; font-weight: 500; }
   .panel-item.selected .builtin-badge { border-color: var(--accent); color: var(--accent); }

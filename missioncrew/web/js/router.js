@@ -329,13 +329,21 @@ function renderSidebar() {
       ? `<div class="side-item panel-item ${currentTab === "board" ? "selected" : ""}"
               data-kind="tasks" data-id="${esc(panel.id)}"
               onclick="openPanelFromSidebar(this.dataset.kind,this.dataset.id)"
-              title="${esc(panel.description)}">▦ ${esc(panel.name)}<span class="builtin-badge">内置</span></div>`
+              title="${esc(panel.description)}"><span class="panel-name">▦ ${esc(panel.name)}</span><span class="builtin-badge">内置</span></div>`
       : `<div class="side-item panel-item ${panel.id === currentCustomBoard && currentTab === "custom" ? "selected" : ""}"
               data-kind="custom" data-id="${esc(panel.id)}"
               onclick="openPanelFromSidebar(this.dataset.kind,this.dataset.id)"
-              title="${esc(panel.description || "")}">${panel.kind === "taskboard" ? "▤" : "▦"} ${esc(panel.name || panel.id)}
-          <button class="icon-btn side-item-edit" title="编辑面板" data-id="${esc(panel.id)}"
-            onclick="event.stopPropagation();editPanelFromSidebar(this.dataset.id)">✎</button></div>`
+              title="${esc(panel.description || "")}"><span class="panel-name">${panel.kind === "taskboard" ? "▤" : "▦"} ${esc(panel.name || panel.id)}</span>
+          <span class="channel-item-actions">
+            <button class="channel-more" type="button" aria-label="面板操作" title="面板操作"
+              onclick="togglePanelActions(event,this)">•••</button>
+            <span class="channel-actions-menu" hidden onclick="event.stopPropagation()">
+              <button type="button" data-id="${esc(panel.id)}"
+                onclick="editPanelFromSidebar(this.dataset.id)">编辑面板</button>
+              <button class="danger-text" type="button" data-id="${esc(panel.id)}"
+                onclick="deletePanelFromSidebar(this.dataset.id)">删除面板</button>
+            </span>
+          </span></div>`
     ).join("");
     const emptyAction = !currentProject
       ? `<div class="empty" style="padding-left:20px">暂无面板</div>`
