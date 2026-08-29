@@ -386,7 +386,12 @@
   .attachment-remove:hover { color: var(--accent); }
   .msg-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
   .msg-attachments img { max-width: 260px; max-height: 180px; border-radius: 10px;
-                         border: 1px solid var(--line); display: block; }
+                         border: 1px solid var(--line); display: block; cursor: zoom-in; }
+  #idlg { padding: 0; border: 0; background: transparent; width: auto;
+          max-width: 94vw; max-height: 94vh; cursor: zoom-out; }
+  #idlg::backdrop { background: rgba(8, 11, 18, .78); backdrop-filter: blur(3px); }
+  #idlg img { display: block; max-width: 94vw; max-height: 94vh; object-fit: contain;
+              border-radius: 10px; }
   #mention-picker, .task-dispatch-picker {
                     position: absolute; z-index: 30; left: 0; bottom: calc(100% + 7px);
                     width: min(360px, 100%); max-height: 240px; overflow-y: auto;

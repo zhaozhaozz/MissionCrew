@@ -538,7 +538,8 @@ function appendMessagesToSurface(list, surface) {
           ${isAgent ? `<span class="via">${esc(agentExecutionLabel(m))}</span>` : ""}<span class="time">${time}</span></div>
         <div class="body${renderMarkdown ? " markdown-body" : ""}${longReply ? " folded" : ""}">${fmtBody(m.content, renderMarkdown, m.mention_spans)}</div>
         ${images.length ? `<div class="msg-attachments">${images.map(a =>
-          `<a href="${esc(a.url)}" target="_blank" rel="noopener"><img src="${esc(a.url)}" alt="${esc(uploadDisplayName(a.name))}" loading="lazy"></a>`).join("")}</div>` : ""}
+          `<img src="${esc(a.url)}" alt="${esc(uploadDisplayName(a.name))}" loading="lazy"
+            title="点击预览" onclick="openImagePreview(this.src, this.alt)">`).join("")}</div>` : ""}
         ${longReply ? `<button type="button" class="message-fold-toggle" data-size="${m.content.length}"
           aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;
@@ -1066,6 +1067,13 @@ function renderPendingUploads() {
 function attachmentBlock(attachments) {
   const lines = attachments.map(a => `- ${a.is_image ? "图片" : "文件"}: ${a.path}`);
   return "[附件] 用户上传了以下本地文件，需要时直接按路径读取：\n" + lines.join("\n");
+}
+
+function openImagePreview(url, name = "") {
+  const img = document.getElementById("idlg-img");
+  img.src = url;
+  img.alt = name;
+  document.getElementById("idlg").showModal();
 }
 
 async function send() {
