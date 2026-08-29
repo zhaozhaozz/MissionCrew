@@ -542,6 +542,9 @@ def test_channel_sidebar_exposes_filter_archive_restore_and_delete(client):
     assert 'id="channel-filter-btn"' in html and 'id="channel-filter-menu"' in html
     assert all(label in html for label in ("全部", "活跃", "已归档"))
     assert 'id="channel-archive-banner"' in html
+    assert 'id="channel-head"' in html and 'class="role-help"' in html
+    assert 'id="sec-proj-chans"' not in html and 'id="chan-table"' not in html
+    assert "输入 @ 后从列表选择角色；单个角色直接执行，多个角色交给主控协调" in html
     assert "CHANNEL_FILTERS" in ui and "channelIsGeneral" in ui
     assert "channelActivity" in ui and "visibleProjChannels" in ui
     assert "visibleProjChannels()" in router and "channelSidebarItem" in router
@@ -550,6 +553,7 @@ def test_channel_sidebar_exposes_filter_archive_restore_and_delete(client):
         assert f"function {function}" in channels
     assert "const managed = general;" in channels
     assert "永久清空对话" in channels and "内容专属频道" in channels
+    assert all(label in channels for label in ("用途", "工作目录", "创建者"))
     assert ".channel-filter-menu" in css and ".channel-actions-menu" in css
     assert client.get("/api/nonexistent").status_code == 404
 

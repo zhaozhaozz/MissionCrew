@@ -12,7 +12,6 @@
     title="显示/隐藏侧栏" aria-label="显示/隐藏侧栏" aria-expanded="false">☰</button>
   <div class="logo">M</div>
   <h1>MissionCrew</h1>
-  <span class="hint">输入 @ 后从列表选择角色；单个角色直接执行，多个角色交给主控协调</span>
   <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="切换明暗主题">🌙</button>
 </header>
 
@@ -46,7 +45,6 @@
           <span class="count" id="cnt-channels"></span>
           <span class="sec-act">
             <button class="icon-btn" title="新建频道" onclick="event.stopPropagation();quickCreateChannel()">＋</button>
-            <button class="icon-btn" title="管理频道" onclick="event.stopPropagation();gotoProjSection('chan-table')">⚙</button>
           </span></h2>
         <div id="chan-list"></div>
       </div>
@@ -118,6 +116,7 @@
 
   <div id="views">
     <div id="chat-view">
+      <div id="channel-head" class="channel-head" hidden></div>
       <div id="channel-archive-banner" hidden>
         <span>此频道已归档，只能查看历史消息。</span>
         <span class="channel-banner-actions">
@@ -128,7 +127,12 @@
       <div id="msgs"><div class="chat-empty empty">还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。</div></div>
       <div id="composer">
         <div id="chat-composer-head">
-          <div id="role-bar"></div>
+          <div class="role-selector">
+            <span class="role-help" tabindex="0" aria-label="角色选择说明">i
+              <span class="role-help-tip" role="tooltip">输入 @ 后从列表选择角色；单个角色直接执行，多个角色交给主控协调</span>
+            </span>
+            <div id="role-bar"></div>
+          </div>
           <div class="chat-composer-actions">
             <button class="danger compact" id="stop-chat-btn" type="button" hidden
               onclick="stopChannelAgents()">停止全部</button>
@@ -190,7 +194,6 @@
         <a onclick="scrollToSec('sec-proj-info')">项目信息</a>
         <a onclick="scrollToSec('sec-proj-res')">本地代码仓</a>
         <a onclick="scrollToSec('sec-proj-roles')">角色</a>
-        <a onclick="scrollToSec('sec-proj-chans')">频道</a>
         <a onclick="scrollToSec('sec-proj-automations')">自动化脚本</a>
         <a onclick="switchTab('guidelines')">准则文档 ↗</a>
         <a onclick="switchTab('skills')">Skills ↗</a>
@@ -214,11 +217,6 @@
           <button class="ghost" onclick="openRoleExportDialog('project')">导出</button></h2>
         <p class="muted">新增角色时可从全局角色模板导入后再调整；角色定位(人格)是"选人"的专长画像,供人类或主控调度时挑人,不是任务描述。启停开关只控制新任务，不中断当前运行，也不删除角色配置和历史；项目主控需先切换后才能停用。</p>
         <table class="mgr" id="role-table"></table>
-      </div>
-      <div class="section" id="sec-proj-chans">
-        <h2>频道 <span class="muted" id="chan-proj-label"></span>
-          <button class="ghost" style="margin-left:8px" onclick="openChannelDialog()">+ 新建频道</button></h2>
-        <table class="mgr" id="chan-table"></table>
       </div>
       <div class="section" id="sec-proj-automations">
         <h2>自动化脚本 <span class="muted" id="automation-proj-label"></span>

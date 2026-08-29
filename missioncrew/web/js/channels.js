@@ -97,6 +97,23 @@ function toggleChannelActions(event, button) {
 function renderChannelState() {
   const channel = projChannels().find(item => item.id === currentChan);
   const archived = Boolean(channel?.archived);
+  const head = document.getElementById("channel-head");
+  head.hidden = !channel;
+  if (channel) {
+    const displayName = channel.name || channel.id;
+    head.innerHTML = `
+      <div class="channel-title-row">
+        <h2># ${esc(displayName)}</h2>
+        ${channelIsGeneral(channel) ? `<span class="badge">默认频道</span>` : ""}
+        ${channelIsContent(channel) ? `<span class="badge">内容专属频道</span>` : ""}
+        <span class="badge">${archived ? "已归档" : "活跃"}</span>
+      </div>
+      <div class="channel-meta">
+        <span><b>用途</b>${esc(channel.purpose || "未说明")}</span>
+        <span><b>工作目录</b><code>${esc(channel.workdir || "平台内置工作区")}</code></span>
+        <span><b>创建者</b>${esc(channel.created_by_role_id ? "@" + channel.created_by_role_id : "human/platform")}</span>
+      </div>`;
+  }
   const banner = document.getElementById("channel-archive-banner");
   banner.hidden = !archived;
   document.getElementById("composer").classList.toggle("channel-archived", archived);
@@ -107,24 +124,6 @@ function renderChannelState() {
   document.getElementById("clear-context-btn").disabled = archived;
   document.getElementById("stop-chat-btn").disabled = archived;
   document.querySelectorAll("#role-bar button").forEach(button => { button.disabled = archived; });
-}
-
-function renderChanTable() {
-  const rows = projChannels().map(c => `<tr>
-    <td><b># ${esc(c.name || c.id)}</b> <span class="muted">${esc(c.id)}</span></td>
-    <td>${esc(c.purpose || "(未说明)")}</td>
-    <td class="muted">${esc(c.workdir || "(平台内置工作区)")}</td>
-    <td class="muted">${esc(c.created_by_role_id ? "@" + c.created_by_role_id : "human/platform")}</td>
-    <td>${c.archived ? `<span class="badge">已归档</span>` : `<span class="badge">活跃</span>`}</td>
-    <td>${channelIsGeneral(c) ? `<span class="muted">默认频道</span>` : `
-      ${channelIsContent(c) ? `<span class="muted">内容专属频道</span>` : ""}
-      ${c.archived
-        ? `<button class="ghost" data-channel-id="${esc(c.id)}" onclick="restoreChannel(this.dataset.channelId)">恢复</button>`
-        : `<button class="ghost" data-channel-id="${esc(c.id)}" onclick="archiveChannel(this.dataset.channelId)">归档</button>`}
-      <button class="danger" data-channel-id="${esc(c.id)}" onclick="deleteChannel(this.dataset.channelId)">删除</button>`}</td>
-  </tr>`).join("");
-  document.getElementById("chan-table").innerHTML =
-    `<tr><th>频道</th><th>用途</th><th>工作目录</th><th>创建者</th><th>状态</th><th></th></tr>` + rows;
 }
 
 function openChannelDialog() {
@@ -155,7 +154,7 @@ async function createChannel() {
     workdir: document.getElementById("nc-workdir").value.trim() || null,
   });
   fdlg.close();
-  await loadOverview(); renderChanTable(); renderSidebar();
+  await loadOverview(); renderSidebar();
   toast("频道已创建", "success");
 }
 
@@ -169,7 +168,7 @@ async function deleteChannel(id) {
   await api("DELETE", `/api/chat/channels/${id}`);
   if (currentChan === id) currentChan = null;
   if (content) resetConfigChatChannel(id);
-  await loadOverview(); renderChanTable(); renderSidebar();
+  await loadOverview(); renderSidebar();
   toast(content ? "内容页对话已永久清空" : "频道已移入回收站", "success");
 }
 
@@ -182,7 +181,7 @@ async function archiveChannel(id) {
     const next = visibleProjChannels()[0];
     if (next) selectChannel(next.id, false);
   }
-  renderChanTable(); renderSidebar();
+  renderSidebar();
   toast(`频道已归档${result.stopped_runtimes ? `，已停止 ${result.stopped_runtimes} 个持久实例` : ""}`, "success");
 }
 
@@ -194,7 +193,7 @@ async function restoreChannel(id) {
     channelFilter = "active";
     localStorage.setItem("mc.channelFilter", channelFilter);
   }
-  await loadOverview(); renderChanTable(); renderSidebar();
+  await loadOverview(); renderSidebar();
   toast("频道已恢复", "success");
 }
 

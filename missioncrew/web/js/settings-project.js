@@ -24,7 +24,6 @@ async function renderProjSettings() {
   const label = `— 项目「${esc(currentProject || "无")}」`;
   document.getElementById("proj-label").textContent = label;
   document.getElementById("role-proj-label").textContent = label;
-  document.getElementById("chan-proj-label").textContent = label;
   document.getElementById("res-proj-label").textContent = label;
   document.getElementById("automation-proj-label").textContent = label;
   const project = projObj();
@@ -53,7 +52,6 @@ async function renderProjSettings() {
       <button class="danger" onclick="deleteProject('${esc(project.id)}')">删除项目</button>
     </div>`;
   renderRoleTable();
-  renderChanTable();
   renderResourceTable();
   renderAutomationTable();
   loadDocFiles();

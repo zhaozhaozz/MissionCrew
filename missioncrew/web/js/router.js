@@ -394,7 +394,7 @@ function renderSidebar() {
     }).join("");
   document.getElementById("role-bar").innerHTML = activeProjRoles().map(r =>
     `<button data-role-id="${esc(r.id)}" onclick="insertMention(this.dataset.roleId)"
-       title="选择后会创建可信提及；单选直接执行，多选交给主控协调。${esc(r.description || "")}">
+       title="${esc(r.description || `选择 @${r.id}`)}">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}
        <span class="role-running-marker" data-runtime-project="${esc(currentProject || "")}"
          data-runtime-role="${esc(r.id)}" hidden><i></i>运行中</span></button>`).join("");
