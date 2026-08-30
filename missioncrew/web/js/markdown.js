@@ -128,7 +128,36 @@ function markdownInlineWithTokens(source, tokens) {
 
 function markdownTableCells(line) {
   const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return trimmed.split(/(?<!\\)\|/).map(cell => cell.trim().replace(/\\\|/g, "|"));
+  const cells = [];
+  let cell = "";
+  for (let index = 0; index < trimmed.length;) {
+    if (trimmed[index] === "`") {
+      const opening = trimmed.slice(index).match(/^`+/)[0];
+      let closing = index + opening.length;
+      while (closing < trimmed.length) {
+        closing = trimmed.indexOf("`", closing);
+        if (closing < 0) break;
+        const candidate = trimmed.slice(closing).match(/^`+/)[0];
+        if (candidate.length === opening.length) break;
+        closing += candidate.length;
+      }
+      if (closing >= 0 && closing < trimmed.length) {
+        const end = closing + opening.length;
+        cell += trimmed.slice(index, end);
+        index = end;
+        continue;
+      }
+    }
+    if (trimmed[index] === "|" && trimmed[index - 1] !== "\\") {
+      cells.push(cell.trim().replace(/\\\|/g, "|"));
+      cell = "";
+    } else {
+      cell += trimmed[index];
+    }
+    index += 1;
+  }
+  cells.push(cell.trim().replace(/\\\|/g, "|"));
+  return cells;
 }
 
 function markdownBlockStart(lines, index) {

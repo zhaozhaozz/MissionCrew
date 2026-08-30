@@ -51,6 +51,23 @@ def test_relative_link_preserves_code_formatted_label():
     assert ">undefined</a>" not in html
 
 
+def test_table_pipe_inside_inline_code_does_not_split_cell():
+    html = render_markdown(
+        "| 对象 kind | 内容 | 类比 | 现状 |\n"
+        "|---|---|---|---|\n"
+        "| `tree` | 有序条目 `[{name, kind: blob|tree, hash, size, mode?}]`，表示目录 "
+        "| git tree / Bazel `Directory` | 无 |\n",
+    )
+
+    assert html.count("<th>") == 4
+    assert html.count("<td>") == 4
+    assert (
+        "<td>有序条目 <code>[{name, kind: blob|tree, hash, size, mode?}]</code>，表示目录</td>"
+        in html
+    )
+    assert "<td>git tree / Bazel <code>Directory</code></td>" in html
+
+
 def test_nested_list_does_not_restart_ordered_numbering():
     html = render_markdown(
         "1. 第一步\n"
