@@ -68,6 +68,8 @@ function automationRunRows(automation, runs) {
 function automationDetailHtml(automation, runs) {
   const status = automation.running ? "running" : automation.last_status;
   const schedule = automation.cron ? `<code>${esc(automation.cron)}</code>` : "仅手动触发";
+  const triggerMode = automation.cron
+    ? (automation.enabled ? "定时与手动" : "仅手动（定时已停用）") : "仅手动";
   const creator = automation.created_by_role_id ? `@${automation.created_by_role_id}` : "human/platform";
   return `<div class="automation-page-head">
       <div><h2>${esc(automation.name || automationShortId(automation))}</h2>
@@ -85,7 +87,6 @@ function automationDetailHtml(automation, runs) {
     <section class="automation-overview">
       <div class="automation-description"><h3>描述</h3><p>${esc(automation.description || "未填写描述")}</p></div>
       <dl class="automation-facts">
-        <div><dt>定时</dt><dd>${schedule}${automation.cron && !automation.enabled ? ' <span class="badge">已停用</span>' : ""}</dd></div>
         <div><dt>下次运行</dt><dd>${esc(fmtTs(automation.next_run_at))}</dd></div>
         <div><dt>最近运行</dt><dd>${status ? `<span class="pill automation-st-${esc(status)}">${esc(AUTOMATION_STATUS[status] || status)}</span>` : "未运行"} · ${esc(fmtTs(automation.last_run_at))}</dd></div>
         <div><dt>创建者</dt><dd>${esc(creator)}</dd></div>
@@ -94,7 +95,8 @@ function automationDetailHtml(automation, runs) {
     <section class="automation-detail-section">
       <h3>配置</h3>
       <dl class="automation-config">
-        <div><dt>触发方式</dt><dd>${automation.cron ? (automation.enabled ? "定时与手动" : "仅手动（定时已停用）") : "仅手动"}</dd></div>
+        <div><dt>触发方式</dt><dd class="automation-trigger-summary">
+          <span>${triggerMode}</span><span>${schedule}</span></dd></div>
         <div><dt>超时</dt><dd>${esc(automation.timeout_seconds)} 秒</dd></div>
         <div class="automation-actions-row"><dt>允许的平台动作</dt><dd>${(automation.actions || []).map(action => `<code>${esc(action)}</code>`).join("") || "无"}</dd></div>
       </dl>
@@ -156,9 +158,6 @@ function automationEditorHtml(automation, runsSection = "") {
         <textarea id="af-desc" class="automation-description-input" rows="3"
           aria-label="用途说明" placeholder="用途说明">${esc(automation?.description || "")}</textarea></div>
       <dl class="automation-facts">
-        <div><dt><span class="automation-cron-label">crontab(五段;留空 = 仅手动触发) ${automationCronHelpHtml()}</span></dt>
-          <dd><input type="text" id="af-cron" aria-label="crontab" placeholder="留空则仅手动触发，例如 0 9 * * 1-5"
-            value="${esc(automation?.cron || "")}"></dd></div>
         <div><dt>下次运行</dt><dd>${esc(fmtTs(automation?.next_run_at))}</dd></div>
         <div><dt>最近运行</dt><dd>${status
           ? `<span class="pill automation-st-${esc(status)}">${esc(AUTOMATION_STATUS[status] || status)}</span> · ${esc(fmtTs(automation.last_run_at))}`
@@ -169,8 +168,15 @@ function automationEditorHtml(automation, runsSection = "") {
     <section class="automation-detail-section form">
       <h3>配置</h3>
       <dl class="automation-config automation-edit-config">
-        <div><dt>触发方式</dt><dd><label class="automation-toggle"><input type="checkbox" id="af-enabled"
-          ${automation ? (automation.enabled ? "checked" : "") : "checked"}> 启用定时触发</label></dd></div>
+        <div><dt>触发方式</dt><dd class="automation-trigger-editor">
+          <label class="automation-toggle"><input type="checkbox" id="af-enabled"
+            ${automation ? (automation.enabled ? "checked" : "") : "checked"}> 启用定时触发</label>
+          <label class="automation-cron-field">
+            <span class="automation-cron-label">crontab(五段;留空 = 仅手动触发) ${automationCronHelpHtml()}</span>
+            <input type="text" id="af-cron" aria-label="crontab"
+              placeholder="例如 0 9 * * 1-5" value="${esc(automation?.cron || "")}">
+          </label>
+        </dd></div>
         <div><dt>超时</dt><dd><input type="number" id="af-timeout" min="1" aria-label="超时秒数"
           value="${esc(automation?.timeout_seconds ?? 600)}"><span class="muted"> 秒</span></dd></div>
         <div class="automation-actions-row"><dt>允许的平台动作</dt>

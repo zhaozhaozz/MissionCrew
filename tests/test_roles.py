@@ -579,6 +579,8 @@ def test_automation_ui_uses_sidebar_and_full_detail_view(client):
     assert 'openFormDialog(automation ? `编辑脚本' not in automations
     assert '<textarea id="af-desc" class="automation-description-input"' in automations
     assert "crontab(五段;留空 = 仅手动触发)" in automations
+    assert 'class="automation-trigger-editor"' in automations
+    assert automations.index('class="automation-trigger-editor"') > automations.index("<h3>配置</h3>")
     assert all(label in automations for label in
                ("描述", "定时", "配置", "脚本预览", "运行记录"))
     assert 'class="automation-cron-help"' in automations
