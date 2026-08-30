@@ -153,8 +153,8 @@ function automationEditorHtml(automation, runsSection = "") {
     </div>
     <section class="automation-overview automation-edit-overview form">
       <div class="automation-description"><h3>描述</h3>
-        <input type="text" id="af-desc" aria-label="用途说明"
-          value="${esc(automation?.description || "")}" placeholder="用途说明"></div>
+        <textarea id="af-desc" class="automation-description-input" rows="3"
+          aria-label="用途说明" placeholder="用途说明">${esc(automation?.description || "")}</textarea></div>
       <dl class="automation-facts">
         <div><dt><span class="automation-cron-label">crontab(五段;留空 = 仅手动触发) ${automationCronHelpHtml()}</span></dt>
           <dd><input type="text" id="af-cron" aria-label="crontab" placeholder="留空则仅手动触发，例如 0 9 * * 1-5"

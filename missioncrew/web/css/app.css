@@ -1286,6 +1286,8 @@
   gap: 32px; padding: 20px 0; border-bottom: 1px solid var(--line); }
 .automation-overview h3, .automation-detail-section h3 { margin: 0 0 10px; font-size: 13px; }
 .automation-description p { margin: 0; color: var(--text-2); line-height: 1.65; white-space: pre-wrap; }
+.automation-description-input { min-height: 84px; resize: vertical; white-space: pre-wrap;
+  overflow-wrap: anywhere; line-height: 1.6; }
 .automation-facts, .automation-config { display: grid; gap: 8px; margin: 0; }
 .automation-facts > div, .automation-config > div { display: grid;
   grid-template-columns: 110px minmax(0, 1fr); gap: 12px; align-items: baseline; }
