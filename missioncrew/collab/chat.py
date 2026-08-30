@@ -19,6 +19,7 @@ import hashlib
 import json
 import re
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -471,6 +472,18 @@ class ChatEngine:
             for f in pending:
                 f.result()
 
+    def shutdown(self, wait: bool = True) -> None:
+        """关闭执行池;wait=True 时先等已派发的运行(含级联)全部结束。
+
+        服务停机与测试里 TestClient 退出都必须经这里收尾,否则工作线程会跑到
+        宿主生命周期之外,继续按当时的环境变量定位并改写频道历史。
+        """
+        try:
+            if wait:
+                self.wait_idle()
+        finally:
+            self._pool.shutdown(wait=wait)
+
     def clear_context(self, channel_id: str) -> dict:
         """结束频道的持久会话，并以可见分隔消息建立新的上下文边界。"""
         channel = self.store.get_channel(channel_id)
@@ -780,8 +793,12 @@ class ChatEngine:
                                    f"不再触发 @{role_id}。", [], msg_id, root_id, depth)
             self._write_channel_history(channel)
             return
-        future = self._pool.submit(self._execute, run_id, channel, role_id,
-                                   msg_id, root_id, depth)
+        try:
+            future = self._pool.submit(self._execute, run_id, channel, role_id,
+                                       msg_id, root_id, depth)
+        except RuntimeError as e:   # 执行池已关闭:运行不能停留在 queued
+            self.store.update_chat_run(run_id, "failed", error=f"聊天引擎已关闭: {e}")
+            return
         with self._futures_lock:
             self._futures.append(future)
 
@@ -1504,13 +1521,22 @@ class ChatEngine:
 
     @staticmethod
     def _atomic_write_json(path: Path, payload: dict) -> None:
+        # 临时文件名必须唯一:多个写者(例如不同 ChatEngine 实例)同时更新
+        # 同一文件时,固定名字会让一方的 replace 抢走另一方刚写好的临时文件。
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = path.with_name(f".{path.name}.tmp")
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-        temporary.replace(path)
+        content = json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+        temporary: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                    mode="w", encoding="utf-8", dir=path.parent,
+                    prefix=f".{path.name}.", suffix=".tmp",
+                    delete=False) as handle:
+                handle.write(content)
+                temporary = Path(handle.name)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _write_channel_history(self, channel: Channel,
                                role: Optional[Role] = None, project=None) -> Path:

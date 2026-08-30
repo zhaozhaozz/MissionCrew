@@ -34,6 +34,9 @@ def create_app() -> FastAPI:
             runtime_manager.set_usage_refresh_handler(None)
             ctx.automation_scheduler.stop()
             ctx.role_usage_linkage.stop()
+            # 先等聊天执行池收尾再关 runtime:工作线程可能仍在驱动 Agent,
+            # 且它按调用时的环境变量写频道历史,不能活过应用生命周期
+            ctx.chat.shutdown()
             runtime_manager.shutdown()
 
     app = FastAPI(title="MissionCrew", version=__version__, lifespan=lifespan)

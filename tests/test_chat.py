@@ -1,6 +1,7 @@
 """聊天协作:@ 触发、级联、防环、失败可见性。"""
 import json
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -1375,3 +1376,63 @@ def test_runtime_wake_respects_direct_human_dispatch(chat, seeded):
     assert not any(m["author"] == "lead" and m["author_type"] == "agent"
                    for m in msgs)
     assert [r["role_id"] for r in seeded.chat_runs_for_channel("general")] == ["dev"]
+
+
+def test_atomic_write_json_survives_concurrent_writers(tmp_path):
+    """多个写者同时更新同一历史文件:临时文件名唯一,replace 不会互相抢走。"""
+    path = tmp_path / "channel-history.json"
+    errors: list[Exception] = []
+
+    def writer(tag: int) -> None:
+        try:
+            for i in range(200):
+                ChatEngine._atomic_write_json(path, {"writer": tag, "i": i})
+        except Exception as e:  # noqa: BLE001 - 断言用
+            errors.append(e)
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert json.loads(path.read_text(encoding="utf-8"))["i"] == 199
+    assert not list(tmp_path.glob(".*.tmp"))   # 不留临时文件
+
+
+def test_engine_shutdown_waits_for_runs_and_rejects_new_ones(seeded, monkeypatch):
+    """shutdown() 先等已派发运行结束;关闭后再派发不能停留在 queued。"""
+    def _slow_start(config):
+        time.sleep(0.2)
+        return RunResult(True, "ok", output="分析完毕")
+
+    monkeypatch.setattr(runtime_manager, "start", _slow_start)
+    chat = ChatEngine(seeded, max_workers=2)
+    chat.post("general", "human", "@[dev] 看一下购物车。")
+    assert seeded.active_chat_runs("general")
+
+    chat.shutdown()
+    assert seeded.active_chat_runs("general") == []
+
+    chat.post("general", "human", "@[dev] 再看一下。")
+    runs = seeded._query("SELECT status, error FROM chat_runs ORDER BY id")
+    assert [run["status"] for run in runs] == ["done", "failed"]
+    assert "聊天引擎已关闭" in runs[-1]["error"]
+
+
+def test_app_shutdown_waits_for_dispatched_runs(seeded, monkeypatch):
+    """TestClient/服务退出时必须等聊天线程池收尾,运行不能活过应用生命周期。"""
+    def _slow_start(config):
+        time.sleep(0.3)
+        return RunResult(True, "ok", output="检查完毕")
+
+    monkeypatch.setattr(runtime_manager, "start", _slow_start)
+    with TestClient(create_app()) as client:
+        response = client.post("/api/chat/general/messages", json={
+            "author": "human", "content": "@dev 检查",
+            "mentions": [{"role_id": "dev", "start": 0, "end": 4}],
+        })
+        assert response.status_code == 200, response.text
+        assert seeded.active_chat_runs("general")
+    assert seeded.active_chat_runs("general") == []
