@@ -115,6 +115,11 @@ async function applyRoute() {
       && selectedGuidelineName !== undefined && r.guideline !== selectedGuidelineName;
     if (!cancelled && guidelineChanged && !await guidelineViewer.confirmDiscard())
       cancelled = true;
+    const routeAutomation = r.tab === "automations" ? projAutomations().find(item =>
+      item.id === r.automation || item.id === `${r.project}:${r.automation}`) : null;
+    const automationChanged = r.tab === "automations" && automationEditingId !== undefined
+      && (routeAutomation?.id ?? null) !== automationEditingId;
+    if (!cancelled && automationChanged && !await confirmAutomationDiscard()) cancelled = true;
     if (!cancelled) {
     if (r.tab === "docs") {
       docSelected = r.doc;
@@ -143,9 +148,8 @@ async function applyRoute() {
       skillOpenFile = selectedSkillId ? r.skillFile : null;
     }
     if (r.tab === "automations") {
-      const automation = projAutomations().find(item =>
-        item.id === r.automation || item.id === `${r.project}:${r.automation}`);
-      selectedAutomationId = automation?.id;
+      if (automationChanged) clearAutomationEditState();
+      selectedAutomationId = routeAutomation?.id;
     }
 
     if (r.tab !== "board" || !r.task) closeTaskDialog(false);
@@ -205,6 +209,8 @@ async function setProject(id, updateRoute = true) {
   guidelineViewer.reset();
   selectedSkillId = undefined;
   selectedAutomationId = undefined;
+  automationEditingId = undefined;
+  automationInitialFormSnapshot = "";
   resetSkillHistoryState();
   skillMarkdownMode = "preview";
   skillOpenFile = null;

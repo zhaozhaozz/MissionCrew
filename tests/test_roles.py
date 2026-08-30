@@ -572,6 +572,12 @@ def test_automation_ui_uses_sidebar_and_full_detail_view(client):
     assert '"automations"' in markdown and 'tab === "automations"' in router
     assert "function selectAutomation" in automations
     assert "function renderAutomationPage" in automations
+    assert "function automationEditorHtml" in automations
+    assert "function cancelAutomationEdit" in automations
+    assert "function confirmAutomationDiscard" in automations
+    assert "registerViewerDirtyChecker(automationFormDirty)" in automations
+    assert 'openFormDialog(automation ? `编辑脚本' not in automations
+    assert "crontab(五段;留空 = 仅手动触发)" in automations
     assert all(label in automations for label in
                ("描述", "定时", "配置", "脚本预览", "运行记录"))
     assert 'class="automation-cron-help"' in automations

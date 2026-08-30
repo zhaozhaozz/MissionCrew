@@ -8,6 +8,9 @@ const projAutomations = () =>
   (overview.automations || []).filter(item => item.project_id === currentProject);
 let selectedAutomationId;
 let automationPageRequest = 0;
+// undefined = view mode, null = new automation, string = editing automation id
+let automationEditingId;
+let automationInitialFormSnapshot = "";
 
 function automationShortId(automation) {
   return automation.id.replace(`${automation.project_id}:`, "");
@@ -15,6 +18,15 @@ function automationShortId(automation) {
 
 function fmtTs(ts) {
   return ts ? new Date(ts * 1000).toLocaleString() : "—";
+}
+
+async function confirmAutomationDiscard(message = "当前脚本尚未保存，继续后将丢失修改。是否继续？") {
+  return !automationFormDirty() || uiConfirm(message, "未保存的修改");
+}
+
+function clearAutomationEditState() {
+  automationEditingId = undefined;
+  automationInitialFormSnapshot = "";
 }
 
 function automationSidebarItem(automation) {
@@ -29,7 +41,11 @@ function automationSidebarItem(automation) {
   </div>`;
 }
 
-function selectAutomation(id) {
+async function selectAutomation(id) {
+  if (automationEditingId !== undefined && automationEditingId !== id) {
+    if (!await confirmAutomationDiscard("当前脚本尚未保存，切换后将丢失修改。是否继续？")) return;
+    clearAutomationEditState();
+  }
   selectedAutomationId = id;
   if (currentTab !== "automations") switchTab("automations");
   else { renderAutomationPage(true); renderSidebar(); syncUrl(); }
@@ -96,9 +112,107 @@ function automationDetailHtml(automation, runs) {
     </section>`;
 }
 
+function automationCronHelpHtml() {
+  return `<span class="automation-cron-help" tabindex="0" aria-label="查看 crontab 基础语法"
+      aria-describedby="automation-cron-tip">i
+    <span class="automation-cron-tip" id="automation-cron-tip" role="tooltip">
+      <strong>分 时 日 月 周</strong>
+      <span>分 0–59 · 时 0–23 · 日 1–31 · 月 1–12 · 周 0–7（0/7 为周日）</span>
+      <span><code>*</code> 任意值 · <code>,</code> 多个值 · <code>-</code> 范围 · <code>/</code> 步长</span>
+      <span><code>0 9 * * 1-5</code> 工作日 9:00</span>
+      <span><code>*/15 * * * *</code> 每 15 分钟</span>
+    </span>
+  </span>`;
+}
+
+function automationEditorHtml(automation, runsSection = "") {
+  const actions = automation?.actions || traitMeta.automation_default_actions || [];
+  const actionBoxes = (traitMeta.automation_actions || []).map(name => `
+    <label class="automation-action-option"><input type="checkbox" value="${esc(name)}"
+      ${actions.includes(name) ? "checked" : ""}> ${esc(name)}</label>`).join("");
+  const status = automation?.running ? "running" : automation?.last_status;
+  const creator = automation?.created_by_role_id
+    ? `@${automation.created_by_role_id}` : "human/platform";
+  const existingId = automation ? `'${esc(automation.id)}'` : "null";
+  return `<div class="automation-page-head automation-edit-head">
+      <div class="automation-edit-title">
+        ${automation
+          ? `<input type="text" id="af-name" class="automation-title-input" aria-label="名称"
+              value="${esc(automation.name || "")}">
+            <span class="muted">${esc(automationShortId(automation))}</span>`
+          : `<h2>新建自动化脚本</h2>
+            <div class="automation-new-identity">
+              <input type="text" id="af-id" aria-label="脚本 id" placeholder="脚本 id，例如 daily-report">
+              <input type="text" id="af-name" aria-label="名称" placeholder="名称">
+            </div>`}
+      </div>
+      <div class="content-topbar-actions">
+        <button class="action compact" onclick="saveAutomationForm(${existingId})">${automation ? "保存修改" : "创建脚本"}</button>
+        <button class="ghost compact" onclick="cancelAutomationEdit()">取消</button>
+      </div>
+    </div>
+    <section class="automation-overview automation-edit-overview form">
+      <div class="automation-description"><h3>描述</h3>
+        <input type="text" id="af-desc" aria-label="用途说明"
+          value="${esc(automation?.description || "")}" placeholder="用途说明"></div>
+      <dl class="automation-facts">
+        <div><dt><span class="automation-cron-label">crontab(五段;留空 = 仅手动触发) ${automationCronHelpHtml()}</span></dt>
+          <dd><input type="text" id="af-cron" aria-label="crontab" placeholder="留空则仅手动触发，例如 0 9 * * 1-5"
+            value="${esc(automation?.cron || "")}"></dd></div>
+        <div><dt>下次运行</dt><dd>${esc(fmtTs(automation?.next_run_at))}</dd></div>
+        <div><dt>最近运行</dt><dd>${status
+          ? `<span class="pill automation-st-${esc(status)}">${esc(AUTOMATION_STATUS[status] || status)}</span> · ${esc(fmtTs(automation.last_run_at))}`
+          : "未运行"}</dd></div>
+        <div><dt>创建者</dt><dd>${esc(automation ? creator : "human/platform")}</dd></div>
+      </dl>
+    </section>
+    <section class="automation-detail-section form">
+      <h3>配置</h3>
+      <dl class="automation-config automation-edit-config">
+        <div><dt>触发方式</dt><dd><label class="automation-toggle"><input type="checkbox" id="af-enabled"
+          ${automation ? (automation.enabled ? "checked" : "") : "checked"}> 启用定时触发</label></dd></div>
+        <div><dt>超时</dt><dd><input type="number" id="af-timeout" min="1" aria-label="超时秒数"
+          value="${esc(automation?.timeout_seconds ?? 600)}"><span class="muted"> 秒</span></dd></div>
+        <div class="automation-actions-row"><dt>允许的平台动作</dt>
+          <dd class="automation-actions-grid">${actionBoxes}</dd></div>
+      </dl>
+    </section>
+    <section class="automation-detail-section form">
+      <h3>脚本内容</h3>
+      <p class="muted automation-script-hint">有 shebang 时按可执行文件运行，否则使用 bash；可通过
+        <code>missioncrew-tool</code> 环境变量调用平台动作。</p>
+      <textarea id="af-script" rows="18" class="automation-script" spellcheck="false"
+        placeholder="#!/bin/bash">${esc(automation?.script || "")}</textarea>
+    </section>
+    ${runsSection}`;
+}
+
+function automationFormSnapshot() {
+  const field = id => document.getElementById(id);
+  return JSON.stringify({
+    id: field("af-id")?.value.trim() || "",
+    name: field("af-name")?.value || "",
+    description: field("af-desc")?.value || "",
+    cron: field("af-cron")?.value || "",
+    enabled: Boolean(field("af-enabled")?.checked),
+    timeout: field("af-timeout")?.value || "",
+    actions: [...document.querySelectorAll(".automation-actions-grid input:checked")]
+      .map(input => input.value).sort(),
+    script: field("af-script")?.value || "",
+  });
+}
+
+function automationFormDirty() {
+  return automationEditingId !== undefined
+    && automationInitialFormSnapshot !== automationFormSnapshot();
+}
+
+registerViewerDirtyChecker(automationFormDirty);
+
 async function renderAutomationPage(refresh = false) {
   const detail = document.getElementById("automation-detail");
   if (!detail || currentTab !== "automations") return;
+  if (automationEditingId !== undefined) { renderSidebar(); return; }
   const request = ++automationPageRequest;
   const workspace = detail.closest(".automation-workspace");
   let list = projAutomations();
@@ -148,54 +262,34 @@ async function renderAutomationPage(refresh = false) {
 }
 
 async function openAutomationEditor(id) {
+  const nextEditingId = id || null;
+  if (automationEditingId !== undefined && automationEditingId !== nextEditingId
+  && !await confirmAutomationDiscard()) return;
   await ensureTraits();
   const automation = id
     ? projAutomations().find(item => item.id === id) : null;
   if (id && !automation) { uiAlert("脚本不存在,请刷新后重试"); return; }
-  const actions = automation?.actions
-    || traitMeta.automation_default_actions || [];
-  const allActions = traitMeta.automation_actions || [];
-  const actionBoxes = allActions.map(name => `
-    <label class="automation-action-option"><input type="checkbox" value="${esc(name)}"
-      ${actions.includes(name) ? "checked" : ""}> ${esc(name)}</label>`).join("");
-  openFormDialog(automation ? `编辑脚本 · ${automation.name}` : "新建自动化脚本", `
-    <div class="row">
-      <div><label>脚本 id(创建后不可改)</label>
-        <input type="text" id="af-id" placeholder="例如 daily-report"
-          value="${automation ? esc(automationShortId(automation)) : ""}"
-          ${automation ? "disabled" : ""}></div>
-      <div><label>名称</label><input type="text" id="af-name"
-        value="${esc(automation?.name || "")}"></div>
-    </div>
-    <label>用途说明</label>
-    <input type="text" id="af-desc" value="${esc(automation?.description || "")}">
-    <div class="row">
-      <div><label class="automation-cron-label">crontab(五段;留空 = 仅手动触发)
-        <span class="automation-cron-help" tabindex="0" aria-label="查看 crontab 基础语法"
-          aria-describedby="automation-cron-tip">i
-          <span class="automation-cron-tip" id="automation-cron-tip" role="tooltip">
-            <strong>分 时 日 月 周</strong>
-            <span>分 0–59 · 时 0–23 · 日 1–31 · 月 1–12 · 周 0–7（0/7 为周日）</span>
-            <span><code>*</code> 任意值 · <code>,</code> 多个值 · <code>-</code> 范围 · <code>/</code> 步长</span>
-            <span><code>0 9 * * 1-5</code> 工作日 9:00</span>
-            <span><code>*/15 * * * *</code> 每 15 分钟</span>
-          </span>
-        </span></label>
-        <input type="text" id="af-cron" placeholder="例如 0 9 * * 1-5"
-          value="${esc(automation?.cron || "")}"></div>
-      <div><label>超时(秒)</label><input type="number" id="af-timeout" min="1"
-        value="${esc(automation?.timeout_seconds ?? 600)}"></div>
-    </div>
-    <label><input type="checkbox" id="af-enabled"
-      ${automation ? (automation.enabled ? "checked" : "") : "checked"}> 启用定时触发</label>
-    <label>允许调用的平台动作(脚本 token 白名单)</label>
-    <div class="automation-actions-grid">${actionBoxes}</div>
-    <label>脚本内容(有 shebang 按可执行文件运行,否则用 bash;可用
-      <code>missioncrew-tool</code> 环境变量调用平台动作)</label>
-    <textarea id="af-script" rows="14" class="automation-script" spellcheck="false"
-      placeholder="#!/bin/bash&#10;# 例:向 general 频道发布巡检报告&#10;&quot;$MISSIONCREW_AGENT_TOOL_PYTHON&quot; -m missioncrew.agent_tool publish-message --channel general --content &quot;巡检正常&quot;">${esc(automation?.script || "")}</textarea>`,
-    `<button class="action" onclick="saveAutomationForm(${automation ? `'${esc(automation.id)}'` : "null"})">${automation ? "保存修改" : "创建脚本"}</button>
-     <button class="ghost" onclick="fdlg.close()">取消</button>`);
+  const detail = document.getElementById("automation-detail");
+  const runsSection = automation && detail?.dataset.automationId === automation.id
+    ? detail.querySelector(".automation-runs-section")?.outerHTML || "" : "";
+  automationPageRequest++;
+  automationEditingId = automation?.id ?? null;
+  selectedAutomationId = automation?.id ?? null;
+  if (currentTab !== "automations") switchTab("automations");
+  if (!detail) return;
+  detail.dataset.automationId = automation?.id || "";
+  detail.innerHTML = automationEditorHtml(automation, runsSection);
+  automationInitialFormSnapshot = automationFormSnapshot();
+  detail.closest(".automation-workspace")?.scrollTo({ top: 0 });
+  renderSidebar(); syncUrl(); closeMobileSidebar();
+  document.getElementById(automation ? "af-name" : "af-id")?.focus();
+}
+
+function cancelAutomationEdit() {
+  const creating = automationEditingId === null;
+  clearAutomationEditState();
+  if (creating) selectedAutomationId = projAutomations()[0]?.id ?? null;
+  renderAutomationPage(true);
 }
 
 async function saveAutomationForm(existingId) {
@@ -219,7 +313,7 @@ async function saveAutomationForm(existingId) {
     timeout_seconds: Number(document.getElementById("af-timeout").value) || 600,
   });
   selectedAutomationId = saved.id;
-  fdlg.close();
+  clearAutomationEditState();
   await loadOverview();
   if (currentTab !== "automations") switchTab("automations");
   else renderAutomationPage(true);
