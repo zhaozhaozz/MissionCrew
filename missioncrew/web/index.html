@@ -94,6 +94,15 @@
         <div id="skill-list"></div>
       </div>
       <div class="side-sec">
+        <h2 class="sec-head" id="sec-automations" onclick="toggleSection('automations')">
+          <span class="caret">▾</span>自动化<span class="count" id="cnt-automations"></span>
+          <span class="sec-act">
+            <button class="icon-btn" title="新建自动化脚本"
+              onclick="event.stopPropagation();openAutomationEditor(null)">＋</button>
+          </span></h2>
+        <div id="automation-list"></div>
+      </div>
+      <div class="side-sec">
         <h2 class="sec-head" id="sec-roles" onclick="toggleSection('roles')">
           <span class="caret">▾</span>角色<span class="count" id="cnt-roles"></span>
           <span class="sec-act">
@@ -194,7 +203,6 @@
         <a onclick="scrollToSec('sec-proj-info')">项目信息</a>
         <a onclick="scrollToSec('sec-proj-res')">本地代码仓</a>
         <a onclick="scrollToSec('sec-proj-roles')">角色</a>
-        <a onclick="scrollToSec('sec-proj-automations')">自动化脚本</a>
         <a onclick="switchTab('guidelines')">准则文档 ↗</a>
         <a onclick="switchTab('skills')">Skills ↗</a>
         <a onclick="switchTab('recycle-bin')">回收站 ↗</a>
@@ -218,11 +226,11 @@
         <p class="muted">新增角色时可从全局角色模板导入后再调整；角色定位(人格)是"选人"的专长画像,供人类或主控调度时挑人,不是任务描述。启停开关只控制新任务，不中断当前运行，也不删除角色配置和历史；项目主控需先切换后才能停用。</p>
         <table class="mgr" id="role-table"></table>
       </div>
-      <div class="section" id="sec-proj-automations">
-        <h2>自动化脚本 <span class="muted" id="automation-proj-label"></span>
-          <button class="ghost" style="margin-left:8px" onclick="openAutomationEditor(null)">+ 新建脚本</button></h2>
-        <p class="muted">脚本由统一定时入口按 crontab 触发,也可手动运行;运行时通过专属 token 调用平台动作(发消息、建 Task、更新面板/文档等),动作范围受白名单约束。主控也可以在频道中用 automation.save 编写脚本。</p>
-        <table class="mgr" id="automation-table"></table>
+    </div>
+
+    <div id="automations-view" class="page">
+      <div class="section content-workspace automation-workspace">
+        <div id="automation-detail"></div>
       </div>
     </div>
 

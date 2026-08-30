@@ -25,7 +25,6 @@ async function renderProjSettings() {
   document.getElementById("proj-label").textContent = label;
   document.getElementById("role-proj-label").textContent = label;
   document.getElementById("res-proj-label").textContent = label;
-  document.getElementById("automation-proj-label").textContent = label;
   const project = projObj();
   const form = document.getElementById("proj-form");
   if (!project) {
@@ -53,7 +52,6 @@ async function renderProjSettings() {
     </div>`;
   renderRoleTable();
   renderResourceTable();
-  renderAutomationTable();
   loadDocFiles();
 }
 

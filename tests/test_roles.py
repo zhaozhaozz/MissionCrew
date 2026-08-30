@@ -558,6 +558,24 @@ def test_channel_sidebar_exposes_filter_archive_restore_and_delete(client):
     assert client.get("/api/nonexistent").status_code == 404
 
 
+def test_automation_ui_uses_sidebar_and_full_detail_view(client):
+    html = client.get("/").text
+    router = client.get("/assets/js/router.js").text
+    automations = client.get("/assets/js/automations.js").text
+    markdown = client.get("/assets/js/markdown.js").text
+
+    assert html.index('id="sec-automations"') < html.index('id="sec-roles"')
+    assert 'id="automation-list"' in html
+    assert 'id="automations-view"' in html and 'id="automation-detail"' in html
+    assert 'id="sec-proj-automations"' not in html
+    assert 'id="automation-table"' not in html
+    assert '"automations"' in markdown and 'tab === "automations"' in router
+    assert "function selectAutomation" in automations
+    assert "function renderAutomationPage" in automations
+    assert all(label in automations for label in
+               ("描述", "定时", "配置", "脚本预览", "运行记录"))
+
+
 def test_shared_dialog_headers_do_not_duplicate_bottom_cancel_actions(client):
     html = client.get("/").text
     # Form dialogs and alert/confirm/prompt dialogs already render their close/cancel

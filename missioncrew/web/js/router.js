@@ -1,12 +1,13 @@
 /* ---- URL 路由:/<项目>/<视图>[/<频道>](History API,干净 URL),
    刷新与前进后退都能还原;服务端对非 API 路径统一返回本页面 ---- */
 const TABS = ["chat", "board", "custom", "docs", "guidelines", "skills",
-              "recycle-bin", "proj", "runtime-status", "settings"];
+              "automations", "recycle-bin", "proj", "runtime-status", "settings"];
 let routeApplying = false;
 
 function emptyRoute(project = null, tab = "chat") {
   return { project, tab, chan: null, doc: null, task: null, dashboard: null,
-           guideline: undefined, skill: undefined, skillFile: null };
+           guideline: undefined, skill: undefined, skillFile: null,
+           automation: undefined };
 }
 
 function parsePath() {
@@ -31,6 +32,8 @@ function parsePath() {
     } else if (resource.type === "skills") {
       route.tab = "skills"; route.skill = id || null;
       route.skillFile = rest.join("/") || null;
+    } else if (resource.type === "automations") {
+      route.tab = "automations"; route.automation = id || null;
     } else if (resource.type === "recycle-bin") {
       route.tab = "recycle-bin";
     }
@@ -68,6 +71,10 @@ function syncUrl(push = true) {
     path = missionCrewResourceUrl(currentProject, "skills",
       ...(selectedSkillId ? [selectedSkillId] : []),
       ...(selectedSkillId && skillOpenFile ? skillOpenFile.split("/") : []));
+  if (currentTab === "automations")
+    path = missionCrewResourceUrl(currentProject, "automations",
+      ...(selectedAutomationId
+        ? [selectedAutomationId.replace(`${currentProject}:`, "")] : []));
   if (currentTab === "recycle-bin")
     path = missionCrewResourceUrl(currentProject, "recycle-bin");
   if (location.pathname === path && !location.hash) return;
@@ -135,6 +142,11 @@ async function applyRoute() {
         .some(item => item.id === r.skill) ? r.skill : undefined;
       skillOpenFile = selectedSkillId ? r.skillFile : null;
     }
+    if (r.tab === "automations") {
+      const automation = projAutomations().find(item =>
+        item.id === r.automation || item.id === `${r.project}:${r.automation}`);
+      selectedAutomationId = automation?.id;
+    }
 
     if (r.tab !== "board" || !r.task) closeTaskDialog(false);
     if (r.tab !== currentTab) switchTab(r.tab);
@@ -142,6 +154,7 @@ async function applyRoute() {
     else if (r.tab === "custom") renderCustomBoards(true);
     else if (r.tab === "guidelines") renderGuidelinesPage(true);
     else if (r.tab === "skills") renderSkillsPage(true);
+    else if (r.tab === "automations") renderAutomationPage(true);
     else if (r.tab === "recycle-bin") renderRecycleBin(true);
 
     if (r.tab === "board" && r.task) {
@@ -191,6 +204,7 @@ async function setProject(id, updateRoute = true) {
   selectedGuidelineName = undefined;
   guidelineViewer.reset();
   selectedSkillId = undefined;
+  selectedAutomationId = undefined;
   resetSkillHistoryState();
   skillMarkdownMode = "preview";
   skillOpenFile = null;
@@ -210,6 +224,7 @@ async function setProject(id, updateRoute = true) {
   renderSidebar(); renderBoard(); renderCustomBoards();
   if (currentTab === "proj") renderProjSettings();
   if (currentTab === "docs") renderDocuments();
+  else if (currentTab === "automations") renderAutomationPage(true);
   else if (currentTab === "recycle-bin") renderRecycleBin(true);
   else loadDocFiles().then(changed => { if (changed) renderSidebar(); });
   renderProjectConfigPage(currentTab, true);
@@ -229,6 +244,8 @@ function switchTab(tab) {
   document.getElementById("docs-view").style.display = tab === "docs" ? "block" : "none";
   document.getElementById("guidelines-view").style.display = tab === "guidelines" ? "block" : "none";
   document.getElementById("skills-view").style.display = tab === "skills" ? "block" : "none";
+  document.getElementById("automations-view").style.display =
+    tab === "automations" ? "block" : "none";
   document.getElementById("recycle-bin-view").style.display =
     tab === "recycle-bin" ? "block" : "none";
   document.getElementById("proj-view").style.display = tab === "proj" ? "block" : "none";
@@ -249,9 +266,11 @@ function switchTab(tab) {
   document.getElementById("sec-docs").classList.toggle("active", tab === "docs");
   document.getElementById("sec-guides").classList.toggle("active", tab === "guidelines");
   document.getElementById("sec-skills").classList.toggle("active", tab === "skills");
+  document.getElementById("sec-automations").classList.toggle("active", tab === "automations");
   if (tab === "proj") renderProjSettings();
   if (tab === "custom") renderCustomBoards(true);
   if (tab === "docs") renderDocuments();
+  if (tab === "automations") renderAutomationPage(true);
   if (tab === "recycle-bin") renderRecycleBin();
   renderProjectConfigPage(tab);
   renderSidebar();
@@ -282,6 +301,7 @@ async function loadOverview() {
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));
   renderSidebar(); renderBoard(); renderCustomBoards();
   if (currentTab === "docs" && docMode !== "new") renderDocuments(true);
+  else if (currentTab === "automations") renderAutomationPage(true);
   else loadDocFiles().then(changed => { if (changed) renderSidebar(); });
   renderProjectConfigPage(currentTab);
   updateConfigChatContext();
@@ -378,6 +398,11 @@ function renderSidebar() {
             onclick="openSkillFromSidebar(this.dataset.id)" title="${esc(s.description || s.id)}">
          ⚡ ${esc(s.name || s.id)}${s.enabled === false ? " (停用)" : ""}</div>`).join("")
       || `<div class="side-item" onclick="quickNewSkill()">＋ 添加第一个 Skill…</div>`;
+  // 自动化 -> 独立详情页。
+  const automations = projAutomations();
+  if (!_secState("automations", "automation-list", "cnt-automations", automations.length))
+    document.getElementById("automation-list").innerHTML = automations.map(automationSidebarItem).join("")
+      || `<div class="side-item" onclick="openAutomationEditor(null)">＋ 新建自动化脚本…</div>`;
   // 角色 -> 聊天 @(主控带标记)
   const orch = projObj()?.orchestrator_role_id;
   if (!_secState("roles", "role-list", "cnt-roles", projRoles().length))

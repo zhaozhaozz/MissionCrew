@@ -1,4 +1,4 @@
-/* ---------------- 自动化脚本(项目设置页) ---------------- */
+/* ---------------- 自动化脚本(侧栏 + 独立详情页) ---------------- */
 
 const AUTOMATION_STATUS = {
   running: "运行中", succeeded: "成功", failed: "失败", timeout: "超时",
@@ -6,6 +6,8 @@ const AUTOMATION_STATUS = {
 
 const projAutomations = () =>
   (overview.automations || []).filter(item => item.project_id === currentProject);
+let selectedAutomationId;
+let automationPageRequest = 0;
 
 function automationShortId(automation) {
   return automation.id.replace(`${automation.project_id}:`, "");
@@ -15,38 +17,138 @@ function fmtTs(ts) {
   return ts ? new Date(ts * 1000).toLocaleString() : "—";
 }
 
-async function renderAutomationTable() {
-  let list = [];
-  try {
-    list = (await api("GET",
-      `/api/projects/${encodeURIComponent(currentProject)}/automations`)).automations;
-  } catch (e) { /* 项目不存在或服务重启间隙 */ }
-  const rows = list.map(a => {
-    const status = a.running ? "running" : a.last_status;
-    const schedule = a.cron
-      ? `<code>${esc(a.cron)}</code>${a.enabled ? "" : ' <span class="badge">已停用</span>'}`
-      : '<span class="muted">仅手动</span>';
-    return `<tr>
-      <td><b>${esc(a.name)}</b> <span class="muted">${esc(automationShortId(a))}</span><br>
-        <span class="muted">${esc(a.description || "")}</span></td>
-      <td>${schedule}<br><span class="muted">下次:${esc(fmtTs(a.next_run_at))}</span></td>
-      <td>${status ? `<span class="pill automation-st-${esc(status)}">${esc(AUTOMATION_STATUS[status] || status)}</span>` : '<span class="muted">未运行</span>'}<br>
-        <span class="muted">${esc(fmtTs(a.last_run_at))}</span></td>
-      <td>
-        <button class="ghost" data-id="${esc(a.id)}" onclick="openAutomationEditor(this.dataset.id)">查看/编辑</button>
-        <button class="ghost" data-id="${esc(a.id)}" onclick="openAutomationRuns(this.dataset.id)">运行记录</button>
-        <button class="action" data-id="${esc(a.id)}" ${a.running ? "disabled" : ""}
-          onclick="runAutomationNow(this.dataset.id)">立即运行</button>
-        <button class="danger" data-id="${esc(a.id)}" onclick="deleteAutomation(this.dataset.id)">删除</button>
-      </td></tr>`;
-  }).join("");
-  const table = document.getElementById("automation-table");
-  if (table) table.innerHTML =
-    `<tr><th>脚本</th><th>定时(crontab)</th><th>最近运行</th><th></th></tr>` +
-    (rows || `<tr><td colspan="4" class="empty">暂无自动化脚本;可手动新建,或在频道里让主控用 automation.save 编写。</td></tr>`);
+function automationSidebarItem(automation) {
+  const status = automation.running ? "running" : automation.last_status;
+  return `<div class="side-item automation-side-item ${
+      automation.id === selectedAutomationId && currentTab === "automations" ? "selected" : ""}"
+      data-id="${esc(automation.id)}" onclick="selectAutomation(this.dataset.id)"
+      title="${esc(automation.description || automation.name || automationShortId(automation))}">
+    <span class="automation-side-name">⚙ ${esc(automation.name || automationShortId(automation))}</span>
+    ${status ? `<i class="automation-side-status automation-st-${esc(status)}"
+      title="${esc(AUTOMATION_STATUS[status] || status)}"></i>` : ""}
+  </div>`;
 }
 
-function openAutomationEditor(id) {
+function selectAutomation(id) {
+  selectedAutomationId = id;
+  if (currentTab !== "automations") switchTab("automations");
+  else { renderAutomationPage(true); renderSidebar(); syncUrl(); }
+  closeMobileSidebar();
+}
+
+function automationRunRows(automation, runs) {
+  const shortId = automationShortId(automation);
+  return runs.map(run => `<tr>
+    <td>#${run.id}</td>
+    <td>${esc(run.trigger === "cron" ? "定时" : "手动")}</td>
+    <td><span class="pill automation-st-${esc(run.status)}">${esc(AUTOMATION_STATUS[run.status] || run.status)}</span></td>
+    <td class="muted">${esc(fmtTs(run.started_at))}</td>
+    <td class="muted">${run.finished_at ? `${Math.round(run.finished_at - run.started_at)}s` : "…"}</td>
+    <td><button class="ghost compact" data-run="${run.id}"
+      onclick="openAutomationRunDetail('${esc(shortId)}', this.dataset.run)">查看输出</button></td>
+  </tr>`).join("");
+}
+
+function automationDetailHtml(automation, runs) {
+  const status = automation.running ? "running" : automation.last_status;
+  const schedule = automation.cron ? `<code>${esc(automation.cron)}</code>` : "仅手动触发";
+  const creator = automation.created_by_role_id ? `@${automation.created_by_role_id}` : "human/platform";
+  return `<div class="automation-page-head">
+      <div><h2>${esc(automation.name || automationShortId(automation))}</h2>
+        <span class="muted">${esc(automationShortId(automation))}</span></div>
+      <div class="content-topbar-actions">
+        <button class="ghost compact" onclick="renderAutomationPage(true)">刷新</button>
+        <button class="ghost compact" data-id="${esc(automation.id)}"
+          onclick="openAutomationEditor(this.dataset.id)">编辑</button>
+        <button class="action compact" data-id="${esc(automation.id)}" ${automation.running ? "disabled" : ""}
+          onclick="runAutomationNow(this.dataset.id)">立即运行</button>
+        <button class="danger compact" data-id="${esc(automation.id)}"
+          onclick="deleteAutomation(this.dataset.id)">删除</button>
+      </div>
+    </div>
+    <section class="automation-overview">
+      <div class="automation-description"><h3>描述</h3><p>${esc(automation.description || "未填写描述")}</p></div>
+      <dl class="automation-facts">
+        <div><dt>定时</dt><dd>${schedule}${automation.cron && !automation.enabled ? ' <span class="badge">已停用</span>' : ""}</dd></div>
+        <div><dt>下次运行</dt><dd>${esc(fmtTs(automation.next_run_at))}</dd></div>
+        <div><dt>最近运行</dt><dd>${status ? `<span class="pill automation-st-${esc(status)}">${esc(AUTOMATION_STATUS[status] || status)}</span>` : "未运行"} · ${esc(fmtTs(automation.last_run_at))}</dd></div>
+        <div><dt>创建者</dt><dd>${esc(creator)}</dd></div>
+      </dl>
+    </section>
+    <section class="automation-detail-section">
+      <h3>配置</h3>
+      <dl class="automation-config">
+        <div><dt>触发方式</dt><dd>${automation.cron ? (automation.enabled ? "定时与手动" : "仅手动（定时已停用）") : "仅手动"}</dd></div>
+        <div><dt>超时</dt><dd>${esc(automation.timeout_seconds)} 秒</dd></div>
+        <div class="automation-actions-row"><dt>允许的平台动作</dt><dd>${(automation.actions || []).map(action => `<code>${esc(action)}</code>`).join("") || "无"}</dd></div>
+      </dl>
+    </section>
+    <section class="automation-detail-section">
+      <h3>脚本预览</h3>
+      <pre class="automation-script-preview"><code>${esc(automation.script)}</code></pre>
+    </section>
+    <section class="automation-detail-section automation-runs-section">
+      <h3>运行记录 <span class="muted">最近 ${runs.length} 条</span></h3>
+      <div class="runtime-table-wrap"><table class="mgr automation-runs-table">
+        <tr><th>#</th><th>触发</th><th>状态</th><th>开始</th><th>耗时</th><th></th></tr>
+        ${automationRunRows(automation, runs) || '<tr><td colspan="6" class="empty">还没有运行记录</td></tr>'}
+      </table></div>
+    </section>`;
+}
+
+async function renderAutomationPage(refresh = false) {
+  const detail = document.getElementById("automation-detail");
+  if (!detail || currentTab !== "automations") return;
+  const request = ++automationPageRequest;
+  const workspace = detail.closest(".automation-workspace");
+  let list = projAutomations();
+  if (selectedAutomationId === undefined
+      || (selectedAutomationId !== null && !list.some(item => item.id === selectedAutomationId)))
+    selectedAutomationId = list[0]?.id ?? null;
+  if (!list.length) {
+    detail.dataset.automationId = "";
+    detail.innerHTML = `<div class="automation-empty empty"><p>暂无自动化脚本</p>
+      <button class="action" onclick="openAutomationEditor(null)">＋ 新建自动化脚本</button></div>`;
+    renderSidebar(); syncUrl(); return;
+  }
+  if (!selectedAutomationId) selectedAutomationId = list[0].id;
+  let automation = list.find(item => item.id === selectedAutomationId) || list[0];
+  const sameAutomation = detail.dataset.automationId === automation.id;
+  const scrollTop = sameAutomation ? workspace?.scrollTop || 0 : 0;
+  if (!sameAutomation) {
+    detail.dataset.automationId = automation.id;
+    detail.innerHTML = automationDetailHtml(automation, []);
+    if (workspace) workspace.scrollTop = 0;
+  }
+  renderSidebar(); syncUrl();
+  try {
+    if (refresh || automation.next_run_at === undefined) {
+      const data = await api("GET",
+        `/api/projects/${encodeURIComponent(currentProject)}/automations`);
+      if (request !== automationPageRequest) return;
+      overview.automations = (overview.automations || [])
+        .filter(item => item.project_id !== currentProject).concat(data.automations);
+      list = projAutomations();
+      automation = list.find(item => item.id === selectedAutomationId) || list[0];
+      selectedAutomationId = automation?.id ?? null;
+    }
+    if (!automation) return renderAutomationPage(false);
+    const shortId = automationShortId(automation);
+    const data = await api("GET",
+      `/api/projects/${encodeURIComponent(currentProject)}/automations/${encodeURIComponent(shortId)}/runs?limit=30`);
+    if (request !== automationPageRequest) return;
+    detail.dataset.automationId = automation.id;
+    detail.innerHTML = automationDetailHtml(automation, data.runs);
+    if (workspace) workspace.scrollTop = scrollTop;
+    renderSidebar(); syncUrl(false);
+  } catch (error) {
+    if (request === automationPageRequest)
+      detail.insertAdjacentHTML("beforeend", `<p class="automation-error">加载运行记录失败：${esc(error.message || error)}</p>`);
+  }
+}
+
+async function openAutomationEditor(id) {
+  await ensureTraits();
   const automation = id
     ? projAutomations().find(item => item.id === id) : null;
   if (id && !automation) { uiAlert("脚本不存在,请刷新后重试"); return; }
@@ -96,7 +198,7 @@ async function saveAutomationForm(existingId) {
   const actions = [...document.querySelectorAll(
     ".automation-actions-grid input:checked")].map(input => input.value);
   if (!actions.length) { uiAlert("至少勾选一个允许的动作"); return; }
-  await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/automations`, {
+  const saved = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/automations`, {
     id: shortId,
     name: document.getElementById("af-name").value.trim(),
     description: document.getElementById("af-desc").value.trim(),
@@ -106,9 +208,11 @@ async function saveAutomationForm(existingId) {
     actions,
     timeout_seconds: Number(document.getElementById("af-timeout").value) || 600,
   });
+  selectedAutomationId = saved.id;
   fdlg.close();
   await loadOverview();
-  renderAutomationTable();
+  if (currentTab !== "automations") switchTab("automations");
+  else renderAutomationPage(true);
   toast(existingId ? "脚本已更新" : "脚本已创建", "success");
 }
 
@@ -120,7 +224,9 @@ async function deleteAutomation(id) {
   await api("DELETE",
     `/api/projects/${encodeURIComponent(currentProject)}/automations/${encodeURIComponent(automationShortId(automation))}`);
   await loadOverview();
-  renderAutomationTable();
+  selectedAutomationId = projAutomations()[0]?.id ?? null;
+  renderSidebar();
+  if (currentTab === "automations") renderAutomationPage(true);
   toast("脚本已删除", "success");
 }
 
@@ -130,28 +236,11 @@ async function runAutomationNow(id) {
   const result = await api("POST",
     `/api/projects/${encodeURIComponent(currentProject)}/automations/${encodeURIComponent(automationShortId(automation))}/run`);
   toast(`已触发运行(记录 #${result.run_id});稍后在运行记录中查看输出`, "success");
-  setTimeout(renderAutomationTable, 800);
-}
-
-async function openAutomationRuns(id) {
-  const automation = projAutomations().find(item => item.id === id);
-  if (!automation) return;
-  const shortId = automationShortId(automation);
-  const data = await api("GET",
-    `/api/projects/${encodeURIComponent(currentProject)}/automations/${encodeURIComponent(shortId)}/runs?limit=30`);
-  const rows = data.runs.map(run => `<tr>
-    <td>#${run.id}</td>
-    <td>${esc(run.trigger === "cron" ? "定时" : "手动")}</td>
-    <td><span class="pill automation-st-${esc(run.status)}">${esc(AUTOMATION_STATUS[run.status] || run.status)}</span></td>
-    <td class="muted">${esc(fmtTs(run.started_at))}</td>
-    <td class="muted">${run.finished_at ? `${Math.round(run.finished_at - run.started_at)}s` : "…"}</td>
-    <td><button class="ghost" data-run="${run.id}"
-      onclick="openAutomationRunDetail('${esc(shortId)}', this.dataset.run)">输出</button></td>
-  </tr>`).join("");
-  openFormDialog(`运行记录 · ${automation.name}`, `
-    <table class="mgr"><tr><th>#</th><th>触发</th><th>状态</th><th>开始</th><th>耗时</th><th></th></tr>
-    ${rows || '<tr><td colspan="6" class="empty">还没有运行记录</td></tr>'}</table>`,
-    `<button class="ghost" onclick="fdlg.close()">关闭</button>`);
+  if (currentTab === "automations") renderAutomationPage(true);
+  setTimeout(() => {
+    if (currentTab === "automations" && selectedAutomationId === id)
+      renderAutomationPage(true);
+  }, 800);
 }
 
 async function openAutomationRunDetail(shortId, runId) {
@@ -166,8 +255,7 @@ async function openAutomationRunDetail(shortId, runId) {
     ${section("stdout", run.stdout)}
     ${section("stderr", run.stderr)}
     ${!run.stdout && !run.stderr ? '<p class="empty">本次运行没有输出</p>' : ""}`,
-    `<button class="ghost" onclick="openAutomationRuns('${esc(currentProject)}:${esc(shortId)}')">← 返回列表</button>
-     <button class="ghost" onclick="fdlg.close()">关闭</button>`);
+    `<button class="ghost" onclick="fdlg.close()">关闭</button>`);
 }
 
 /* Task 自动处理规则的配置入口在看板页的标签列(tasks.js)。 */
