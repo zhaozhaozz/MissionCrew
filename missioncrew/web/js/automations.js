@@ -127,11 +127,36 @@ function automationCronHelpHtml() {
   </span>`;
 }
 
+// 平台动作统一命名为 "<资源>.<动作>";编辑器按资源前缀分组,顺序即此表顺序,
+// 未登记的前缀排在最后并直接显示前缀本身。
+const AUTOMATION_ACTION_GROUPS = {
+  task: "任务", document: "文档", message: "消息", channel: "频道",
+  dashboard: "面板", board_source: "面板数据源", guideline: "准则",
+  skill: "Skill", automation: "自动化脚本", recycle: "回收站",
+};
+
+function automationActionGroups(names) {
+  const known = Object.keys(AUTOMATION_ACTION_GROUPS);
+  const rank = prefix => (known.includes(prefix) ? known.indexOf(prefix) : known.length);
+  const groups = new Map();
+  for (const name of names) {
+    const prefix = name.split(".")[0];
+    if (!groups.has(prefix)) groups.set(prefix, []);
+    groups.get(prefix).push(name);
+  }
+  return [...groups].sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
+}
+
 function automationEditorHtml(automation, runsSection = "") {
   const actions = automation?.actions || traitMeta.automation_default_actions || [];
-  const actionBoxes = (traitMeta.automation_actions || []).map(name => `
-    <label class="automation-action-option"><input type="checkbox" value="${esc(name)}"
-      ${actions.includes(name) ? "checked" : ""}> ${esc(name)}</label>`).join("");
+  const actionBoxes = automationActionGroups(traitMeta.automation_actions || [])
+    .map(([prefix, names]) => `
+    <fieldset class="automation-action-group">
+      <legend>${esc(AUTOMATION_ACTION_GROUPS[prefix] || prefix)} <code>${esc(prefix)}</code></legend>
+      <div class="automation-actions-grid">${names.map(name => `
+        <label class="automation-action-option"><input type="checkbox" value="${esc(name)}"
+          ${actions.includes(name) ? "checked" : ""}> ${esc(name)}</label>`).join("")}</div>
+    </fieldset>`).join("");
   const status = automation?.running ? "running" : automation?.last_status;
   const creator = automation?.created_by_role_id
     ? `@${automation.created_by_role_id}` : "human/platform";
@@ -180,7 +205,7 @@ function automationEditorHtml(automation, runsSection = "") {
         <div><dt>超时</dt><dd><input type="number" id="af-timeout" min="1" aria-label="超时秒数"
           value="${esc(automation?.timeout_seconds ?? 600)}"><span class="muted"> 秒</span></dd></div>
         <div class="automation-actions-row"><dt>允许的平台动作</dt>
-          <dd class="automation-actions-grid">${actionBoxes}</dd></div>
+          <dd class="automation-action-groups">${actionBoxes}</dd></div>
       </dl>
     </section>
     <section class="automation-detail-section form">

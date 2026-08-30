@@ -1301,8 +1301,14 @@
 .automation-trigger-summary, .automation-trigger-editor { display: grid; gap: 7px; }
 .automation-trigger-summary code { width: fit-content; }
 .automation-cron-field { display: grid; gap: 4px; max-width: 520px; }
-.automation-actions-row dd.automation-actions-grid { display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+.automation-edit-config .automation-actions-row { align-items: start; }
+.automation-edit-config .automation-actions-row dt { padding-top: 6px; }
+.automation-actions-row dd.automation-action-groups { display: grid; gap: 14px; margin: 4px 0 8px; }
+.automation-action-group { min-width: 0; margin: 0; padding: 2px 0 2px 12px; border: 0;
+  border-left: 2px solid var(--line-strong); }
+.automation-action-group legend { display: flex; align-items: baseline; gap: 6px; padding: 0;
+  margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-2); }
+.automation-action-group legend code { padding: 0; background: none; font-weight: 400; color: var(--muted); }
 .automation-script-hint { margin: -4px 0 9px; font-size: 12px; }
 .automation-actions-row dd { display: flex; flex-wrap: wrap; gap: 5px; }
 .automation-actions-row code { padding: 2px 6px; border-radius: 5px; background: var(--bg-soft); }
@@ -1331,7 +1337,7 @@
 .automation-cron-help:focus-visible .automation-cron-tip {
   opacity: 1; visibility: visible; transform: translate(-50%, 0); }
 .automation-actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-  gap: 4px 12px; margin: 4px 0 8px; }
+  gap: 4px 12px; margin: 0; }
 .automation-action-option { display: flex; align-items: center; gap: 6px;
   margin: 0; font-weight: 400; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .automation-script { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
