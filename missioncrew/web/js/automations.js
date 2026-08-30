@@ -170,7 +170,17 @@ async function openAutomationEditor(id) {
     <label>用途说明</label>
     <input type="text" id="af-desc" value="${esc(automation?.description || "")}">
     <div class="row">
-      <div><label>crontab(五段;留空 = 仅手动触发)</label>
+      <div><label class="automation-cron-label">crontab(五段;留空 = 仅手动触发)
+        <span class="automation-cron-help" tabindex="0" aria-label="查看 crontab 基础语法"
+          aria-describedby="automation-cron-tip">i
+          <span class="automation-cron-tip" id="automation-cron-tip" role="tooltip">
+            <strong>分 时 日 月 周</strong>
+            <span>分 0–59 · 时 0–23 · 日 1–31 · 月 1–12 · 周 0–7（0/7 为周日）</span>
+            <span><code>*</code> 任意值 · <code>,</code> 多个值 · <code>-</code> 范围 · <code>/</code> 步长</span>
+            <span><code>0 9 * * 1-5</code> 工作日 9:00</span>
+            <span><code>*/15 * * * *</code> 每 15 分钟</span>
+          </span>
+        </span></label>
         <input type="text" id="af-cron" placeholder="例如 0 9 * * 1-5"
           value="${esc(automation?.cron || "")}"></div>
       <div><label>超时(秒)</label><input type="number" id="af-timeout" min="1"

@@ -574,6 +574,9 @@ def test_automation_ui_uses_sidebar_and_full_detail_view(client):
     assert "function renderAutomationPage" in automations
     assert all(label in automations for label in
                ("描述", "定时", "配置", "脚本预览", "运行记录"))
+    assert 'class="automation-cron-help"' in automations
+    assert all(text in automations for text in
+               ("分 时 日 月 周", "工作日 9:00", "每 15 分钟"))
 
 
 def test_shared_dialog_headers_do_not_duplicate_bottom_cancel_actions(client):

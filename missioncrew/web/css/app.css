@@ -1291,6 +1291,23 @@
 .automation-runs-section h3 .muted { margin-left: 5px; font-size: 11px; font-weight: 400; }
 .automation-runs-table { min-width: 680px; }
 .automation-empty { display: grid; justify-items: center; gap: 10px; padding: 80px 20px; }
+.automation-cron-label { display: flex; align-items: center; gap: 6px; }
+.automation-cron-help { position: relative; flex: none; display: inline-grid; place-items: center;
+  width: 18px; height: 18px; border: 1px solid var(--line); border-radius: 50%;
+  color: var(--muted); font: 600 12px/1 serif; cursor: help; }
+.automation-cron-help:hover, .automation-cron-help:focus-visible {
+  border-color: var(--accent); color: var(--accent); outline: none; }
+.automation-cron-tip { position: absolute; z-index: 80; left: 50%; bottom: calc(100% + 8px);
+  display: grid; gap: 4px; width: max-content; max-width: min(410px, 78vw); padding: 9px 11px;
+  border: 1px solid var(--line); border-radius: 7px; background: var(--text); color: var(--card);
+  box-shadow: var(--shadow-md); font: 12px/1.5 sans-serif; transform: translate(-50%, 3px);
+  opacity: 0; visibility: hidden; pointer-events: none;
+  transition: opacity .15s, transform .15s, visibility .15s; }
+.automation-cron-tip strong { font-size: 12.5px; }
+.automation-cron-tip code { color: inherit; }
+.automation-cron-help:hover .automation-cron-tip,
+.automation-cron-help:focus-visible .automation-cron-tip {
+  opacity: 1; visibility: visible; transform: translate(-50%, 0); }
 .automation-actions-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 4px 12px; margin: 4px 0 8px; }
 .automation-action-option { display: flex; align-items: center; gap: 6px;
