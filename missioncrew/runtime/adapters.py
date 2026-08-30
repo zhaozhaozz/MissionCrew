@@ -32,6 +32,7 @@ from . import acp
 from . import clis as _clis
 from .base import RuntimeInstance, host_isolated_environ
 from .clis.claude import MODEL_CATALOG as CLAUDE_MODEL_CATALOG
+from ..core.config import mc_home
 from ..core.models import Backend, ExecutionConfig, RunResult
 
 _CLI_SESSION_LOCKS: dict[str, threading.Lock] = {}
@@ -600,9 +601,12 @@ def _emit_execution_start(emit, command: list[str], prompt: str) -> None:
 
 
 def _diagnostic_log_path(cfg: ExecutionConfig, adapter_name: str) -> Path:
-    """把 Runtime 诊断输出放进 harness 工作区，避免污染业务代码仓。"""
-    root = Path(cfg.env.get("MISSIONCREW_WORKSPACE")
-                or Path(cfg.workdir) / ".missioncrew")
+    """把 Runtime 诊断输出放进 harness 工作区，避免污染业务代码仓。
+
+    没有 harness 工作区的执行(无项目归属的频道)回落到平台数据目录,
+    同样不在 workdir(可能是业务代码仓)里创建 .missioncrew。
+    """
+    root = Path(cfg.env.get("MISSIONCREW_WORKSPACE") or mc_home())
     directory = root / "runtime"
     directory.mkdir(parents=True, exist_ok=True)
     return directory / f"last-output-{adapter_name}.log"

@@ -6,7 +6,8 @@ import time
 from fastapi import FastAPI
 
 from ..collab.skills import sync_all_project_skill_libraries
-from ..collab.resource_urls import (channel_resource_url,
+from ..collab.resource_urls import (automation_resource_url,
+                                    channel_resource_url,
                                     dashboard_resource_url,
                                     guideline_resource_url,
                                     skill_resource_url, task_resource_url)
@@ -67,7 +68,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             "boards": [{**b.to_dict(),
                         "resource_url": dashboard_resource_url(b.project_id, b.id)}
                        for b in store.list_boards()],
-            "automations": [a.to_dict() for a in store.list_automations()],
+            "automations": [
+                {**a.to_dict(),
+                 "resource_url": automation_resource_url(a.project_id, a.id)}
+                for a in store.list_automations()],
         }
 
     @app.get("/api/traits")

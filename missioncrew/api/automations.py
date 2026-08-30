@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 
 from ..collab.automations import (delete_automation, normalize_automation_id,
                                   save_automation)
+from ..collab.resource_urls import automation_resource_url
 from ..core.cron import next_cron_time
 from ..core.models import Automation
 from .context import ApiContext
@@ -29,6 +30,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     def _automation_data(automation: Automation) -> dict:
         data = automation.to_dict()
+        data["resource_url"] = automation_resource_url(
+            automation.project_id, automation.id)
         data["running"] = automation.id in ctx.automations.running_ids()
         data["next_run_at"] = None
         if automation.enabled and automation.cron.strip():

@@ -140,6 +140,20 @@ def test_cli_adapter_parses_stream_json_events(tmp_path):
     assert not (tmp_path / ".missioncrew").exists()
 
 
+def test_cli_adapter_diagnostic_log_falls_back_to_platform_home(tmp_path, monkeypatch):
+    """没有 harness 工作区时诊断日志进平台数据目录,不在 workdir 里建 .missioncrew。"""
+    monkeypatch.setenv("MISSIONCREW_HOME", str(tmp_path / "home"))
+    events, emit = _collect()
+    backend = Backend(id="c", name="c", adapter="claude_code")
+    cfg = _cfg(tmp_path / "repo", backend, emit)
+    (tmp_path / "repo").mkdir()
+    result = adapters.CliAdapter(
+        "claude_code", [sys.executable, FAKE_STREAM, "stream-json"]).run(cfg)
+    assert result.success
+    assert (tmp_path / "home" / "runtime" / "last-output-claude_code.log").is_file()
+    assert not (tmp_path / "repo" / ".missioncrew").exists()
+
+
 def test_cli_adapter_keeps_full_long_stream_reply(tmp_path):
     events, emit = _collect()
     backend = Backend(id="c", name="c", adapter="claude_code")

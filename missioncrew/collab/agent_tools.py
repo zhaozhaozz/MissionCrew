@@ -30,9 +30,9 @@ from .recycle_bin import (RecycleConflictError, list_recycle_items,
                           recycle_dashboard, recycle_document,
                           recycle_guideline, recycle_skill, recycle_task,
                           restore_recycle_item)
-from .resource_urls import (channel_resource_url, dashboard_resource_url,
-                            guideline_resource_url, skill_resource_url,
-                            task_resource_url)
+from .resource_urls import (automation_resource_url, channel_resource_url,
+                            dashboard_resource_url, guideline_resource_url,
+                            skill_resource_url, task_resource_url)
 from .skills import save_project_skill, save_project_skill_markdown
 from .workspace import chat_workspace_dir, write_task_files
 from ..core.models import (BOARD_KINDS, BOARD_WIDGET_TYPES, Board,
@@ -1295,6 +1295,7 @@ class AgentActionService:
             "summary": (f"已{'创建' if created else '更新'}自动化脚本 "
                         f"{automation.name}({schedule})"),
             "automation": automation.to_dict(),
+            "resource_url": automation_resource_url(project.id, automation.id),
         }
 
     def _delete_automation(self, project: Project, identity: AgentIdentity,

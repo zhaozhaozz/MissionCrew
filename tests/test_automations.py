@@ -311,10 +311,13 @@ def test_automation_api_crud_and_manual_run(seeded):
         })
         assert saved.status_code == 200, saved.text
         assert saved.json()["next_run_at"] is not None
+        assert saved.json()["resource_url"] == "/resources/webshop/automations/report"
 
         listed = client.get("/api/projects/webshop/automations").json()
         assert [a["id"] for a in listed["automations"]] == ["webshop:report"]
-        assert client.get("/api/overview").json()["automations"]
+        overview_automations = client.get("/api/overview").json()["automations"]
+        assert [a["resource_url"] for a in overview_automations] == [
+            "/resources/webshop/automations/report"]
 
         run = client.post("/api/projects/webshop/automations/report/run")
         assert run.status_code == 200, run.text

@@ -12,7 +12,7 @@ from urllib.parse import quote
 _PROJECT_ID_RE = re.compile(r"[\w-]+")
 RESOURCE_TYPES = frozenset({
     "documents", "channels", "tasks", "dashboards", "guidelines", "skills",
-    "recycle-bin",
+    "automations", "recycle-bin",
 })
 
 
@@ -57,6 +57,11 @@ def dashboard_resource_url(project_id: str, board_id: str | None = None) -> str:
         return missioncrew_resource_url(project_id, "dashboards")
     return missioncrew_resource_url(
         project_id, "dashboards", _short_project_id(project_id, board_id))
+
+
+def automation_resource_url(project_id: str, automation_id: str) -> str:
+    return missioncrew_resource_url(
+        project_id, "automations", _short_project_id(project_id, automation_id))
 
 
 def guideline_resource_url(project_id: str, guideline_name: str) -> str:
