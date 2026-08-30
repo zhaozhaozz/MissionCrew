@@ -20,15 +20,29 @@ def test_chat_send_human_bracket_mention_dispatches(seeded):
             json.loads(stored["mention_spans"])] == ["dev"]
 
 
-def test_serve_listens_on_all_ipv4_interfaces_by_default(monkeypatch):
+def test_serve_listens_on_loopback_by_default(monkeypatch):
     called = {}
 
     monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: called.update(kwargs))
+    monkeypatch.delenv("MISSIONCREW_HOST", raising=False)
 
     cli.serve()
 
-    assert called["host"] == "0.0.0.0"
+    assert called["host"] == "127.0.0.1"
     assert called["port"] == 8321
+
+
+def test_serve_host_env_overrides_default_but_not_flag(monkeypatch):
+    called = {}
+
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: called.update(kwargs))
+    monkeypatch.setenv("MISSIONCREW_HOST", "0.0.0.0")
+
+    cli.serve()
+    assert called["host"] == "0.0.0.0"
+
+    cli.serve(host="127.0.0.1")
+    assert called["host"] == "127.0.0.1"
 
 
 def test_serve_chat_workers_flag_sets_env(monkeypatch):

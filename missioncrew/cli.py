@@ -36,7 +36,9 @@ app.add_typer(task_app, name="task")
 app.add_typer(chat_app, name="chat")
 app.add_typer(role_app, name="role")
 
-DEFAULT_SERVE_HOST = "0.0.0.0"
+# 平台没有身份验证,默认只监听本机;局域网访问需显式 --host 0.0.0.0 或
+# 环境变量 MISSIONCREW_HOST(便于 pm2 等托管方式不改命令行)。
+DEFAULT_SERVE_HOST = "127.0.0.1"
 DEFAULT_SERVE_PORT = 8321
 
 
@@ -99,14 +101,17 @@ def demo(run: bool = typer.Option(True, help="是否顺带演示 Channel 派发"
 
 
 @app.command()
-def serve(host: str = DEFAULT_SERVE_HOST, port: int = DEFAULT_SERVE_PORT,
+def serve(host: Optional[str] = None, port: int = DEFAULT_SERVE_PORT,
           chat_workers: Optional[int] = None):
     """启动 Web 服务(REST API + 看板)。
 
+    平台不提供身份验证,默认只监听本机 127.0.0.1;需要局域网访问时显式传
+    --host 0.0.0.0(或设置 MISSIONCREW_HOST),并只在可信网络中使用。
     --chat-workers 设定聊天执行并发上限(默认 16,亦可用环境变量
     MISSIONCREW_CHAT_MAX_WORKERS 配置);同频道同角色仍按会话串行。
     """
     import uvicorn
+    host = host or os.environ.get("MISSIONCREW_HOST") or DEFAULT_SERVE_HOST
     from .api import create_app
     # Runtime 总是经本机回环访问 Agent Tool API；监听地址可继续面向所有网卡。
     os.environ["MISSIONCREW_AGENT_TOOL_URL"] = (

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from .. import __version__
 from . import (agent_tools, automations, backends, boards, chat, documents,
                guidelines, projects, recycle_bin, resources, roles, spa, system,
                tasks, uploads)
@@ -35,7 +36,7 @@ def create_app() -> FastAPI:
             ctx.role_usage_linkage.stop()
             runtime_manager.shutdown()
 
-    app = FastAPI(title="MissionCrew", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="MissionCrew", version=__version__, lifespan=lifespan)
     for module in (system, chat, agent_tools, roles, projects, resources, guidelines,
                    documents, boards, recycle_bin, backends, tasks, automations,
                    uploads):
