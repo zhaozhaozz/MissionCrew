@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # 每周一 03:00 UTC 用未锁定的最新依赖跑一遍,提前发现上游破坏性变更
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"   # tests/test_markdown_renderer.py 用 node 执行前端渲染器
+      - name: Install (locked)
+        run: uv sync --locked
+      - name: Test
+        run: uv run pytest -q
+
+  latest-deps:
+    name: pytest with latest dependencies
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Resolve to latest versions
+        run: uv lock --upgrade && uv sync
+      - name: Test
+        run: uv run pytest -q
+
+  build:
+    name: build wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv build
+      - name: Check wheel contents
+        run: |
+          python -m zipfile -l dist/*.whl | grep -E 'web/index.html|runtime/pi_guard.ts|licenses/LICENSE'

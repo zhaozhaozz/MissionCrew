@@ -516,22 +516,22 @@ def test_all_missioncrew_resources_have_stable_web_urls(seeded):
 
 
 def test_document_resource_url_replaces_internal_agent_paths(tmp_path):
-    root = tmp_path / ".missioncrew" / "projects" / "science_agent" / "documents"
+    root = tmp_path / ".missioncrew" / "projects" / "acme-shop" / "documents"
     canonical = root / "architecture" / "current design.md"
     assert document_resource_url(
-        "science_agent", "architecture/current design.md") == \
-        "/resources/science_agent/documents/architecture/current%20design.md"
+        "acme-shop", "architecture/current design.md") == \
+        "/resources/acme-shop/documents/architecture/current%20design.md"
     reply = (
         f"正式文档：[架构]({canonical})\n"
-        "兼容入口：[/doc](/srv/.missioncrew/agent-workspaces/science_agent/"
+        "兼容入口：[/doc](/srv/.missioncrew/agent-workspaces/acme-shop/"
         "channels/general/lead/.missioncrew/documents/architecture/current.md)\n"
-        "业务源码：/home/test/code/company/science_agent/server.ts"
+        "业务源码：/srv/acme-shop/server.ts"
     )
-    normalized = normalize_document_resource_urls(reply, "science_agent", [root])
+    normalized = normalize_document_resource_urls(reply, "acme-shop", [root])
     assert str(root) not in normalized and "agent-workspaces" not in normalized
-    assert "/resources/science_agent/documents/architecture/current design.md" in normalized
-    assert "/resources/science_agent/documents/architecture/current.md" in normalized
-    assert "/home/test/code/company/science_agent/server.ts" in normalized
+    assert "/resources/acme-shop/documents/architecture/current design.md" in normalized
+    assert "/resources/acme-shop/documents/architecture/current.md" in normalized
+    assert "/srv/acme-shop/server.ts" in normalized
 
 
 def test_guideline_and_skill_management_have_no_binding_fields(seeded):

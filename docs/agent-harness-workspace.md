@@ -20,9 +20,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 ## 文件系统边界
 
-Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其子目录。`/tmp`、
-`/var/tmp`、其他项目目录、未授权的用户文件和 MissionCrew 源码目录都不在默认授权
-范围内；Shell 重定向、管道、后台日志和工具自动生成文件同样必须遵守这个边界。
+Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子目录，不要主动使用 `/tmp`、`/var/tmp`、其他项目目录、未授权的用户文件和 MissionCrew 源码目录；Shell 重定向、管道、后台日志和工具自动生成文件同样必须遵守这个边界。注意这是提示词层面的约束：默认的 `workspace-write` 策略会把系统临时目录和 Runtime 自有目录（如 `~/.codex`、平台内的 pi 主目录）并入沙箱可写根（`runtime/manager.py` 的 `_prepare`），以免隐式使用 `/tmp` 的工具链在沙箱内失败；`read-only` / `full-access` 不做这类追加。
 
 命令原本使用外部临时路径时，应在执行前改写到业务仓已有的任务目录（例如项目约定的
 `.tmp/`、`.e2e/`）；没有项目约定时使用 `$MISSIONCREW_WORKSPACE/temp`，并在任务
@@ -40,6 +38,7 @@ Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其�
 ├── skills/                 # 已启用 Skill 的项目级共享实时视图
 ├── channel-history.json    # 仅聊天工作区；按角色隔离
 ├── .agent-tool-token       # 0600 角色令牌
+├── page-context/           # 仅主控角色；Web 配置页发到聊天的正文快照
 └── runtime/                # Runtime 最近输出等诊断文件
 ```
 
@@ -59,7 +58,7 @@ Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其�
 /resources/<project-id>/documents/<文档库相对路径>
 ```
 
-例如 `[架构说明](/resources/science_agent/documents/architecture/current.md)`。该 URL 可点击、刷新和复制，不包含平台数据目录；Web 会把它解析为对应项目的文档页。平台发布 Agent 回复前还会把误输出的文档库真实路径规范化为资源 URL，前端则兼容已经保存的历史路径链接。
+例如 `[架构说明](/resources/acme-shop/documents/architecture/current.md)`。该 URL 可点击、刷新和复制，不包含平台数据目录；Web 会把它解析为对应项目的文档页。平台发布 Agent 回复前还会把误输出的文档库真实路径规范化为资源 URL，前端则兼容已经保存的历史路径链接。
 
 ## 统一资源 URL
 
@@ -101,7 +100,7 @@ Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其�
 
 这里的“成功返回”指 Agent Tool 或 Web API 已完成整个同步链。若 Git、索引或实时视图任一步失败，调用会返回结构化错误而不是成功；准则视图使用同目录临时文件替换，读取者只会看到完整旧版或完整新版，不会读到半写入正文。已经发送给 Runtime 的 Prompt 不会在回合中被反向修改，但 Prompt 给出的文件路径会实时指向新版；下一轮装配会重新计算公共上下文版本并把新摘要发给复用 session。
 
-项目级删除统一写入 `projects/<project>/recycle-bin/`，但该内部目录不授权给 Runtime。Agent 使用 `recycle.list`、`recycle.restore` 和 `recycle.purge`，人类使用项目回收站页面；文档、准则、Skill、面板、频道、角色和本地代码仓共用同一列表。恢复只有在内容、项目索引和共享实时视图全部刷新后才返回成功；目标标识冲突时保留回收项，供用户改名、移除冲突或永久删除后再处理。
+项目级删除统一写入 `projects/<project>/recycle-bin/`，但该内部目录不授权给 Runtime。Agent 使用 `recycle.list`、`recycle.restore` 和 `recycle.purge`，人类使用项目回收站页面；文档、准则、Skill、面板、频道、角色、Task 和本地代码仓共用同一列表。恢复只有在内容、项目索引和共享实时视图全部刷新后才返回成功；目标标识冲突时保留回收项，供用户改名、移除冲突或永久删除后再处理。
 
 ### `channel-history.json`
 
@@ -109,7 +108,7 @@ Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其�
 
 ### `runtime/`
 
-`runtime/` 保存 Runtime 的最近输出等诊断信息，用于实时显示、排错和恢复。它属于平台运行状态，不应提交到业务代码仓。
+`runtime/` 保存 Runtime 的最近输出等诊断信息，用于实时显示、排错和恢复。它属于平台运行状态，不应提交到业务代码仓。没有 harness 工作区的执行（无项目归属的频道）把诊断日志写到平台数据目录根下的 `runtime/`，同样不会在业务仓里创建 `.missioncrew/`。
 
 ## 注入的环境变量
 
@@ -123,10 +122,17 @@ Runtime 只能读写 Prompt 中“本次可读写目录”列出的路径及其�
 | `MISSIONCREW_SKILLS_DIR` | 已启用 Skill 目录 |
 | `MISSIONCREW_TASKS_DIR` | 项目任务 Markdown 目录 |
 | `MISSIONCREW_CHANNEL_HISTORY` | 当前角色可见的频道历史文件；仅聊天执行 |
-| `MISSIONCREW_ALLOWED_DIRS` | 本次明确授权的本地代码仓和 harness 目录列表 |
-| `MISSIONCREW_AGENT_TOOL_URL` | 统一 Agent Tool API 根地址；仅聊天执行 |
-| `MISSIONCREW_AGENT_TOKEN_FILE` | 路径稳定、内容按 Run 原子轮换的 Bearer capability 文件；仅聊天执行 |
+| `MISSIONCREW_CHANNEL_ID` | 当前频道 id |
+| `MISSIONCREW_SESSION_KEY` | 当前 channel×role 的 Runtime 会话键 |
+| `MISSIONCREW_ALLOWED_DIRS` | 统一策略解析后的全部授权目录（JSON 数组）：本地代码仓、项目文档库、harness 工作区、准则/Skill 视图、Skill 投放目录、频道上传目录，以及默认策略追加的系统临时目录和 Runtime 自有目录 |
+| `MISSIONCREW_READABLE_DIRS` / `MISSIONCREW_WRITABLE_DIRS` | 统一策略解析后的只读 / 可写目录 JSON 数组 |
+| `MISSIONCREW_SKILL_DIRS` | 本次装配的 Skill 目录 JSON 数组 |
+| `MISSIONCREW_RUNTIME_PERMISSIONS` | approval / filesystem / network 权限意图 JSON |
+| `MISSIONCREW_AGENT_TOOL_URL` | 统一 Agent Tool API 根地址 |
+| `MISSIONCREW_AGENT_TOKEN_FILE` | 路径稳定、内容按 Run 原子轮换的 Bearer capability 文件 |
 | `MISSIONCREW_AGENT_TOOL_PYTHON` | 可执行 Agent Tool CLI 模块的 Python 解释器 |
+
+以上三个 Agent Tool 变量在聊天执行与自动化脚本中都会注入；自动化脚本的令牌文件位于 `automations/<project>/<id>/.agent-tool-token`，并额外获得 `MISSIONCREW_PROJECT_ID` 与 `MISSIONCREW_AUTOMATION_ID`。
 
 Runtime 的实际 `PWD` 仍是 `workdir`。支持原生多目录授权的适配器会把允许目录转换为相应命令行参数；其他 Runtime 也能从环境变量和提示上下文获知这些路径。Agent Tool 的身份、scope、动作和错误契约见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 

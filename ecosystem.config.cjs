@@ -1,5 +1,7 @@
-// pm2 部署配置。请通过 scripts/serve.sh 调用,以保证服务在最小环境变量下启动,
-// 避免把终端环境(VSCODE_*/SSH_AUTH_SOCK 等)传染给 Agent 子进程。
+// pm2 部署配置。请通过 scripts/serve.sh 调用(restart 带 --update-env,新装的
+// Agent CLI 才会被检测到)。服务按常规继承调用方环境;宿主终端注入的变量
+// (VSCODE_*/SSH_AUTH_SOCK 等)由派发层 runtime/base.py 在启动 Agent 子进程前剥离。
+// 默认只监听 127.0.0.1,局域网访问在启动时设置 MISSIONCREW_HOST=0.0.0.0。
 module.exports = {
   apps: [
     {

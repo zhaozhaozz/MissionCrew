@@ -4,6 +4,8 @@ MissionCrew 把聊天角色对平台状态的修改收敛到一个 Runtime 无�
 
 这套边界适用于所有聊天 Runtime。Claude、Codex、ACP 和打印模式 CLI 都通过同一组环境变量、角色令牌和动作契约调用 MissionCrew，Runtime provider 不需要导入 Store、FastAPI 或各资源的内部实现。
 
+对人类而言，这意味着频道、Task、文档、准则、Skill、面板与自动化脚本都可以由主控在对话中自动创建和维护——人类在聊天里提需求，主控调用下文的动作完成并把资源链接贴回频道；普通角色也能创建和更新 Task、发布文档。Web 页面与 CLI 只是查看与人工干预的入口，不是这些资源唯一的录入方式。
+
 ## 调用链
 
 ```text
@@ -46,11 +48,11 @@ Runtime
   --arguments '{"source":"reports/result.md","target":"archive/result.md"}'
 ```
 
-安装项目后也可以使用等价的 `missioncrew-tool` 命令。CLI 在成功时退出码为 0；API 错误、连接错误或客户端参数错误时退出码非零，并把 JSON 原样打印到 stdout，便于 Runtime 在同一回合读取、修正和重试。
+CLI 共四个子命令：`actions`、`call <action> --arguments '<JSON>'`、`publish-file --source <本地文件> --path <文档库路径> [--message <版本说明>] [--overwrite]`、`publish-message --channel <频道短 id> --content <正文> [--mention <角色 id>]...`；后两者分别是 `document.publish` 与 `message.publish` 的便捷封装。安装项目后也可以使用等价的 `missioncrew-tool` 命令。CLI 在成功时退出码为 0；API 错误、连接错误或客户端参数错误时退出码非零，并把 JSON 原样打印到 stdout，便于 Runtime 在同一回合读取、修正和重试。
 
 ## 身份、权限与生命周期
 
-令牌按 `project × channel × role × run` 分配，而不是按 Runtime 分配，所以角色更换 Claude、Codex 或 ACP 后仍遵循同一权限。明文只写入该角色隔离工作区中路径稳定的 `.agent-tool-token`，文件权限为 `0600`；每个 Run 获得执行锁后原子替换文件内容。SQLite 只保存 SHA-256 哈希、随机 `token_id`、绑定的 `run_id`、作用域、签发时间、过期时间和最后使用时间。
+令牌按 `project × channel × role × run` 分配，而不是按 Runtime 分配，所以角色更换 Claude、Codex 或 ACP 后仍遵循同一权限。明文只写入该角色隔离工作区中路径稳定的 `.agent-tool-token`，文件权限为 `0600`；每个 Run 获得执行锁后原子替换文件内容。SQLite 不保存明文，只保存 SHA-256 哈希、随机 `token_id`、项目/频道/角色、`kind`（`run` 或 `automation`）、绑定的 `run_id`、作用域、签发/过期/最后使用/撤销时间。
 
 令牌最多有效七天，但正常情况下会在对应 Run 结束时立即撤销并删除文件；下一 Run 在同一路径写入新的 capability。服务端从令牌直接得到 `run_id`，并确认该回合属于令牌中的频道和角色且状态仍是 `queued`、`running` 或 `waiting_user`。旧客户端提交的 `run_id` 只作为兼容校验字段，不能改变令牌绑定的 Run。因此获得旧令牌不足以在已结束回合中继续写入。
 
@@ -67,6 +69,7 @@ Runtime
 | `channel.runs.list` / `channel.run.stop` | 禁止 | 允许 |
 | `channel.create` | 禁止 | 允许 |
 | `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
+| `board_source.save` / `board_source.delete` | 禁止 | 允许 |
 | `guideline.save` / `guideline.delete` | 禁止 | 允许 |
 | `skill.save` / `skill.delete` | 禁止 | 允许 |
 | `automation.save` / `automation.delete` | 禁止 | 允许 |
@@ -82,9 +85,9 @@ Runtime
 
 ### 自动化脚本身份（`kind=automation`）
 
-除逐 Run 绑定的角色令牌外，还有一类**自动化脚本令牌**：`automation.save` 定义的项目脚本经统一定时入口（cron 或手动）触发时，平台为该次运行签发一次性令牌（`kind=automation`，不绑定 Run），写入脚本工作目录的 `.agent-tool-token` 并在运行结束后立即撤销。脚本身份的可用动作以脚本自身的 `actions` 白名单为事实源（默认 `task.create`、`task.update`、`task.brief`、`message.publish`、`document.publish`、`dashboard.save`），与主控权限位无关；审计 actor 记为 `automation:<脚本id>`，可与角色触发区分。
+除逐 Run 绑定的角色令牌外，还有一类**自动化脚本令牌**：`automation.save` 定义的项目脚本经统一定时入口（cron 或手动）触发时，平台为该次运行签发一次性令牌（`kind=automation`，不绑定 Run），写入脚本工作目录的 `.agent-tool-token` 并在运行结束后立即撤销。脚本身份的可用动作以脚本自身的 `actions` 白名单为事实源（默认 `task.create`、`task.update`、`task.brief`、`message.publish`、`document.publish`、`dashboard.save`、`board_source.save`），与主控权限位无关；白名单只能包含除 `channel.runs.list`、`channel.run.stop` 之外的动作，`automation.save` 传入这两个动作会返回 `invalid_arguments`。审计 actor 记为 `automation:<项目id>:<脚本短id>`，可与角色触发区分。
 
-脚本身份的 `message.publish` 以 `author_type=automation` 发布：不传 `mentions` 时只发消息、不触发任何角色；显式提及单个角色时直接派发该角色（结果不自动交回主控），提及多个角色时与人类消息一致收敛为只启动主控。脚本经 `task.create` 同步 Task 时，若项目配置的 Task 自动处理规则命中 label，会按规则的默认提示词和处理角色立即派发。
+脚本身份的 `message.publish` 以 `author_type=automation` 发布：不传 `mentions` 时只发消息、不触发任何角色；显式提及单个角色时直接派发该角色（结果不自动交回主控），提及多个角色时与人类消息一致收敛为只启动主控。任何身份调用 `task.create` 时，若项目配置的 Task 自动处理规则命中 label，都会按规则的默认提示词和处理角色立即派发，结果附带 `auto_dispatch`（`rule_label`、`sent`）；脚本同步外部 Task 是最常见的场景。
 
 ## 动作和并发规则
 
@@ -103,7 +106,7 @@ Runtime
 ```
 
 - 文档必须且只能提供 UTF-8 `content` 或 `content_base64`；单文件上限 50 MB。默认不覆盖已有文件，显式传 `overwrite: true` 才能覆盖并形成新版本。
-- `document.rename` 使用文档库内的 `source` 和 `target` 相对路径；源文件必须存在、目标路径必须不存在。移动和仅修改文件名使用同一动作，并以一次 Git 提交保留原文件的历史链。若源文档已有页面对话绑定，该频道、消息和 Runtime 会话会迁移到新路径。
+- `document.rename` 使用文档库内的 `source` 和 `target` 相对路径；源文件必须存在、目标路径必须不存在。移动和仅修改文件名使用同一动作，并以一次 Git 提交保留原文件的历史链。若源文档已有页面对话绑定，该频道、消息和 Runtime 会话会迁移到新路径；若目标路径已绑定另一个页面对话，返回 `channel_conflict`。
 - `task.delete`、`document.delete`、`dashboard.delete`、`guideline.delete` 和 `skill.delete` 都要求项目主控身份。目标不存在时返回 `task_not_found` 或 `not_found`，不会把删除不存在的资源误报为成功；成功结果包含 `recycle_item`。
 - `recycle.list` 返回当前项目全部类型的回收项；`recycle.restore` 和 `recycle.purge` 使用回收项 `id`，均要求项目主控身份。
 - `channel.runs.list` 不接受 Channel 参数，只查询 token 绑定的当前 Channel；`channel.run.stop` 只接受该查询返回的正整数 `run_id`，不能停止当前主控自身的 Run。
@@ -111,9 +114,10 @@ Runtime
 - `task.create` 和 `task.update` 使用 `title`、`summary`、`body`、`status`、`labels`、`channel_ids`；每个 Task 至少绑定一个当前项目的可用 Channel。
 - `task.brief` 追加状态简报，可用 `status` 同时更新 `open`、`in_progress`、`blocked`、`done` 状态。简报是追加记录，不覆盖正文。
 - `task.delete` 把 Task 正文和全部状态简报一起移入项目回收站；恢复后保留原 Task id、字段、简报作者、内容和时间。
+- `board_source.save` 创建或整体替换自定义看板数据源（`columns`、`cards`、`mode`），供 `dashboard.save` 的 taskboard 组件通过 `source` 绑定；`board_source.delete` 在数据源仍被面板引用时返回 `in_use`。
 - `automation.save` 按短 id 新建或按字段合并更新脚本：`script` 是脚本全文（有 shebang 按可执行文件运行，否则用 bash），`cron` 是五段 crontab（空字符串 = 仅手动触发），`actions` 是脚本令牌的动作白名单，`timeout_seconds` 是单次运行超时。`automation.delete` 删除脚本并撤销其令牌、清除运行记录。
 - 频道、面板、准则和 Skill 的 ID、项目归属、工作目录和 Markdown 属性都在统一动作实现中校验。
-- 成功结果包含规范 `/resources/...` URL；Agent 应把该 URL 放入频道回复，不应发布 `.missioncrew` 的真实路径。
+- 涉及频道、文档、任务、准则、Skill、自动化和回收站的动作，成功结果包含规范 `/resources/...` URL（`resource_url`）；Agent 应把该 URL 放入频道回复，不应发布 `.missioncrew` 的真实路径。
 
 成功响应：
 
@@ -142,7 +146,7 @@ Runtime
 }
 ```
 
-常见错误包括 `missing_token`、`invalid_token`、`expired_token`、`run_mismatch`、`run_inactive`、`permission_denied`、`invalid_request`、`invalid_arguments`、`already_exists`、`version_conflict` 和 `internal_error`。
+常见错误包括 `missing_token`、`invalid_token`、`expired_token`、`run_mismatch`、`run_inactive`、`permission_denied`、`invalid_request`、`invalid_arguments`、`already_exists`、`version_conflict` 和 `internal_error`。资源类错误还包括 `not_found`、`task_not_found`、`task_archived`、`channel_not_found`、`role_not_found`、`run_not_found`、`cannot_stop_self`、`file_too_large`、`channel_conflict`、`in_use`、`unsupported_action`；CLI 在无法连接或本地参数错误时自行生成 `connection_failed` / `client_error`。
 
 ## 审计与安全边界
 

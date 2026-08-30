@@ -1,98 +1,126 @@
 # MissionCrew
 
-MissionCrew 是一个 Channel 驱动的多 Agent 研发协作平台。它把本机已安装的 Agent CLI(Claude Code、Codex、Grok 等)组织成一个个项目里可 @ 的角色,让它们在频道里像一支真实团队那样协作:人类在聊天框里提需求,项目主控理解上下文、拆解任务、把简报派发给合适的角色,执行结果回到同一个频道继续讨论。整个平台纯本地运行——数据存在本地 SQLite,执行是本地 CLI 子进程,没有任何云端依赖。
+中文 | [English](README.en.md)
 
-它想解决的问题是:单个 Coding Agent 已经足够强,但真实研发工作仍然需要多视角协作——独立评审、安全审查、多模态验证、专项攻坚,以及把这些过程组织起来的持续上下文。直接开多个终端手工粘贴上下文既繁琐又不可追溯;而"把 Agent 当员工、预设固定流水线"的组织式平台又过重,与模型能力的增长方向相悖。MissionCrew 选择了一条中间路线:不预设阶段和流程,只提供项目、频道、角色和一套显式的派发机制,由主控 Agent 在预算内自主决定何时需要更多执行者。
+MissionCrew 是一个本地多 Agent 协作平台。它把本机已安装的 Agent CLI(Claude Code、Codex、Grok 等)组织成多个角色，通过聊天 channel 像团队一样协作。人类在聊天框提出需求，直接让对应角色或者通过主控调度多个角色完成任务。
 
-这带来几个实际的优点。协作过程完整落在频道里,谁派发了什么、谁回了什么结果都可回溯;每个角色固定使用一组 runtime/model,行为可预期,不会被平台悄悄换掉;派发是显式命令而非正文里的 @ 文本,提及有可信边界,Agent 引用其他角色不会误触发级联;每个角色拥有隔离的 harness 工作区,项目文档、准则和 Skill 以文件形式按需读取,不会混入业务代码仓。项目之间完全隔离,一套平台可以同时管理多个互不相干的工作。
+本项目可以整合本地的多个 Agent CLI，方便发挥不同工具和模型的优势，像群聊一样，向不同模型分配不同的任务。可以自定义工作准则和 skills，打造自己的 Agent 团队。
+
+![每个 issue / feature 一个频道；人类一句话提需求，主控派发给开发与测试并汇总](docs/images/chat.jpg)
+
+## 核心概念
+
+MissionCrew 为 Agent 提供一系列接口脚本，Agent 可以用执行命令的方法操作 MissionCrew 的资源，核心概念如下：
+
+- **Project(项目)**：项目之间配置和资源隔离，方便同时开展多项工作
+- **Runtime(运行时)**：本机安装的 Agent CLI，比如 Claude Code、Codex 等，可以自动发现，所有项目共享
+- **Role(角色)**：Runtime 配置 + 人设，比如选一个模型，作为开发，另一个作为测试
+- **Orchestrator(主控)**：从角色中选择一个作为主控，主控有比其他角色更大的权限，比如创建一个新的 Channel，如果一次对话没有 @ 任何角色，那么默认交给主控，其他角色的回复也会自动触发主控的动作
+- **Channel(频道)**：类似聊天窗口，所有 Agent 都可以读取会话记录，在其中进行协作
+- **Guidelines(准则)**：一种特殊的文档，列表会进入上下文，可以在这里面定义工作流程，比如开发要求、测试要求等
+- **Docs(文档库)**：MissionCrew 为每个项目都提供一个文档库，支持版本记录，适合保存一些不适合放进代码仓的文档
+- **Automation(自动化)**：通过定时或者手动触发一个脚本，调用 MissionCrew 的接口，完成动作
+
+**这些资源不需要人类手动管理。** 频道、Task、文档、准则、Skill、面板、自动化脚本，主控都能通过 Agent Tool 自己创建和维护：在聊天里说「把登录改造拆成几个 Task，建个频道跟进」「把刚才的结论整理成文档」「把这次的测试要求写进准则」，主控就会调用对应动作完成，并把结果以链接形式贴回频道；其他角色也可以创建和更新 Task、发布文档。Web 页面主要用来查看、审阅和偶尔手工调整，而不是日常的资源录入入口。
+
+详细文档可参考:[Runtime 接入](docs/runtimes.md)、[Agent Tool API](docs/agent-tool-api.md)、[资源与 URL 约定](docs/resources.md)、[harness 工作区边界](docs/agent-harness-workspace.md)、[项目 Skill 目录](docs/skills.md)、[命令行工具](docs/cli.md)。
 
 ## 快速开始
 
+环境要求：Python 3.10+、[uv](https://docs.astral.sh/uv/)、Node.js 18+（pm2 与 pi 需要 npm），以及本机至少一个已登录可用的 Agent CLI（如 `claude`、`codex`）。
+
 ```bash
-uv sync
-
-# 方式一:零成本演示(mock 后端,含派发、审批门禁、聊天级联)
-uv run mc demo
-
-# 方式二:接入真实本地 Agent
-uv run mc backend detect      # 扫描注册本机 CLI;自动创建 default 项目(含角色/频道)
-uv run mc serve               # 默认监听 0.0.0.0:8321,访问 http://<本机IP>:8321
+uv sync            # 创建 .venv 并安装依赖
+uv run mc serve    # 启动 Web 服务，默认监听 127.0.0.1:8321
 ```
 
-之后的所有操作都在 Web 里完成。顶部的项目切换器是所有页面的第一入口;每个项目自带 `general` 频道和一套默认角色(`@lead` 主控、`@dev` 开发、`@reviewer` 评审等)。
+打开 `http://127.0.0.1:8321`，之后的所有操作都在 Web 里完成：
 
-- **聊天协作**:在频道聊天框里直接提需求,默认交给项目主控。键入 `@` 会弹出角色选择器:只选一个角色时该角色直接执行,结果留在频道;选多个角色时平台只启动主控,由它拿着完整名单决定并行、顺序或改选。手动打出来的 `@xxx` 只是普通文字,永远不会触发角色。
-- **频道**:侧栏可创建、归档、删除频道;频道记录自己的用途和主工作目录,可以绑定真实代码仓协作。频道里有 Agent 排队或运行时,输入区提供"停止 Agent/停止全部"。
-- **Task 看板**:Task 类似 Issue,保存标题、正文、状态、标签、Channel 绑定和追加式状态简报。点击"交给 Lead 处理"就是在绑定频道里向主控发一条消息,后续完全复用聊天协作,没有独立的任务执行循环。
-- **项目设置**:维护角色(固定 runtime/model + 定位 + 能力 + 偏好)、多篇准则 Markdown、完整 Skill 包、版本化文档库和自定义面板。文档、准则和完整 Skill 包由平台用独立 Git 管理版本,可查看历史、比较和恢复;删除的内容统一进入项目回收站。
-- **全局设置**:维护新项目角色模板和 Runtime 列表(安装状态、版本、启停开关、模型清单)。
-- **运行状态**:查看全局 Runtime 实例、调用历史，以及本机已登录 Codex、Claude、Kimi、Grok 账户的限额窗口和重置时间。角色配置可逐个开启用量联动，在额度耗尽时只自动停用已开启的角色，并在重置到点后恢复。
+1. 进入「全局设置」，在运行时列表点击「重新检测」。平台扫描本机已安装的 Agent CLI 并注册，同时自动创建 `default` 项目，附带一套默认角色（`@lead` 主控、`@dev` 开发、`@reviewer` 评审等）和 `general` 频道。
+2. 回到聊天页，在 `general` 频道的输入框里直接提需求：不 @ 任何角色就交给主控调度；键入 `@` 选择某个角色则由它直接执行。
+3. 需要时在「项目设置」里调整角色的 runtime/模型与人设。准则、Skill、文档、频道、Task 这些资源既可以在页面上手工维护，也可以直接在聊天里让主控代劳。
 
-`mc serve` 默认监听所有 IPv4 接口以方便局域网访问,但不提供公网身份验证;请只在可信网络中使用,或用 `uv run mc serve --host 127.0.0.1` 限制为本机访问。聊天执行并发上限默认 16,可用 `--chat-workers <N>` 或环境变量 `MISSIONCREW_CHAT_MAX_WORKERS` 调整。
+各页面的用途：
 
-## 架构与核心概念
+- **聊天协作**：顶部的项目切换器是所有页面的第一入口。在频道聊天框里直接提需求，默认交给项目主控。键入 `@` 会弹出角色选择器：只选一个角色时该角色直接执行，结果留在频道；选多个角色时平台只启动主控，由它拿着完整名单决定并行、顺序或改选。手动打出来的 `@xxx` 只是普通文字，永远不会触发角色。
+- **频道**：侧栏可创建、归档、删除频道；频道记录自己的用途和主工作目录，可以绑定真实代码仓协作。频道里有 Agent 排队或运行时，输入区提供「停止 Agent / 停止全部」。
+- **Task 看板**：Task 类似 Issue，保存标题、正文、状态、标签、Channel 绑定和追加式状态简报。点击「交给 Lead 处理」就是在绑定频道里向主控发一条消息，后续完全复用聊天协作，没有独立的任务执行循环。
+- **项目设置**：维护角色（固定 runtime/model + 定位 + 能力 + 偏好）、多篇准则 Markdown、完整 Skill 包、版本化文档库和自定义面板。文档、准则和完整 Skill 包由平台用独立 Git 管理版本，可查看历史、比较和恢复；删除的内容统一进入项目回收站。
+- **全局设置**：维护新项目角色模板、Runtime 列表（安装状态、版本、启停开关、模型清单）和自定义模型接入。
+- **运行状态**：查看全局 Runtime 实例、调用历史，以及本机已登录 Codex、Claude、Kimi、Grok 账户的限额窗口和重置时间。角色配置可逐个开启用量联动，在额度耗尽时只自动停用已开启的角色，并在重置到点后恢复。
 
-```text
-        Web(聊天 + 看板)                    统一协作入口
-                    │
-     ┌──────────────▼───────────────┐
-     │           控制平面           │
-     │  结构化提及验证/显式派发/级联防护 │   Channel 协作引擎(collab/chat.py)
-     │  Task Issue/状态简报/Channel 绑定 │   Task 服务(collab/tasks.py)
-     │  上下文装配: 项目准则+角色人格+频道历史
-     └──────────────┬───────────────┘
-                    │ 执行配置
-     ┌──────────────▼───────────────┐
-     │           执行平面           │
-     │  本地 Agent CLI 子进程(runtime/adapters.py)
-     │  claude / codex / grok / opencode / copilot / cursor-agent / …
-     │  每频道×角色隔离的 .missioncrew harness 工作区
-     └──────────────────────────────┘
+**平台没有任何身份验证**，Web/API 能浏览本机目录、调度 Agent 执行命令，因此 `mc serve` 默认只监听本机 `127.0.0.1`。需要从局域网其他设备访问时显式传 `--host 0.0.0.0`（或设置环境变量 `MISSIONCREW_HOST`），并且只在可信网络中这样做，绝不要暴露到公网；详见 [SECURITY.md](SECURITY.md)。聊天执行并发上限默认 16，可用 `--chat-workers <N>` 或环境变量 `MISSIONCREW_CHAT_MAX_WORKERS` 调整。
+
+平台数据（SQLite、文档库、Agent 工作区、日志）默认放在当前目录的 `.missioncrew/`，可用环境变量 `MISSIONCREW_HOME` 覆盖；业务代码仓内不会被写入任何平台文件。
+
+## 用 pm2 常驻运行
+
+日常使用建议交给 [pm2](https://pm2.keymetrics.io/) 托管。仓库提供统一入口 `scripts/serve.sh`（配置在 `ecosystem.config.cjs`，服务名 `missioncrew`，用 `.venv/bin/python -m missioncrew.cli serve` 启动），不要再用 `nohup`/`setsid` 手工拉起：
+
+```bash
+npm install -g pm2          # 一次性安装 pm2
+
+scripts/serve.sh start      # 启动(默认只监听本机;局域网访问用 MISSIONCREW_HOST=0.0.0.0 scripts/serve.sh start)
+scripts/serve.sh status     # 查看 pm2 状态(等价 pm2 status missioncrew)
+scripts/serve.sh logs 100   # 查看最近 100 行日志
+scripts/serve.sh restart    # 重启
+scripts/serve.sh stop       # 停止
 ```
 
-| 概念 | 说明 |
-|---|---|
-| **Project(项目)** | 第一层级容器:唯一主控 + 角色/频道/任务/文档库/面板 + 准则、Skill 和受控资源,项目之间互不可见 |
-| **Runtime(运行时)** | 本机安装的 Agent CLI,全局资源,所有项目共享;模型清单挂在工具下供角色选择 |
-| **Role(角色)** | 项目内可 @ 的身份:固定 runtime/model + 定位 + 能力 + 偏好。定位是给角色本人与主控看的专长画像,不是任务描述;偏好是给主控选人的领域/风格短标签 |
-| **Channel(频道)** | 项目内面向某类任务的协作场所,记录用途并装配完整项目上下文,可指定真实仓库工作目录 |
-| **Task** | 类似 Issue 的协作入口:标题、正文、状态、标签、Channel 绑定与多条状态简报 |
-| **Document Library** | 对 Runtime 是普通共享目录,对平台是可查询、可回读的 Git 版本库;准则和完整 Skill 包也有各自的项目级 Git 历史 |
-| **Board** | 主控可创建和编辑的通用 12 列网格面板,动态保存组件类型、布局和内容 |
+几条约定：
 
-**派发模型**:只有项目主控能调度其他角色,且派发是显式命令——执行 Agent Tool 的 `message.publish` 并把角色 id 写进 `mentions` 数组,平台据此生成合法提及并触发执行。Agent 正文里的任何 `@角色` 都只是普通文字,永不触发,因此描述已完成的派发、引用其他角色的报告都安全。至少一个角色实际启动后,工具返回 `handoff: "end_turn"`,主控立即结束当前 turn,不在原 turn 内轮询等待,也不向执行中的同一角色追加中间状态请求;这类请求无法插入持久会话的当前 turn,只会排到原任务之后。被派发角色完成或失败后,平台自动启动新的主控 turn 并交回完整结果。人类单选角色时结果留在频道,不自动唤起主控。平台不限制调度层级,只保留单条协作链的执行总次数兜底(项目级可配置,默认 100 次)。
-
-**工具操作可见性**:Agent 通过 MissionCrew Tool 成功执行创建 Channel、更新文档、修改 Task 等写操作后,发起调用的会话会显示一条包含角色、动作和结果摘要的平台回执。失败和只读调用不显示;`message.publish` 本身已经是可见消息,不会重复回执。
-
-**角色启停**:人类可在项目设置中临时停用角色。停用角色不会进入 Agent 名册、聊天提及选择器或新的派发,对 Agent 而言与角色不存在相同;角色配置、聊天历史与原生会话仍会保留,已经开始的 turn 也不会中断,重新启用后即可继续使用。当前项目主控不能直接人工停用,需要先把主控切换到另一个已启用角色。每个角色可独立开启账户用量联动：任务结束或页面刷新发现某个窗口达到 100% 时，平台只自动停用绑定该 Runtime 且已开启联动的角色；同一 Runtime 下使用第三方 LLM API 的角色可以保持关闭。已知重置时间到点后只通过本地计时恢复，不进行周期性用量探测；Claude Fable 使用独立周窗口。
-
-**会话与上下文**:同一频道内同一角色复用 Runtime 原生会话;每轮重新注入带版本的项目公共上下文,项目设置更新后旧会话的下一轮会收到新版本。每个角色获得隔离的 `.missioncrew/` harness 工作区(位于平台数据根,不在业务代码仓内),其中提供脱敏频道历史、版本化文档库、只读 Task 快照、准则和 Skill 文件,Agent 结合任务按需读取。平台数据默认在 `./.missioncrew/`,可用 `MISSIONCREW_HOME` 覆盖。
-
-更细的契约文档:[Runtime 接入](docs/runtimes.md)、[Agent Tool API](docs/agent-tool-api.md)、[资源与 URL 约定](docs/resources.md)、[harness 工作区边界](docs/agent-harness-workspace.md)、[项目 Skill 目录](docs/skills.md)。
+- 服务按常规继承调用方的环境变量，尤其是完整的 PATH——Runtime 检测靠它探测本机装了哪些 Agent CLI；新安装了 CLI 后执行 `scripts/serve.sh restart`（带 `--update-env`），新工具才会被检测到。宿主终端注入的变量（`VSCODE_*`、`CLAUDE_*`、`GIT_ASKPASS`、`SSH_AUTH_SOCK` 等）由派发层在启动 Agent 子进程前统一剥离，与启动方式无关。
+- 日志由 pm2 接管 stdout/stderr，写到 `.missioncrew/server.log`。
+- 健康检查请访问 `/api/overview` 这类会读取数据库的接口；首页是静态 HTML，返回 200 不代表服务正常。
+- 重启或停止前先确认没有正在执行的 Agent：「运行状态」页没有运行中的实例，频道里没有排队或运行中的任务。pm2 停服时会给服务最多 30 秒优雅退出，逐个结束常驻的 CLI 会话。
 
 ## 支持的本地 Agent
 
-`mc backend detect` 自动扫描本机安装的 CLI 并注册,一个工具一条记录。打印模式 CLI 通过内置命令模板传递 prompt,用各工具的 session/resume 参数恢复会话;ACP 协议 CLI 作为长驻 JSON-RPC 服务挂在 stdio 上,平台自动应答其权限请求。
+「重新检测」按下表逐个探测本机 PATH（pi 例外，见下文），一个工具一条注册记录；角色固定绑定某个 runtime 与模型。接入方式分三类：
 
-| CLI | 适配器 | 接入方式 | 自带模型清单(自动填充,不可编辑) |
-|---|---|---|---|
-| `claude` (Claude Code) | `claude_code` | 打印模式 | (CLI 默认)/ haiku / sonnet / opus / fable;带版本号的型号见「来自 runtime」 |
-| `codex` (OpenAI Codex) | `codex` | 打印模式(`codex exec` 工作区沙箱) | CLI 默认 |
-| `grok` (Grok Build) | `grok_build` | ACP stdio(`grok agent stdio`) | CLI 默认 |
-| `opencode` | `opencode` | 打印模式 | CLI 默认 |
-| `copilot` (GitHub Copilot CLI) | `copilot` | 打印模式 | CLI 默认 |
-| `cursor-agent` (Cursor) | `cursor` | 打印模式 | CLI 默认 |
-| `codebuddy` | `codebuddy` | 打印模式 | CLI 默认 |
-| `pi` | `pi` | 打印模式 | CLI 默认 |
-| `kimi` (Kimi CLI) | `kimi` | ACP stdio 协议 | CLI 默认 |
-| `kiro-cli` (Kiro) | `kiro` | ACP stdio 协议 | CLI 默认 |
-| `qodercli` (Qoder) | `qoder` | ACP stdio 协议 | CLI 默认 |
-| `traecli` (Trae) | `trae` | ACP stdio 协议 | CLI 默认 |
+- **原生协议**：claude、codex、pi 各有专用 provider，直接对接工具自身的结构化协议，会话恢复、权限应答、推理力度都在协议内完成；
+- **ACP stdio**：CLI 作为长驻 JSON-RPC 服务挂在 stdio 上，平台自动应答其权限请求；
+- **打印模式**：通过内置命令模板传递 prompt，用各工具的 session/resume 参数恢复会话。
+
+| CLI | adapter | 接入方式 |
+|---|---|---|
+| `claude` (Claude Code) | `claude_code` | 原生双向 stream-json；自带 haiku / sonnet / opus / fable 别名清单 |
+| `codex` (OpenAI Codex) | `codex` | 原生 app-server；模型清单从当前账号动态读取 |
+| `pi` | `pi` | 原生 RPC（平台 vendored 安装）；承接自定义 API 模型 |
+| `grok` (Grok Build) | `grok_build` | ACP stdio |
+| `copilot` (GitHub Copilot CLI) | `copilot` | ACP stdio |
+| `kimi` (Kimi CLI) | `kimi` | ACP stdio |
+| `kiro-cli` (Kiro) | `kiro` | ACP stdio |
+| `qodercli` (Qoder) | `qoder` | ACP stdio |
+| `traecli` (Trae) | `trae` | ACP stdio |
+| `opencode` | `opencode` | 打印模式 |
+| `cursor-agent` (Cursor) | `cursor` | 打印模式 |
+| `codebuddy` | `codebuddy` | 打印模式 |
 
 协议流程、检测与升级机制、模型清单来源、新工具接入步骤见 [docs/runtimes.md](docs/runtimes.md)。
 
-## 测试
+### 接入 API 模型（通过 pi 实现）
 
-```bash
-uv run pytest -q
-```
+除本机 CLI 外，MissionCrew 也支持直接接入 **OpenAI / Anthropic 兼容的 API**——自建推理服务、网关代理、第三方托管都可以，接口协议支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Generative AI。这类模型由 [pi](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) 执行：平台不重写 agent 循环，复用 pi 的工具执行与会话管理，通过它的 RPC 模式对接。接入步骤：
+
+1. **安装 pi**。pi 由平台以 vendored 方式装在数据目录内，检测只认这份安装、不探测系统级 pi。首次使用需要 Node.js/npm，手动装一次（`MISSIONCREW_HOME` 改过时替换路径前缀）：
+
+   ```bash
+   npm install --prefix .missioncrew/pi/vendor --no-fund --no-audit @mariozechner/pi-coding-agent@latest
+   ```
+
+   然后在「全局设置」点「重新检测」注册并启用 `pi`；之后的升级由该页的「更新」按钮完成，只写 vendor 目录，不会 `-g` 污染全局。
+2. **添加接入**。在「全局设置 → 自定义模型接入」新增一条：接入名、接口协议、Base URL、API Key（字面量或 `$ENV_VAR` 引用，密钥不会回传浏览器）和模型 id 列表。
+3. **绑定角色**。保存后模型以 `接入名/模型id` 的形态出现在角色编辑器的模型清单中，给角色选择 runtime `pi` 和该模型即可使用。
+
+接入配置落在 `.missioncrew/pi/agent/models.json`（权限 0600），会话文件在 `.missioncrew/pi/sessions`，不读写 `~/.pi`。对接细节见 [docs/runtimes.md](docs/runtimes.md) 的「pi RPC 与裸 API 接入」与「自定义模型接入」两节。
+
+## 许可证
+
+本项目以 [MIT License](LICENSE) 发布。
+
+## 致谢
+
+本项目受 [multica](https://github.com/multica-ai/multica)、[hapi](https://github.com/tiann/hapi) 及其他 happy 系应用的启发。
+
+感谢 [linux.do](https://linux.do/) 社区。

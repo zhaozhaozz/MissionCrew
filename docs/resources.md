@@ -7,6 +7,8 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 
 公开 URL 不是文件路径，也不会授予 Runtime 新的文件权限；harness 中的真实路径则只用于工具访问，不应发布到聊天消息中。
 
+下文各类资源都有对应的 Agent Tool 动作（见 [Agent Tool API](agent-tool-api.md)）。日常使用中不需要人类在页面上逐个录入：主控可以在对话里按需创建频道、Task、文档、准则、Skill、面板和自动化脚本，并把规范 URL 贴回频道；Web 页面用于查看、审阅和人工干预。
+
 ## 公开资源 URL
 
 ### 规范
@@ -28,28 +30,29 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 | 频道 | `/resources/<project>/channels/<channel-id>` | 项目内频道短 ID | 对应聊天频道 |
 | Task | `/resources/<project>/tasks/<task-id>` | 全局 Task ID | 内置 Task 看板及详情 |
 | 自定义面板 | `/resources/<project>/dashboards/<board-id>` | 项目内面板短 ID | 对应自定义面板 |
-| 内置任务看板 | `/resources/<project>/dashboards/tasks` | 保留标识 `tasks` | 项目任务看板 |
+| 内置任务看板 | `/resources/<project>/dashboards/tasks` | 保留标识 `tasks`（由前端路由约定；后端目前不阻止创建同名自定义面板，应避免使用该 ID） | 项目任务看板 |
 | 准则 | `/resources/<project>/guidelines/<name>` | Markdown frontmatter 的 `name` | 对应准则编辑/预览页 |
 | Skill | `/resources/<project>/skills/<skill-id>` | 项目 Skill ID | Skill 的 `SKILL.md` 页面 |
 | Skill 内文件 | `/resources/<project>/skills/<skill-id>/<relative-path>` | Skill 目录内相对路径 | 文件树中的对应文件 |
 | 项目文档 | `/resources/<project>/documents/<relative-path>` | 文档库内相对路径 | 对应版本化文档页 |
 | 项目回收站 | `/resources/<project>/recycle-bin` | 项目 ID | 全部可恢复项目资源的统一列表 |
+| 自动化 | `/resources/<project>/automations/<automation-id>` | 项目内自动化短 ID | 对应自动化详情页 |
 
 例如：
 
 ```markdown
-[架构文档](/resources/science_agent/documents/architecture/current.md)
-[端到端测试准则](/resources/science_agent/guidelines/web-e2e-testing)
-[任务看板](/resources/science_agent/dashboards/tasks)
-[架构讨论频道](/resources/science_agent/channels/architecture-doc)
-[项目回收站](/resources/science_agent/recycle-bin)
+[架构文档](/resources/acme-shop/documents/architecture/current.md)
+[端到端测试准则](/resources/acme-shop/guidelines/web-e2e-testing)
+[任务看板](/resources/acme-shop/dashboards/tasks)
+[架构讨论频道](/resources/acme-shop/channels/architecture-doc)
+[项目回收站](/resources/acme-shop/recycle-bin)
 ```
 
 ## 各类资源的存储与行为
 
 ### 频道
 
-频道及消息的事实源是平台数据库。频道保存用途、工作目录、归档状态和最近活动时间；频道 URL 打开项目聊天页并选择对应频道。
+频道及消息的事实源是平台数据库。频道保存用途、工作目录和归档状态，最近活动时间由平台按消息表实时计算；频道 URL 打开项目聊天页并选择对应频道。
 
 归档频道默认不进入 Agent 可见范围。人类打开归档频道时仍可查看历史；Agent 向归档频道发布新消息前，平台会重新激活该频道。项目内部的 `general` 频道是保留默认频道，其资源 URL 使用短 ID `general`。
 
@@ -67,7 +70,7 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 
 Task 是类似 Issue 的协作入口，事实源是平台数据库。它包含标题、简介、正文、状态、标签、一个或多个 Channel 绑定，以及多条追加式状态简报。Task URL 打开内置任务看板并展开详情。
 
-Agent harness 同时提供 `.missioncrew/tasks/` Markdown 快照。Agent 使用 `task.create`、`task.update` 和 `task.brief` 修改事实源，项目主控使用 `task.delete` 删除；人类使用同一组 Web/API 字段。删除时 Task 与状态简报一起进入项目回收站，恢复后仍使用原 Task id。处理 Task 时，平台不启动独立执行引擎，而是在每个绑定 Channel 中向项目主控发送普通消息，由既有 Channel 协作流程接管。
+Agent harness 同时提供 `.missioncrew/tasks/` Markdown 快照。Agent 使用 `task.create`、`task.update` 和 `task.brief` 修改事实源，项目主控使用 `task.delete` 删除；人类使用同一组 Web/API 字段。删除时 Task 与状态简报一起进入项目回收站，恢复后仍使用原 Task id。处理 Task 时，平台不启动独立执行引擎，而是在每个绑定 Channel 中发送普通消息：默认发给项目主控，带结构化提及或命中自动处理规则时发给指定角色，由既有 Channel 协作流程接管。
 
 主要 API：
 
@@ -154,7 +157,7 @@ Web 目录树由文件清单中的相对路径即时构造，不存在独立的�
 
 ### 项目统一回收站
 
-文档、准则、完整 Skill 包、自定义面板、Task、频道、非主控角色和项目资源引用删除后，都进入项目自己的统一回收站。物理条目保存在 `projects/<project>/recycle-bin/<item-id>/`，其中包含平台私有 manifest 和内容或数据库快照；这个内部目录不会加入 Runtime 的允许目录，也不会通过 API 暴露。旧版 `.skill-trash/` 中的完整 Skill 包会在服务启动时迁入统一回收站。
+文档、准则、完整 Skill 包、自定义面板、Task、频道（绑定文档/准则/Skill 页面的内容频道除外，它们随内容删除或自身删除时被永久清除）、非主控角色和项目资源引用删除后，都进入项目自己的统一回收站。物理条目保存在 `projects/<project>/recycle-bin/<item-id>/`，其中包含平台私有 manifest 和内容或数据库快照；这个内部目录不会加入 Runtime 的允许目录，也不会通过 API 暴露。旧版 `.skill-trash/` 中的完整 Skill 包会在服务启动时迁入统一回收站。
 
 回收站页面是项目级单页视图，可以按资源类型筛选。每项显示原名称、稳定标识、删除时间、操作者和大小。恢复会重建资源事实源，并同步 Project 索引及准则/Skill 实时视图；只有整条链完成才移除回收项。若原路径或 ID 已被新资源占用，恢复返回 `409`，现有资源和回收项都保持不变。永久删除单项和清空回收站不可撤销，Web 会先要求确认。
 
@@ -169,7 +172,7 @@ Web 目录树由文件清单中的相对路径即时构造，不存在独立的�
 
 ## Runtime 可见的文件资源
 
-每次 Channel 角色执行都会获得独立的 `MISSIONCREW_WORKSPACE`。典型结构如下：
+每个 Channel×角色组合拥有独立的 `MISSIONCREW_WORKSPACE`，每次执行前由平台刷新。典型结构如下：
 
 ```text
 .missioncrew/

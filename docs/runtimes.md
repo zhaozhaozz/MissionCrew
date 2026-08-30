@@ -35,7 +35,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 - `stop(Backend, session_key="") -> int`：停止指定 Runtime 的活动 CLI 进程、ACP 一次性执行或长驻会话。
 - `interrupt(Backend, session_key="") -> int`：原生 provider 中断当前 turn，但保留 session/thread 供下一轮继续；不支持的 Runtime 返回 0。
 - `supports_session()` / `capabilities()`：查询实际会话复用和生命周期能力，聊天层不再猜测后端类型。
-- 原生 provider 还声明 `structured_events`、`user_interaction`、`permission_control` 和 `interrupt`，前端只按能力呈现操作，不判断 Claude/Codex 名称。
+- Claude/Codex 原生 provider 还声明 `structured_events`、`user_interaction`、`permission_control` 和 `interrupt`；pi 只声明 `structured_events` 与 `interrupt`（pi RPC 没有权限/提问回传通道）。前端只按能力呈现操作，不判断 Claude/Codex 名称。
 - `list_models()`、`effort_options()`：统一模型和推理力度管理。
 - `account_usage()`：读取本机已登录账户的限额窗口；provider 只返回统一快照，不暴露凭据或上游原始响应。
 - `detect_report()`、`detect_backends()`、`update()`、`refresh_installation()`：统一发现、注册、升级和版本探测。
@@ -75,13 +75,13 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 | Codex | 启动已安装的 `codex app-server`，以 `capabilities.experimentalApi=true` 完成 `initialize/initialized`，再调用官方 `account/rateLimits/read` | app-server 自己读取 Codex CLI 当前账户；MissionCrew 不直接读取 Codex 凭据 | `rateLimitsByLimitId` 下每个 limit id 的 `primary` / `secondary` 桶映射为独立窗口；读取 `usedPercent`、`windowDurationMins`、`resetsAt`，并显示 `planType` 与非敏感 credits 余额。协议字段见 [Codex App Server 文档](https://developers.openai.com/codex/app-server/) |
 | Claude | 执行 `claude -p "/usage" --output-format json`，只解析 JSON `result` 中形如 `Current week …: 53% used · resets …` 的 `/usage` 文本 | Claude Code 命令自己使用当前登录态；该命令不启动模型推理。MissionCrew 不读取 Claude 凭据 | `Current session` 映射为 5 小时窗口，`Current week (all models)` 与模型专项周限额映射为周窗口。角色联动中，会话窗口约束全部 Claude 角色；普通周窗口只约束非 Fable 角色，`Current week (Fable)` 只约束模型名含 Fable（兼容 Fabel 拼写）的角色。重置时间可能省略年份或分钟，解析时补当前年份并处理跨年 |
 | Kimi | 对 Kimi managed provider 的 `${base_url}/usages` 发起只读 GET；默认 `base_url=https://api.kimi.com/coding/v1`，支持 `KIMI_CODE_BASE_URL` 与 `~/.kimi-code/config.toml` 的 `providers."managed:kimi-code".base_url` | 默认从 `$KIMI_CODE_HOME/credentials/kimi-code.json`（未设置时 `$KIMI_CODE_HOME=~/.kimi-code`）读取 OAuth token；只接受无 group/other 权限的凭据文件。access token 过期时，按 Kimi CLI 相同的 `~/.kimi-code/oauth/kimi-code.lock` 跨进程锁约定，通过 `$KIMI_CODE_OAUTH_HOST/api/oauth/token` 刷新并以 `0600` 原子替换凭据，避免 refresh token 轮换竞争 | 顶层 `usage` 映射为周限额，`limits[].detail` 映射为短窗口；用 `limit`、`used` 或 `remaining` 计算百分比，用 `window.duration/timeUnit` 识别 5 小时等窗口，读取 `resetTime`。可显示 membership level、并发上限和 Booster 余额 |
-| Grok | 使用 Grok CLI 当前的 chat proxy base URL，请求 `${GROK_CLI_CHAT_PROXY_BASE_URL:-https://cli-chat-proxy.grok.com/v1}/billing?format=credits`，请求头带 `x-grok-client-mode: grok-build` | 从 `${GROK_AUTH_FILE:-~/.grok/auth.json}` 选择未过期的 Bearer token；只接受无 group/other 权限的凭据文件。401 时执行不推理的 `grok models`，让 Grok CLI 按自身流程刷新登录态，再重新读取一次 | `config.creditUsagePercent` 和 `config.currentPeriod` 映射为当前额度窗口；Grok 的 protobuf JSON 在新周期用量为 0 时可能省略 `creditUsagePercent`，此时只有在周期起止时间均有效时才按 0% 处理。套餐兼容读取顶层或 `config` 中的 `subscriptionTier`；另显示 prepaid balance、on-demand used/cap 与 `productUsage` 分布 |
+| Grok | 使用 Grok CLI 当前的 chat proxy base URL，请求 `${GROK_CLI_CHAT_PROXY_BASE_URL:-https://cli-chat-proxy.grok.com/v1}/billing?format=credits`，请求头带 `x-grok-client-mode: grok-build` | 从 `${GROK_AUTH_FILE:-~/.grok/auth.json}` 选择 `expires_at`/`create_time` 最新的 Bearer token（不在本地判断过期，过期由 401 刷新路径处理）；只接受无 group/other 权限的凭据文件。401 时执行不推理的 `grok models`，让 Grok CLI 按自身流程刷新登录态，再重新读取一次 | `config.creditUsagePercent` 和 `config.currentPeriod` 映射为当前额度窗口；Grok 的 protobuf JSON 在新周期用量为 0 时可能省略 `creditUsagePercent`，此时只有在周期起止时间均有效时才按 0% 处理。套餐兼容读取顶层或 `config` 中的 `subscriptionTier`；另显示 prepaid balance、on-demand used/cap 与 `productUsage` 分布 |
 
 Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构化契约。Claude 官方提供 `/usage`，但当前 CLI 只通过人类可读文本返回，因此解析器对文案变化采用“无法识别即暂不可用”，不会猜测百分比。Kimi 的 `/usages` 与 OAuth 协议来自 CLI 自带 managed-provider 实现。Grok 的 billing 路径由 Grok CLI 内部使用，并不是 ACP v1 的公开方法；上游若变更路径或响应结构，对应卡片会安全降级，聊天 Runtime 仍可继续工作。
 
 凭据读取遵循最小权限：只读当前服务用户的 CLI 登录文件，只把 token 放进目标域名的 `Authorization` 请求头；不会写日志、进入异常消息、返回前端或持久化到数据库。Kimi OAuth 刷新是唯一会直接更新凭据文件的路径，更新采用同目录临时文件、`fsync`、原子替换和 `0600` 权限；Grok 刷新完全委托给 `grok models`。若凭据不存在、JSON 损坏或权限比 `0600` 更宽，MissionCrew 不使用它，并提示需要登录。
 
-页面下方的「使用历史」来自独立的 `GET /api/runtime/history`，记录的是每次 `RuntimeManager.start()` 调用，而不是进程实例生命周期。`RuntimeProvider.execution_info()` 声明该次调用的 `persistent` / `one_shot` 形态与 transport；统一管理器在调用 provider 前写入 `running`，返回后更新为 `succeeded` 或 `failed`。记录包含 Runtime、项目、角色、session key、模型、effort、工作目录、起止时间和耗时，保存在平台 SQLite 中，因此服务重启后仍保留。
+页面下方的「使用历史」来自独立的 `GET /api/runtime/history`，记录的是每次 `RuntimeManager.start()` 调用，而不是进程实例生命周期。`RuntimeProvider.execution_info()` 声明该次调用的 `persistent` / `one_shot` 形态与 transport；统一管理器在调用 provider 前写入 `running`，返回后更新为 `succeeded`、`failed`，或在本轮已被用户停止时记为 `interrupted`。记录包含 Runtime、项目、角色、session key、模型、effort、工作目录、起止时间和耗时，保存在平台 SQLite 中，因此服务重启后仍保留。
 
 `ExecutionConfig`、`RuntimeInstance` 与 `runtime_usage` 同时携带 `project_id` 和 `role_id`。因此全局后端概览会聚合当前实例所属的项目和角色，实例表与历史表也直接显示这两个字段；非项目调用两者可以为空。
 
@@ -111,7 +111,7 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 
 会话元数据保存在 SQLite `chat_sessions`：除原生 ID 外，还记录 backend id、adapter、解析后的 workdir 和最后成功接收的公共上下文版本。只有 backend、adapter、workdir 均兼容时才恢复；角色、频道或 backend 删除时同步清理。项目设置变化在下一轮把完整新版公共上下文注入原会话；Claude 的模型、effort、目录或进程环境变化会重启 OS 进程，但仍以原生 id 恢复同一会话。若 Claude/Codex 明确报告 session/thread 不存在或无效，本轮会失败并删除旧记录，绝不在同一轮静默新建；用户下一次明确重试时才使用恢复输入建立新会话。
 
-Runtime 启动命令由 provider 固定维护，不允许通过 Backend 数据覆盖。若新增或调整打印 Runtime，必须在 `DEFAULT_COMMANDS` 和会话策略集合中同时登记，并补首轮、续接和缺失 ID 的测试；ACP serve 命令则统一维护在 `ACP_SERVE_COMMANDS`。
+Runtime 启动命令由 provider 固定维护，不允许通过 Backend 数据覆盖。若新增或调整打印 Runtime，在 `runtime/clis/<tool>.py` 的 `CliSpec` 中声明 `command` 模板、`session_id`（`fixed`/`captured`）与 `session_args` 钩子并追加进 `clis.SPECS`，`DEFAULT_COMMANDS` 与会话策略集合由声明自动汇总；同时补首轮、续接和缺失 ID 的测试。ACP serve 命令同样在 `CliSpec.acp_serve` 中声明，汇总为 `ACP_SERVE_COMMANDS`。
 
 ### Claude 双向 stream-json
 
@@ -131,7 +131,7 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 
 ### pi RPC 与裸 API 接入
 
-pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平台不重写 agent 循环,直接复用 pi 的工具执行与会话管理。接入走 pi 官方为跨语言宿主设计的 RPC 模式(`pi --mode rpc`),行式 JSON:客户端发 `{"type": <command>, "id": ...}`,进程回 `{"type": "response"}`,回合过程以 `agent_start`、`message_update`(text/thinking delta)、`tool_execution_start/end`、`message_end`、`agent_end` 等事件流出,分别映射到聊天过程事件。注意 `agent_end` 不是可靠的回合终点:pi 遇瞬态错误会在 `agent_end` 后立刻发 `auto_retry_start` 并重开一轮,因此 provider 以短静默期(1s 内无重试事件)判终。
+pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平台不重写 agent 循环,直接复用 pi 的工具执行与会话管理。接入走 pi 官方为跨语言宿主设计的 RPC 模式(`pi --mode rpc`),行式 JSON:客户端发 `{"type": <command>, "id": ...}`,进程回 `{"type": "response"}`,回合过程以 `message_update`(text/thinking delta)、`tool_execution_start/end`、`message_end`、`compaction_start/end`、`auto_retry_start`、`agent_end` 等事件流出,分别映射到聊天过程事件(`agent_start` 不产生过程事件)。注意 `agent_end` 不是可靠的回合终点:pi 遇瞬态错误会在 `agent_end` 后立刻发 `auto_retry_start` 并重开一轮,因此 provider 以短静默期(1s 内无重试事件)判终。
 
 隔离约定:
 
@@ -167,7 +167,7 @@ pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平�
 
 - `{prompt}` — 装配好的完整提示词(角色定位、项目上下文、JSON 格式的最近对话与触发消息、按需读取的频道历史文件路径);
 - `{model}` — 角色固定的模型;为空时该 token 连同紧邻的 `--model`/`-m` 标志一起移除,即显式使用 CLI 默认模型;
-- `{effort}` — 角色固定的推理力度(见下方 Effort 一节);为空时连同紧邻的 `--effort`/`--reasoning-effort`/`-c` 标志一起移除;
+- `{effort}` — 角色固定的推理力度(见下方 Effort 一节);为空时连同紧邻的 `--effort`/`--reasoning-effort`/`-c`/`--config` 标志一起移除;
 - `{documents_dir}` — 项目文档库路径的兼容占位符；新模板应使用 `{allowed_dirs}`；
 - `{allowed_dirs}` — 当前项目全部本地资源目录与文档库；会展开为重复的 `--add-dir <path>`；
 - `{workdir}` — 本次主工作目录，用于需要显式工作根参数的 CLI。
@@ -210,7 +210,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 ## 检测与注册
 
 - **检测**(`detect_report`):对检测表逐个 `which` 探测 PATH,已安装的再跑 `--version` 提取语义版本号(输出中匹配不到语义版本就留空——有些安装 shim 会输出无关提示文本);pi 例外,只认平台 vendored 安装(`MC_HOME/pi/vendor`),不探测系统 PATH;
-- **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并按 `KNOWN_MODELS` 刷新工具自带模型清单(目前只有 claude 预置:`""`(CLI 默认)/haiku/sonnet/opus/fable);
+- **注册**(`detect_backends`):一个工具一条注册记录,写入二进制路径、版本、默认能力/档位/成本,并刷新工具自带模型清单:按 `KNOWN_MODELS` 预置(目前只有 claude:`""`(CLI 默认)/haiku/sonnet/opus/fable),声明了 `configured_models` 钩子的工具(pi)则从平台 `models.json` 动态读取;
 - Runtime 管理页只呈现工具、版本与安装状态;每条记录有启用开关,停用的 runtime 不能被角色绑定(保存时 400),已绑定角色的执行会明确报"不可用"。
 
 ## 角色临时启停
@@ -225,7 +225,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 
 角色编辑器的模型下拉合并两个来源:
 
-1. **工具自带清单**(`Backend.models`):只有模型名的有序列表,`""` 表示 CLI 默认、排在最前。检测时按 `KNOWN_MODELS` 刷新,**不可编辑**——`POST /api/backends` 不接受 `models` 字段。平台不跟踪单个模型的档位与成本,配额一律按工具级 `cost_per_run` 扣减。
+1. **工具自带清单**(`Backend.models`):只有模型名的有序列表,`""` 表示 CLI 默认、排在最前。检测时按 `KNOWN_MODELS` 刷新,pi 改从平台 `models.json` 读取并在 `PUT /api/model-providers` 后同步刷新;两者都**不可编辑**——`POST /api/backends` 不接受 `models` 字段。平台不跟踪单个模型的档位与成本,配额一律按工具级 `cost_per_run` 扣减。
 2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟):
    - codex:默认通过 `codex app-server` 的 `model/list` 分页读取当前账号可用目录；协议启动失败时退回 `codex debug models --bundled`；
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);

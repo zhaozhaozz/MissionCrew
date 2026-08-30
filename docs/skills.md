@@ -32,7 +32,7 @@ Read `references/checklist.md`, then run `scripts/inspect.py` when needed.
 
 其他 frontmatter 属性会原样保留，以兼容不同 Agent 后端的扩展。`scripts/`、`references/`、`assets/` 和其他同目录文件都会作为 Skill 包的一部分保留。
 
-Skill id 默认取目录名，只允许字母、数字、下划线和连字符。ZIP 根目录直接包含单个 `SKILL.md` 时，MissionCrew 使用 frontmatter 的 `name` 作为 id，前提是它也满足 id 规则。
+Skill id 默认取目录名，只允许字母、数字、下划线和连字符。导入 ZIP 或本地目录时，若 `SKILL.md` 所在目录名不满足 id 规则（ZIP 根目录直接放 `SKILL.md` 即属此情况），MissionCrew 改用 frontmatter 的 `name` 作为 id，前提是它也满足 id 规则。
 
 ## 三种导入方式
 
@@ -70,7 +70,7 @@ Skill id 默认取目录名，只允许字母、数字、下划线和连字符�
 
 每次执行前，MissionCrew 扫描项目 Skill 库，并执行以下通用适配：
 
-1. 只把已启用 Skill 以目录链接映射到当前 Agent 的 `.missioncrew/skills/<id>/`。
+1. 只把已启用 Skill 以目录链接映射到项目级共享视图 `projects/<project-id>/runtime-context/skills/<id>/`；每个 Agent 工作区的 `.missioncrew/skills` 是指向该共享视图的链接，因此 Agent 侧路径仍是 `.missioncrew/skills/<id>/`。
 2. 通过 `MISSIONCREW_SKILLS_DIR` 告知 Runtime 统一入口。
 3. 把真实项目 Skill 根和 Agent harness 根加入 `MISSIONCREW_ALLOWED_DIRS`，支持原生多目录授权的 Runtime 同时获得对应命令行权限。
 4. 在持久公共上下文中列出每个 Skill 的 id、name、description、完整目录内容版本和 `SKILL.md` 路径，不预加载正文。
