@@ -12,9 +12,24 @@ from .context import ApiContext
 WEB_DIR = Path(__file__).parent.parent / "web"
 
 
+class _RevalidatedStaticFiles(StaticFiles):
+    """静态资源强制协商缓存。
+
+    不带 Cache-Control 时浏览器按启发式(Last-Modified 距今的 10%)判新鲜,
+    旧文件会被缓存数天,发版后页面拿不到新 js/css;no-cache 让每次加载都带
+    ETag 校验,未变返回 304,改动立即生效。
+    """
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+
 def register(app: FastAPI, _ctx: ApiContext) -> None:
     # 前端拆分后的 css/js 走静态资源;挂载在 catch-all 之前,前缀优先匹配
-    app.mount("/assets", StaticFiles(directory=str(WEB_DIR)), name="assets")
+    app.mount("/assets", _RevalidatedStaticFiles(directory=str(WEB_DIR)),
+              name="assets")
 
     @app.get("/", response_class=HTMLResponse)
     def index():
