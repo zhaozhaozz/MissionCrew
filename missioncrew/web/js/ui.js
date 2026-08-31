@@ -191,6 +191,11 @@ let routeRestored = false;   // 首次加载按 URL 还原视图后才允许写 
 const CHANNEL_FILTERS = new Set(["all", "active", "archived"]);
 let channelFilter = localStorage.getItem("mc.channelFilter") || "active";
 if (!CHANNEL_FILTERS.has(channelFilter)) channelFilter = "active";
+// 频道/任务列表按当前项目 + 筛选状态向服务端按需拉取;
+// counts 是服务端全量口径的计数(供筛选菜单),scopeKey 防重复拉取与竞态
+let channelCounts = null;
+let taskCounts = null;
+let tasksScopeKey = null;
 
 // 项目是第一层级:聊天、看板、角色、频道都只看当前项目
 const projRoles = () => overview.roles.filter(r => r.project_id === currentProject);

@@ -322,7 +322,8 @@ def test_automation_api_crud_and_manual_run(seeded):
 
         listed = client.get("/api/projects/webshop/automations").json()
         assert [a["id"] for a in listed["automations"]] == ["webshop:report"]
-        overview_automations = client.get("/api/overview").json()["automations"]
+        overview_automations = client.get(
+            "/api/projects/webshop/overview").json()["automations"]
         assert [a["resource_url"] for a in overview_automations] == [
             "/resources/webshop/automations/report"]
 

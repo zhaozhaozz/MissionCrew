@@ -498,12 +498,15 @@ def test_all_missioncrew_resources_have_stable_web_urls(seeded):
     assert dashboard_resource_url("webshop", "webshop:delivery") == created_board["resource_url"]
     assert guideline_resource_url("webshop", "release-check") == guideline["resource_url"]
 
-    overview = client.get("/api/overview").json()
-    assert next(item for item in overview["channels"]
+    channels = client.get(
+        "/api/projects/webshop/channels?scope=all").json()["channels"]
+    assert next(item for item in channels
                 if item["id"] == "webshop:release")["resource_url"] == created_channel["resource_url"]
-    assert next(item for item in overview["boards"]
+    boards = client.get("/api/projects/webshop/overview").json()["boards"]
+    assert next(item for item in boards
                 if item["id"] == "webshop:delivery")["resource_url"] == created_board["resource_url"]
-    project = next(item for item in overview["projects"] if item["id"] == "webshop")
+    project = next(item for item in client.get("/api/overview").json()["projects"]
+                   if item["id"] == "webshop")
     assert next(item for item in project["guidelines"]
                 if item["name"] == "release-check")["resource_url"] == guideline["resource_url"]
     assert next(item for item in project["skills"]
@@ -1895,7 +1898,7 @@ def test_resource_refresh_rebinds_git_remote(seeded, tmp_path):
         f"/api/projects/webshop/resources/{url_res['id']}/refresh").status_code == 400
 
 
-def test_overview_is_thin_with_on_demand_content_and_etag(seeded):
+def test_overview_is_layered_thin_with_on_demand_content_and_etag(seeded):
     client = _client(seeded)
     client.post("/api/projects/webshop/guidelines", json={
         "markdown": "---\nname: release-flow\ndescription: 发布流程\n---\n\n"
@@ -1903,25 +1906,48 @@ def test_overview_is_thin_with_on_demand_content_and_etag(seeded):
     client.post("/api/projects/webshop/skills", json={
         "id": "local-ci", "name": "本地 CI", "description": "跑本地 CI",
         "instructions": "运行 scripts/ci.sh"})
-    client.post("/api/tasks", json={
+    task_id = client.post("/api/tasks", json={
         "project_id": "webshop", "title": "带正文任务",
-        "body": "很长的正文" * 200, "channel_ids": ["general"]})
+        "body": "很长的正文" * 200, "channel_ids": ["general"]}).json()["id"]
 
+    # 全局总览只含全局集合;项目内数据走分层端点
     response = client.get("/api/overview")
     overview = response.json()
+    assert sorted(overview) == ["backends", "projects", "role_templates"]
     project = next(p for p in overview["projects"] if p["id"] == "webshop")
     guideline = next(g for g in project["guidelines"]
                      if g["name"] == "release-flow")
     skill = next(s for s in project["skills"] if s["id"] == "local-ci")
-    # 总览是精简对象:准则/Skill 只带元信息与内容指纹,任务不带 body
+    # 准则/Skill 只带元信息与内容指纹
     assert "markdown" not in guideline and guideline["markdown_fingerprint"]
     assert "instructions" not in skill and skill["instructions_fingerprint"]
-    assert all("body" not in task for task in overview["tasks"])
 
     # 数据未变化时轮询命中 ETag,返回 304 空响应体
     etag = response.headers["etag"]
     repeat = client.get("/api/overview", headers={"If-None-Match": etag})
     assert repeat.status_code == 304 and not repeat.content
+
+    # 项目内总览:角色/面板/自动化
+    scoped = client.get("/api/projects/webshop/overview").json()
+    assert {"roles", "boards", "automations"} <= set(scoped)
+    assert any(role["id"] == "dev" for role in scoped["roles"])
+
+    # 任务按项目 + 归档态取:默认 active,不带 body,counts 是全量口径
+    tasks = client.get("/api/projects/webshop/tasks").json()
+    assert task_id in [t["id"] for t in tasks["tasks"]]
+    assert all("body" not in t for t in tasks["tasks"])
+    archived = client.get(
+        "/api/projects/webshop/tasks?scope=archived").json()["tasks"]
+    assert task_id not in [t["id"] for t in archived]
+    assert tasks["counts"]["active"] >= 1
+    assert client.get(
+        "/api/projects/webshop/tasks?scope=bogus").status_code == 400
+
+    # 频道按项目 + 归档态取,带活动运行计数
+    channels = client.get("/api/projects/webshop/channels").json()
+    general = next(c for c in channels["channels"] if c["id"] == "general")
+    assert general["active_run_count"] == 0
+    assert channels["counts"]["active"] >= 1
 
     # 正文经单条端点按需获取;不存在的准则返回 404
     detail = client.get("/api/projects/webshop/guidelines/release-flow").json()

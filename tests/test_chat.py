@@ -295,7 +295,8 @@ def test_overview_reports_active_run_count_per_channel(seeded):
     seeded.update_chat_run(finished, "succeeded")
 
     channels = {channel["id"]: channel
-                for channel in TestClient(create_app()).get("/api/overview")
+                for channel in TestClient(create_app())
+                .get("/api/projects/webshop/channels?scope=all")
                 .json()["channels"]}
 
     assert channels["general"]["active_run_count"] == 2

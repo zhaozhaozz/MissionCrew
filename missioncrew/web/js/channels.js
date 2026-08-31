@@ -54,12 +54,16 @@ function setChannelRunningCount(channelId, count) {
 }
 
 function renderChannelFilter() {
-  const all = projChannels();
-  const active = all.filter(channel => !channel.archived).length;
-  const archived = all.length - active;
-  document.getElementById("channel-filter-all-count").textContent = all.length;
-  document.getElementById("channel-filter-active-count").textContent = active;
-  document.getElementById("channel-filter-archived-count").textContent = archived;
+  // 列表只含当前筛选范围,计数用服务端的全量口径;拉取前回退本地计算
+  const local = projChannels();
+  const counts = channelCounts || {
+    all: local.length,
+    active: local.filter(channel => !channel.archived).length,
+    archived: local.filter(channel => channel.archived).length,
+  };
+  document.getElementById("channel-filter-all-count").textContent = counts.all;
+  document.getElementById("channel-filter-active-count").textContent = counts.active;
+  document.getElementById("channel-filter-archived-count").textContent = counts.archived;
   document.querySelectorAll("#channel-filter-menu [data-filter]").forEach(button => {
     const selected = button.dataset.filter === channelFilter;
     button.classList.toggle("selected", selected);
@@ -83,6 +87,7 @@ function setChannelFilter(value) {
   document.getElementById("channel-filter-menu").hidden = true;
   document.getElementById("channel-filter-btn").setAttribute("aria-expanded", "false");
   renderSidebar();
+  void refreshChannels().then(() => renderSidebar());   // 列表按新筛选重拉
 }
 
 function toggleChannelActions(event, button) {

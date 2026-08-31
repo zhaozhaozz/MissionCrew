@@ -93,11 +93,12 @@ def test_tasks_sort_by_latest_edit_or_progress_for_existing_data(seeded):
     assert seeded.get_task("t_recent-progress").updated_at == 50.0
 
     with TestClient(create_app()) as client:
-        overview = [
-            task for task in client.get("/api/overview").json()["tasks"]
+        listed = [
+            task for task in client.get(
+                "/api/projects/webshop/tasks?scope=all").json()["tasks"]
             if task["id"].startswith("t_recent-")
         ]
-    assert [task["id"] for task in overview] == [
+    assert [task["id"] for task in listed] == [
         "t_recent-progress", "t_recent-edit", "t_recent-created"]
 
 

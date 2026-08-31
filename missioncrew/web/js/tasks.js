@@ -83,14 +83,18 @@ function visibleProjTasks() {
 }
 
 function renderTaskFilter() {
+  // 列表只含当前筛选范围,计数用服务端的全量口径;拉取前回退本地计算
   const tasks = builtinProjTasks();
-  const archived = tasks.filter(task => task.archived).length;
+  const counts = taskCounts || {
+    active: tasks.filter(task => !task.archived).length,
+    archived: tasks.filter(task => task.archived).length,
+  };
   const select = document.getElementById("task-filter");
   if (select) select.value = taskFilter;
   const summary = document.getElementById("task-filter-summary");
   if (summary) {
     const shown = visibleProjTasks().length;
-    summary.textContent = `显示 ${shown} 个 · 活跃 ${tasks.length - archived} · 已归档 ${archived}`;
+    summary.textContent = `显示 ${shown} 个 · 活跃 ${counts.active} · 已归档 ${counts.archived}`;
   }
 }
 
@@ -99,6 +103,7 @@ function setTaskFilter(value) {
   taskFilter = value;
   localStorage.setItem("mc.taskFilter", value);
   renderBoard();
+  void refreshTasks().then(() => renderBoard());   // 列表按新筛选重拉
 }
 
 function taskCardHtml(task, { showStatus = false } = {}) {

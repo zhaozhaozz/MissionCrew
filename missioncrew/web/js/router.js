@@ -99,9 +99,17 @@ async function applyRoute() {
     }
 
     if (!cancelled && r.tab === "chat") {
-      const channel = projChannels().find(item =>
+      const findChannel = () => projChannels().find(item =>
         item.id === r.chan || item.id === `${r.project}:${r.chan}`)
         || (!r.chan ? projChannels()[0] : null);
+      let channel = findChannel();
+      if (!channel && r.chan && channelFilter !== "all") {
+        // 直链归档频道:当前筛选的列表里取不到,切到全部并重拉后再试
+        channelFilter = "all";
+        localStorage.setItem("mc.channelFilter", channelFilter);
+        await refreshChannels();
+        channel = findChannel();
+      }
       if (channel && channel.id !== currentChan) selectChannel(channel.id, false);
       if (channel?.archived && channelFilter === "active") {
         channelFilter = "all";
@@ -162,15 +170,17 @@ async function applyRoute() {
     else if (r.tab === "recycle-bin") renderRecycleBin(true);
 
     if (r.tab === "board" && r.task) {
-      const task = projTasks().find(item => item.id === r.task);
-      if (task) {
-        if (task.archived && taskFilter === "active") {
-          taskFilter = "all";
-          localStorage.setItem("mc.taskFilter", taskFilter);
-          renderBoard();
-        }
-        await openTask(task.id, false);
+      await ensureTasksLoaded();
+      let task = projTasks().find(item => item.id === r.task);
+      if (!task && taskFilter !== "all") {
+        // 直链归档任务:当前筛选的列表里取不到,切到全部并重拉后再试
+        taskFilter = "all";
+        localStorage.setItem("mc.taskFilter", taskFilter);
+        await refreshTasks();
+        renderBoard();
+        task = projTasks().find(item => item.id === r.task);
       }
+      if (task) await openTask(task.id, false);
     }
     }
   } finally {
@@ -202,6 +212,7 @@ async function setProject(id, updateRoute = true) {
   }
   currentProject = id;
   localStorage.setItem("mc.project", id);
+  await loadProjectScope();   // 角色/频道/面板等项目内数据换成新项目的
   currentChan = null; lastMsgId = 0; lastMsgDate = "";
   firstMsgId = 0; chanHasEarlier = false;
   currentCustomBoard = null; customBoardEditing = false; boardEditMode = false;
@@ -244,6 +255,9 @@ function switchTab(tab) {
   const previousTab = currentTab;
   currentTab = tab;
   if (previousTab !== tab) configChatSelection = null;
+  // 任务列表不参与其他页面的轮询,进入看板时拉一次最新数据
+  if (tab === "board" && previousTab !== "board")
+    void refreshTasks().then(() => renderBoard());
   document.getElementById("chat-view").style.display = tab === "chat" ? "flex" : "none";
   document.getElementById("board-view").style.display = tab === "board" ? "flex" : "none";
   document.getElementById("custom-view").style.display = tab === "custom" ? "block" : "none";
@@ -286,12 +300,70 @@ function switchTab(tab) {
   syncUrl();
 }
 
+/* ---- 分层加载 ----
+   /api/overview 只含全局数据(projects/backends/role_templates);
+   角色/面板/自动化走项目内总览,频道/任务按当前筛选状态另取。
+   每个加载器在响应落地时校验项目与筛选未变,避免竞态覆盖。 */
+async function loadProjectScope() {
+  if (!currentProject) {
+    overview.roles = []; overview.channels = []; overview.boards = [];
+    overview.automations = []; overview.tasks = [];
+    channelCounts = null; taskCounts = null; tasksScopeKey = null;
+    return;
+  }
+  const project = currentProject;
+  const [scope] = await Promise.all([
+    fetch(`/api/projects/${encodeURIComponent(project)}/overview`)
+      .then(r => r.ok ? r.json() : null),
+    refreshChannels(),
+    // 任务列表只在任务看板打开时参与轮询,其余页面不拉取
+    currentTab === "board" ? refreshTasks() : null,
+  ]);
+  if (!scope || project !== currentProject) return;
+  overview.roles = scope.roles;
+  overview.boards = scope.boards;
+  overview.automations = scope.automations;
+}
+
+async function refreshChannels() {
+  if (!currentProject) return;
+  const project = currentProject, filter = channelFilter;
+  const r = await fetch(`/api/projects/${encodeURIComponent(project)}` +
+    `/channels?scope=${encodeURIComponent(filter)}`);
+  if (!r.ok) return;
+  const data = await r.json();
+  if (project !== currentProject || filter !== channelFilter) return;
+  overview.channels = data.channels;
+  channelCounts = data.counts;
+}
+
+async function refreshTasks() {
+  if (!currentProject) return;
+  const project = currentProject, filter = taskFilter;
+  const r = await fetch(`/api/projects/${encodeURIComponent(project)}` +
+    `/tasks?scope=${encodeURIComponent(filter)}`);
+  if (!r.ok) return;
+  const data = await r.json();
+  if (project !== currentProject || filter !== taskFilter) return;
+  overview.tasks = data.tasks;
+  taskCounts = data.counts;
+  tasksScopeKey = `${project}:${filter}`;
+}
+
+async function ensureTasksLoaded() {
+  if (tasksScopeKey !== `${currentProject}:${taskFilter}`) await refreshTasks();
+}
+
 async function loadOverview() {
-  overview = await (await fetch("/api/overview")).json();
+  const global = await (await fetch("/api/overview")).json();
+  overview.projects = global.projects;
+  overview.backends = global.backends;
+  overview.role_templates = global.role_templates;
   const sel = document.getElementById("proj-sel");
   if (!overview.projects.length) {
     sel.innerHTML = `<option>(无项目)</option>`;
     currentProject = null;
+    await loadProjectScope();
     renderSidebar(); renderBoard(); renderCustomBoards();
     updateConfigChatContext();
     return;
@@ -302,6 +374,7 @@ async function loadOverview() {
     currentProject = want.project;
   if (!overview.projects.some(p => p.id === currentProject))
     currentProject = overview.projects[0].id;
+  await loadProjectScope();
   sel.innerHTML = overview.projects.map(p =>
     `<option value="${esc(p.id)}" ${p.id === currentProject ? "selected" : ""}>${esc(p.name || p.id)}</option>`).join("");
   roleColor = Object.fromEntries(projRoles().map(r => [r.id, r.color || "#888"]));

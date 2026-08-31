@@ -1,13 +1,15 @@
 """API 共享上下文:存储、引擎实例与跨端点的校验助手。"""
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Optional
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Request, Response
 
 from ..collab.automations import AutomationScheduler, AutomationService
 from ..collab.chat import ChatEngine
@@ -27,6 +29,19 @@ from ..runtime import runtime_manager
 from ..runtime.role_usage_linkage import RoleUsageLinkage
 
 MENTION_ID_RE = re.compile(r"[\w-]+")
+
+
+def etag_json_response(request: Request, payload) -> Response:
+    """带 ETag + no-cache 的 JSON 响应:高频轮询数据未变化时命中 304,
+    浏览器 fetch 透明读缓存,前端无需感知。"""
+    body = json.dumps(payload, ensure_ascii=False,
+                      separators=(",", ":")).encode("utf-8")
+    etag = f'"{hashlib.sha1(body).hexdigest()}"'
+    headers = {"ETag": etag, "Cache-Control": "no-cache"}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=body, media_type="application/json",
+                    headers=headers)
 
 
 @dataclass

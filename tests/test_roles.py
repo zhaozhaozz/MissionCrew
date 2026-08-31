@@ -187,10 +187,9 @@ def test_role_can_be_temporarily_disabled_without_stopping_existing_run(
     assert {key: stored.to_dict()[key] for key in original if key != "enabled"} == {
         key: value for key, value in original.items() if key != "enabled"}
     assert seeded.get_chat_run(run_id)["status"] == "queued"
-    overview = client.get("/api/overview").json()
+    overview = client.get("/api/projects/webshop/overview").json()
     assert next(role for role in overview["roles"]
-                if role["project_id"] == "webshop"
-                and role["id"] == "dev")["enabled"] is False
+                if role["id"] == "dev")["enabled"] is False
 
     stale_form = {**original, "name": "开发者新名称", "enabled": True}
     edited = client.post("/api/roles", json=stale_form)
@@ -471,8 +470,10 @@ def test_channel_archive_restore_and_delete_api(client, seeded):
 
     archived = client.post(f"/api/chat/channels/{channel_id}/archive")
     assert archived.status_code == 200 and archived.json()["archived"] is True
-    overview_channel = next(channel for channel in client.get("/api/overview").json()["channels"]
-                            if channel["id"] == channel_id)
+    overview_channel = next(
+        channel for channel in client.get(
+            "/api/projects/webshop/channels?scope=archived").json()["channels"]
+        if channel["id"] == channel_id)
     assert overview_channel["archived"] is True
     blocked = client.post(f"/api/chat/{channel_id}/messages", json={
         "author": "human", "content": "归档后不能继续发送", "mentions": [],
@@ -718,8 +719,8 @@ def test_usage_role_linkage_api_disables_and_restores_related_roles(
     assert seeded.get_role("webshop", "dev").enabled is False
     assert seeded.get_role("webshop", "third-party").enabled is True
     overview_role = next(
-        role for role in client.get("/api/overview").json()["roles"]
-        if role["project_id"] == "webshop" and role["id"] == "dev")
+        role for role in client.get("/api/projects/webshop/overview")
+        .json()["roles"] if role["id"] == "dev")
     assert overview_role["usage_auto_disabled"] is True
     assert overview_role["usage_disabled_until"] == 2_000_000_000
 

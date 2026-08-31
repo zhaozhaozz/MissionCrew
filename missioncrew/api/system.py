@@ -1,22 +1,24 @@
-"""总览与词表端点。"""
+"""总览与词表端点。
+
+总览分层:`/api/overview` 只返回全局数据(项目列表/后端/角色模板),
+项目内数据走 `/api/projects/{id}/overview`(角色/面板/自动化),
+频道与任务由各自模块提供带 scope 的按项目列表,按页面状态按需拉取。
+"""
 from __future__ import annotations
 
-import hashlib
-import json
 import time
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 
 from ..collab.skills import sync_all_project_skill_libraries
 from ..collab.resource_urls import (automation_resource_url,
-                                    channel_resource_url,
                                     dashboard_resource_url,
                                     guideline_resource_url,
-                                    skill_resource_url, task_resource_url)
+                                    skill_resource_url)
 from ..core.models import (BOARD_WIDGET_TYPES, ROLE_ABILITIES, TIER_ORDER,
                            text_fingerprint)
 from ..runtime import runtime_manager
-from .context import ApiContext
+from .context import ApiContext, etag_json_response
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -47,58 +49,42 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             ]
             return data
 
-        active_run_counts = store.active_chat_run_counts()
+        return etag_json_response(request, {
+            "projects": [project_data(p) for p in store.list_projects()],
+            "backends": [b.to_dict() for b in store.list_backends()],
+            "role_templates": [r.to_dict() for r in store.list_role_templates()],
+        })
+
+    @app.get("/api/projects/{project_id}/overview")
+    def project_overview(project_id: str, request: Request):
+        """项目内总览:角色(含限额停用状态)、面板、自动化。"""
+        ctx.must_project(project_id)
 
         usage_blocks = {
-            (item["project_id"], item["role_id"]): item
+            item["role_id"]: item
             for item in store.list_role_usage_blocks()
+            if item["project_id"] == project_id
         }
 
         def role_data(role):
             data = role.to_dict()
-            block = usage_blocks.get((role.project_id, role.id))
+            block = usage_blocks.get(role.id)
             data["usage_auto_disabled"] = block is not None
             data["usage_disabled_until"] = (
                 block["disabled_until"] if block else None)
             data["usage_window_keys"] = block["window_keys"] if block else []
             return data
 
-        def task_data(task):
-            # body 只在任务详情弹窗展示,详情走 /api/tasks/{id};总览列表不携带
-            data = {**task.to_dict(),
-                    "resource_url": task_resource_url(task.project_id, task.id)}
-            data.pop("body", None)
-            return data
-
-        payload = {
-            "projects": [project_data(p) for p in store.list_projects()],
-            "backends": [b.to_dict() for b in store.list_backends()],
-            "tasks": [task_data(t) for t in store.list_tasks()],
-            "roles": [role_data(r) for r in store.list_roles()],
-            "role_templates": [r.to_dict() for r in store.list_role_templates()],
-            "channels": [{**c.to_dict(),
-                          "active_run_count": active_run_counts.get(c.id, 0), **(
-                {"resource_url": channel_resource_url(c.project_id, c.id)}
-                if c.project_id else {})}
-                for c in store.list_channels()],
+        return etag_json_response(request, {
+            "roles": [role_data(r) for r in store.list_roles(project_id)],
             "boards": [{**b.to_dict(),
-                        "resource_url": dashboard_resource_url(b.project_id, b.id)}
-                       for b in store.list_boards()],
+                        "resource_url": dashboard_resource_url(project_id, b.id)}
+                       for b in store.list_boards(project_id)],
             "automations": [
                 {**a.to_dict(),
-                 "resource_url": automation_resource_url(a.project_id, a.id)}
-                for a in store.list_automations()],
-        }
-        # 高频轮询多数时候数据未变:ETag + no-cache 让浏览器命中 304,
-        # 前端 fetch 透明读缓存,弱网链路上省掉整个响应体
-        body = json.dumps(payload, ensure_ascii=False,
-                          separators=(",", ":")).encode("utf-8")
-        etag = f'"{hashlib.sha1(body).hexdigest()}"'
-        headers = {"ETag": etag, "Cache-Control": "no-cache"}
-        if request.headers.get("if-none-match") == etag:
-            return Response(status_code=304, headers=headers)
-        return Response(content=body, media_type="application/json",
-                        headers=headers)
+                 "resource_url": automation_resource_url(project_id, a.id)}
+                for a in store.list_automations(project_id)],
+        })
 
     @app.get("/api/traits")
     def traits():

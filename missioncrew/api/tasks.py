@@ -1,15 +1,18 @@
 """Issue 化 Task 端点：编辑、状态简报与 Channel 派发。"""
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from ..collab.recycle_bin import recycle_task
 from ..collab.resource_urls import channel_resource_url, task_resource_url
+from ..core.models import BUILTIN_SOURCE_ID
 from ..collab.tasks import (TaskDispatchError, add_task_brief, archive_task,
                             auto_process_task, create_task, dispatch_task,
                             restore_task, update_task)
-from .context import ApiContext
+from .context import ApiContext, etag_json_response
 from .schemas import TaskBriefInput, TaskCreate, TaskProcessInput, TaskUpdate
+
+LIST_SCOPES = {"active", "archived", "all"}
 
 
 def _task_data(store, task) -> dict:
@@ -48,6 +51,32 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "resource_url": task_resource_url(task.project_id, task.id),
                 "auto_dispatch": auto and {
                     "rule_query": auto["rule_query"], "sent": auto["sent"]}}
+
+    @app.get("/api/projects/{project_id}/tasks")
+    def project_tasks(project_id: str, request: Request,
+                      scope: str = "active"):
+        """按项目 + 归档态取任务列表(不带 body,详情走 /api/tasks/{id});
+        counts 按内置数据源全量统计,与看板筛选菜单口径一致。"""
+        ctx.must_project(project_id)
+        if scope not in LIST_SCOPES:
+            raise HTTPException(400, "scope 只能是 active/archived/all")
+        tasks = store.list_tasks(project_id)
+        builtin = [t for t in tasks
+                   if (t.source_id or BUILTIN_SOURCE_ID) == BUILTIN_SOURCE_ID]
+        counts = {"all": len(builtin),
+                  "archived": sum(1 for t in builtin if t.archived)}
+        counts["active"] = counts["all"] - counts["archived"]
+        if scope != "all":
+            tasks = [t for t in tasks if t.archived == (scope == "archived")]
+
+        def task_data(task):
+            data = {**task.to_dict(),
+                    "resource_url": task_resource_url(project_id, task.id)}
+            data.pop("body", None)
+            return data
+
+        return etag_json_response(request, {
+            "tasks": [task_data(t) for t in tasks], "counts": counts})
 
     @app.get("/api/tasks/{task_id}")
     def detail(task_id: str):

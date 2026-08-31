@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 
 from ..collab.content_channels import (CONTENT_KIND_LABELS,
                                        content_channel as find_content_channel,
@@ -15,9 +15,11 @@ from ..collab.resource_urls import channel_resource_url
 from ..collab.workspace import write_page_context_snapshot
 from ..core.config import projects_dir
 from ..core.models import Channel
-from .context import ApiContext
+from .context import ApiContext, etag_json_response
 from .schemas import (ChannelCreate, ContentChannelInput, MessageInput, PageContextInput,
                       RuntimeInteractionInput)
+
+LIST_SCOPES = {"active", "archived", "all"}
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -33,6 +35,28 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     def channel_data(channel: Channel) -> dict:
         return {**channel.to_dict(),
                 "resource_url": channel_resource_url(channel.project_id, channel.id)}
+
+    @app.get("/api/projects/{project_id}/channels")
+    def project_channels(project_id: str, request: Request,
+                         scope: str = "active"):
+        """按项目 + 归档态取频道列表;counts 固定按全量统计,供筛选菜单显示。"""
+        ctx.must_project(project_id)
+        if scope not in LIST_SCOPES:
+            raise HTTPException(400, "scope 只能是 active/archived/all")
+        channels = store.list_channels(project_id)
+        counts = {"all": len(channels),
+                  "archived": sum(1 for c in channels if c.archived)}
+        counts["active"] = counts["all"] - counts["archived"]
+        if scope != "all":
+            channels = [c for c in channels
+                        if c.archived == (scope == "archived")]
+        active_run_counts = store.active_chat_run_counts()
+        return etag_json_response(request, {
+            "channels": [{**channel_data(c),
+                          "active_run_count": active_run_counts.get(c.id, 0)}
+                         for c in channels],
+            "counts": counts,
+        })
 
     @app.post("/api/chat/channels")
     def create_channel(body: ChannelCreate):
