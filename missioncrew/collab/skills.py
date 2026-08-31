@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..core.config import projects_dir
-from ..core.models import Project, ProjectSkill
+from ..core.models import Project, ProjectSkill, text_fingerprint
 from .resource_urls import skill_resource_url
 from .skill_versions import skill_version_library
 
@@ -349,6 +349,8 @@ def skill_library_info(store: Store, project: Project, *,
         skill_file = _skill_file(directory) or directory / "SKILL.md"
         skills.append({
             **asdict(skill),
+            # 与总览的元信息指纹同源:前端据此判断库信息是否已过期
+            "instructions_fingerprint": text_fingerprint(skill.instructions),
             "resource_url": skill_resource_url(project.id, skill.id),
             "path": str(directory),
             "skill_file": str(skill_file),

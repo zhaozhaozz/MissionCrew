@@ -9,6 +9,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.gzip import GZipMiddleware
 
 from .. import __version__
 from . import (agent_tools, automations, backends, boards, chat, documents,
@@ -40,6 +41,8 @@ def create_app() -> FastAPI:
             runtime_manager.shutdown()
 
     app = FastAPI(title="MissionCrew", version=__version__, lifespan=lifespan)
+    # JSON/JS 文本响应压缩率高,弱网(远程隧道)访问时显著缩短加载时间
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     for module in (system, chat, agent_tools, roles, projects, resources, guidelines,
                    documents, boards, recycle_bin, backends, tasks, automations,
                    uploads):

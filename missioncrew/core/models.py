@@ -5,6 +5,7 @@ Backend 描述可用 Runtime，Project 承载项目上下文与协作角色；Ta
 """
 from __future__ import annotations
 
+import hashlib as _hashlib
 import json as _json
 import re as _re
 import secrets as _secrets
@@ -35,6 +36,11 @@ LEGACY_STATUS_TEXT = {
     "open": "待处理", "in_progress": "处理中", "blocked": "已阻塞",
     "done": "已完成", "awaiting_approval": "处理中", "failed": "已阻塞",
 }
+
+
+def text_fingerprint(text: str) -> str:
+    """短内容指纹;总览等高频轻量列表用它代替全文做变更检测。"""
+    return _hashlib.sha1(str(text or "").encode("utf-8")).hexdigest()[:12]
 
 
 def status_of(labels) -> str:
@@ -225,8 +231,9 @@ class GuidelineDocument:
         if isinstance(value, str):
             return cls(name=value, description=value)
         data = dict(value)
-        # resource_url 是 API 的只读导航字段；项目配置整对象回传时忽略。
+        # resource_url / 内容指纹是 API 的只读导航字段；整对象回传时忽略。
         data.pop("resource_url", None)
+        data.pop("markdown_fingerprint", None)
         if "markdown" in data:
             return cls.from_markdown(str(data["markdown"]), bool(data.get("enabled", True)))
 
@@ -286,8 +293,9 @@ class ProjectSkill:
         if isinstance(value, str):
             return cls(id=value, name=value)
         data = dict(value)
-        # resource_url 是 API 的只读导航字段；项目配置整对象回传时忽略。
+        # resource_url / 内容指纹是 API 的只读导航字段；整对象回传时忽略。
         data.pop("resource_url", None)
+        data.pop("instructions_fingerprint", None)
         # 旧版按文件、Runtime 或角色预装配；升级后把文件引用转成 Markdown
         # 链接、把补充说明并入正文，仅丢弃绑定条件，由执行者自行判断。
         instructions = str(data.get("instructions", ""))

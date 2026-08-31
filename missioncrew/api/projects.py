@@ -50,10 +50,39 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                          ([r.__dict__ for r in existing.repos] if existing else []))
         data["dev_guidelines"] = (body.dev_guidelines if body.dev_guidelines is not None
                                   else (existing.dev_guidelines if existing else ""))
-        data["guidelines"] = (body.guidelines if body.guidelines is not None else
-                              ([g.to_dict() for g in existing.guidelines] if existing else []))
-        data["skills"] = (body.skills if body.skills is not None else
-                          ([s.__dict__ for s in existing.skills] if existing else []))
+        # 总览返回的准则/Skill 是只带元信息与内容指纹的精简对象;整对象回传时
+        # 按主键回填现有全文,避免把正文清空。引用不存在的条目按格式错误处理。
+        def restore_thin_items(items, full_by_key, key, fingerprint_key,
+                               content_keys, kind):
+            resolved = []
+            for item in items:
+                thin = (isinstance(item, dict) and fingerprint_key in item
+                        and not any(k in item for k in content_keys))
+                if not thin:
+                    resolved.append(item)
+                    continue
+                full = full_by_key.get(str(item.get(key, "")))
+                if full is None:
+                    raise HTTPException(
+                        400, f"{kind}精简对象引用了不存在的条目,无法还原正文: "
+                             f"{item.get(key)}")
+                resolved.append({**full, "enabled": bool(item.get("enabled", True))})
+            return resolved
+
+        data["guidelines"] = (
+            restore_thin_items(
+                body.guidelines,
+                {g.name: g.to_dict() for g in existing.guidelines} if existing else {},
+                "name", "markdown_fingerprint", ("markdown", "content"), "准则")
+            if body.guidelines is not None else
+            ([g.to_dict() for g in existing.guidelines] if existing else []))
+        data["skills"] = (
+            restore_thin_items(
+                body.skills,
+                {s.id: dict(s.__dict__) for s in existing.skills} if existing else {},
+                "id", "instructions_fingerprint", ("instructions",), "Skill")
+            if body.skills is not None else
+            ([s.__dict__ for s in existing.skills] if existing else []))
         data["resources"] = (body.resources if body.resources is not None else
                              (existing.resources if existing else []))
         data["required_env"] = (body.required_env if body.required_env is not None else

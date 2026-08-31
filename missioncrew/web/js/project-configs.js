@@ -719,6 +719,17 @@ function selectedGuideline() {
   return (projObj()?.guidelines || []).find(item => item.name === selectedGuidelineName);
 }
 
+// 总览只带准则元信息与内容指纹,正文在进入查看/编辑时按需拉取。
+// 404(已被他处删除)回退占位内容;其他失败抛错,避免用占位文本覆盖真实正文。
+async function fetchGuidelineMarkdown() {
+  if (!currentProject || !selectedGuidelineName) return null;
+  const r = await fetch(`/api/projects/${encodeURIComponent(currentProject)}` +
+    `/guidelines/${encodeURIComponent(selectedGuidelineName)}`);
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`准则读取失败 (${r.status})`);
+  return (await r.json()).markdown || null;
+}
+
 const guidelineViewer = createTextViewer({
   containerId: "guideline-editor",
   textareaId: "gf-content",
@@ -739,9 +750,10 @@ const guidelineViewer = createTextViewer({
       return { kind: "markdown", content: version.markdown };
     }
     return { kind: "markdown",
-             content: selectedGuideline()?.markdown || GUIDELINE_MARKDOWN_PLACEHOLDER };
+             content: (await fetchGuidelineMarkdown()) || GUIDELINE_MARKDOWN_PLACEHOLDER };
   },
-  loadEdit: () => selectedGuideline()?.markdown || GUIDELINE_MARKDOWN_PLACEHOLDER,
+  loadEdit: async () =>
+    (await fetchGuidelineMarkdown()) || GUIDELINE_MARKDOWN_PLACEHOLDER,
   save: async content => {
     const saved = await api("POST",
       `/api/projects/${encodeURIComponent(currentProject)}/guidelines`, {
@@ -852,9 +864,10 @@ let skillCompareRevisions = [];
 let skillCompareResult = null;
 
 function skillMetadataSignature(skills) {
+  // 总览与 skills/library 都带 instructions_fingerprint,以指纹代替全文比对
   return JSON.stringify((skills || []).map(skill => ({
     id: skill.id, name: skill.name, description: skill.description,
-    instructions: skill.instructions, enabled: skill.enabled,
+    instructions_fingerprint: skill.instructions_fingerprint, enabled: skill.enabled,
   })));
 }
 

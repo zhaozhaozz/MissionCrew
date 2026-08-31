@@ -1893,3 +1893,63 @@ def test_resource_refresh_rebinds_git_remote(seeded, tmp_path):
                           json={"target": "https://github.com/acme/pure.git"}).json()
     assert client.post(
         f"/api/projects/webshop/resources/{url_res['id']}/refresh").status_code == 400
+
+
+def test_overview_is_thin_with_on_demand_content_and_etag(seeded):
+    client = _client(seeded)
+    client.post("/api/projects/webshop/guidelines", json={
+        "markdown": "---\nname: release-flow\ndescription: 发布流程\n---\n\n"
+                    "发布前先跑本地 CI\n"})
+    client.post("/api/projects/webshop/skills", json={
+        "id": "local-ci", "name": "本地 CI", "description": "跑本地 CI",
+        "instructions": "运行 scripts/ci.sh"})
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "带正文任务",
+        "body": "很长的正文" * 200, "channel_ids": ["general"]})
+
+    response = client.get("/api/overview")
+    overview = response.json()
+    project = next(p for p in overview["projects"] if p["id"] == "webshop")
+    guideline = next(g for g in project["guidelines"]
+                     if g["name"] == "release-flow")
+    skill = next(s for s in project["skills"] if s["id"] == "local-ci")
+    # 总览是精简对象:准则/Skill 只带元信息与内容指纹,任务不带 body
+    assert "markdown" not in guideline and guideline["markdown_fingerprint"]
+    assert "instructions" not in skill and skill["instructions_fingerprint"]
+    assert all("body" not in task for task in overview["tasks"])
+
+    # 数据未变化时轮询命中 ETag,返回 304 空响应体
+    etag = response.headers["etag"]
+    repeat = client.get("/api/overview", headers={"If-None-Match": etag})
+    assert repeat.status_code == 304 and not repeat.content
+
+    # 正文经单条端点按需获取;不存在的准则返回 404
+    detail = client.get("/api/projects/webshop/guidelines/release-flow").json()
+    assert "发布前先跑本地 CI" in detail["markdown"]
+    assert client.get(
+        "/api/projects/webshop/guidelines/absent").status_code == 404
+
+
+def test_overview_project_round_trip_keeps_guideline_and_skill_content(seeded):
+    client = _client(seeded)
+    client.post("/api/projects/webshop/guidelines", json={
+        "markdown": "---\nname: review-rule\ndescription: 评审规则\n---\n\n"
+                    "必须双人评审\n"})
+    client.post("/api/projects/webshop/skills", json={
+        "id": "release-helper", "name": "发布助手", "description": "发布用",
+        "instructions": "运行 scripts/release.sh"})
+
+    project = next(p for p in client.get("/api/overview").json()["projects"]
+                   if p["id"] == "webshop")
+    # 把总览的精简项目对象整体回传:按指纹回填现有全文,不清空正文
+    assert client.post("/api/projects", json=project).status_code == 200
+    detail = client.get("/api/projects/webshop/guidelines/review-rule").json()
+    assert "必须双人评审" in detail["markdown"]
+    skills = client.get("/api/projects/webshop/skills").json()
+    saved = next(s for s in skills if s["id"] == "release-helper")
+    assert "运行 scripts/release.sh" in saved["instructions"]
+
+    # 精简对象引用不存在的条目视为格式错误,而不是静默清空
+    project["guidelines"] = [{"name": "ghost", "description": "",
+                              "enabled": True, "markdown_fingerprint": "0" * 12}]
+    assert client.post("/api/projects", json=project).status_code == 400

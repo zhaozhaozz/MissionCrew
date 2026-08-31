@@ -39,6 +39,18 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                  "resource_url": guideline_resource_url(project_id, g.name)}
                 for g in project.guidelines]
 
+    @app.get("/api/projects/{project_id}/guidelines/{guideline_name}")
+    def get_guideline(project_id: str, guideline_name: str):
+        """单条准则全文;总览只带元信息,编辑器按需拉取正文。"""
+        project = ctx.must_project(project_id)
+        sync_guideline_library(store, project)
+        for guideline in project.guidelines:
+            if guideline.name == guideline_name:
+                return {**guideline.to_dict(),
+                        "resource_url": guideline_resource_url(
+                            project_id, guideline.name)}
+        raise HTTPException(404, "准则文档不存在")
+
     @app.post("/api/projects/{project_id}/guidelines")
     def save_guideline(project_id: str, body: GuidelineInput):
         project = ctx.must_project(project_id)
