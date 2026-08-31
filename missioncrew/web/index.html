@@ -168,7 +168,7 @@
     <div id="board-view">
       <div class="task-board-toolbar">
         <button class="action" onclick="openNewTask()">+ 新建任务</button>
-        <button class="ghost" onclick="openLabelBoardAdder()">+ 标签看板</button>
+        <button class="ghost" onclick="openTaskBoardFilterAdder()">+ 筛选列</button>
         <label>显示
           <select id="task-filter" onchange="setTaskFilter(this.value)">
             <option value="active">活跃 Task</option>
@@ -425,14 +425,15 @@
       placeholder="背景、要求、验收标准……支持 Markdown"></textarea>
     <div class="row">
       <div><label>状态</label><select id="nt-status">
-        <option value="open">待处理</option>
-        <option value="in_progress">处理中</option>
-        <option value="blocked">已阻塞</option>
-        <option value="done">已完成</option>
+        <option value="待处理">待处理</option>
+        <option value="处理中">处理中</option>
+        <option value="已阻塞">已阻塞</option>
+        <option value="已完成">已完成</option>
       </select></div>
-      <div><label>标签(逗号分隔)</label><input type="text" id="nt-labels" placeholder="ui, auth"></div>
+      <div><label>标签(逗号分隔,支持「属性: 值」)</label>
+        <input type="text" id="nt-labels" placeholder="ui, owner: 张三"></div>
     </div>
-    <label>绑定 Channel（至少一个）</label>
+    <label>绑定 Channel（可选）</label>
     <div class="task-channel-options" id="nt-channels"></div>
     <p class="muted">处理 Task 时，平台会在所有绑定 Channel 中向项目主控发送消息。</p>
   </div>

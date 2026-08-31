@@ -5,3 +5,4 @@ __pycache__/
 .missioncrew/
 dist/
 CLAUDE.local.md
+.tmp/

@@ -42,9 +42,29 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(400, "该面板不是任务看板")
         try:
             return board_sources.resolve_board_data(
-                store, project_id, board.source, board.filters)
+                store, project_id, board.source, board.filters,
+                group_by=board.group_by)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+
+    @app.get("/api/projects/{project_id}/builtin_board/data")
+    def builtin_board_data(project_id: str):
+        """内置任务看板:四个锁定状态列 + 项目自定义筛选列,同一渲染协议。"""
+        project = ctx.must_project(project_id)
+        pinned = board_sources.default_filters(
+            board_sources.source_status_values(
+                store, project_id, board_sources.BUILTIN_SOURCE_ID))
+        extras = list(project.task_board_filters)
+        try:
+            data = board_sources.resolve_board_data(
+                store, project_id, board_sources.BUILTIN_SOURCE_ID,
+                pinned + extras)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        for index, column in enumerate(data["columns"]):
+            column["locked"] = index < len(pinned)
+        data["filters"] = extras   # 前端只增删锁定列之后的自定义列
+        return data
 
     def _resolve_widget_source(project_id: str, source: dict):
         """解析卡片数据源:卡片是通用展示原语,领域数据从平台实时取。"""
@@ -169,12 +189,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 board.filters = board_sources.validate_filters(body.filters)
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
-        # 新建看板未显式给筛选列时,把数据源状态列物化为默认筛选列,
+        if body.group_by is not None:
+            board.group_by = body.group_by.strip()
+        # 新建看板未显式给筛选列时,把数据源状态取值物化为默认筛选列,
         # 用户后续可在看板上直接增删列
         if (board.kind == "taskboard" and existing is None
-                and body.filters is None):
+                and body.filters is None and not board.group_by):
             board.filters = board_sources.default_filters(
-                board_sources.source_columns(store, project_id, board.source))
+                board_sources.source_status_values(
+                    store, project_id, board.source))
         store.put_board(board)
         store.audit(actor, "board_saved", detail=f"project={project_id} board={board_id}")
         return {**board.to_dict(),

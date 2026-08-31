@@ -50,7 +50,7 @@ MissionCrew 的日常操作在 Web 页面完成，频道、Task、文档、准�
 
 | 命令 | 说明 |
 |---|---|
-| `mc task create -p 项目 --title 标题 [-s 简介] [-b 正文] [-l 标签]... [-c 频道id]... [--status S] [--process]` | 创建 Task，状态可选 `open`、`in_progress`、`blocked`、`done`；`--process` 表示创建后立即发送给绑定频道的主控。 |
+| `mc task create -p 项目 --title 标题 [-s 简介] [-b 正文] [-l 标签]... [-c 频道id]... [--status S] [--process]` | 创建 Task，状态是自由文本（内置取值 `待处理`、`处理中`、`已阻塞`、`已完成`），落库为 `status: 文本` 标签；`--process` 表示创建后立即发送给绑定频道的主控。 |
 | `mc task process <task_id> [-m 附言]` | 在每个绑定频道里通知主控处理该 Task。 |
 | `mc task brief <task_id> -m <内容> [--status S]` | 追加状态简报，可同时更新 Task 状态。 |
 | `mc task list` / `mc task show <task_id>` | 列出 Task；查看单个 Task 及其状态简报。 |

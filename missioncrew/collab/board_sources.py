@@ -1,75 +1,41 @@
-"""任务看板数据源注册表:看板从数据源取卡片,标签筛选在服务端完成。
+"""任务看板数据源:所有卡片都来自统一的 tasks 表,按 source_id 圈定范围。
 
-数据源分两类:内置源(如 tasks,取数函数实时读平台数据)与自定义源
-(BoardDataSource,由主控 board_source.save 创建、自动化脚本整体刷新卡片,
-适合定时同步 GitCode/GitHub Issue 这类外部列表)。两类产出统一卡片结构:
-id/title/summary/status/labels/updated_at/meta,外加打开方式(task_id 打开
-平台任务详情,url 打开外部链接)。
+数据源分两类:内置源 `built-in`(平台原生任务)与自定义源(BoardDataSource,
+由主控 board_source.save 创建、自动化脚本按 external_id upsert 任务,适合
+定时同步 GitCode/GitHub Issue 这类外部列表)。状态就是 `status: 文本` 标签,
+数据源只声明状态取值的顺序与颜色,用于生成默认筛选列。
 
-看板列由 filters([{title,query,color}],每列一个标签表达式)定义;匹配时
-卡片的状态 key 与状态列标题(待处理/处理中/已阻塞/已完成 等)都作为可筛选
-标签参与,filters 为空时回退按数据源状态列生成默认列。前端只做通用渲染,
-不感知数据来自任务还是外部同步列表。
+看板列有两种模式:filters([{title,query,color}],每列一个标签表达式)或
+group_by(按属性取值动态分列,末尾追加「未设置」列);标签匹配在服务端完成,
+前端只做通用渲染。
 """
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Optional
 
 from ..core import label_query
-from ..core.models import DEFAULT_BOARD_COLUMNS
+from ..core.models import (BUILTIN_SOURCE_ID, BUILTIN_STATUS_VALUES,
+                           LEGACY_STATUS_TEXT, STATUS_PROPERTY, Task, new_id,
+                           normalize_labels, normalize_status_values,
+                           status_of, with_status)
 
 MAX_BOARD_FILTERS = 20
-MAX_SOURCE_COLUMNS = 12
+MAX_SOURCE_STATUS_VALUES = 12
 MAX_SOURCE_CARDS = 1000
-# 卡片允许的字段:与内置任务源产出的标准卡片结构一致(外链卡片用 url)
+# 同步卡片允许的字段(status 是状态文本;旧脚本发状态列 key 也能映射)
 SOURCE_CARD_FIELDS = {"id", "title", "summary", "status", "labels",
                       "updated_at", "meta", "url"}
-# 列 key/标题不能包含表达式运算符:标题会作为标签参与表达式匹配
+# 状态取值不能包含表达式运算符:状态文本要参与标签表达式匹配
 _OPERATOR_CHARS = set("&|!()")
 
-
-@dataclass(frozen=True)
-class BoardSource:
-    """一个内置看板数据源:状态列定义 + 取数函数。"""
-
-    id: str
-    name: str
-    description: str
-    # ({"key","title","color"},...):title 兼作状态标签,颜色是 CSS 值
-    columns: tuple
-    # (store, project_id) -> 标准化卡片列表(未经表达式过滤)
-    fetch: Callable[..., list]
+# 内置源沿用过的旧 id,读取时归一化
+_LEGACY_BUILTIN_IDS = {"tasks", BUILTIN_SOURCE_ID}
 
 
-def _fetch_tasks(store, project_id: str) -> list[dict]:
-    cards = []
-    for task in store.list_tasks():
-        if task.project_id != project_id or task.archived:
-            continue
-        meta = [task.id]
-        for channel_id in task.channel_ids:
-            channel = store.get_channel(channel_id)
-            meta.append(f"#{channel.name or channel.id}" if channel else channel_id)
-        cards.append({
-            "id": task.id, "title": task.title, "summary": task.summary,
-            "status": task.status, "labels": list(task.labels),
-            "updated_at": task.updated_at, "meta": meta,
-            "task_id": task.id,
-        })
-    return cards
-
-
-TASKS_SOURCE = BoardSource(
-    id="tasks", name="项目任务",
-    description="本项目的 Task 列表",
-    columns=tuple(dict(c) for c in DEFAULT_BOARD_COLUMNS),
-    fetch=_fetch_tasks,
-)
-
-SOURCES: dict[str, BoardSource] = {s.id: s for s in (TASKS_SOURCE,)}
-DEFAULT_SOURCE = TASKS_SOURCE.id
+def normalize_source_id(source_id: str) -> str:
+    text = str(source_id or "").strip()
+    return BUILTIN_SOURCE_ID if text in _LEGACY_BUILTIN_IDS or not text else text
 
 
 def custom_source_full_id(project_id: str, source_id: str) -> str:
@@ -85,42 +51,48 @@ def get_custom_source(store, project_id: str, source_id: str):
 
 
 def source_exists(store, project_id: str, source_id: str) -> bool:
-    return (source_id in SOURCES
+    source_id = normalize_source_id(source_id)
+    return (source_id == BUILTIN_SOURCE_ID
             or get_custom_source(store, project_id, source_id) is not None)
 
 
-def source_columns(store, project_id: str, source_id: str) -> list[dict]:
-    if source_id in SOURCES:
-        return [dict(c) for c in SOURCES[source_id].columns]
+def source_status_values(store, project_id: str, source_id: str) -> list[dict]:
+    source_id = normalize_source_id(source_id)
+    if source_id == BUILTIN_SOURCE_ID:
+        return [dict(c) for c in BUILTIN_STATUS_VALUES]
     record = get_custom_source(store, project_id, source_id)
     if record is None:
         raise ValueError(f"未知数据源: {source_id}")
-    return [dict(c) for c in record.columns]
+    return [dict(c) for c in record.status_values]
 
 
 def describe_sources(store=None, project_id: Optional[str] = None) -> list[dict]:
     """创建/编辑看板时展示的可选数据源清单(内置 + 本项目自定义)。"""
-    items = [{"id": s.id, "name": s.name, "description": s.description,
-              "columns": [dict(c) for c in s.columns], "custom": False}
-             for s in SOURCES.values()]
+    items = [{"id": BUILTIN_SOURCE_ID, "name": "项目任务",
+              "description": "本项目的平台原生 Task",
+              "status_values": [dict(c) for c in BUILTIN_STATUS_VALUES],
+              "custom": False}]
     if store is not None and project_id:
         for record in store.list_board_datasources(project_id):
+            short_id = record.id.removeprefix(f"{project_id}:")
             items.append({
-                "id": record.id.removeprefix(f"{project_id}:"),
+                "id": short_id,
                 "name": record.name or record.id,
                 "description": record.description,
-                "columns": [dict(c) for c in record.columns],
-                "custom": True, "cards": len(record.cards),
+                "status_values": [dict(c) for c in record.status_values],
+                "custom": True,
+                "cards": len(store.list_tasks(project_id, source_id=short_id)),
                 "updated_at": record.updated_at,
             })
     return items
 
 
-def default_filters(columns) -> list[dict]:
-    """按数据源状态列生成默认筛选列:列标题即状态标签。"""
-    return [{"title": str(c.get("title") or c.get("key") or ""),
-             "query": str(c.get("title") or c.get("key") or ""),
-             "color": str(c.get("color") or "")} for c in columns]
+def default_filters(status_values) -> list[dict]:
+    """按数据源状态取值生成默认筛选列:一列一个状态标签表达式。"""
+    return [{"title": str(c.get("value") or ""),
+             "query": f"{STATUS_PROPERTY}: {c.get('value')}",
+             "color": str(c.get("color") or "")}
+            for c in status_values if str(c.get("value") or "").strip()]
 
 
 def validate_filters(raw) -> list[dict]:
@@ -159,36 +131,46 @@ def _clean_tag_text(value, what: str) -> str:
 
 
 def validate_source_columns(raw) -> list[dict]:
-    """校验自定义数据源的状态列;key/标题兼作状态标签,不允许运算符。"""
+    """校验数据源状态取值声明;兼容旧状态列 {key,title,color} 写法。"""
     if not isinstance(raw, list) or not raw:
         raise ValueError("columns 必须是非空数组")
-    if len(raw) > MAX_SOURCE_COLUMNS:
-        raise ValueError(f"状态列最多 {MAX_SOURCE_COLUMNS} 个")
-    columns, seen = [], set()
+    if len(raw) > MAX_SOURCE_STATUS_VALUES:
+        raise ValueError(f"状态取值最多 {MAX_SOURCE_STATUS_VALUES} 个")
     for item in raw:
         if not isinstance(item, dict):
-            raise ValueError("columns 每项必须是 {key,title,color} 对象")
-        unknown = set(item) - {"key", "title", "color"}
+            raise ValueError("columns 每项必须是 {value,color}(或旧版 {key,title,color}) 对象")
+        unknown = set(item) - {"value", "key", "title", "color"}
         if unknown:
-            raise ValueError(f"状态列含未知字段: {', '.join(sorted(unknown))}")
-        key = _clean_tag_text(item.get("key"), "状态列 key")
-        if key in seen:
-            raise ValueError(f"状态列 key 重复: {key}")
-        seen.add(key)
-        title = _clean_tag_text(item.get("title") or key, "状态列标题")
-        columns.append({"key": key, "title": title,
-                        "color": str(item.get("color") or "")})
-    return columns
+            raise ValueError(f"状态取值含未知字段: {', '.join(sorted(unknown))}")
+        _clean_tag_text(item.get("value") or item.get("title")
+                        or item.get("key"), "状态取值")
+    values = normalize_status_values(raw)
+    if not values:
+        raise ValueError("columns 必须声明至少一个状态取值")
+    return values
 
 
-def validate_source_cards(raw, columns) -> list[dict]:
-    """校验并归一化自定义数据源卡片(整体替换语义);非法抛 ValueError。"""
+def _column_key_map(raw_columns) -> dict[str, str]:
+    """旧脚本卡片用状态列 key 表示状态;建 key -> 状态文本 的映射。
+
+    没有显式列声明时,旧内置四态 key(open/in_progress/...)仍按惯例映射。
+    """
+    mapping = {}
+    for item in raw_columns or []:
+        if isinstance(item, dict):
+            key = str(item.get("key") or "").strip()
+            text = str(item.get("value") or item.get("title") or key).strip()
+            if key and text:
+                mapping[key] = text
+    return mapping or dict(LEGACY_STATUS_TEXT)
+
+
+def validate_source_cards(raw) -> list[dict]:
+    """校验并归一化同步卡片;非法抛 ValueError。状态文本不做取值校验。"""
     if not isinstance(raw, list):
         raise ValueError("cards 必须是数组")
     if len(raw) > MAX_SOURCE_CARDS:
         raise ValueError(f"卡片最多 {MAX_SOURCE_CARDS} 张")
-    known_status = {str(c.get("key")) for c in columns}
-    default_status = str(columns[0].get("key")) if columns else ""
     cards, seen = [], set()
     for item in raw:
         if not isinstance(item, dict):
@@ -203,55 +185,136 @@ def validate_source_cards(raw, columns) -> list[dict]:
         if card_id in seen:
             raise ValueError(f"卡片 id 重复: {card_id}")
         seen.add(card_id)
-        status = str(item.get("status") or "").strip() or default_status
-        if status not in known_status:
-            raise ValueError(
-                f"卡片 {card_id} 的 status `{status}` 不在状态列中,"
-                f"可用: {', '.join(sorted(known_status))}")
         labels_raw = item.get("labels") or []
         if (not isinstance(labels_raw, list)
                 or not all(isinstance(x, str) for x in labels_raw)):
             raise ValueError(f"卡片 {card_id} 的 labels 必须是字符串数组")
-        labels = list(dict.fromkeys(x.strip() for x in labels_raw if x.strip()))
         meta_raw = item.get("meta") or []
         if not isinstance(meta_raw, list):
             raise ValueError(f"卡片 {card_id} 的 meta 必须是数组")
-        card = {
+        cards.append({
             "id": card_id, "title": title,
             "summary": str(item.get("summary") or ""),
-            "status": status, "labels": labels,
+            "status": str(item.get("status") or "").strip(),
+            "labels": normalize_labels(labels_raw),
             "updated_at": float(item.get("updated_at") or time.time()),
             "meta": [str(x) for x in meta_raw],
-        }
-        url = str(item.get("url") or "").strip()
-        if url:
-            card["url"] = url
-        cards.append(card)
+            "url": str(item.get("url") or "").strip(),
+        })
     return cards
 
 
-def _status_tags(status: str, columns) -> list[str]:
-    """卡片状态映射出的可筛选标签:状态 key 与其状态列标题。"""
-    tags = [status] if status else []
-    for col in columns:
-        if col.get("key") == status:
-            title = str(col.get("title") or "")
-            if title and title not in tags:
-                tags.append(title)
-    return tags
+def sync_source_tasks(store, project_id: str, source_id: str,
+                      cards: list[dict], raw_columns=None,
+                      status_values=None, auto_process=None) -> dict:
+    """把同步卡片 upsert 成该源的任务(整体同步语义)。
+
+    卡片按 external_id 匹配既有任务:命中则整卡覆盖(标签含状态,最后写入
+    者生效,本地简报与频道绑定保留);未命中则新建,新任务会走项目自动处理
+    规则(auto_process 回调);本次未出现的 external_id 任务连带简报删除。
+    """
+    key_text = _column_key_map(raw_columns)
+    declared = [str(c.get("value") or "") for c in status_values or []]
+    default_status = (next((str(item.get("value") or item.get("title")
+                                or item.get("key") or "")
+                            for item in raw_columns or []
+                            if isinstance(item, dict)), "")
+                      or (declared[0] if declared else "待处理"))
+    existing = {task.external_id: task
+                for task in store.list_tasks(project_id, source_id=source_id)
+                if task.external_id}
+    created, updated = 0, 0
+    seen_ids = set()
+    for card in cards:
+        external_id = card["id"]
+        seen_ids.add(external_id)
+        status_raw = card["status"]
+        status_text = key_text.get(status_raw, status_raw) or default_status
+        labels = with_status(card["labels"], status_text) \
+            if status_text or not status_of(card["labels"]) else card["labels"]
+        task = existing.get(external_id)
+        if task is None:
+            task = Task(
+                id=new_id("t"), project_id=project_id, title=card["title"],
+                source_id=source_id, external_id=external_id,
+                summary=card["summary"], labels=labels,
+                url=card["url"], meta=card["meta"],
+                created_at=card["updated_at"], updated_at=card["updated_at"],
+            )
+            store.put_task(task)
+            created += 1
+            if auto_process is not None:
+                auto_process(task)
+        else:
+            task.title = card["title"]
+            task.summary = card["summary"]
+            task.labels = labels
+            task.url = card["url"]
+            task.meta = card["meta"]
+            store.put_task(task)
+            updated += 1
+    removed = 0
+    for external_id, task in existing.items():
+        if external_id not in seen_ids:
+            store.delete_task(task.id)
+            removed += 1
+    return {"created": created, "updated": updated, "removed": removed}
+
+
+def _task_card(task: Task) -> dict:
+    card = {
+        "id": task.id, "title": task.title, "summary": task.summary,
+        "status": status_of(task.labels), "labels": list(task.labels),
+        "updated_at": task.updated_at, "meta": list(task.meta),
+        "task_id": task.id,
+    }
+    if task.url:
+        card["url"] = task.url
+    return card
+
+
+def _builtin_meta(store, task: Task) -> list[str]:
+    meta = [task.id]
+    for channel_id in task.channel_ids:
+        channel = store.get_channel(channel_id)
+        meta.append(f"#{channel.name or channel.id}" if channel else channel_id)
+    return meta
+
+
+def _group_columns(tasks: list[Task], prop: str,
+                   status_values: list[dict]) -> list[dict]:
+    """按属性取值动态分列;status 属性按数据源声明的顺序与颜色排前。"""
+    prop = str(prop or "").strip()
+    declared = ([{"value": c["value"], "color": c.get("color") or ""}
+                 for c in status_values]
+                if prop.lower() == STATUS_PROPERTY else [])
+    seen = {item["value"].lower() for item in declared}
+    extras = []
+    for task in tasks:
+        for label in task.labels:
+            label_prop, value = label_query.split_label(label)
+            if label_prop.lower() == prop.lower() and value.lower() not in seen:
+                seen.add(value.lower())
+                extras.append({"value": value, "color": ""})
+    extras.sort(key=lambda item: item["value"])
+    columns = [{"title": item["value"], "query": f"{prop}: {item['value']}",
+                "color": item["color"]} for item in declared + extras]
+    columns.append({"title": f"未设置 {prop}", "query": f"!{prop}: *",
+                    "color": ""})
+    return columns
 
 
 def resolve_board_data(store, project_id: str, source_id: str,
-                       filters: Optional[list] = None) -> dict:
-    """解析看板数据:取数 -> 按筛选列分列。
+                       filters: Optional[list] = None,
+                       group_by: str = "") -> dict:
+    """解析看板数据:按源取任务 -> 按筛选列或分组属性分列。
 
-    卡片可命中多列(筛选列是标签视角,不是互斥状态);表达式非法抛 ValueError。
+    卡片可命中多列(列是标签视角,不是互斥状态);表达式非法抛 ValueError。
     """
-    if source_id in SOURCES:
-        source = SOURCES[source_id]
-        source_info = {"id": source_id, "name": source.name}
-        columns = [dict(c) for c in source.columns]
-        cards = source.fetch(store, project_id)
+    source_id = normalize_source_id(source_id)
+    if source_id == BUILTIN_SOURCE_ID:
+        source_info = {"id": source_id, "name": "项目任务"}
+        status_values = [dict(c) for c in BUILTIN_STATUS_VALUES]
     else:
         record = get_custom_source(store, project_id, source_id)
         if record is None:
@@ -261,32 +324,34 @@ def resolve_board_data(store, project_id: str, source_id: str,
             "name": record.name or source_id,
             "updated_at": record.updated_at,
         }
-        columns = [dict(c) for c in record.columns]
-        cards = [dict(card) for card in record.cards]
+        status_values = [dict(c) for c in record.status_values]
+    tasks = store.list_tasks(project_id, include_archived=False,
+                             source_id=source_id)
+    if source_id == BUILTIN_SOURCE_ID:
+        for task in tasks:
+            if not task.meta:
+                task.meta = _builtin_meta(store, task)
 
-    # (card, 可筛选标签集合=labels + 状态标签)
-    matchable = [
-        (card, list(card.get("labels") or [])
-         + _status_tags(str(card.get("status") or ""), columns))
-        for card in cards
-    ]
-
-    column_filters = (validate_filters(filters) if filters
-                      else default_filters(columns))
+    if str(group_by or "").strip():
+        column_filters = _group_columns(tasks, group_by, status_values)
+    else:
+        column_filters = (validate_filters(filters) if filters
+                          else default_filters(status_values))
     out_columns = []
     for index, item in enumerate(column_filters):
         ast = label_query.parse(item["query"])
         out_columns.append({
             "key": f"f{index}", "title": item["title"], "query": item["query"],
             "color": item["color"] or "var(--muted)",
-            "cards": [card for card, tags in matchable
-                      if label_query.matches(ast, tags)],
+            "cards": [_task_card(task) for task in tasks
+                      if label_query.matches(ast, task.labels)],
         })
-    # 可筛选标签全集(含状态标签),供前端做筛选输入建议
-    labels = {str(tag) for _, tags in matchable for tag in tags}
-    labels.update(str(c.get("title") or "") for c in columns)
+    # 可筛选标签全集,供前端做筛选输入建议
+    labels = {label for task in tasks for label in task.labels}
+    labels.update(f"{STATUS_PROPERTY}: {c['value']}" for c in status_values)
     labels.discard("")
     return {"source": source_info,
             "columns": out_columns,
             "labels": sorted(labels),
-            "filters": column_filters if filters else []}
+            "filters": column_filters if filters and not group_by else [],
+            "group_by": str(group_by or "").strip()}

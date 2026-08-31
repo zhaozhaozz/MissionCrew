@@ -111,8 +111,10 @@ ACTION_DEFINITIONS = {
         "orchestrator_only": False,
         "arguments": {
             "title": "任务标题", "summary": "一句话简介", "body": "正文",
-            "labels": "标签数组", "channel_ids": "绑定的 Channel id 数组",
-            "status": "open/in_progress/blocked/done",
+            "labels": ("标签数组;`文本` 或 `属性: 值` 高级标签,"
+                       "如 owner: 张三"),
+            "channel_ids": "可选绑定的 Channel id 数组",
+            "status": "状态文本,如 待处理/处理中/已阻塞/已完成,缺省 待处理",
         },
     },
     "task.update": {
@@ -128,7 +130,7 @@ ACTION_DEFINITIONS = {
         "orchestrator_only": False,
         "arguments": {
             "id": "任务 id", "content": "状态简报正文",
-            "status": "可选 open/in_progress/blocked/done",
+            "status": "可选状态文本,如 待处理/处理中/已阻塞/已完成",
         },
     },
     "task.delete": {
@@ -199,10 +201,11 @@ ACTION_DEFINITIONS = {
             "id": "面板短 id", "name": "名称", "description": "用途",
             "layout": "可选组件数组(widgets 形态)",
             "kind": "可选 widgets/taskboard",
-            "source": "taskboard 数据源 id(内置 tasks 或自定义源短 id)",
+            "source": "taskboard 数据源 id(内置 built-in 或自定义源短 id)",
             "filters": ("taskboard 筛选列数组 [{title,query,color}],query 是"
-                        "标签表达式(& | ! 与括号),状态列标题也是可筛选标签;"
-                        "新建时缺省按数据源状态列生成"),
+                        "标签表达式(& | ! 与括号,`属性: *` 匹配带该属性的"
+                        "任务);新建时缺省按数据源状态取值生成 status 列"),
+            "group_by": "可选分组属性名;非空时按属性取值动态分列,忽略 filters",
         },
     },
     "dashboard.delete": {
@@ -212,18 +215,19 @@ ACTION_DEFINITIONS = {
     },
     "board_source.save": {
         "description": (
-            "创建或更新自定义看板数据源;cards 整体替换卡片列表,"
-            "适合配自动化脚本定时同步 GitCode/GitHub Issue 等外部列表,"
-            "再用 dashboard.save 建任务看板绑定该源"
+            "创建或更新自定义任务数据源;cards 按 id 整体同步为该源的任务"
+            "(新增/覆盖/删除),适合配自动化脚本定时同步 GitCode/GitHub "
+            "Issue 等外部列表,再用 dashboard.save 建任务看板绑定该源"
         ),
         "orchestrator_only": True,
         "arguments": {
             "id": "数据源短 id(不能与内置源重名)",
             "name": "名称", "description": "用途",
-            "columns": "可选状态列数组 [{key,title,color}],缺省四态列",
-            "cards": ("可选卡片数组,整体替换;每张必须有 id、title,可选 "
-                      "summary、status(状态列 key)、labels、updated_at、"
-                      "meta、url(外部链接)"),
+            "columns": ("可选状态取值数组 [{value,color}](兼容旧版 "
+                        "{key,title,color}),缺省四态"),
+            "cards": ("可选卡片数组,按 id 整体同步;每张必须有 id、title,"
+                      "可选 summary、status(状态文本)、labels、updated_at、"
+                      "meta、url(外部链接);新任务会走项目自动处理规则"),
             "mode": "create/update/upsert,缺省 upsert",
         },
     },
@@ -834,14 +838,14 @@ class AgentActionService:
         url = task_resource_url(project.id, task.id)
         summary = f"已创建任务 [{task.title}]({url})"
         if auto:
-            summary += f";已按自动规则(label `{auto['rule_label']}`)派发"
+            summary += f";已按自动规则(`{auto['rule_query']}`)派发"
         result = {
             "summary": summary,
             "task": task.to_dict(), "resource_url": url,
         }
         if auto:
             result["auto_dispatch"] = {
-                "rule_label": auto["rule_label"], "sent": auto["sent"]}
+                "rule_query": auto["rule_query"], "sent": auto["sent"]}
         return result
 
     def _update_task(self, project: Project, identity: AgentIdentity,
@@ -1176,11 +1180,13 @@ class AgentActionService:
             board.source = source
         if "filters" in arguments:
             board.filters = board_sources.validate_filters(arguments["filters"])
-        # 与 Web 端一致:新建看板未显式给筛选列时按数据源状态列物化默认列
+        if "group_by" in arguments:
+            board.group_by = str(arguments.get("group_by") or "").strip()
+        # 与 Web 端一致:新建看板未显式给筛选列时按数据源状态取值物化默认列
         if (board.kind == "taskboard" and created
-                and "filters" not in arguments):
+                and "filters" not in arguments and not board.group_by):
             board.filters = board_sources.default_filters(
-                board_sources.source_columns(
+                board_sources.source_status_values(
                     self.store, project.id, board.source))
         self.store.put_board(board)
         self.store.audit(
@@ -1206,8 +1212,12 @@ class AgentActionService:
 
     def _save_board_source(self, project: Project, identity: AgentIdentity,
                            arguments: dict, _context: AgentRunContext) -> dict:
+        from types import SimpleNamespace
+        from .tasks import auto_process_task
+
         raw_id = self._control_id(arguments.get("id"))
-        if raw_id in board_sources.SOURCES:
+        if board_sources.normalize_source_id(raw_id) \
+                == board_sources.BUILTIN_SOURCE_ID:
             raise AgentToolError(
                 "invalid_arguments", f"{raw_id} 是内置数据源,不能覆盖")
         full_id = board_sources.custom_source_full_id(project.id, raw_id)
@@ -1231,21 +1241,30 @@ class AgentActionService:
         if "description" in arguments:
             record.description = str(arguments.get("description") or "")
         if "columns" in arguments:
-            record.columns = board_sources.validate_source_columns(
+            record.status_values = board_sources.validate_source_columns(
                 arguments["columns"])
-        if "cards" in arguments:
-            record.cards = board_sources.validate_source_cards(
-                arguments["cards"], record.columns)
         self.store.put_board_datasource(record)
+        stats = None
+        if "cards" in arguments:
+            cards = board_sources.validate_source_cards(arguments["cards"])
+            chat = SimpleNamespace(post=self._post_message)
+            stats = board_sources.sync_source_tasks(
+                self.store, project.id, raw_id, cards,
+                raw_columns=arguments.get("columns"),
+                status_values=record.status_values,
+                auto_process=lambda task: auto_process_task(
+                    self.store, chat, task))
         self.store.audit(
             identity.actor, "board_source_saved",
             detail=(f"project={project.id} source={full_id} "
-                    f"cards={len(record.cards)}"))
-        return {
-            "summary": (f"已{'创建' if created else '更新'}看板数据源 "
-                        f"{record.name}({len(record.cards)} 张卡片)"),
-            "source": record.to_dict(),
-        }
+                    + (f"cards={stats['created']}+{stats['updated']}"
+                       f"-{stats['removed']}" if stats else "cards=(未同步)")))
+        summary = f"已{'创建' if created else '更新'}任务数据源 {record.name}"
+        if stats:
+            summary += (f"(新增 {stats['created']}、更新 {stats['updated']}、"
+                        f"删除 {stats['removed']})")
+        return {"summary": summary, "source": record.to_dict(),
+                **({"sync": stats} if stats else {})}
 
     def _delete_board_source(self, project: Project, identity: AgentIdentity,
                              arguments: dict,
@@ -1262,11 +1281,16 @@ class AgentActionService:
             raise AgentToolError(
                 "in_use", f"数据源仍被面板使用: {names};请先删除或改绑这些面板",
                 409)
+        removed = 0
+        for task in self.store.list_tasks(project.id, source_id=raw_id):
+            self.store.delete_task(task.id)
+            removed += 1
         self.store.delete_board_datasource(full_id)
         self.store.audit(
             identity.actor, "board_source_deleted",
-            detail=f"project={project.id} source={full_id}")
-        return {"summary": f"已删除看板数据源 {record.name or raw_id}",
+            detail=f"project={project.id} source={full_id} tasks={removed}")
+        return {"summary": (f"已删除任务数据源 {record.name or raw_id}"
+                            f"(连带 {removed} 个任务)"),
                 "deleted": True}
 
     def _save_automation(self, project: Project, identity: AgentIdentity,

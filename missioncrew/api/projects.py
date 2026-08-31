@@ -5,6 +5,7 @@ from dataclasses import asdict
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab import board_sources
 from ..collab.documents import archive_library, library_for
 from ..collab.guidelines import replace_guideline_library
 from ..collab.project_context import write_guideline_context
@@ -61,9 +62,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             body.task_auto_rules if body.task_auto_rules is not None else
             ([asdict(rule) for rule in existing.task_auto_rules]
              if existing else []))
-        data["task_label_boards"] = (
-            body.task_label_boards if body.task_label_boards is not None else
-            (existing.task_label_boards if existing else []))
+        if body.task_board_filters is not None:
+            try:
+                data["task_board_filters"] = board_sources.validate_filters(
+                    body.task_board_filters)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+        else:
+            data["task_board_filters"] = (
+                existing.task_board_filters if existing else [])
         try:
             project = Project.from_dict(data)
         except (TypeError, ValueError) as exc:

@@ -149,24 +149,26 @@ ORCHESTRATOR_TEMPLATE = """\
     chart（kind=bar|line|pie + data + x_key/y_key）、list（items）、
     log（lines）、code（code+language）。
   卡片可用 content.source 绑定平台实时数据，渲染时自动取数：
-    {{"from":"tasks","status":["open"],"labels":[]}}（项目任务→表格行）
+    {{"from":"tasks","status":["待处理"],"labels":[]}}（项目任务→表格行）
     {{"from":"document","path":"specs/x.md"}}（文档库文件→markdown）
     {{"from":"audit","actions":[],"limit":30}}（审计事件→列表）
     {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
   例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
   实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
 - 任务看板面板:`dashboard.save` 传 `kind: "taskboard"` 与 `source`(数据源 id,
-  内置 `tasks` 或自定义源短 id)即可创建。看板按 `filters` 分列,每项
-  {{"title","query","color"}} 定义一列,query 是标签表达式(& | ! 与括号);
-  卡片状态(待处理/处理中/已阻塞/已完成 等状态列标题与状态 key)也作为标签
-  参与筛选,可写 `处理中 & bug` 这类组合;不传 filters 时新建看板按数据源
-  状态列生成默认列,用户也可在看板页直接增删筛选列。
-- `board_source.save` 创建或更新自定义看板数据源:cards 整体替换卡片列表,
-  每张必须有 id、title,可选 summary、status(状态列 key)、labels、
-  updated_at、meta、url(外部链接,点击卡片打开)。典型用法:配合
+  内置 `built-in` 或自定义源短 id)即可创建。看板按 `filters` 分列,每项
+  {{"title","query","color"}} 定义一列,query 是标签表达式(& | ! 与括号,
+  `属性: *` 匹配带该属性标签的任务);状态就是 `status: 待处理` 这样的标签,
+  可写 `status: 处理中 & bug` 这类组合;也可传 `group_by` 按属性取值动态
+  分列(如 `group_by: "owner"`);不传 filters 时新建看板按数据源状态取值
+  生成默认列,用户也可在看板页直接增删筛选列。
+- `board_source.save` 创建或更新自定义任务数据源:cards 按 id 整体同步为
+  该源的任务(新增/覆盖/删除本次未出现的),每张必须有 id、title,可选
+  summary、status(状态文本)、labels、updated_at、meta、url(外部链接,
+  点击卡片打开);新任务会走项目自动处理规则。典型用法:配合
   `automation.save` 的定时脚本同步 GitCode/GitHub Issue 等外部列表到数据源,
   再用 `dashboard.save` 建任务看板绑定该源。删除用 `board_source.delete`
-  (仍被面板引用时会拒绝)。
+  (仍被面板引用时会拒绝,删除连带该源全部任务)。
 - `guideline.save` 接收完整 markdown，文件必须以只含 name、description 的 YAML
   frontmatter 开头；后端直接读取这两个属性，不使用 id/title/summary，也不做字段转换。
   修改并重命名现有准则时传 original_name。`skill.save` 按 id 新建或覆盖，markdown 是
@@ -1629,9 +1631,10 @@ class ChatEngine:
             _board_line(b) for b in self.store.list_boards(project.id)) or "(无)"
         datasources = "\n".join(
             f"- {_short(s.id)}({s.name}):{s.description or '无描述'};"
-            f"{len(s.cards)} 张卡片"
+            f"{len(self.store.list_tasks(project.id, source_id=_short(s.id)))}"
+            " 个任务"
             for s in self.store.list_board_datasources(project.id)
-        ) or "(无自定义源;内置源 tasks 始终可用)"
+        ) or "(无自定义源;内置源 built-in 始终可用)"
         guidelines = "\n".join(
             f"- {g.name}:{g.description or '未填写 description'}"
             f"{'[停用]' if not g.enabled else ''}"

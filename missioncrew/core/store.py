@@ -10,7 +10,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .models import (Automation, Backend, Board, BoardDataSource, Channel,
-                     Project, Resource, Role, Task)
+                     Project, Resource, Role, Task, new_id, normalize_labels,
+                     with_status)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -136,7 +137,9 @@ class Store:
         self._migrate_runtime_usage()
         self._migrate_chat_sessions()
         self._migrate_agent_tokens()
+        self._migrate_source_cards_to_tasks()
         self._migrate_tasks_to_issues()
+        self._migrate_board_status_filters()
         self._conn.commit()
 
     def _migrate_chat_runs(self) -> None:
@@ -167,7 +170,7 @@ class Store:
         return changed
 
     def _migrate_tasks_to_issues(self) -> int:
-        """把旧阶段任务文档原地升级，并为其绑定项目默认 Channel。"""
+        """任务行原地升级(旧枚举 status 转状态标签),并清理失效频道绑定。"""
         channel_rows = self._conn.execute("SELECT data FROM channels").fetchall()
         channels_by_project: dict[str, list[Channel]] = {}
         for row in channel_rows:
@@ -185,22 +188,147 @@ class Store:
                 task = Task.from_dict(raw)
             except (TypeError, ValueError, KeyError, json.JSONDecodeError):
                 continue
-            available = channels_by_project.get(task.project_id, [])
-            valid_ids = {channel.id for channel in available}
+            # 频道绑定已可选:只剔除失效引用,不再强制补默认频道
+            valid_ids = {channel.id for channel in
+                         channels_by_project.get(task.project_id, [])}
             task.channel_ids = [cid for cid in task.channel_ids if cid in valid_ids]
-            if not task.channel_ids and available:
-                default = next(
-                    (channel for channel in available
-                     if channel.id == "general" or channel.id.endswith(":general")),
-                    available[0],
-                )
-                task.channel_ids = [default.id]
             normalized = task.to_dict()
             if normalized != raw:
                 self._conn.execute(
                     "UPDATE tasks SET data=? WHERE id=?",
                     (json.dumps(normalized, ensure_ascii=False), row["id"]),
                 )
+                changed += 1
+        return changed
+
+    def _migrate_source_cards_to_tasks(self) -> int:
+        """把旧版数据源内嵌 cards 一次性迁入统一 tasks 表。
+
+        卡片 id 作为 external_id,状态列 key 映射成状态标签文本;已存在同
+        (project, source, external_id) 的任务则跳过,保证迁移可重入。
+        """
+        existing: set[tuple[str, str, str]] = set()
+        for row in self._conn.execute("SELECT data FROM tasks").fetchall():
+            try:
+                raw = json.loads(row["data"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(raw, dict) and raw.get("external_id"):
+                existing.add((str(raw.get("project_id", "")),
+                              str(raw.get("source_id", "")),
+                              str(raw.get("external_id", ""))))
+        changed = 0
+        for row in self._conn.execute(
+                "SELECT id, data FROM board_sources").fetchall():
+            try:
+                raw = json.loads(row["data"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(raw, dict) or "cards" not in raw:
+                continue
+            project_id = str(raw.get("project_id", ""))
+            short_id = str(raw.get("id", "")).removeprefix(f"{project_id}:")
+            key_text = {
+                str(col.get("key")): str(col.get("title") or col.get("key") or "")
+                for col in raw.get("columns") or [] if isinstance(col, dict)}
+            for card in raw.get("cards") or []:
+                if not isinstance(card, dict):
+                    continue
+                external_id = str(card.get("id", "")).strip()
+                if (not external_id
+                        or (project_id, short_id, external_id) in existing):
+                    continue
+                status_raw = str(card.get("status") or "")
+                labels = with_status(
+                    normalize_labels(card.get("labels") or []),
+                    key_text.get(status_raw, status_raw))
+                stamp = float(card.get("updated_at") or time.time())
+                task_id = new_id("t")
+                while self._conn.execute(
+                        "SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+                    task_id = new_id("t")
+                task = Task(
+                    id=task_id, project_id=project_id,
+                    title=str(card.get("title") or external_id),
+                    source_id=short_id, external_id=external_id,
+                    summary=str(card.get("summary") or ""), labels=labels,
+                    url=str(card.get("url") or ""),
+                    meta=[str(x) for x in card.get("meta") or []],
+                    created_at=stamp, updated_at=stamp,
+                )
+                self._conn.execute(
+                    "INSERT INTO tasks(id, data) VALUES(?, ?)",
+                    (task.id, json.dumps(task.to_dict(), ensure_ascii=False)))
+                changed += 1
+            normalized = BoardDataSource.from_dict(raw).to_dict()
+            if normalized != raw:
+                self._conn.execute(
+                    "UPDATE board_sources SET data=? WHERE id=?",
+                    (json.dumps(normalized, ensure_ascii=False), row["id"]))
+        return changed
+
+    def _migrate_board_status_filters(self) -> int:
+        """把看板筛选列里的裸状态词一次性改写成状态标签表达式。
+
+        旧版卡片状态兼作可筛选标签(如列表达式直接写 `待处理`);状态改为
+        `status: 文本` 标签后,与数据源状态取值同名的表达式项按新语义改写,
+        其余标签项(如 bug)保持不变。
+        """
+        from . import label_query
+        from .models import BUILTIN_SOURCE_ID, BUILTIN_STATUS_VALUES
+
+        # (project_id, source_id) -> 状态取值集合(小写)
+        source_values: dict[tuple[str, str], set[str]] = {}
+        for row in self._conn.execute("SELECT data FROM board_sources").fetchall():
+            try:
+                record = BoardDataSource.from_dict(json.loads(row["data"]))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            short_id = record.id.removeprefix(f"{record.project_id}:")
+            source_values[(record.project_id, short_id)] = {
+                str(c.get("value") or "").lower() for c in record.status_values}
+        builtin_values = {str(c["value"]).lower() for c in BUILTIN_STATUS_VALUES}
+
+        def rewrite(query: str, values: set[str]) -> str:
+            try:
+                tokens = label_query._tokenize(query)
+            except Exception:
+                return query
+            parts = []
+            for token in tokens:
+                if isinstance(token, tuple) and token[0] == "label":
+                    text = token[1]
+                    if (text.lower() in values
+                            and not label_query.split_label(text)[0]):
+                        text = f"status: {text}"
+                    parts.append(text)
+                else:
+                    parts.append(str(token))
+            return " ".join(parts).replace("( ", "(").replace(" )", ")")
+
+        changed = 0
+        for row in self._conn.execute("SELECT id, data FROM boards").fetchall():
+            try:
+                raw = json.loads(row["data"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(raw, dict) or raw.get("kind") != "taskboard":
+                continue
+            source_id = str(raw.get("source") or "")
+            if source_id in ("", "tasks", BUILTIN_SOURCE_ID):
+                values = builtin_values
+            else:
+                values = source_values.get(
+                    (str(raw.get("project_id", "")), source_id), set())
+            filters = raw.get("filters") or []
+            rewritten = [
+                {**item, "query": rewrite(str(item.get("query") or ""), values)}
+                for item in filters if isinstance(item, dict)]
+            if rewritten != filters:
+                raw["filters"] = rewritten
+                self._conn.execute(
+                    "UPDATE boards SET data=? WHERE id=?",
+                    (json.dumps(raw, ensure_ascii=False), row["id"]))
                 changed += 1
         return changed
 
@@ -503,7 +631,8 @@ class Store:
         return self._task_activity(Task.from_dict(d)) if d else None
 
     def list_tasks(self, project_id: Optional[str] = None,
-                   include_archived: bool = True) -> list[Task]:
+                   include_archived: bool = True,
+                   source_id: Optional[str] = None) -> list[Task]:
         ts = [Task.from_dict(d) for d in self._list("tasks")]
         latest_briefs = {
             row["task_id"]: float(row["latest"] or 0)
@@ -516,6 +645,8 @@ class Store:
                 task.updated_at, latest_briefs.get(task.id, 0))
         if project_id is not None:
             ts = [task for task in ts if task.project_id == project_id]
+        if source_id is not None:
+            ts = [task for task in ts if task.source_id == source_id]
         if not include_archived:
             ts = [task for task in ts if not task.archived]
         return sorted(

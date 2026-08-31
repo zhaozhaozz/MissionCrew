@@ -79,7 +79,7 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 
 ### `tasks/`
 
-`tasks/` 只存放平台生成的项目 Task 快照，不是协作草稿或报告目录。快照只读；Agent 创建、编辑、追加简报或删除 Task 时必须显式调用 Agent Tool，回合结束不会把文件修改同步回 Task。Task 包含 `title`、`summary`、正文、`status`、`labels` 和 `channel_ids`。聊天角色新建 Task 使用 `task.create`，修改 Task 使用带 `snapshot_updated_at` 的 `task.update`；工具会立即报告版本冲突。追加状态简报使用 `task.brief`；项目主控删除 Task 使用 `task.delete`，Task 与简报会进入项目回收站。快照 frontmatter 中的 `status_briefs` 是只读历史。协作草稿和报告应通过 `document.publish` 放到文档库下合适的目录。
+`tasks/` 只存放平台生成的项目 Task 快照，不是协作草稿或报告目录。快照只读；Agent 创建、编辑、追加简报或删除 Task 时必须显式调用 Agent Tool，回合结束不会把文件修改同步回 Task。Task 包含 `title`、`summary`、正文、`labels`（状态是 `status: 文本` 标签）和可选 `channel_ids`。聊天角色新建 Task 使用 `task.create`，修改 Task 使用带 `snapshot_updated_at` 的 `task.update`；工具会立即报告版本冲突。追加状态简报使用 `task.brief`；项目主控删除 Task 使用 `task.delete`，Task 与简报会进入项目回收站。快照 frontmatter 中的 `status_briefs` 是只读历史。协作草稿和报告应通过 `document.publish` 放到文档库下合适的目录。
 
 人类和 Agent 都可以更新 `open`、`in_progress`、`blocked`、`done` 状态。Agent Tool 使用 `snapshot_updated_at` 避免旧版本覆盖较新的内容。每个 Task 至少绑定一个可用 Channel；“处理 Task”就是在这些 Channel 中向项目主控发送消息。
 

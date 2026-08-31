@@ -5,8 +5,14 @@ import time
 from typing import Optional
 
 from .resource_urls import task_resource_url
-from ..core.models import TASK_STATUSES, Channel, Task, new_id
+from ..core import label_query
+from ..core.models import (Channel, Task, new_id, normalize_labels, status_of,
+                           with_status)
 from ..core.store import Store
+
+DEFAULT_STATUS = "待处理"
+DONE_STATUS = "已完成"
+DISPATCHED_STATUS = "处理中"
 
 
 class TaskDispatchError(ValueError):
@@ -25,7 +31,7 @@ def _text(value: object, field: str, *, required: bool = False) -> str:
 def _labels(value: object) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError("labels 必须是字符串数组")
-    return list(dict.fromkeys(item.strip() for item in value if item.strip()))
+    return normalize_labels(value)
 
 
 def task_channels(store: Store, project_id: str, channel_ids: object,
@@ -46,10 +52,8 @@ def task_channels(store: Store, project_id: str, channel_ids: object,
              if channel.id == "general" or channel.id.endswith(":general")),
             available[0] if available else None,
         )
-        if fallback is not None:
-            ids = [fallback.id]
-    if not ids:
-        raise ValueError("Task 至少需要绑定一个可用 Channel")
+        # 频道绑定可选:没有可回退频道时返回空绑定,派发时再要求频道
+        ids = [fallback.id] if fallback is not None else []
     result = []
     for channel_id in ids:
         channel = (store.get_channel(channel_id)
@@ -65,23 +69,26 @@ def task_channels(store: Store, project_id: str, channel_ids: object,
 
 def create_task(store: Store, project_id: str, *, title: object,
                 summary: object = "", body: object = "", labels: object = None,
-                channel_ids: object = None, status: object = "open",
+                channel_ids: object = None, status: object = None,
                 actor: str = "human", fallback_channel_id: str = "") -> Task:
     if store.get_project(project_id) is None:
         raise ValueError("项目不存在")
-    status_value = str(status)
-    if status_value not in TASK_STATUSES:
-        raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
     channels = task_channels(
         store, project_id, channel_ids if channel_ids is not None else [],
         fallback_channel_id=fallback_channel_id,
     )
+    # 状态即标签:显式 status 参数优先,其次保留 labels 里已有的状态标签,
+    # 两者都没有时落默认状态。状态文本不做合法性校验。
+    label_list = _labels(labels if labels is not None else [])
+    status_text = str(status).strip() if status is not None else ""
+    if status_text or not status_of(label_list):
+        label_list = with_status(label_list, status_text or DEFAULT_STATUS)
     task = Task(
         id=new_id("t"), project_id=project_id,
         title=_text(title, "title", required=True),
         summary=_text(summary, "summary"), body=_text(body, "body"),
-        labels=_labels(labels if labels is not None else []),
-        channel_ids=[channel.id for channel in channels], status=status_value,
+        labels=label_list,
+        channel_ids=[channel.id for channel in channels],
     )
     store.put_task(task)
     store.audit(actor, "task_created", task.id, f"project={project_id}")
@@ -105,13 +112,15 @@ def update_task(store: Store, task: Task, *, snapshot_updated_at: object,
     if "labels" in changes:
         task.labels = _labels(changes["labels"])
     if "status" in changes:
-        status = changes["status"]
-        if status not in TASK_STATUSES:
-            raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
-        task.status = status
+        task.labels = with_status(
+            task.labels, _text(changes["status"], "status", required=True))
     if "channel_ids" in changes:
-        task.channel_ids = [channel.id for channel in task_channels(
-            store, task.project_id, changes["channel_ids"])]
+        ids = changes["channel_ids"]
+        if isinstance(ids, list) and not ids:
+            task.channel_ids = []   # 频道绑定可选:显式空列表即解除绑定
+        else:
+            task.channel_ids = [channel.id for channel in task_channels(
+                store, task.project_id, ids)]
     store.put_task(task)
     store.audit(actor, "task_updated", task.id, f"project={task.project_id}")
     return task
@@ -123,17 +132,17 @@ def add_task_brief(store: Store, task: Task, *, content: object,
     if task.archived:
         raise ValueError("Task 已归档，请先恢复后再追加状态简报")
     text = _text(content, "content", required=True)
-    if status is not None:
-        if status not in TASK_STATUSES:
-            raise ValueError(f"status 必须是 {'/'.join(TASK_STATUSES)}")
-        if task.status != status:
-            task.status = status
+    status_text = str(status).strip() if status is not None else ""
+    if status_text and status_text != status_of(task.labels):
+        task.labels = with_status(task.labels, status_text)
     brief = store.add_task_brief(
-        task.id, author, author_type, text, status or task.status)
+        task.id, author, author_type, text,
+        status_text or status_of(task.labels))
     # 即使状态不变，新增进展也必须刷新最近活动时间和乐观锁版本。
     store.put_task(task)
     store.audit(author, "task_brief_added", task.id,
-                f"project={task.project_id} status={status or task.status}")
+                f"project={task.project_id} "
+                f"status={status_text or status_of(task.labels)}")
     return brief
 
 
@@ -170,7 +179,7 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
     """
     if task.archived:
         raise ValueError("Task 已归档，请先恢复后再派发")
-    if task.status == "done":
+    if status_of(task.labels) == DONE_STATUS:
         raise ValueError("已完成 Task 不能再次派发；请先重新打开")
     project = store.get_project(task.project_id)
     if project is None:
@@ -217,9 +226,11 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
         target_ids = [lead_id]
 
     channels = task_channels(store, task.project_id, task.channel_ids)
+    if not channels:
+        raise ValueError("Task 派发需要至少一个可用 Channel")
     task.channel_ids = [channel.id for channel in channels]
-    previous_status = task.status
-    task.status = "in_progress"
+    previous_labels = list(task.labels)
+    task.labels = with_status(task.labels, DISPATCHED_STATUS)
     store.put_task(task)
     handled_by = "、".join(f"@{role_id}" for role_id in target_ids)
     sent: list[dict] = []
@@ -236,12 +247,12 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
                 task.id, "platform", "system",
                 f"已向 {len(sent)} 个 Channel 的 {handled_by} 派发；"
                 f"后续派发失败：{exc}",
-                task.status,
+                status_of(task.labels),
             )
             store.put_task(task)
             raise TaskDispatchError(str(exc)) from exc
         else:
-            task.status = previous_status
+            task.labels = previous_labels
             store.put_task(task)
             raise
 
@@ -249,7 +260,7 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
         task.id, author, author_type,
         f"已交给 {handled_by} 处理：" + "、".join(channel.name or channel.id
                                                 for channel in channels),
-        task.status,
+        status_of(task.labels),
     )
     store.put_task(task)
     store.audit(author, "task_dispatched", task.id,
@@ -259,18 +270,23 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
 
 
 def matching_auto_rule(project, task: Task):
-    """返回第一条命中 Task label 的启用规则;不命中返回 None。"""
-    labels = {label.lower() for label in task.labels}
+    """返回第一条标签表达式命中 Task 的启用规则;不命中返回 None。"""
     for rule in getattr(project, "task_auto_rules", []):
-        if rule.enabled and rule.label and rule.label.lower() in labels:
-            return rule
+        if not (rule.enabled and rule.query):
+            continue
+        try:
+            if label_query.matches(rule.query, task.labels):
+                return rule
+        except ValueError:
+            continue   # 规则表达式非法时跳过,不阻塞任务创建
     return None
 
 
 def auto_process_task(store: Store, chat, task: Task) -> Optional[dict]:
     """新建 Task 命中自动处理规则时立即派发;派发失败不影响 Task 创建。"""
     project = store.get_project(task.project_id)
-    if project is None or task.archived or task.status == "done":
+    if project is None or task.archived \
+            or status_of(task.labels) == DONE_STATUS:
         return None
     rule = matching_auto_rule(project, task)
     if rule is None:
@@ -287,15 +303,16 @@ def auto_process_task(store: Store, chat, task: Task) -> Optional[dict]:
     except (TaskDispatchError, ValueError) as exc:
         store.add_task_brief(
             task.id, "platform", "system",
-            f"自动处理规则(label `{rule.label}`)派发失败：{exc}", task.status)
+            f"自动处理规则(`{rule.query}`)派发失败：{exc}",
+            status_of(task.labels))
         store.put_task(task)
         store.audit("platform", "task_auto_dispatch_failed", task.id,
-                    f"project={task.project_id} label={rule.label} error={exc}")
+                    f"project={task.project_id} rule={rule.query} error={exc}")
         return None
     store.audit("platform", "task_auto_dispatched", task.id,
-                f"project={task.project_id} label={rule.label} "
+                f"project={task.project_id} rule={rule.query} "
                 f"roles={','.join(rule.role_ids) or '(orchestrator)'}")
-    return {"rule_label": rule.label, "sent": sent, "brief": brief}
+    return {"rule_query": rule.query, "sent": sent, "brief": brief}
 
 
 def archive_task(store: Store, task: Task, *, actor: str = "human") -> Task:

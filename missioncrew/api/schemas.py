@@ -13,7 +13,7 @@ class TaskCreate(BaseModel):
     body: str = ""
     labels: list[str] = Field(default_factory=list)
     channel_ids: list[str] = Field(default_factory=list)
-    status: str = "open"
+    status: Optional[str] = None   # 状态文本;None = labels 已带则保留,否则默认
 
 
 class TaskUpdate(BaseModel):
@@ -203,8 +203,9 @@ class ProjectInput(BaseModel):
     skills: Optional[list[dict | str]] = None
     resources: Optional[list[str]] = None
     required_env: Optional[str] = None
-    task_auto_rules: Optional[list[dict]] = None   # None = 保留现值
-    task_label_boards: Optional[list[str]] = None  # None = 保留现值
+    task_auto_rules: Optional[list[dict]] = None      # None = 保留现值
+    # 内置任务看板锁定状态列之后的自定义筛选列;None = 保留现值
+    task_board_filters: Optional[list[dict]] = None
 
 
 class ResourceAdd(BaseModel):
@@ -242,6 +243,8 @@ class BoardInput(BaseModel):
     source: Optional[str] = None         # taskboard 的数据源 id;None = 保留现值
     # taskboard 的筛选列 [{title,query,color}];None = 保留现值
     filters: Optional[list[dict]] = None
+    # taskboard 的分组属性;None = 保留现值,空串 = 回到筛选列模式
+    group_by: Optional[str] = None
 
 
 class WidgetDataInput(BaseModel):

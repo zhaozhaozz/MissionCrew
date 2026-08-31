@@ -361,7 +361,8 @@ def task_create(project: str = typer.Option(..., "-p", "--project"),
                 body: str = typer.Option("", "-b", "--body"),
                 label: list[str] = typer.Option([], "-l", "--label"),
                 channel: list[str] = typer.Option([], "-c", "--channel"),
-                status: str = typer.Option("open", help="open|in_progress|blocked|done"),
+                status: Optional[str] = typer.Option(
+                    None, help="状态文本,如 待处理/处理中/已阻塞/已完成"),
                 process: bool = typer.Option(False, help="创建后发送给绑定 Channel 的主控")):
     store = _store()
     task = create_task(

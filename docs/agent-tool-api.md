@@ -111,10 +111,10 @@ CLI 共四个子命令：`actions`、`call <action> --arguments '<JSON>'`、`pub
 - `recycle.list` 返回当前项目全部类型的回收项；`recycle.restore` 和 `recycle.purge` 使用回收项 `id`，均要求项目主控身份。
 - `channel.runs.list` 不接受 Channel 参数，只查询 token 绑定的当前 Channel；`channel.run.stop` 只接受该查询返回的正整数 `run_id`，不能停止当前主控自身的 Run。
 - `task.update` 必须带读取任务时得到的 `snapshot_updated_at`。任务已经被其他执行更新时返回 `version_conflict`，防止旧快照覆盖新状态。
-- `task.create` 和 `task.update` 使用 `title`、`summary`、`body`、`status`、`labels`、`channel_ids`；每个 Task 至少绑定一个当前项目的可用 Channel。
-- `task.brief` 追加状态简报，可用 `status` 同时更新 `open`、`in_progress`、`blocked`、`done` 状态。简报是追加记录，不覆盖正文。
+- `task.create` 和 `task.update` 使用 `title`、`summary`、`body`、`status`、`labels`、`channel_ids`；`status` 是状态文本（落库为 `status: 文本` 标签），标签支持 `属性: 值` 高级形式，Channel 绑定可选。
+- `task.brief` 追加状态简报，可用 `status` 同时更新状态文本（如 `待处理`、`处理中`、`已阻塞`、`已完成`）。简报是追加记录，不覆盖正文。
 - `task.delete` 把 Task 正文和全部状态简报一起移入项目回收站；恢复后保留原 Task id、字段、简报作者、内容和时间。
-- `board_source.save` 创建或整体替换自定义看板数据源（`columns`、`cards`、`mode`），供 `dashboard.save` 的 taskboard 组件通过 `source` 绑定；`board_source.delete` 在数据源仍被面板引用时返回 `in_use`。
+- `board_source.save` 创建或更新自定义任务数据源（`columns` 声明状态取值，`cards` 按 id 整体同步为该源的任务：新增、覆盖、删除本次未出现的），供 `dashboard.save` 的 taskboard 面板通过 `source` 绑定；新任务会走项目自动处理规则。`board_source.delete` 在数据源仍被面板引用时返回 `in_use`，删除连带该源全部任务。
 - `automation.save` 按短 id 新建或按字段合并更新脚本：`script` 是脚本全文（有 shebang 按可执行文件运行，否则用 bash），`cron` 是五段 crontab（空字符串 = 仅手动触发），`actions` 是脚本令牌的动作白名单，`timeout_seconds` 是单次运行超时。`automation.delete` 删除脚本并撤销其令牌、清除运行记录。
 - 频道、面板、准则和 Skill 的 ID、项目归属、工作目录和 Markdown 属性都在统一动作实现中校验。
 - 涉及频道、文档、任务、准则、Skill、自动化和回收站的动作，成功结果包含规范 `/resources/...` URL（`resource_url`）；Agent 应把该 URL 放入频道回复，不应发布 `.missioncrew` 的真实路径。

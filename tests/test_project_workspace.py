@@ -909,21 +909,25 @@ def test_taskboard_kind_board_saves_and_validates(seeded):
     assert saved.status_code == 200, saved.text
     board = seeded.get_board("webshop:bugs")
     assert board.kind == "taskboard"
-    assert board.source == "tasks"   # 缺省数据源
+    assert board.source == "built-in"   # 缺省数据源
     assert [f["title"] for f in board.filters] == [
         "待处理", "处理中", "已阻塞", "已完成"]
+    assert [f["query"] for f in board.filters] == [
+        "status: 待处理", "status: 处理中", "status: 已阻塞", "status: 已完成"]
 
     # 只改名不带 kind/source/filters -> 形态、数据源与筛选列保留
     client.post("/api/projects/webshop/boards",
                 json={"id": "bugs", "name": "缺陷追踪 v2"})
     board = seeded.get_board("webshop:bugs")
-    assert board.kind == "taskboard" and board.source == "tasks"
+    assert board.kind == "taskboard" and board.source == "built-in"
     assert len(board.filters) == 4
 
-    # 旧版全局表达式字段已退役:旧数据行读取即丢弃,不再进入模型
+    # 旧版全局表达式字段已退役:旧数据行读取即丢弃;旧内置源 id 归一化
     seeded._put("boards", "webshop:bugs",
-                {**board.to_dict(), "query": "bug"})
-    assert not hasattr(seeded.get_board("webshop:bugs"), "query")
+                {**board.to_dict(), "query": "bug", "source": "tasks"})
+    reread = seeded.get_board("webshop:bugs")
+    assert not hasattr(reread, "query")
+    assert reread.source == "built-in"
 
     # 非法 kind 与未知数据源都拒绝
     bad_kind = client.post("/api/projects/webshop/boards", json={
@@ -945,22 +949,22 @@ def test_taskboard_source_registry_and_data_endpoint(seeded):
     client = _client(seeded)
     # 数据源清单:内置任务源带按状态分列的列定义
     sources = client.get("/api/projects/webshop/board_sources").json()
-    assert [s["id"] for s in sources] == ["tasks"]
-    assert [c["key"] for c in sources[0]["columns"]] == [
-        "open", "in_progress", "blocked", "done"]
+    assert [s["id"] for s in sources] == ["built-in"]
+    assert [c["value"] for c in sources[0]["status_values"]] == [
+        "待处理", "处理中", "已阻塞", "已完成"]
 
     client.post("/api/tasks", json={
         "project_id": "webshop", "title": "登录崩溃", "summary": "点登录闪退",
-        "labels": ["bug"], "status": "in_progress"})
+        "labels": ["bug"], "status": "处理中"})
     client.post("/api/tasks", json={
         "project_id": "webshop", "title": "文案优化", "labels": ["polish"]})
 
     saved = client.post("/api/projects/webshop/boards", json={
         "id": "bugs", "name": "缺陷", "kind": "taskboard",
-        "source": "tasks", "layout": []})
+        "source": "built-in", "layout": []})
     assert saved.status_code == 200, saved.text
-    assert saved.json()["source"] == "tasks"
-    # 新建看板未显式给筛选列:按数据源状态列物化默认筛选列(标题即状态标签)
+    assert saved.json()["source"] == "built-in"
+    # 新建看板未显式给筛选列:按数据源状态取值物化默认筛选列
     assert [f["title"] for f in saved.json()["filters"]] == [
         "待处理", "处理中", "已阻塞", "已完成"]
 
@@ -968,22 +972,23 @@ def test_taskboard_source_registry_and_data_endpoint(seeded):
     data = client.get("/api/projects/webshop/boards/bugs/data")
     assert data.status_code == 200, data.text
     payload = data.json()
-    assert payload["source"] == {"id": "tasks", "name": "项目任务"}
+    assert payload["source"] == {"id": "built-in", "name": "项目任务"}
     assert [c["title"] for c in payload["columns"]] == [
         "待处理", "处理中", "已阻塞", "已完成"]
     in_progress = payload["columns"][1]
     assert [c["title"] for c in in_progress["cards"]] == ["登录崩溃"]
     card = in_progress["cards"][0]
-    assert card["status"] == "in_progress" and card["task_id"] == card["id"]
-    assert card["labels"] == ["bug"] and card["summary"] == "点登录闪退"
+    assert card["status"] == "处理中" and card["task_id"] == card["id"]
+    assert card["labels"] == ["status: 处理中", "bug"]
+    assert card["summary"] == "点登录闪退"
     # 状态标签与卡片标签都进筛选建议全集
-    assert {"bug", "处理中", "待处理"} <= set(payload["labels"])
+    assert {"bug", "status: 处理中", "status: 待处理"} <= set(payload["labels"])
 
     # 状态即标签:筛选列表达式可组合状态与业务标签
     combo = client.post("/api/projects/webshop/boards", json={
         "id": "bugs", "name": "缺陷",
         "filters": [{"title": "阻塞或进行中的缺陷",
-                     "query": "(处理中 | 已阻塞) & bug"},
+                     "query": "(status: 处理中 | status: 已阻塞) & bug"},
                     {"title": "非缺陷", "query": "!bug"}]})
     assert combo.status_code == 200, combo.text
     payload = client.get("/api/projects/webshop/boards/bugs/data").json()
@@ -1001,6 +1006,60 @@ def test_taskboard_source_registry_and_data_endpoint(seeded):
         "id": "grid", "name": "网格", "kind": "widgets", "layout": []})
     assert client.get("/api/projects/webshop/boards/grid/data").status_code == 400
     assert client.get("/api/projects/webshop/boards/nope/data").status_code == 404
+
+
+def test_builtin_board_locks_status_columns_and_appends_custom_filters(seeded):
+    client = _client(seeded)
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "登录崩溃", "labels": ["bug"]})
+    client.post("/api/projects", json={
+        "id": "webshop", "name": "网店",
+        "task_board_filters": [{"title": "缺陷", "query": "bug"}]})
+    data = client.get("/api/projects/webshop/builtin_board/data")
+    assert data.status_code == 200, data.text
+    payload = data.json()
+    # 四个状态列锁定,自定义筛选列追加在后
+    assert [(c["title"], c["locked"]) for c in payload["columns"]] == [
+        ("待处理", True), ("处理中", True), ("已阻塞", True),
+        ("已完成", True), ("缺陷", False)]
+    assert [c["title"] for c in payload["columns"][0]["cards"]] == ["登录崩溃"]
+    assert [c["title"] for c in payload["columns"][4]["cards"]] == ["登录崩溃"]
+    # filters 只回传自定义列,前端据此增删
+    assert [f["query"] for f in payload["filters"]] == ["bug"]
+
+
+def test_taskboard_group_by_property_columns(seeded):
+    client = _client(seeded)
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "任务A",
+        "labels": ["owner: 张三", "bug"]})
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "任务B", "labels": ["owner: 李四"]})
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "无主任务"})
+    saved = client.post("/api/projects/webshop/boards", json={
+        "id": "byowner", "name": "按负责人", "kind": "taskboard",
+        "layout": [], "group_by": "owner"})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["group_by"] == "owner"
+    payload = client.get("/api/projects/webshop/boards/byowner/data").json()
+    assert payload["group_by"] == "owner"
+    by_title = {c["title"]: [x["title"] for x in c["cards"]]
+                for c in payload["columns"]}
+    assert by_title["张三"] == ["任务A"]
+    assert by_title["李四"] == ["任务B"]
+    assert by_title["未设置 owner"] == ["无主任务"]
+    # 分组列查询表达式可直接复用:属性值列 + 未设置列
+    assert [c["query"] for c in payload["columns"]] == [
+        "owner: 张三", "owner: 李四", "!owner: *"]
+    # group_by 置空回到筛选列模式
+    cleared = client.post("/api/projects/webshop/boards", json={
+        "id": "byowner", "name": "按负责人", "group_by": "",
+        "filters": [{"query": "bug"}]})
+    assert cleared.status_code == 200, cleared.text
+    payload = client.get("/api/projects/webshop/boards/byowner/data").json()
+    assert payload["group_by"] == ""
+    assert [c["title"] for c in payload["columns"]] == ["bug"]
 
 
 def test_non_orchestrator_actions_are_stripped_end_to_end(seeded):

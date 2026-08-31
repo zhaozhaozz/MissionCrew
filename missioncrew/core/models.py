@@ -14,10 +14,57 @@ from typing import Callable, Optional
 
 import yaml as _yaml
 
+from .label_query import normalize_label, split_label
+
 # 成本档位从低到高,路由优先低档,失败后逐级升级
 TIER_ORDER = ["economy", "standard", "expert"]
 DEFAULT_MAX_CHAIN_RUNS = 100
-TASK_STATUSES = ("open", "in_progress", "blocked", "done")
+
+# 状态即标签:任务状态是 `status: 待处理` 这样的高级标签,值就是显示文本,
+# 不做合法性校验。内置数据源声明的状态取值兼作看板默认列(带颜色与顺序)。
+STATUS_PROPERTY = "status"
+BUILTIN_STATUS_VALUES = (
+    {"value": "待处理", "color": "var(--muted)"},
+    {"value": "处理中", "color": "var(--accent)"},
+    {"value": "已阻塞", "color": "var(--bad)"},
+    {"value": "已完成", "color": "var(--ok)"},
+)
+BUILTIN_SOURCE_ID = "built-in"   # 平台原生任务归属的固定数据源
+# 旧枚举状态 -> 状态标签文本(读取旧数据与旧同步脚本载荷时映射)
+LEGACY_STATUS_TEXT = {
+    "open": "待处理", "in_progress": "处理中", "blocked": "已阻塞",
+    "done": "已完成", "awaiting_approval": "处理中", "failed": "已阻塞",
+}
+
+
+def status_of(labels) -> str:
+    """从标签集合取状态文本(第一条 status 属性标签的值);没有返回空串。"""
+    for label in labels or []:
+        prop, value = split_label(label)
+        if prop.lower() == STATUS_PROPERTY:
+            return value
+    return ""
+
+
+def with_status(labels, value: str) -> list[str]:
+    """返回替换状态标签后的标签列表;value 为空表示移除状态标签。"""
+    rest = [label for label in labels or []
+            if split_label(label)[0].lower() != STATUS_PROPERTY]
+    text = str(value or "").strip()
+    if text:
+        rest.insert(0, f"{STATUS_PROPERTY}: {text}")
+    return rest
+
+
+def normalize_labels(labels) -> list[str]:
+    """标签统一归一化 + 去重(大小写不敏感,保留首次写法)。"""
+    seen, result = set(), []
+    for label in labels or []:
+        text = normalize_label(str(label))
+        if text and text.lower() not in seen:
+            seen.add(text.lower())
+            result.append(text)
+    return result
 
 # 聊天公共上下文的注入模式:完整模式重发全部 common_prompt 并清零增量回合
 # 计数;lean(增量回合)只发版本引用头;raw 是非聊天路径的原始 prompt。
@@ -289,15 +336,15 @@ class ProjectResource:
 
 @dataclass
 class TaskAutoRule:
-    """Task 自动处理规则:新建 Task 命中 label 时按配置自动派发。
+    """Task 自动处理规则:新建 Task 的标签命中表达式时按配置自动派发。
 
-    prompt 是派发消息里的默认处理要求,mentions 是其中结构化提及的角色
-    (与聊天输入框同构:role_id + 在 prompt 中的 start/end 码点位置)。
-    旧数据只有 role_ids 没有 mentions,派发时走 @前缀通道保持兼容;
-    两者都为空表示交给项目主控。
+    query 是标签表达式(与看板筛选列同语法);prompt 是派发消息里的默认
+    处理要求,mentions 是其中结构化提及的角色(与聊天输入框同构:role_id +
+    在 prompt 中的 start/end 码点位置)。旧数据只有 role_ids 没有 mentions,
+    派发时走 @前缀通道保持兼容;两者都为空表示交给项目主控。
     """
 
-    label: str
+    query: str
     role_ids: list[str] = field(default_factory=list)
     prompt: str = ""
     enabled: bool = True
@@ -317,8 +364,10 @@ class TaskAutoRule:
                     if str(item).strip()]
         if mentions:   # 有结构化提及时 role_ids 只是派生视图,保持一致
             role_ids = list(dict.fromkeys(m["role_id"] for m in mentions))
+        # 旧规则字段是单个 label,读取即转成同义表达式
+        query = str(d.get("query") or d.get("label") or "").strip()
         return cls(
-            label=str(d.get("label", "")).strip(),
+            query=query,
             role_ids=role_ids,
             prompt=str(d.get("prompt", "")),
             enabled=bool(d.get("enabled", True)),
@@ -343,7 +392,8 @@ class Project:
     resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
     task_auto_rules: list[TaskAutoRule] = field(default_factory=list)
-    task_label_boards: list[str] = field(default_factory=list)  # 看板页固定显示的标签列
+    # 内置任务看板在四个锁定状态列之后追加的自定义筛选列 [{title,query,color}]
+    task_board_filters: list[dict] = field(default_factory=list)
 
     def __post_init__(self):
         # 代码仓条目归一化:旧版字符串路径与 dict 均转成 ProjectResource
@@ -352,14 +402,20 @@ class Project:
         self.task_auto_rules = [
             rule if isinstance(rule, TaskAutoRule) else TaskAutoRule.from_dict(rule)
             for rule in self.task_auto_rules]
-        seen_labels = set()
+        seen_queries = set()
         normalized = []
-        for label in self.task_label_boards:
-            text = str(label).strip()
-            if text and text.lower() not in seen_labels:
-                seen_labels.add(text.lower())
-                normalized.append(text)
-        self.task_label_boards = normalized
+        for item in self.task_board_filters:
+            if isinstance(item, str):     # 旧版标签看板:单个 label 一列
+                item = {"title": item, "query": item, "color": ""}
+            query = str(item.get("query") or "").strip()
+            if query and query.lower() not in seen_queries:
+                seen_queries.add(query.lower())
+                normalized.append({
+                    "title": str(item.get("title") or "").strip() or query,
+                    "query": query,
+                    "color": str(item.get("color") or ""),
+                })
+        self.task_board_filters = normalized
         if (isinstance(self.max_chain_runs, bool)
                 or not isinstance(self.max_chain_runs, int)
                 or self.max_chain_runs < 1):
@@ -422,6 +478,10 @@ class Project:
         d["skills"] = [ProjectSkill.from_dict(v) for v in d.get("skills", [])]
         d.setdefault("orchestrator_role_id", "lead")
         d.setdefault("max_chain_runs", DEFAULT_MAX_CHAIN_RUNS)
+        # 旧版标签看板字段:label 字符串列表,__post_init__ 会转成筛选列
+        legacy_boards = d.pop("task_label_boards", None)
+        if legacy_boards and not d.get("task_board_filters"):
+            d["task_board_filters"] = legacy_boards
         return cls(**d)
 
 
@@ -448,27 +508,41 @@ class Resource:
 
 @dataclass
 class Task:
-    """项目 Issue：正文可编辑，状态简报单独以追加记录保存。"""
+    """项目 Issue:唯一的任务类型,平台原生与外部同步条目共用。
+
+    归属由 source_id 区分(内置 `built-in` 或自定义数据源短 id);外部条目
+    以 external_id 作为同步 upsert 匹配键。状态是 `status: 文本` 标签,
+    人、Agent、脚本都可直接改标签,最后写入者生效。summary/body/channel_ids
+    均可选;状态简报单独以追加记录保存。
+    """
 
     id: str
     project_id: str
     title: str
+    source_id: str = BUILTIN_SOURCE_ID
+    external_id: str = ""          # 外部源条目的同步匹配键;内置任务为空
     summary: str = ""
     body: str = ""
     labels: list[str] = field(default_factory=list)
     channel_ids: list[str] = field(default_factory=list)
-    status: str = "open"          # open | in_progress | blocked | done
+    url: str = ""                  # 外部条目原始链接
+    meta: list[str] = field(default_factory=list)   # 纯展示性附注文本
     archived: bool = False
     archived_at: float = 0.0
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
+
+    @property
+    def status(self) -> str:
+        """状态文本 = `status:` 标签的值;无状态标签时为空串。"""
+        return status_of(self.labels)
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict) -> "Task":
-        """读取新版 Task，并把旧阶段式任务无损降级为 Issue 内容。"""
+        """读取 Task;旧枚举 status 字段一次性转成状态标签。"""
         raw = dict(d)
         legacy_description = raw.get("description", "")
         body = raw.get("body", legacy_description)
@@ -477,26 +551,27 @@ class Task:
             summary = next(
                 (line.strip() for line in legacy_description.splitlines()
                  if line.strip()), "")[:240]
-        legacy_status = raw.get("status", "open")
-        status = {
-            "awaiting_approval": "in_progress",
-            "failed": "blocked",
-        }.get(legacy_status, legacy_status)
-        if status not in TASK_STATUSES:
-            status = "open"
-        labels = raw.get("labels", [])
+        labels = normalize_labels(
+            str(item) for item in raw.get("labels", [])
+            if isinstance(item, str))
+        legacy_status = str(raw.get("status", "") or "")
+        if legacy_status and not status_of(labels):
+            text = LEGACY_STATUS_TEXT.get(legacy_status, legacy_status)
+            labels = with_status(labels, text)
         channel_ids = raw.get("channel_ids", [])
         return cls(
             id=str(raw["id"]),
             project_id=str(raw["project_id"]),
             title=str(raw.get("title", "")),
+            source_id=str(raw.get("source_id") or BUILTIN_SOURCE_ID),
+            external_id=str(raw.get("external_id", "")),
             summary=str(summary or ""),
             body=str(body or ""),
-            labels=list(dict.fromkeys(
-                str(item) for item in labels if isinstance(item, str))),
+            labels=labels,
             channel_ids=list(dict.fromkeys(
                 str(item) for item in channel_ids if isinstance(item, str))),
-            status=status,
+            url=str(raw.get("url", "")),
+            meta=[str(item) for item in raw.get("meta", []) or []],
             archived=bool(raw.get("archived", False)),
             archived_at=float(raw.get("archived_at", 0.0)),
             created_at=float(raw.get("created_at", now())),
@@ -661,32 +736,38 @@ class BoardWidget:
 # 面板形态:widgets(主控维护的组件网格) | taskboard(按标签筛选列分列的任务看板)
 BOARD_KINDS = {"widgets", "taskboard"}
 
-# 看板默认状态列:内置任务源与自定义数据源共用;key 对应卡片 status,
-# title(待处理/处理中/已阻塞/已完成)同时作为可筛选的状态标签参与表达式匹配。
-DEFAULT_BOARD_COLUMNS = (
-    {"key": "open", "title": "待处理", "color": "var(--muted)"},
-    {"key": "in_progress", "title": "处理中", "color": "var(--accent)"},
-    {"key": "blocked", "title": "已阻塞", "color": "var(--bad)"},
-    {"key": "done", "title": "已完成", "color": "var(--ok)"},
-)
+
+def normalize_status_values(raw) -> list[dict]:
+    """状态取值声明归一化为 [{value,color}];兼容旧状态列 {key,title,color}。"""
+    result, seen = [], set()
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("value") or item.get("title")
+                    or item.get("key") or "").strip()
+        if value and value.lower() not in seen:
+            seen.add(value.lower())
+            result.append({"value": value,
+                           "color": str(item.get("color") or "")})
+    return result
 
 
 @dataclass
 class BoardDataSource:
-    """脚本可维护的自定义看板数据源。
+    """自定义任务数据源:一组外部同步任务的归属容器。
 
-    卡片结构与内置任务源一致(id/title/summary/status/labels/updated_at/meta,
-    外链卡片带 url);由主控 board_source.save 创建,自动化脚本整体刷新 cards,
-    适合定时同步 GitCode/GitHub Issue 这类外部列表。
+    任务本体存在统一的 tasks 表(Task.source_id 指向本源);本记录只保留
+    名称、说明与状态取值声明(状态标签的默认列顺序与颜色)。由主控
+    board_source.save 创建,自动化脚本按 external_id upsert 任务,适合定时
+    同步 GitCode/GitHub Issue 这类外部列表。
     """
 
     id: str                    # 全局唯一,约定为 "<project>:<short_id>"
     project_id: str
     name: str = ""
     description: str = ""
-    columns: list[dict] = field(
-        default_factory=lambda: [dict(c) for c in DEFAULT_BOARD_COLUMNS])
-    cards: list[dict] = field(default_factory=list)
+    status_values: list[dict] = field(
+        default_factory=lambda: [dict(c) for c in BUILTIN_STATUS_VALUES])
     created_by_role_id: str = ""   # 为空表示人类/平台创建
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
@@ -697,9 +778,11 @@ class BoardDataSource:
     @classmethod
     def from_dict(cls, d: dict) -> "BoardDataSource":
         d = dict(d)
-        d["columns"] = ([dict(c) for c in d.get("columns") or []]
-                        or [dict(c) for c in DEFAULT_BOARD_COLUMNS])
-        d["cards"] = [dict(c) for c in d.get("cards") or []]
+        d.pop("cards", None)   # 旧版内嵌卡片已迁入 tasks 表(见 store 迁移)
+        d["status_values"] = (
+            normalize_status_values(d.pop("columns", None)
+                                    or d.get("status_values"))
+            or [dict(c) for c in BUILTIN_STATUS_VALUES])
         return cls(**d)
 
 
@@ -716,10 +799,12 @@ class Board:
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
     kind: str = "widgets"
-    source: str = "tasks"    # taskboard:数据源 id(collab/board_sources 注册表)
+    source: str = BUILTIN_SOURCE_ID  # taskboard:数据源 id(内置或自定义短 id)
     # taskboard:筛选列 [{title,query,color}],每列一个标签表达式;
-    # 空列表 = 按数据源状态列分列(创建看板时默认物化为状态标签筛选列)
+    # 空列表 = 按数据源状态取值分列(创建看板时默认物化为状态筛选列)
     filters: list[dict] = field(default_factory=list)
+    # taskboard:按属性分组模式;非空时忽略 filters,按该属性取值动态分列
+    group_by: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -730,6 +815,8 @@ class Board:
         d["layout"] = [BoardWidget(**item) for item in d.get("layout", [])]
         # 旧版 taskboard 的全局标签表达式已退役,读取即丢弃(筛选列承载过滤)
         d.pop("query", None)
+        if d.get("source") == "tasks":   # 内置源改名 built-in
+            d["source"] = BUILTIN_SOURCE_ID
         return cls(**d)
 
 

@@ -184,9 +184,15 @@ def test_automation_refreshes_custom_board_source_and_board_binds_it(seeded):
         ],
     }, None, "req-src")
     assert "GitCode Issues" in result["summary"]
+    assert result["sync"] == {"created": 2, "updated": 0, "removed": 0}
     record = seeded.get_board_datasource("webshop:gitcode-issues")
-    assert record is not None and len(record.cards) == 2
-    assert record.cards[1]["status"] == "open"   # 缺省落到第一个状态列
+    assert record is not None
+    # 卡片即任务:同步进统一 tasks 表;旧状态 key 映射为状态标签文本
+    synced = {t.external_id: t
+              for t in seeded.list_tasks("webshop", source_id="gitcode-issues")}
+    assert set(synced) == {"42", "43"}
+    assert synced["42"].labels == ["status: 处理中", "bug"]
+    assert synced["43"].status == "待处理"   # 缺省落到第一个状态取值
 
     with TestClient(create_app()) as client:
         # 数据源清单包含自定义源;看板可直接绑定
@@ -200,23 +206,23 @@ def test_automation_refreshes_custom_board_source_and_board_binds_it(seeded):
         assert saved.status_code == 200, saved.text
         data = client.get("/api/projects/webshop/boards/issues/data").json()
         assert data["source"]["name"] == "GitCode Issues"
-        assert data["source"]["updated_at"] == record.updated_at
         by_title = {c["title"]: [x["title"] for x in c["cards"]]
                     for c in data["columns"]}
         assert by_title["处理中"] == ["登录页崩溃"]
         assert by_title["待处理"] == ["支持导出"]
         assert data["columns"][1]["cards"][0]["url"].endswith("/issues/42")
 
-        # 卡片校验:未知状态拒绝,数据源内容不被破坏
-        with pytest.raises(AgentToolError) as bad:
-            tools.execute(identity, "board_source.save", {
-                "id": "gitcode-issues",
-                "cards": [{"id": "1", "title": "x", "status": "closed"}],
-            }, None, "req-bad")
-        assert bad.value.code == "invalid_arguments"
-        assert len(seeded.get_board_datasource("webshop:gitcode-issues").cards) == 2
+        # 整体同步:再发一批只含新卡片时,旧任务连带删除;状态文本不做校验
+        resync = tools.execute(identity, "board_source.save", {
+            "id": "gitcode-issues",
+            "cards": [{"id": "1", "title": "x", "status": "closed"}],
+        }, None, "req-resync")
+        assert resync["sync"] == {"created": 1, "updated": 0, "removed": 2}
+        remaining = seeded.list_tasks("webshop", source_id="gitcode-issues")
+        assert [t.external_id for t in remaining] == ["1"]
+        assert remaining[0].status == "closed"
 
-        # 仍被面板引用时删除拒绝;面板移除后可删除
+        # 仍被面板引用时删除拒绝;面板移除后可删除(连带该源任务)
         with pytest.raises(AgentToolError) as in_use:
             tools.execute(identity, "board_source.delete",
                           {"id": "gitcode-issues"}, None, "req-del-1")
@@ -226,6 +232,7 @@ def test_automation_refreshes_custom_board_source_and_board_binds_it(seeded):
                                {"id": "gitcode-issues"}, None, "req-del-2")
         assert result["deleted"] is True
         assert seeded.get_board_datasource("webshop:gitcode-issues") is None
+        assert seeded.list_tasks("webshop", source_id="gitcode-issues") == []
 
 
 def test_orchestrator_creates_taskboard_bound_to_custom_source(seeded):

@@ -28,7 +28,9 @@ def test_task_api_supports_issue_fields_updates_and_briefs(seeded):
         })
         assert created.status_code == 200, created.text
         task = created.json()
-        assert task["status"] == "open"
+        # 状态即标签:创建默认落 status: 待处理,排在标签首位
+        assert task["labels"] == ["status: 待处理", "checkout", "ui"]
+        assert "status" not in task
         assert task["channel_ids"] == ["general", "webshop:delivery"]
         assert "stages" not in task and "task_type" not in task
 
@@ -39,12 +41,13 @@ def test_task_api_supports_issue_fields_updates_and_briefs(seeded):
             "body": task["body"],
             "labels": ["checkout"],
             "channel_ids": ["webshop:delivery"],
-            "status": "in_progress",
+            "status": "处理中",
         })
         assert edited.status_code == 200, edited.text
         edited_task = edited.json()["task"]
         assert edited_task["title"] == "重做结算体验"
         assert edited_task["channel_ids"] == ["webshop:delivery"]
+        assert edited_task["labels"] == ["status: 处理中", "checkout"]
 
         stale = client.patch(f"/api/tasks/{task['id']}", json={
             "snapshot_updated_at": task["updated_at"],
@@ -53,12 +56,13 @@ def test_task_api_supports_issue_fields_updates_and_briefs(seeded):
         assert stale.status_code == 409
 
         briefed = client.post(f"/api/tasks/{task['id']}/briefs", json={
-            "status": "blocked",
+            "status": "已阻塞",
             "content": "等待结算 API 字段冻结。",
         })
         assert briefed.status_code == 200
         payload = briefed.json()
-        assert payload["task"]["status"] == "blocked"
+        assert "status: 已阻塞" in payload["task"]["labels"]
+        assert payload["briefs"][0]["status"] == "已阻塞"
         assert payload["briefs"][0]["content"] == "等待结算 API 字段冻结。"
         assert payload["task"]["updated_at"] > edited_task["updated_at"]
 
@@ -159,8 +163,8 @@ def test_processing_task_posts_to_each_bound_channel_and_triggers_lead(seeded):
 
     assert {item["channel_id"] for item in sent} == {
         "general", "webshop:delivery"}
-    assert brief["status"] == "in_progress"
-    assert seeded.get_task(task.id).status == "in_progress"
+    assert brief["status"] == "处理中"
+    assert seeded.get_task(task.id).status == "处理中"
     for item in sent:
         message = seeded.get_message(item["message_id"])
         assert f"@lead 请处理 Task [{task.id}" in message["content"]
@@ -220,17 +224,19 @@ def test_processing_task_rejects_disabled_mentioned_role(seeded):
         dispatch_task(
             seeded, chat, task, message="@dev 处理",
             mention_spans=[{"role_id": "dev", "start": 0, "end": 4}])
-    assert seeded.get_task(task.id).status == "open"
+    assert seeded.get_task(task.id).status == "待处理"
 
 
 def test_task_auto_rule_dispatches_matching_new_task(seeded):
     project = seeded.get_project("webshop")
+    # 旧规则 label 字段读取即迁移为同义表达式;新规则直接写标签表达式
     project.task_auto_rules = [
         {"label": "sync", "role_ids": ["dev"],
          "prompt": "请分析并给出处理建议", "enabled": True},
-        {"label": "ignored", "role_ids": [], "prompt": "", "enabled": True},
+        {"query": "ignored", "role_ids": [], "prompt": "", "enabled": True},
     ]
     seeded.put_project(project)
+    assert seeded.get_project("webshop").task_auto_rules[0].query == "sync"
     chat = ChatEngine(seeded, max_workers=2)
 
     from missioncrew.collab.tasks import auto_process_task
@@ -240,8 +246,8 @@ def test_task_auto_rule_dispatches_matching_new_task(seeded):
     result = auto_process_task(seeded, chat, task)
     chat.wait_idle()
 
-    assert result and result["rule_label"] == "sync"
-    assert seeded.get_task(task.id).status == "in_progress"
+    assert result and result["rule_query"] == "sync"
+    assert seeded.get_task(task.id).status == "处理中"
     stored = seeded.get_message(result["sent"][0]["message_id"])
     assert stored["author_type"] == "automation"
     assert stored["content"].startswith("@dev ")
@@ -256,35 +262,35 @@ def test_task_auto_rule_dispatches_matching_new_task(seeded):
         seeded, "webshop", title="普通任务", labels=["other"],
         channel_ids=["general"])
     assert auto_process_task(seeded, chat, plain) is None
-    assert seeded.get_task(plain.id).status == "open"
+    assert seeded.get_task(plain.id).status == "待处理"
 
 
 def test_task_api_create_applies_auto_rule(seeded):
     project = seeded.get_project("webshop")
     project.task_auto_rules = [
-        {"label": "auto", "role_ids": [], "prompt": "按默认流程处理",
-         "enabled": True}]
+        {"query": "auto & !status: 已完成", "role_ids": [],
+         "prompt": "按默认流程处理", "enabled": True}]
     seeded.put_project(project)
     with TestClient(create_app()) as client:
         created = client.post("/api/tasks", json={
             "project_id": "webshop", "title": "自动流转",
             "labels": ["auto"], "channel_ids": ["general"],
         }).json()
-        assert created["auto_dispatch"]["rule_label"] == "auto"
+        assert created["auto_dispatch"]["rule_query"] == "auto & !status: 已完成"
         assert created["auto_dispatch"]["sent"]
         detail = client.get(f"/api/tasks/{created['id']}").json()
-        assert detail["task"]["status"] == "in_progress"
+        assert "status: 处理中" in detail["task"]["labels"]
 
         rules = client.get("/api/overview").json()["projects"][0].get(
             "task_auto_rules")
-        assert rules and rules[0]["label"] == "auto"
+        assert rules and rules[0]["query"] == "auto & !status: 已完成"
 
 
 def test_task_auto_rule_with_mentions_dispatches_like_composer(seeded):
     """新版规则带结构化提及:派发与人工 @ 完全同构,role_ids 从提及派生。"""
     project = seeded.get_project("webshop")
     project.task_auto_rules = [
-        {"label": "alert", "prompt": "@dev 请先分析影响面",
+        {"query": "alert", "prompt": "@dev 请先分析影响面",
          "mentions": [{"role_id": "dev", "start": 0, "end": 4}],
          "enabled": True}]
     seeded.put_project(project)
@@ -299,7 +305,7 @@ def test_task_auto_rule_with_mentions_dispatches_like_composer(seeded):
     result = auto_process_task(seeded, chat, task)
     chat.wait_idle()
 
-    assert result and result["rule_label"] == "alert"
+    assert result and result["rule_query"] == "alert"
     stored = seeded.get_message(result["sent"][0]["message_id"])
     # 提及走 mention_spans 通道:提示词保持原文原位,不再额外加 @前缀
     assert stored["content"].startswith("@dev 请先分析影响面")
@@ -308,19 +314,46 @@ def test_task_auto_rule_with_mentions_dispatches_like_composer(seeded):
     assert [row["role_id"] for row in runs] == ["dev"]
 
 
-def test_project_task_label_boards_persist_and_normalize(seeded):
+def test_project_task_board_filters_persist_and_normalize(seeded):
     with TestClient(create_app()) as client:
         saved = client.post("/api/projects", json={
             "id": "webshop", "name": "网店",
-            "task_label_boards": [" Sync ", "alert", "sync", ""],
+            "task_board_filters": [
+                {"query": "Sync"},
+                {"title": "指派给我", "query": "owner: 张三"},
+            ],
         })
         assert saved.status_code == 200, saved.text
-        assert saved.json()["task_label_boards"] == ["Sync", "alert"]
+        assert saved.json()["task_board_filters"] == [
+            {"title": "Sync", "query": "Sync", "color": ""},
+            {"title": "指派给我", "query": "owner: 张三", "color": ""},
+        ]
 
         # 未传该字段时保留现值
         kept = client.post("/api/projects", json={
             "id": "webshop", "name": "网店"}).json()
-        assert kept["task_label_boards"] == ["Sync", "alert"]
+        assert [f["query"] for f in kept["task_board_filters"]] == [
+            "Sync", "owner: 张三"]
+
+        # 表达式非法时整体拒绝
+        bad = client.post("/api/projects", json={
+            "id": "webshop", "name": "网店",
+            "task_board_filters": [{"query": "(bug"}],
+        })
+        assert bad.status_code == 400
+
+
+def test_legacy_task_label_boards_migrate_to_filters(seeded):
+    project = seeded.get_project("webshop")
+    raw = project.to_dict()
+    raw.pop("task_board_filters", None)
+    raw["task_label_boards"] = ["Sync", "alert"]
+    from missioncrew.core.models import Project
+    migrated = Project.from_dict(raw)
+    assert migrated.task_board_filters == [
+        {"title": "Sync", "query": "Sync", "color": ""},
+        {"title": "alert", "query": "alert", "color": ""},
+    ]
 
 
 def test_processing_task_rejects_disabled_orchestrator(seeded):
@@ -333,19 +366,24 @@ def test_processing_task_rejects_disabled_orchestrator(seeded):
 
     with pytest.raises(ValueError, match="项目主控角色已停用"):
         dispatch_task(seeded, chat, task)
-    assert seeded.get_task(task.id).status == "open"
+    assert seeded.get_task(task.id).status == "待处理"
     assert seeded.list_messages("general") == []
     assert seeded._query("SELECT * FROM chat_runs") == []
 
 
-def test_task_edit_empty_channel_list_falls_back_to_general(seeded):
+def test_task_edit_empty_channel_list_clears_binding(seeded):
     task = create_task(
         seeded, "webshop", title="检查库存", channel_ids=["general"])
     updated = update_task(
         seeded, task, snapshot_updated_at=task.updated_at,
         changes={"channel_ids": []},
     )
-    assert updated.channel_ids == ["general"]
+    # 频道绑定可选:显式空列表即解除绑定;派发时按 general 回退
+    assert updated.channel_ids == []
+    chat = ChatEngine(seeded, max_workers=2)
+    sent, _ = dispatch_task(seeded, chat, updated)
+    chat.wait_idle()
+    assert [item["channel_id"] for item in sent] == ["general"]
 
 
 def test_task_delete_moves_task_and_briefs_to_recycle_bin_and_restores(seeded):
@@ -399,13 +437,51 @@ def test_legacy_staged_task_is_migrated_to_issue(store):
     migrated = Store(store.path).get_task("t_legacy")
     assert migrated.summary == "旧描述第一行"
     assert migrated.body == legacy["description"]
-    assert migrated.status == "in_progress"
-    assert migrated.channel_ids == ["demo:general"]
+    # 旧枚举状态迁成状态标签;频道绑定已可选,不再强制补默认频道
+    assert migrated.labels == ["status: 处理中", "legacy"]
+    assert migrated.status == "处理中"
+    assert migrated.channel_ids == []
     assert set(migrated.to_dict()) == {
-        "id", "project_id", "title", "summary", "body", "labels",
-        "channel_ids", "status", "archived", "archived_at",
-        "created_at", "updated_at",
+        "id", "project_id", "title", "source_id", "external_id",
+        "summary", "body", "labels", "channel_ids", "url", "meta",
+        "archived", "archived_at", "created_at", "updated_at",
     }
+
+
+def test_legacy_board_source_cards_and_filters_migrate(store):
+    """旧版数据源内嵌 cards 迁入 tasks 表;看板筛选列的裸状态词改写为状态标签。"""
+    store._put("board_sources", "demo:gitcode", {
+        "id": "demo:gitcode", "project_id": "demo", "name": "GitCode",
+        "description": "", "columns": [
+            {"key": "open", "title": "待处理", "color": ""},
+            {"key": "done", "title": "已完成", "color": ""}],
+        "cards": [{"id": "1", "title": "条目", "status": "done",
+                   "labels": ["bug"], "updated_at": 5.0,
+                   "url": "https://x/1", "meta": ["m"]}],
+        "created_by_role_id": "", "created_at": 1.0, "updated_at": 2.0,
+    })
+    store._put("boards", "demo:issues", {
+        "id": "demo:issues", "project_id": "demo", "kind": "taskboard",
+        "source": "gitcode", "name": "issues", "description": "",
+        "layout": [], "created_by_role_id": "",
+        "created_at": 1.0, "updated_at": 1.0,
+        "filters": [{"title": "待处理", "query": "待处理", "color": ""},
+                    {"title": "缺陷", "query": "已完成 & bug", "color": ""}],
+    })
+
+    reopened = Store(store.path)
+    tasks = reopened.list_tasks("demo", source_id="gitcode")
+    assert len(tasks) == 1 and tasks[0].external_id == "1"
+    assert tasks[0].labels == ["status: 已完成", "bug"]
+    assert tasks[0].url == "https://x/1" and tasks[0].meta == ["m"]
+    record = reopened.get_board_datasource("demo:gitcode")
+    assert record.status_values == [
+        {"value": "待处理", "color": ""}, {"value": "已完成", "color": ""}]
+    board = reopened.get_board("demo:issues")
+    assert [f["query"] for f in board.filters] == [
+        "status: 待处理", "status: 已完成 & bug"]
+    # 迁移可重入:再次打开不重复建任务
+    assert len(Store(store.path).list_tasks("demo", source_id="gitcode")) == 1
 
 
 def test_task_board_exposes_activity_order_and_archive_filter(seeded):

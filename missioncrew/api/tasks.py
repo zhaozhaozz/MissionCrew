@@ -47,7 +47,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         return {**task.to_dict(),
                 "resource_url": task_resource_url(task.project_id, task.id),
                 "auto_dispatch": auto and {
-                    "rule_label": auto["rule_label"], "sent": auto["sent"]}}
+                    "rule_query": auto["rule_query"], "sent": auto["sent"]}}
 
     @app.get("/api/tasks/{task_id}")
     def detail(task_id: str):

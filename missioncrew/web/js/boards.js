@@ -25,16 +25,16 @@ async function loadBoardSources() {
     } catch (_) { /* ignore */ }
   }
   return (boardSourcesCache.project === currentProject && boardSourcesCache.list)
-    || [{ id: "tasks", name: "项目任务", description: "" }];
+    || [{ id: "built-in", name: "项目任务", description: "" }];
 }
 
 function boardSourceName(id) {
   const hit = (boardSourcesCache.list || []).find(s => s.id === id);
-  return hit ? hit.name : (id || "tasks");
+  return hit ? hit.name : (id || "built-in");
 }
 
 function boardSourceOptionsHtml(selected) {
-  return (boardSourcesCache.list || [{ id: "tasks", name: "项目任务", description: "" }])
+  return (boardSourcesCache.list || [{ id: "built-in", name: "项目任务", description: "" }])
     .map(s => `<option value="${esc(s.id)}"${s.id === selected ? " selected" : ""}>
       ${esc(s.name)}${s.description ? ` — ${esc(s.description)}` : ""}</option>`).join("");
 }
@@ -145,13 +145,15 @@ function renderBoardContent(board) {
   else renderBoardWidgets(board.layout || []);
 }
 
-/* ---- 标签表达式:与 & 或 | 非 ! 与括号;标签不区分大小写,&&/|| 同义 ---- */
+/* ---- 标签表达式:与 & 或 | 非 ! 与括号;标签不区分大小写,&&/|| 同义。
+   项与整串标签匹配(高级标签经归一化),`属性: *` 匹配带该属性的对象;
+   与服务端 core/label_query.py 同一套语义。 ---- */
 function compileLabelQuery(expr) {
   const tokens = [];
   let buffer = "";
   const flush = () => {
     const text = buffer.trim();
-    if (text) tokens.push({ label: text.toLowerCase() });
+    if (text) tokens.push({ raw: text });
     buffer = "";
   };
   for (let i = 0; i < expr.length; i++) {
@@ -171,7 +173,7 @@ function compileLabelQuery(expr) {
     while (peek() === "|") {
       pos++;
       const left = node, right = parseAnd();
-      node = labels => left(labels) || right(labels);
+      node = ctx => left(ctx) || right(ctx);
     }
     return node;
   };
@@ -180,13 +182,13 @@ function compileLabelQuery(expr) {
     while (peek() === "&") {
       pos++;
       const left = node, right = parseNot();
-      node = labels => left(labels) && right(labels);
+      node = ctx => left(ctx) && right(ctx);
     }
     return node;
   };
   const parseNot = () => {
     const token = peek();
-    if (token === "!") { pos++; const inner = parseNot(); return labels => !inner(labels); }
+    if (token === "!") { pos++; const inner = parseNot(); return ctx => !inner(ctx); }
     if (token === "(") {
       pos++;
       const inner = parseOr();
@@ -196,26 +198,44 @@ function compileLabelQuery(expr) {
     }
     if (!token || typeof token === "string") throw new Error("运算符后缺少标签");
     pos++;
-    const label = token.label;
-    return labels => labels.has(label);
+    const [prop, value] = splitLabel(token.raw);
+    if (prop && value === "*") {
+      const wanted = prop.toLowerCase();
+      return ctx => ctx.props.has(wanted);
+    }
+    const wanted = normalizeLabel(token.raw).toLowerCase();
+    return ctx => ctx.labels.has(wanted);
   };
   const matcher = parseOr();
   if (pos !== tokens.length) throw new Error("表达式有多余内容");
   return matcher;
 }
 
-/* 看板通用卡片:task_id 打开平台任务详情,url 打开外部页面(如 GitHub Issue) */
+function matchLabelQuery(query, labels) {
+  const matcher = compileLabelQuery(query);
+  return matcher({
+    labels: new Set((labels || []).map(l => normalizeLabel(l).toLowerCase())),
+    props: new Set((labels || []).map(l => splitLabel(l)[0].toLowerCase())
+      .filter(Boolean)),
+  });
+}
+
+/* 看板通用卡片:所有卡片都是任务,点击打开任务详情;带 url 的另给外链 ↗ */
 function boardCardHtml(card) {
   const click = card.task_id
     ? `data-task-id="${esc(card.task_id)}" onclick="openTask(this.dataset.taskId)"`
     : (card.url ? `data-url="${esc(card.url)}" onclick="window.open(this.dataset.url,'_blank','noopener')"` : "");
   const meta = [`更新 ${new Date(card.updated_at * 1000).toLocaleString()}`,
                 ...(card.meta || [])];
+  const labels = (card.labels || []).filter(l =>
+    splitLabel(l)[0].toLowerCase() !== "status");
   return `<div class="card" ${click}>
-    <div class="title">${esc(card.title)}</div>
+    <div class="title">${esc(card.title)}${card.task_id && card.url
+      ? ` <a class="badge" href="${esc(card.url)}" target="_blank" rel="noopener"
+           onclick="event.stopPropagation()" title="打开外部链接">↗</a>` : ""}</div>
     ${card.summary ? `<div class="task-card-summary">${esc(card.summary)}</div>` : ""}
     <div class="meta">${meta.map(esc).join(" · ")}</div>
-    <div class="meta">${(card.labels || []).map(l => `<span class="badge">${esc(l)}</span>`).join("")}</div>
+    <div class="meta">${labels.map(l => `<span class="badge">${esc(l)}</span>`).join("")}</div>
   </div>`;
 }
 
@@ -223,19 +243,32 @@ function boardCardHtml(card) {
 let taskboardLastData = null;   // 最近一次 /data 响应,增删筛选列时物化当前列
 
 function taskboardFilterBarHtml(data) {
+  const options = (data.labels || [])
+    .map(l => `<option value="${esc(l)}"></option>`).join("");
+  if (data.group_by) {
+    // 分组模式:列由属性取值动态生成,不提供手工增删
+    return `<div class="tb-filter-bar">
+      <span class="muted">分组:</span>
+      <span class="tb-chip" title="按属性「${esc(data.group_by)}」的取值分列">
+        ${esc(data.group_by)}<button class="tb-chip-x" title="退出分组,回到筛选列"
+        onclick="setTaskboardGroupBy('')">×</button></span>
+    </div>`;
+  }
   const chips = data.columns.map((col, i) =>
     `<span class="tb-chip" title="${esc(col.query)}">${esc(col.title)}<button
        class="tb-chip-x" data-index="${i}" title="移除此列"
        onclick="removeTaskboardFilter(+this.dataset.index)">×</button></span>`).join("");
-  const options = (data.labels || [])
-    .map(l => `<option value="${esc(l)}"></option>`).join("");
   return `<div class="tb-filter-bar">
     <span class="muted">筛选列:</span>${chips}
     <input id="tb-new-filter" list="tb-label-options"
-      placeholder="标签表达式,如 处理中 & bug"
+      placeholder="标签表达式,如 status: 处理中 & bug 或 owner: *"
       onkeydown="if(event.key==='Enter')addTaskboardFilter()">
     <datalist id="tb-label-options">${options}</datalist>
     <button class="ghost" onclick="addTaskboardFilter()">＋加列</button>
+    <input id="tb-group-by" placeholder="按属性分组,如 owner"
+      onkeydown="if(event.key==='Enter')setTaskboardGroupBy(this.value)">
+    <button class="ghost"
+      onclick="setTaskboardGroupBy(document.getElementById('tb-group-by').value)">分组</button>
   </div>`;
 }
 
@@ -246,13 +279,26 @@ function currentTaskboardFilters() {
 }
 
 async function saveTaskboardFilters(filters) {
+  await saveTaskboardConfig({ filters });
+}
+
+async function saveTaskboardConfig(patch) {
   const board = projBoards().find(b => b.id === currentCustomBoard);
   if (!board) return;
   await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/boards`, {
-    id: board.id.replace(`${currentProject}:`, ""), name: board.name, filters,
+    id: board.id.replace(`${currentProject}:`, ""), name: board.name, ...patch,
   });
   await loadOverview();
   renderCustomBoards(true);
+}
+
+async function setTaskboardGroupBy(value) {
+  const prop = String(value || "").trim();
+  if (prop && splitLabel(`${prop}: x`)[0] !== prop) {
+    uiAlert("分组属性名不能包含冒号或表达式运算符"); return;
+  }
+  await saveTaskboardConfig({ group_by: prop });
+  toast(prop ? `已按属性「${prop}」分组` : "已退出分组,回到筛选列", "success");
 }
 
 async function addTaskboardFilter() {
@@ -308,8 +354,16 @@ async function renderTaskboardBoard(board) {
   const columns = data.columns.map(col => {
     const cards = col.cards.map(boardCardHtml).join("")
       || `<div class="empty" style="padding:6px 4px">暂无条目</div>`;
+    const rule = ruleForQuery(col.query);
+    const ruleState = rule ? (rule.enabled ? "rule-on" : "rule-off") : "";
+    const ruleTitle = rule
+      ? (rule.enabled ? "自动处理规则已启用,点击修改" : "自动处理规则已停用,点击修改")
+      : "为该列的标签表达式设置自动处理规则";
     return `<section class="col"><h2><span class="col-dot" style="background:${esc(col.color || "var(--muted)")}"></span>
-      ${esc(col.title)}<span class="col-count">${col.cards.length}</span></h2>
+      ${esc(col.title)}<span class="col-count">${col.cards.length}</span>
+      <button class="col-tool col-rule ${ruleState}" title="${esc(ruleTitle)}"
+        data-query="${esc(col.query)}"
+        onclick="openColumnRule(this.dataset.query)">⚡</button></h2>
       <div class="col-list" data-scroll-key="tb:${esc(col.key)}">${cards}</div></section>`;
   }).join("");
   preview.innerHTML = taskboardFilterBarHtml(data)
@@ -423,9 +477,9 @@ function renderWidgetContent(w, resolved) {
     case "taskboard": {   // 标签任务看板:与看板页标签列同数据、同规则入口
       const label = String(c.label || "").trim();
       if (!label) return `<div class="empty">缺少 content.label(要聚合的 Task 标签)</div>`;
-      const tasks = projTasks().filter(task =>
+      const tasks = builtinProjTasks().filter(task =>
         !task.archived && taskHasLabel(task, label));
-      const rule = ruleForLabel(label);
+      const rule = ruleForQuery(label);
       const ruleText = rule
         ? (rule.enabled ? "⚡ 自动规则已启用" : "⚡ 自动规则已停用") : "⚡ 设置自动规则";
       const cards = tasks.map(task => taskCardHtml(task, { showStatus: true })).join("")
@@ -434,7 +488,7 @@ function renderWidgetContent(w, resolved) {
           <span class="badge">${esc(label)}</span>
           <span class="muted">${tasks.length} 个 Task</span>
           <button class="ghost" data-label="${esc(label)}"
-            onclick="openLabelRule(this.dataset.label)">${ruleText}</button>
+            onclick="openColumnRule(this.dataset.label)">${ruleText}</button>
         </div><div class="widget-taskboard-cards">${cards}</div>`;
     }
     default:
@@ -513,7 +567,7 @@ async function openNewBoardDialog() {
     <div id="nb-taskboard">
       <label>名称</label><input type="text" id="nb-name" placeholder="例如 缺陷追踪">
       <label>数据源</label>
-      <select id="nb-source">${boardSourceOptionsHtml("tasks")}</select>
+      <select id="nb-source">${boardSourceOptionsHtml("built-in")}</select>
       <p class="muted">创建后按数据源状态列分列;可在看板顶部用标签表达式增删筛选列,
         状态(待处理/处理中/已阻塞/已完成)也是可筛选标签。</p>
     </div>
@@ -578,7 +632,7 @@ async function openTaskboardDialog(boardId) {
     <label>名称</label>
     <input type="text" id="tbf-name" value="${esc(board.name || "")}">
     <label>数据源</label>
-    <select id="tbf-source">${boardSourceOptionsHtml(board.source || "tasks")}</select>
+    <select id="tbf-source">${boardSourceOptionsHtml(board.source || "built-in")}</select>
     <p class="muted">筛选列在看板顶部工具条直接增删,每列一个标签表达式。</p>`,
     `<button class="action" data-id="${esc(board.id)}"
        onclick="saveTaskboardDialog(this.dataset.id)">保存</button>
