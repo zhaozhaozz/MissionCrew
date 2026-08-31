@@ -23,7 +23,7 @@ MissionCrew 为 Agent 提供一系列接口脚本，Agent 可以用执行命令�
 
 **这些资源不需要人类手动管理。** 频道、Task、文档、准则、Skill、面板、自动化脚本，主控都能通过 Agent Tool 自己创建和维护：在聊天里说「把登录改造拆成几个 Task，建个频道跟进」「把刚才的结论整理成文档」「把这次的测试要求写进准则」，主控就会调用对应动作完成，并把结果以链接形式贴回频道；其他角色也可以创建和更新 Task、发布文档。Web 页面主要用来查看、审阅和偶尔手工调整，而不是日常的资源录入入口。
 
-详细文档可参考:[Runtime 接入](docs/runtimes.md)、[Agent Tool API](docs/agent-tool-api.md)、[资源与 URL 约定](docs/resources.md)、[harness 工作区边界](docs/agent-harness-workspace.md)、[项目 Skill 目录](docs/skills.md)、[命令行工具](docs/cli.md)。
+详细文档可参考:[Runtime 接入](docs/runtimes.md)、[Agent Tool API](docs/agent-tool-api.md)、[定时自动化与任务自动处理](docs/automation.md)、[资源与 URL 约定](docs/resources.md)、[harness 工作区边界](docs/agent-harness-workspace.md)、[项目 Skill 目录](docs/skills.md)、[命令行工具](docs/cli.md)。
 
 ## 快速开始
 
@@ -52,6 +52,15 @@ uv run mc serve    # 启动 Web 服务，默认监听 127.0.0.1:8321
 **平台没有任何身份验证**，Web/API 能浏览本机目录、调度 Agent 执行命令，因此 `mc serve` 默认只监听本机 `127.0.0.1`。需要从局域网其他设备访问时显式传 `--host 0.0.0.0`（或设置环境变量 `MISSIONCREW_HOST`），并且只在可信网络中这样做，绝不要暴露到公网；详见 [SECURITY.md](SECURITY.md)。聊天执行并发上限默认 16，可用 `--chat-workers <N>` 或环境变量 `MISSIONCREW_CHAT_MAX_WORKERS` 调整。
 
 平台数据（SQLite、文档库、Agent 工作区、日志）默认放在当前目录的 `.missioncrew/`，可用环境变量 `MISSIONCREW_HOME` 覆盖；业务代码仓内不会被写入任何平台文件。
+
+## 自动化闭环
+
+定时脚本 + 任务自动处理规则可以拼出全自动流水线：
+
+- **自动化脚本**按 crontab 定时运行，平台注入一次性令牌，脚本调用 Agent 接口更新 MissionCrew——创建任务、同步数据源、发消息、发布文档。
+- **Task 自动处理规则**在新任务的标签命中表达式时自动派发进频道，交给角色处理。
+
+组合起来即可自动处理 GitHub/GitCode 的 Issue、PR 等外部条目：脚本定时把外部列表同步成 Task，新条目命中规则后自动派发给开发/评审角色，Agent 在频道里完成并回写状态。详见 [docs/automation.md](docs/automation.md)。
 
 ## 用 pm2 常驻运行
 
