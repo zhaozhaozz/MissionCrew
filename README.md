@@ -23,7 +23,15 @@ MissionCrew 为 Agent 提供一系列接口脚本，Agent 可以用执行命令�
 
 **这些资源不需要人类手动管理。** 频道、Task、文档、准则、Skill、面板、自动化脚本，主控都能通过 Agent Tool 自己创建和维护：在聊天里说「把登录改造拆成几个 Task，建个频道跟进」「把刚才的结论整理成文档」「把这次的测试要求写进准则」，主控就会调用对应动作完成，并把结果以链接形式贴回频道；其他角色也可以创建和更新 Task、发布文档。Web 页面主要用来查看、审阅和偶尔手工调整，而不是日常的资源录入入口。
 
-详细文档可参考:[Runtime 接入](docs/runtimes.md)、[Agent Tool API](docs/agent-tool-api.md)、[定时自动化与任务自动处理](docs/automation.md)、[资源与 URL 约定](docs/resources.md)、[harness 工作区边界](docs/agent-harness-workspace.md)、[项目 Skill 目录](docs/skills.md)、[命令行工具](docs/cli.md)。
+详细文档：
+
+- [Runtime 接入](docs/runtimes.md)：支持哪些 Agent CLI、检测/升级机制、模型清单来源，以及如何接入新工具
+- [Agent Tool API](docs/agent-tool-api.md)：Agent 修改平台状态的统一动作边界——动作清单、令牌与权限模型
+- [定时自动化与任务自动处理](docs/automation.md)：定时脚本调用平台接口 + 任务自动处理规则，自动流转外部 Issue/PR
+- [资源与 URL 约定](docs/resources.md)：公开资源 URL 与内部标识的两层结构和规范类型
+- [harness 工作区边界](docs/agent-harness-workspace.md)：Agent 工作区、任务快照与业务代码仓之间的读写边界
+- [项目 Skill 目录](docs/skills.md)：完整目录形态的项目 Skill 的投放、同步与版本管理
+- [命令行工具](docs/cli.md)：`mc` 子命令速查，与 Web/API 同一套业务校验的终端形态
 
 ## 快速开始
 
