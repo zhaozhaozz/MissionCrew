@@ -864,10 +864,8 @@ function syncRunLiveOutput(run, card, pane, events) {
     bubble.querySelector(".body").style.borderLeftColor = color;
     card.el.after(bubble);
   }
-  const body = bubble.querySelector(".body");
-  const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
-  body.innerHTML = fmtBody(text, true);
-  if (follow) body.scrollTop = body.scrollHeight;
+  // 不限高、整体随消息流展开;贴底跟随由外层消息面板统一处理
+  bubble.querySelector(".body").innerHTML = fmtBody(text, true);
 }
 
 async function renderRunEvents(run, card, pane = document.getElementById("msgs")) {

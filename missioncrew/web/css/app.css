@@ -290,8 +290,7 @@
                border-top: 1px dashed var(--line); }
   /* 运行中的实时输出框:跟在运行卡片后,由 text 过程事件聚合而成 */
   .run-live-output { margin-top: -8px; }
-  .run-live-output .body { border-style: dashed; border-left: 3px solid var(--line);
-                           max-height: 480px; overflow-y: auto; overscroll-behavior: contain; }
+  .run-live-output .body { border-style: dashed; border-left: 3px solid var(--line); }
   .run-live-output .via::after { content: "●"; color: var(--accent); font-size: 8px;
                                  margin-left: 6px; animation: blink 1.2s infinite; }
   .re { margin-top: 8px; white-space: pre-wrap; word-break: break-word;
