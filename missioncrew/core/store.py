@@ -1451,6 +1451,17 @@ class Store:
                 events.append(event)
         return events
 
+    def run_live_output(self, run_id: int) -> str:
+        """运行迄今的全部 text 输出按序拼接。
+
+        过程事件读取有最近 N 行的窗口限制,思考/工具事件交替会把最早的
+        输出段挤出窗口;实时输出框必须拿到完整正文,所以单独全量拼接。
+        """
+        rows = self._query(
+            "SELECT content FROM run_events WHERE run_id=? AND kind='text' "
+            "ORDER BY id", (run_id,))
+        return "".join(str(row["content"]) for row in rows)
+
     def rewrite_run_events(self, run_id: int, transform: Callable[[str], str],
                            kinds: set[str]) -> int:
         """在最终发布前改写已合并的文本事件，覆盖跨 chunk 的敏感路径。"""

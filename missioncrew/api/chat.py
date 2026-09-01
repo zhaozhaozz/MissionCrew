@@ -202,7 +202,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     @app.get("/api/chat/runs/{run_id}/events")
     def run_events(run_id: int):
-        return {"events": store.run_events(run_id)}
+        # live_output 是不受事件窗口限制的完整 text 输出,供实时输出框使用
+        return {"events": store.run_events(run_id),
+                "live_output": store.run_live_output(run_id)}
 
     @app.post("/api/chat/runs/{run_id}/interactions/{request_id}")
     def respond_runtime_interaction(run_id: int, request_id: str,

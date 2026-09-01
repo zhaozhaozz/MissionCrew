@@ -65,6 +65,19 @@ def test_run_event_coalescing(store):
         '{"status":"running"}', '{"status":"completed"}']
 
 
+def test_run_live_output_survives_event_window(store):
+    """思考/工具事件把最早输出挤出读取窗口后,实时输出仍是完整拼接。"""
+    store.append_run_event(14, "text", "开头段落。")
+    for i in range(260):
+        store.append_run_event(14, "thinking", f"t{i}")
+        store.append_run_event(14, "tool", f"Bash step{i}\n")
+    store.append_run_event(14, "text", "结尾段落。")
+    window = store.run_events(14)
+    assert all(e["content"] != "开头段落。" for e in window
+               if e["kind"] == "text")   # 最早输出已被窗口挤出
+    assert store.run_live_output(14) == "开头段落。结尾段落。"
+
+
 def test_duplicate_reply_output_is_removed_exactly(store):
     store.append_run_event(10, "thinking", "先思考\n")
     store.append_run_event(10, "text", "最终回复")

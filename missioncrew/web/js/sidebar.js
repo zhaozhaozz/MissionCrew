@@ -839,14 +839,17 @@ function submitRuntimeAnswers(runId, requestId, button) {
 /* 运行期间的实时输出:把 text 过程事件聚合成一个跟随更新的输出框,
    一轮运行只有一个(消息之间是 Runtime 拼好的 Markdown 横线),不随
    每次输出新建气泡;运行结束后移除,由正式发布的 Agent 消息接替展示。 */
-function syncRunLiveOutput(run, card, pane, events) {
+function syncRunLiveOutput(run, card, pane, events, liveOutput) {
   const existing = pane.querySelector(`.run-live-output[data-run-id="${run.id}"]`);
   // 以 card 上同步记录的最新状态为准:事件请求在途时运行可能已经结束,
   // 晚到的回调不能按调用时捕获的旧状态把刚移除的实时框重新建回来
   const live = ["queued", "running", "waiting_user"]
     .includes(card.runStatus || run.status);
-  const text = live
-    ? events.filter(e => e.kind === "text").map(e => e.content).join("") : "";
+  // 优先用接口全量拼接的 live_output:过程事件窗口只保留最近 N 行,
+  // 长运行里最早的输出段会被挤出窗口,按事件拼接会丢开头
+  const text = !live ? ""
+    : liveOutput != null ? String(liveOutput)
+    : events.filter(e => e.kind === "text").map(e => e.content).join("");
   if (!text.trim()) { existing?.remove(); return; }
   let bubble = existing;
   if (!bubble) {
@@ -901,7 +904,7 @@ async function renderRunEvents(run, card, pane = document.getElementById("msgs")
         }
       });
     });
-    syncRunLiveOutput(run, card, pane, events);
+    syncRunLiveOutput(run, card, pane, events, d.live_output);
     // 内外滚动都只在原本贴底时跟随,不打断正在回看历史的读者
     if (innerNear) body.scrollTop = body.scrollHeight;
     if (outerNear) pane.scrollTop = pane.scrollHeight;
