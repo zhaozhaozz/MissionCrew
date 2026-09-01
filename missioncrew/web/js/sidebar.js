@@ -832,6 +832,35 @@ function submitRuntimeAnswers(runId, requestId, button) {
   sendRuntimeInteraction(runId, requestId, "submit", answers);
 }
 
+/* 运行期间的实时输出:把 text 过程事件聚合成一个跟随更新的输出框,
+   一轮运行只有一个(消息之间是 Runtime 拼好的 Markdown 横线),不随
+   每次输出新建气泡;运行结束后移除,由正式发布的 Agent 消息接替展示。 */
+function syncRunLiveOutput(run, card, pane, events) {
+  const existing = pane.querySelector(`.run-live-output[data-run-id="${run.id}"]`);
+  const live = ["queued", "running", "waiting_user"].includes(run.status);
+  const text = live
+    ? events.filter(e => e.kind === "text").map(e => e.content).join("") : "";
+  if (!text.trim()) { existing?.remove(); return; }
+  let bubble = existing;
+  if (!bubble) {
+    const color = roleColor[run.role_id] || "#888";
+    bubble = document.createElement("div");
+    bubble.className = "msg agent run-live-output";
+    bubble.dataset.runId = run.id;
+    bubble.innerHTML = `<span class="avatar" style="background:${esc(color)}">${esc((run.role_id[0] || "?").toUpperCase())}</span>
+      <div class="msg-main">
+        <div class="head"><span class="author" style="color:${esc(color)}">@${esc(run.role_id)}</span>
+          <span class="via">运行中 · 过程输出实时更新</span></div>
+        <div class="body markdown-body"></div>
+      </div>`;
+    card.el.after(bubble);
+  }
+  const body = bubble.querySelector(".body");
+  const follow = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
+  body.innerHTML = fmtBody(text, true);
+  if (follow) body.scrollTop = body.scrollHeight;
+}
+
 async function renderRunEvents(run, card, pane = document.getElementById("msgs")) {
   // 静默拉取(不弹 toast,服务重启间隙下轮重试);成功才返回 true,
   // 调用方据此提交 card.key,失败时下轮按 key 未变化重试
@@ -865,6 +894,7 @@ async function renderRunEvents(run, card, pane = document.getElementById("msgs")
         }
       });
     });
+    syncRunLiveOutput(run, card, pane, events);
     // 内外滚动都只在原本贴底时跟随,不打断正在回看历史的读者
     if (innerNear) body.scrollTop = body.scrollHeight;
     if (outerNear) pane.scrollTop = pane.scrollHeight;
@@ -894,7 +924,9 @@ function syncRuns(runs, surface = null) {
       el.addEventListener("toggle", () => {   // 展开时过程流贴底显示最新
         if (el.open) { const b = el.querySelector(".rc-events"); b.scrollTop = b.scrollHeight; }
       });
-      while (anchor.nextElementSibling?.classList?.contains("run-card")
+      // 更早运行的卡片连同其实时输出框一起越过,保持按 run id 排序
+      while ((anchor.nextElementSibling?.classList?.contains("run-card")
+              || anchor.nextElementSibling?.classList?.contains("run-live-output"))
              && Number(anchor.nextElementSibling.dataset.runId) < run.id)
         anchor = anchor.nextElementSibling;
       anchor.after(el);

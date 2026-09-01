@@ -19,6 +19,49 @@ class RuntimeProtocolError(RuntimeError):
 MESSAGE_DIVIDER = "\n\n---\n\n"
 
 
+class OutputAssembler:
+    """聚合一个 turn 内的多条完整输出消息。
+
+    消息之间补 MESSAGE_DIVIDER;整条只有空白的消息直接丢弃,消息开头的空白
+    先扣住、等本条出现实际内容时再连同分隔横线一起写出。这样最终回复与实时
+    text 事件都不会出现空横线段。append 返回本次真正新增的文本,调用方原样
+    emit 即可保证事件流与最终聚合结果一致。
+    """
+
+    def __init__(self) -> None:
+        self._parts: list[str] = []
+        self._held = ""              # 当前消息出现实际内容前扣住的空白前缀
+        self._message_open = False   # 当前消息已写出过非空白内容
+        self._pending_divider = False
+
+    @property
+    def text(self) -> str:
+        return "".join(self._parts)
+
+    def append(self, text: str) -> str:
+        if not text:
+            return ""
+        if self._message_open:
+            self._parts.append(text)
+            return text
+        self._held += text
+        if not self._held.strip():
+            return ""
+        emitted = (MESSAGE_DIVIDER if self._pending_divider else "") + self._held
+        self._pending_divider = False
+        self._held = ""
+        self._message_open = True
+        self._parts.append(emitted)
+        return emitted
+
+    def finish_message(self) -> None:
+        """一条完整输出结束:空白消息不留痕迹,有内容才预约下一条前的横线。"""
+        self._held = ""
+        if self._message_open:
+            self._message_open = False
+            self._pending_divider = True
+
+
 def safe_emit(emit: Optional[Callable[[str, str], None]],
               kind: str, text: str) -> None:
     """过程事件失败只能丢弃，不能阻塞 Runtime 的 stdout 读取线程。"""

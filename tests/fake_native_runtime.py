@@ -140,9 +140,14 @@ def run_codex() -> None:
                     "threadId": thread_id,
                     "turn": {"id": turn_id, "status": "completed",
                              "error": None, "items": []}}})
-            elif "TWO_MESSAGES" in prompt:
-                for item_id, text in (("m-1", "先说明进度。"),
-                                      ("m-2", "最终结论。")):
+            elif "TWO_MESSAGES" in prompt or "BLANK_MESSAGES" in prompt:
+                # BLANK_MESSAGES 在两条实际输出中间夹一条纯空白消息:
+                # 验证空白消息被丢弃,不产生空横线段
+                texts = (("先说明进度。", "  \n\t", "最终结论。")
+                         if "BLANK_MESSAGES" in prompt
+                         else ("先说明进度。", "最终结论。"))
+                for index, text in enumerate(texts, start=1):
+                    item_id = f"m-{index}"
                     send({"method": "item/agentMessage/delta", "params": {
                         "threadId": thread_id, "turnId": turn_id,
                         "itemId": item_id, "delta": text}})
@@ -303,9 +308,13 @@ def run_claude() -> None:
                       "session_id": session_id, "result": "",
                       "num_turns": turn_number, "total_cost_usd": 0,
                       "duration_ms": 1, "duration_api_ms": 1})
-            elif "TWO_MESSAGES" in prompt:
-                # 两条完整 assistant 消息 + 空 result:驱动输出兜底聚合路径
-                for text in ("先说明进度。", "最终结论。"):
+            elif "TWO_MESSAGES" in prompt or "BLANK_MESSAGES" in prompt:
+                # 多条完整 assistant 消息 + 空 result:驱动输出兜底聚合路径;
+                # BLANK_MESSAGES 中间夹一条纯空白消息,验证不产生空横线段
+                texts = (("先说明进度。", "  \n\t", "最终结论。")
+                         if "BLANK_MESSAGES" in prompt
+                         else ("先说明进度。", "最终结论。"))
+                for text in texts:
                     send({"type": "assistant", "message": {
                         "role": "assistant",
                         "content": [{"type": "text", "text": text}]}})

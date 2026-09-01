@@ -194,6 +194,53 @@ def test_native_multiple_messages_join_with_divider(
     ("claude_code", ClaudeRuntimeProvider),
     ("codex", CodexRuntimeProvider),
 ])
+def test_native_blank_messages_skip_divider(tmp_path, adapter, provider_cls):
+    """整条空白的消息被丢弃:最终输出与实时 text 事件都没有空横线段。"""
+    provider = provider_cls(_Fallback(), _fake_command(adapter))
+    events: list[tuple[str, str]] = []
+    try:
+        result = provider.start(
+            _config(tmp_path, adapter, "BLANK_MESSAGES", {}, events))
+        assert result.success
+        assert result.output == "先说明进度。\n\n---\n\n最终结论。"
+        streamed = "".join(text for kind, text in events if kind == "text")
+        assert streamed == result.output
+    finally:
+        provider.shutdown()
+
+
+def test_output_assembler_drops_blank_messages():
+    """空白消息不产生输出或横线;实际内容之间正常补分隔。"""
+    from missioncrew.runtime.native import MESSAGE_DIVIDER, OutputAssembler
+    assembler = OutputAssembler()
+    assert assembler.append(" \n") == ""         # 开头就是纯空白消息
+    assembler.finish_message()
+    assert assembler.append("第一段") == "第一段"
+    assembler.finish_message()
+    assert assembler.append("\t \n") == ""       # 中间的纯空白消息
+    assembler.finish_message()
+    assert assembler.append("结论") == MESSAGE_DIVIDER + "结论"
+    assembler.finish_message()
+    assert assembler.text == f"第一段{MESSAGE_DIVIDER}结论"
+
+
+def test_output_assembler_keeps_leading_whitespace_of_real_message():
+    """流式前导空白先扣住,出现实际内容时随横线一起写出,不丢正文。"""
+    from missioncrew.runtime.native import MESSAGE_DIVIDER, OutputAssembler
+    assembler = OutputAssembler()
+    assembler.append("进度")
+    assembler.finish_message()
+    assert assembler.append("\n") == ""
+    assert assembler.append("结论") == MESSAGE_DIVIDER + "\n结论"
+    assert assembler.append("。") == "。"
+    assembler.finish_message()
+    assert assembler.text == f"进度{MESSAGE_DIVIDER}\n结论。"
+
+
+@pytest.mark.parametrize("adapter,provider_cls", [
+    ("claude_code", ClaudeRuntimeProvider),
+    ("codex", CodexRuntimeProvider),
+])
 def test_native_execution_accepts_no_deadline(tmp_path, adapter, provider_cls):
     provider = provider_cls(_Fallback(), _fake_command(adapter))
     config = _config(tmp_path, adapter, "NO DEADLINE", {}, [])

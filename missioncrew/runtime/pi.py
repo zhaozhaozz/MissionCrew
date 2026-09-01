@@ -27,7 +27,8 @@ from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider)
-from .native import MESSAGE_DIVIDER, RuntimeProtocolError, emit_json, safe_emit
+from .native import (OutputAssembler, RuntimeProtocolError, emit_json,
+                     safe_emit)
 
 # models.json 支持的 API 协议(与 pi 的 KnownApi 对齐,只放平台明确要
 # 支持的裸 API 形态;其余协议按需再放开)。
@@ -254,9 +255,8 @@ class _PiSession:
         self._state_lock = threading.Lock()
         self._turn_done = threading.Event()
         self._active_config: Optional[ExecutionConfig] = None
-        self._output: list[str] = []
+        self._assembler = OutputAssembler()
         self._saw_text_delta = False
-        self._pending_divider = False
         self._turn_error = ""
         self._stop_reason = ""
         self._last_usage: dict = {}
@@ -396,9 +396,8 @@ class _PiSession:
                 config, recovery=not bool(config.session_id))
             with self._state_lock:
                 self._turn_done.clear()
-                self._output = []
+                self._assembler = OutputAssembler()
                 self._saw_text_delta = False
-                self._pending_divider = False
                 self._turn_error = ""
                 self._stop_reason = ""
                 self._last_usage = {}
@@ -420,7 +419,7 @@ class _PiSession:
                     except Exception:
                         pass
                     return RunResult(False, f"执行超时({config.timeout}s)")
-                output = "".join(self._output).strip()
+                output = self._assembler.text.strip()
                 success = self._stop_reason not in {"error", "aborted"} and \
                     not self._turn_error
                 if success and self.persistent and self.session_file:
@@ -513,24 +512,15 @@ class _PiSession:
                     fallback_text = text
         if fallback_text:
             self._append_output_text(emit, fallback_text)
-        # 一条 assistant 消息结束:下一条输出到来时先插横线分隔
+        # 一条 assistant 消息结束:空白消息丢弃,有内容才在下一条前插横线
         with self._state_lock:
-            if self._output:
-                self._pending_divider = True
+            self._assembler.finish_message()
 
     def _append_output_text(self, emit, text: str) -> None:
         """输出正文统一入口:消息之间补 Markdown 横线,过程与结论可区分。"""
-        if not text:
-            return
         with self._state_lock:
-            divider = self._pending_divider
-            self._pending_divider = False
-            if divider:
-                self._output.append(MESSAGE_DIVIDER)
-            self._output.append(text)
-        if divider:
-            safe_emit(emit, "text", MESSAGE_DIVIDER)
-        safe_emit(emit, "text", text)
+            emitted = self._assembler.append(text)
+        safe_emit(emit, "text", emitted)
 
     def _schedule_finish(self) -> None:
         """agent_end 后延迟判终:静默期内出现 auto_retry_start 则继续等待。"""

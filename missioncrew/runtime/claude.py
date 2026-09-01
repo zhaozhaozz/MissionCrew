@@ -15,7 +15,8 @@ from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageSnapshot)
-from .native import MESSAGE_DIVIDER, RuntimeProtocolError, emit_json, safe_emit
+from .native import (OutputAssembler, RuntimeProtocolError, emit_json,
+                     safe_emit)
 from .usage import probe_claude_usage
 
 # 后台任务结束后 Claude CLI 会自发开启新 turn(无用户输入)汇报结果。
@@ -33,10 +34,9 @@ class _TurnSink:
     """一个 turn 的输出汇聚点。运行 turn 落到 config.emit;自唤醒 turn
     没有对应运行,事件先缓冲,turn 结束后整体交给 wake handler 回放。"""
     emit: Optional[Callable[[str, str], None]] = None
-    output: list[str] = field(default_factory=list)
+    assembler: OutputAssembler = field(default_factory=OutputAssembler)
     saw_partial_text: bool = False
     saw_partial_thinking: bool = False
-    pending_divider: bool = False
     events: list[tuple[str, str]] = field(default_factory=list)
 
 
@@ -357,7 +357,7 @@ class _ClaudeSession:
                 result = self._result
                 output = str(result.get("result") or "").strip()
                 if not output:
-                    output = "".join(self._run_sink.output).strip()
+                    output = self._run_sink.assembler.text.strip()
                 success = not bool(result.get("is_error")) and str(
                     result.get("subtype") or "success") == "success"
                 if result.get("session_id"):
@@ -522,7 +522,7 @@ class _ClaudeSession:
                     self.session_id = str(result["session_id"])
                 self.last_activity = time.time()
                 output = (str(result.get("result") or "").strip()
-                          or "".join(sink.output).strip())
+                          or sink.assembler.text.strip())
                 success = (not bool(result.get("is_error"))
                            and str(result.get("subtype") or "success") == "success")
                 if _WAKE_HANDLER is not None and output and self.persistent:
@@ -612,20 +612,12 @@ class _ClaudeSession:
         )
 
     def _finish_output_line(self, sink: _TurnSink) -> None:
-        """一条完整输出结束:下一条输出到来时先插横线分隔。"""
-        if sink.output:
-            sink.pending_divider = True
+        """一条完整输出结束:空白消息丢弃,有内容才在下一条前插横线分隔。"""
+        sink.assembler.finish_message()
 
     def _append_output_text(self, sink: _TurnSink, text: str) -> None:
         """输出正文统一入口:消息之间补 Markdown 横线,过程与结论可区分。"""
-        if not text:
-            return
-        if sink.pending_divider:
-            sink.pending_divider = False
-            sink.output.append(MESSAGE_DIVIDER)
-            safe_emit(sink.emit, "text", MESSAGE_DIVIDER)
-        sink.output.append(text)
-        safe_emit(sink.emit, "text", text)
+        safe_emit(sink.emit, "text", sink.assembler.append(text))
 
     def _current_sink(self, begin_wake: bool = False) -> Optional[_TurnSink]:
         """事件归属:自唤醒 turn 进行中时优先归它——即使新运行已把用户消息

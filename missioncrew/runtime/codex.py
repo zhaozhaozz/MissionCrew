@@ -14,7 +14,7 @@ from .base import host_isolated_environ
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageMetric, RuntimeUsageSnapshot,
                    RuntimeUsageWindow)
-from .native import (MESSAGE_DIVIDER, JsonLineProcess, RuntimeProtocolError, emit_json,
+from .native import (JsonLineProcess, OutputAssembler, RuntimeProtocolError, emit_json,
                      safe_emit)
 
 
@@ -166,10 +166,9 @@ class _CodexSession:
         self._active_turn_id = ""
         self._turn_status = ""
         self._turn_error = ""
-        self._output: list[str] = []
+        self._assembler = OutputAssembler()
         self._saw_text_delta = False
         self._message_item_id = ""
-        self._pending_divider = False
         self._restarting_client = False
         self.created_at = time.time()
         self.last_activity = self.created_at
@@ -284,10 +283,9 @@ class _CodexSession:
             self._turn_status = ""
             self._turn_error = ""
             self._active_turn_id = ""
-            self._output = []
+            self._assembler = OutputAssembler()
             self._saw_text_delta = False
             self._message_item_id = ""
-            self._pending_divider = False
             try:
                 self._ensure_client(config)
                 assert self.client
@@ -329,7 +327,7 @@ class _CodexSession:
                         except Exception:
                             pass
                     return RunResult(False, f"执行超时({config.timeout}s)")
-                output = "".join(self._output).strip()
+                output = self._assembler.text.strip()
                 success = self._turn_status == "completed"
                 if success and self.thread_id:
                     adapters._save_session(
@@ -440,29 +438,22 @@ class _CodexSession:
             if error:
                 self._turn_error = str(
                     error.get("message") if isinstance(error, dict) else error)
-            if not self._output:
-                # 兜底聚合 turn.items 时多条消息之间同样用横线分隔
-                self._output.append(MESSAGE_DIVIDER.join(
-                    str(item["text"]) for item in turn.get("items") or []
-                    if item.get("type") == "agentMessage" and item.get("text")))
+            if not self._assembler.text:
+                # 兜底聚合 turn.items:同样经聚合器,空白消息不产生空横线段
+                for item in turn.get("items") or []:
+                    if item.get("type") == "agentMessage" and item.get("text"):
+                        self._assembler.append(str(item["text"]))
+                        self._assembler.finish_message()
             safe_emit(emit, "status", f"Codex turn {self._turn_status}\n")
             self._turn_done.set()
 
     def _finish_message_line(self) -> None:
-        """一条完整输出结束:下一条输出到来时先插横线分隔。"""
-        if self._output:
-            self._pending_divider = True
+        """一条完整输出结束:空白消息丢弃,有内容才在下一条前插横线分隔。"""
+        self._assembler.finish_message()
 
     def _append_output(self, emit, text: str) -> None:
         """输出正文统一入口:消息之间补 Markdown 横线,过程与结论可区分。"""
-        if not text:
-            return
-        if self._pending_divider:
-            self._pending_divider = False
-            self._output.append(MESSAGE_DIVIDER)
-            safe_emit(emit, "text", MESSAGE_DIVIDER)
-        self._output.append(text)
-        safe_emit(emit, "text", text)
+        safe_emit(emit, "text", self._assembler.append(text))
 
     def _emit_item(self, emit, item: dict, *, completed: bool) -> None:
         item_type = str(item.get("type") or "")
