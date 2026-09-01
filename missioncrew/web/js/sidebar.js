@@ -1121,6 +1121,44 @@ function handleChatFileInput(input) {
   input.value = "";
 }
 
+/* 拖文件进聊天输入框即上传为附件;文件落在页面其他位置一律拦截,
+   防止浏览器直接打开文件顶掉页面。角色表的行排序拖拽不带 Files 类型,不受影响。 */
+function dragHasFiles(event) {
+  return [...(event.dataTransfer?.types || [])].includes("Files");
+}
+
+function bindChatDropZone() {
+  const wrap = document.getElementById("input-wrap");
+  let depth = 0;   // dragenter/dragleave 在子元素间成对触发,计数避免高亮闪烁
+  wrap.addEventListener("dragenter", event => {
+    if (!dragHasFiles(event)) return;
+    depth += 1;
+    wrap.classList.add("drop-target");
+  });
+  wrap.addEventListener("dragover", event => {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  });
+  wrap.addEventListener("dragleave", () => {
+    if (depth > 0) depth -= 1;
+    if (!depth) wrap.classList.remove("drop-target");
+  });
+  wrap.addEventListener("drop", event => {
+    if (!dragHasFiles(event)) return;
+    event.preventDefault();
+    depth = 0;
+    wrap.classList.remove("drop-target");
+    addChatAttachments([...event.dataTransfer.files]);
+  });
+  window.addEventListener("dragover", event => {
+    if (dragHasFiles(event)) event.preventDefault();
+  });
+  window.addEventListener("drop", event => {
+    if (dragHasFiles(event)) event.preventDefault();
+  });
+}
+
 function removePendingUpload(index) {
   pendingUploads.splice(index, 1);
   renderPendingUploads();
@@ -1271,6 +1309,7 @@ function bindComposerEvents(boxId, pickerId, onSubmit) {
 }
 
 bindComposerEvents("input", "mention-picker", () => send());
+bindChatDropZone();
 document.addEventListener("selectionchange", rememberComposerSelection);
 document.addEventListener("mousedown", event => {
   if (!event.target.closest(".composer-wrap") && !event.target.closest("#input-wrap")

@@ -403,6 +403,8 @@
            transition: border-color .15s, box-shadow .15s; }
   #input:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
   #input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  #input-wrap.drop-target #input { border-color: var(--accent); border-style: dashed;
+                                   box-shadow: 0 0 0 3px var(--accent-soft); }
   #attach-btn { flex: none; padding: 8px 11px; font-size: 15px; }
   #composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
   #composer-attachments[hidden] { display: none; }
