@@ -837,7 +837,10 @@ function submitRuntimeAnswers(runId, requestId, button) {
    每次输出新建气泡;运行结束后移除,由正式发布的 Agent 消息接替展示。 */
 function syncRunLiveOutput(run, card, pane, events) {
   const existing = pane.querySelector(`.run-live-output[data-run-id="${run.id}"]`);
-  const live = ["queued", "running", "waiting_user"].includes(run.status);
+  // 以 card 上同步记录的最新状态为准:事件请求在途时运行可能已经结束,
+  // 晚到的回调不能按调用时捕获的旧状态把刚移除的实时框重新建回来
+  const live = ["queued", "running", "waiting_user"]
+    .includes(card.runStatus || run.status);
   const text = live
     ? events.filter(e => e.kind === "text").map(e => e.content).join("") : "";
   if (!text.trim()) { existing?.remove(); return; }
@@ -853,6 +856,8 @@ function syncRunLiveOutput(run, card, pane, events) {
           <span class="via">运行中 · 过程输出实时更新</span></div>
         <div class="body markdown-body"></div>
       </div>`;
+    // 多个 Agent 并行时各自的输出框以角色色左描边区分归属
+    bubble.querySelector(".body").style.borderLeftColor = color;
     card.el.after(bubble);
   }
   const body = bubble.querySelector(".body");
@@ -919,7 +924,8 @@ function syncRuns(runs, surface = null) {
       el.dataset.runId = run.id;
       el.innerHTML = `<summary></summary><div class="rc-events"></div>`;
       card = { el, key: null, userToggled: false, fetching: false,
-               latestEventId: "", openEventId: undefined };
+               latestEventId: "", openEventId: undefined,
+               runStatus: run.status };
       el.querySelector("summary").addEventListener("click", () => { card.userToggled = true; });
       el.addEventListener("toggle", () => {   // 展开时过程流贴底显示最新
         if (el.open) { const b = el.querySelector(".rc-events"); b.scrollTop = b.scrollHeight; }
@@ -933,6 +939,11 @@ function syncRuns(runs, surface = null) {
       cards.set(run.id, card);
     }
     const live = ["queued", "running", "waiting_user"].includes(run.status);
+    card.runStatus = run.status;
+    // 运行结束在同步路径立即移除实时输出框:与本轮 appendMessages 挂上的
+    // 正式消息同一渲染周期完成交接,不闪重复,也不依赖事件请求成功
+    if (!live)
+      pane.querySelector(`.run-live-output[data-run-id="${run.id}"]`)?.remove();
     const key = `${run.status}:${run.events_size}`;
     if (card.key !== key && !card.fetching) {
       card.el.querySelector("summary").innerHTML = runSummary(run);
