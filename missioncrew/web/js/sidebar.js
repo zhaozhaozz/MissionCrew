@@ -1081,6 +1081,15 @@ function restoreComposerPayload(content, mentionSpans = [],
 /* ---------------- 频道附件:上传后随消息告知 Agent 本地路径 ---------------- */
 let pendingUploads = [];   // 已上传待随下一条消息发送的附件
 
+// 粘贴文本超过任一阈值时不再塞进输入框,改为转成 .txt 附件
+const PASTE_FILE_MIN_CHARS = 1500;
+const PASTE_FILE_MIN_LINES = 30;
+
+function isLongPaste(text) {
+  return text.length > PASTE_FILE_MIN_CHARS
+      || text.split("\n").length > PASTE_FILE_MIN_LINES;
+}
+
 function uploadDisplayName(name) { return String(name || "").replace(/^\d+(?:-\d+)?-/, ""); }
 
 async function uploadChatFile(file) {
@@ -1249,7 +1258,15 @@ function bindComposerEvents(boxId, pickerId, onSubmit) {
     // 聊天输入框支持直接粘贴图片/文件；其他 composer 仍只收纯文本
     const files = [...(event.clipboardData?.files || [])];
     if (files.length && boxId === "input") { addChatAttachments(files); return; }
-    document.execCommand("insertText", false, event.clipboardData.getData("text/plain"));
+    const text = event.clipboardData.getData("text/plain");
+    // 长文本粘贴转为 .txt 附件,输入框里已有的内容保持原样
+    if (boxId === "input" && currentChan && isLongPaste(text)) {
+      addChatAttachments([new File([text], "粘贴文本.txt",
+                                   { type: "text/plain" })]);
+      toast("粘贴的长文本已转为附件", "success");
+      return;
+    }
+    document.execCommand("insertText", false, text);
   });
 }
 
