@@ -73,6 +73,37 @@ def test_interaction_completion_does_not_overwrite_finished_run(store):
     assert row["error"] == "timeout"
 
 
+def test_respond_interaction_waits_for_pending_registration(store):
+    """事件已落库但 pending 尚未注册时,应答方必须等到注册完成而不是报请求不存在。"""
+    store._execute("INSERT INTO channels(id,data) VALUES(?,?)",
+                   ("channel", '{"id":"channel","name":"channel"}'))
+    trigger = store.add_message("channel", "human", "human", "question", [])
+    run_id = store.add_chat_run("channel", "lead", trigger, trigger, 0)
+    chat = ChatEngine(store, max_workers=1)
+    real_append = store.append_interaction_event
+
+    def preempted_append(*args, **kwargs):
+        event_id = real_append(*args, **kwargs)
+        time.sleep(0.05)   # 模拟 worker 在事件 commit 后、注册 pending 前被调度走
+        return event_id
+
+    store.append_interaction_event = preempted_append
+    worker = threading.Thread(target=lambda: chat._request_runtime_interaction(
+        run_id, "claude", "permission_request", {"tool": "Bash"}, 5))
+    worker.start()
+    for _ in range(200):
+        events = store.run_events(run_id)
+        if events:
+            break
+        time.sleep(0.005)
+    payload = json.loads(events[0]["content"])
+    chat.respond_interaction(run_id, payload["request_id"], {
+        "decision": "deny", "answers": {},
+    })
+    worker.join(timeout=5)
+    assert json.loads(store.run_events(run_id)[0]["content"])["status"] == "resolved"
+
+
 def test_channel_stop_cancels_pending_interaction_without_reopening_run(
         seeded, monkeypatch):
     trigger = seeded.add_message("general", "human", "human", "question", [])

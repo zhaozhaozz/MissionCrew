@@ -1127,11 +1127,14 @@ class ChatEngine:
                 "request_id": request_id,
                 "status": "pending",
             }
-            event_id = self.store.append_interaction_event(run_id, kind, visible)
-            pending = _PendingInteraction(
-                run_id=run_id, backend_id=backend_id, kind=kind,
-                event_id=event_id, payload=visible)
+            # 事件 commit 后立即对轮询方可见,落库与注册必须同在交互锁内;
+            # 否则应答方可能抢在注册之前调 respond_interaction 而误报请求不存在。
             with self._interaction_lock:
+                event_id = self.store.append_interaction_event(
+                    run_id, kind, visible)
+                pending = _PendingInteraction(
+                    run_id=run_id, backend_id=backend_id, kind=kind,
+                    event_id=event_id, payload=visible)
                 self._interactions[request_id] = pending
         self.store.audit(
             "platform", "runtime_interaction_requested",
