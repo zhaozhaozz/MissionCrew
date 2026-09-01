@@ -466,6 +466,9 @@ function appendAgentToolReceipt(message, pane, date) {
           <span class="via agent-tool-group-role"></span><span class="time"></span></summary>
         <div class="agent-tool-items"></div>
       </details></div>`;
+    // 回执分组同样带发起角色的色条,多 Agent 并行时能对上归属
+    group.querySelector(".agent-tool-details").style.borderLeft =
+      `3px solid ${roleColor[meta.roleId] || "#888"}`;
     pane.appendChild(group);
   }
   const item = document.createElement("div");
@@ -555,7 +558,8 @@ function appendMessagesToSurface(list, surface) {
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${isAgent ? color : "var(--text)"}">${esc(name)}</span>
           ${isAgent ? `<span class="via">${esc(agentExecutionLabel(m))}</span>` : ""}<span class="time">${time}</span></div>
-        <div class="body${renderMarkdown ? " markdown-body" : ""}${longReply ? " folded" : ""}">${fmtBody(m.content, renderMarkdown, m.mention_spans)}</div>
+        <div class="body${renderMarkdown ? " markdown-body" : ""}${longReply ? " folded" : ""}"
+          style="border-left:3px solid ${esc(color)}">${fmtBody(m.content, renderMarkdown, m.mention_spans)}</div>
         ${images.length ? `<div class="msg-attachments">${images.map(a =>
           `<img src="${esc(a.url)}" alt="${esc(uploadDisplayName(a.name))}" loading="lazy"
             title="点击预览" onclick="openImagePreview(this.src, this.alt)">`).join("")}</div>` : ""}
