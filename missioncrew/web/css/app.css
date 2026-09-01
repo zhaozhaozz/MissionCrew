@@ -231,8 +231,9 @@
                          cursor: pointer; }
   /* 连续 MissionCrew Tool 回执按 Agent 运行合并，避免批量发布文件时淹没对话。 */
   .agent-tool-group .agent-tool-avatar { background: var(--muted); }
+  /* 左上圆角与左下一致:3px 角色色条两端对称收弧,避免小圆角处形成尖角 */
   .agent-tool-details { overflow: hidden; border: 1px dashed var(--line);
-                        border-radius: 4px 12px 12px 12px; background: var(--bg-soft); }
+                        border-radius: 12px; background: var(--bg-soft); }
   .agent-tool-details > summary { display: flex; align-items: baseline; gap: 8px;
                                   padding: 7px 11px; cursor: pointer; user-select: none;
                                   color: var(--text-2); list-style: none; }
@@ -290,7 +291,7 @@
   /* 运行中的实时输出框:跟在运行卡片后,由 text 过程事件聚合而成 */
   .run-live-output { margin-top: -8px; }
   .run-live-output .body { border-style: dashed; border-left: 3px solid var(--line);
-                           max-height: 480px; overflow-y: auto; }
+                           max-height: 480px; overflow-y: auto; overscroll-behavior: contain; }
   .run-live-output .via::after { content: "●"; color: var(--accent); font-size: 8px;
                                  margin-left: 6px; animation: blink 1.2s infinite; }
   .re { margin-top: 8px; white-space: pre-wrap; word-break: break-word;
