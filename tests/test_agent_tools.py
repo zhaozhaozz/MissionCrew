@@ -63,7 +63,8 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert "返回非空 `dispatched` 时" not in dev.common_prompt
     assert "is_current_run" not in lead.common_prompt
     assert "missioncrew-action>" not in lead.common_prompt
-    assert "不要传 `--run-id`" in lead.turn_prompt
+    assert "不要传 `--run-id`" in lead.common_prompt     # 稳定规则进持久块,本轮输入不再重复
+    assert "本轮上下文" not in lead.turn_prompt
     assert "MISSIONCREW_AGENT_RUN_ID" not in lead.env
     assert lead_token not in lead.prompt and dev_token not in dev.prompt
     assert Path(lead.env["MISSIONCREW_AGENT_TOKEN_FILE"]).stat().st_mode & 0o777 == 0o600
