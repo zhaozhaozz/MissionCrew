@@ -717,7 +717,8 @@ function renderBackendAgent(payload) {
   const description = payload.description || payload.agent_type || "Claude backend Agent";
   const summary = payload.summary ? `<div class="rba-summary">${esc(payload.summary)}</div>` : "";
   const details = [payload.agent_type, payload.last_tool_name ? `工具：${payload.last_tool_name}` : "",
-    payload.pending ? `剩余：${payload.pending}` : ""].filter(Boolean).join(" · ");
+    payload.pending ? `剩余：${payload.pending}` : "",
+    usageInlineSummary(payload.usage)].filter(Boolean).join(" · ");
   return `<div class="rba-head"><b>${esc(description)}</b><span class="rba-status ${esc(status)}">${esc(statusLabel)}</span></div>` +
     (details ? `<div class="muted">${esc(details)}</div>` : "") + summary;
 }
@@ -763,6 +764,191 @@ function renderUserInputRequest(run, event, payload) {
   return `${questions}${actions}`;
 }
 
+/* ---- 用量事件的友好展示 ----
+   各 Runtime 上报的 token 用量字段名并不统一:Codex 是驼峰且按 total/last 分区段
+   并附 modelContextWindow;pi 平铺 input/output/cacheRead/cacheWrite/totalTokens 加
+   cost;Claude 后台 Agent 是 total_tokens/tool_uses/duration_ms;Anthropic API 则是
+   input_tokens/cache_read_input_tokens。这里按别名表归一到统一标签后按固定顺序
+   展示;认不出的字段原样列在末尾,整体一个都认不出时由调用方回退到原始 JSON。 */
+const USAGE_FIELD_ALIASES = {
+  input: "输入", inputTokens: "输入", input_tokens: "输入", prompt_tokens: "输入",
+  output: "输出", outputTokens: "输出", output_tokens: "输出", completion_tokens: "输出",
+  cacheRead: "缓存命中", cachedInputTokens: "缓存命中", cache_read_input_tokens: "缓存命中",
+  cached_tokens: "缓存命中",
+  cacheWrite: "缓存写入", cacheWriteInputTokens: "缓存写入", cache_creation_input_tokens: "缓存写入",
+  reasoning: "推理", reasoningOutputTokens: "推理", reasoning_tokens: "推理",
+  reasoning_output_tokens: "推理",
+  totalTokens: "合计", total_tokens: "合计",
+  tool_uses: "工具调用", toolUses: "工具调用",
+  duration_ms: "耗时", durationMs: "耗时",
+};
+const USAGE_FIELD_ORDER = ["输入", "缓存命中", "缓存写入", "输出", "推理", "合计", "工具调用", "耗时"];
+// 这些字段为 0 是常态(没走缓存、模型不推理),为 0 时不占位
+const USAGE_FIELDS_HIDE_ZERO = new Set(["缓存命中", "缓存写入", "推理", "工具调用"]);
+const visibleUsageLabels = fields => USAGE_FIELD_ORDER.filter(label =>
+  fields.has(label) && !(USAGE_FIELDS_HIDE_ZERO.has(label) && fields.get(label) === 0));
+// Codex 的嵌套区段名 -> 展示名;平铺字段视为无区段行,排在最前
+const USAGE_SCOPE_LABELS = { last: "本轮", total: "累计" };
+const USAGE_CONTEXT_KEYS = ["modelContextWindow", "model_context_window", "context_window"];
+const USAGE_COST_KEYS = ["cost", "total_cost_usd", "cost_usd", "total_cost"];
+
+function fmtTokenCount(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  const abs = Math.abs(n);
+  const trim = text => text.replace(/\.?0+$/, "");
+  // 999,950 起按 k 取一位小数会四舍五入成 1000k,直接进位到 M
+  if (abs >= 1e6 || Math.round(abs / 100) >= 10000) return trim((n / 1e6).toFixed(2)) + "M";
+  if (abs >= 1e4) return trim((n / 1e3).toFixed(1)) + "k";
+  return n.toLocaleString();
+}
+
+function fmtDurationMs(value) {
+  const ms = Number(value);
+  if (!Number.isFinite(ms) || ms < 0) return String(value);
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const secs = Math.round(ms / 1000);
+  if (secs < 60) return `${(ms / 1000).toFixed(1).replace(/\.0$/, "")}s`;
+  const mins = Math.floor(secs / 60);
+  return mins < 60 ? `${mins}m${secs % 60 ? `${secs % 60}s` : ""}`
+    : `${Math.floor(mins / 60)}h${mins % 60 ? `${mins % 60}m` : ""}`;
+}
+
+function fmtUsageCost(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value);
+  // 1 美元以上到分;小额保留 4 位再去掉尾零(至少到分);再小只标"< $0.0001"
+  if (n > 0 && n < 0.0001) return "< $0.0001";
+  if (n >= 1) return "$" + n.toFixed(2);
+  return "$" + n.toFixed(4).replace(/0+$/, "").replace(/\.(\d)$/, ".$10").replace(/\.$/, ".00");
+}
+
+function fmtUsageField(label, value) {
+  if (label === "耗时") return fmtDurationMs(value);
+  if (label === "工具调用") return `${Number(value).toLocaleString()} 次`;
+  return fmtTokenCount(value);
+}
+
+// 把一个平铺的 {字段: 数值} 字典按别名表归一成 label -> value;认不出或非数值的进 unknown
+function normalizeUsageFields(dict) {
+  const known = new Map();
+  const unknown = {};
+  for (const [key, value] of Object.entries(dict || {})) {
+    const label = USAGE_FIELD_ALIASES[key];
+    const numeric = typeof value === "number"
+      || (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value)));
+    if (label && numeric) {
+      if (!known.has(label)) known.set(label, Number(value));
+    } else {
+      unknown[key] = value;
+    }
+  }
+  return { known, unknown };
+}
+
+function usageCostTotal(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    // pi 形如 {input, output, cacheRead, cacheWrite, total};没有 total 时按分项求和
+    const total = Number(value.total);
+    if (Number.isFinite(total)) return total > 0 ? total : null;
+    const sum = Object.values(value).map(Number).filter(Number.isFinite).reduce((a, b) => a + b, 0);
+    return sum > 0 ? sum : null;
+  }
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+function usageFieldsText(fields) {
+  return visibleUsageLabels(fields)
+    .map(label => `${label} ${fmtUsageField(label, fields.get(label))}`).join(" · ");
+}
+
+/* 解析一份用量 payload。返回 null 表示整体不认识(调用方原样展示 JSON);
+   否则返回 {html, preview}:html 是分区段的友好视图,preview 是折叠时的一句话摘要。 */
+function renderUsagePayload(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const rows = [];
+  const flat = {};
+  const unknown = {};
+  let contextWindow = null;
+  let cost = null;
+  for (const [key, value] of Object.entries(payload)) {
+    const isDict = value && typeof value === "object" && !Array.isArray(value);
+    if (USAGE_SCOPE_LABELS[key] && isDict) {
+      const parsed = normalizeUsageFields(value);
+      if (parsed.known.size) {
+        rows.push({ scope: USAGE_SCOPE_LABELS[key], fields: parsed.known });
+        Object.entries(parsed.unknown).forEach(([k, v]) => { unknown[`${key}.${k}`] = v; });
+        continue;
+      }
+    }
+    if (USAGE_CONTEXT_KEYS.includes(key) && Number(value) > 0) { contextWindow = Number(value); continue; }
+    if (USAGE_COST_KEYS.includes(key)) {
+      // 费用只在有正值时展示:0 通常表示模型没配价格,不值得占一行
+      const numericLike = isDict || typeof value === "number"
+        || (typeof value === "string" && Number.isFinite(Number(value)));
+      if (numericLike) { cost = usageCostTotal(value); continue; }
+    }
+    flat[key] = value;
+  }
+  const parsedFlat = normalizeUsageFields(flat);
+  if (parsedFlat.known.size) rows.unshift({ scope: "", fields: parsedFlat.known });
+  Object.assign(unknown, parsedFlat.unknown);
+  if (!rows.length) return null;
+  // 本轮排在累计前面,便于先看当前这一步
+  rows.sort((a, b) => ["", "本轮", "累计"].indexOf(a.scope) - ["", "本轮", "累计"].indexOf(b.scope));
+
+  // 上下文占用:以本轮(或唯一一行)的合计对比模型上下文窗口
+  const current = rows.find(row => row.scope === "本轮") || rows[0];
+  let contextHtml = "", contextPreview = "";
+  if (contextWindow && current) {
+    const used = current.fields.has("合计") ? current.fields.get("合计")
+      : (current.fields.get("输入") || 0) + (current.fields.get("输出") || 0);
+    if (used > 0) {
+      const percent = Math.min(100, Math.round(used / contextWindow * 100));
+      const tone = percent >= 90 ? "critical" : percent >= 70 ? "warning" : "healthy";
+      contextPreview = `上下文 ${percent}%`;
+      contextHtml = `<div class="ru-row ru-context"><span class="ru-scope">上下文</span>` +
+        `<div class="ru-track ${tone}" role="progressbar" aria-valuenow="${percent}" aria-valuemin="0" aria-valuemax="100"><i style="width:${percent}%"></i></div>` +
+        `<span class="ru-metric" title="${esc(used.toLocaleString())} / ${esc(contextWindow.toLocaleString())} tokens">` +
+        `${esc(fmtTokenCount(used))} / ${esc(fmtTokenCount(contextWindow))} · ${percent}%</span></div>`;
+    }
+  }
+  const rowsHtml = rows.map(row => `<div class="ru-row">` +
+    (row.scope ? `<span class="ru-scope">${esc(row.scope)}</span>` : "") +
+    visibleUsageLabels(row.fields).map(label =>
+      `<span class="ru-metric" title="${esc(row.fields.get(label).toLocaleString())}"><em>${esc(label)}</em>${esc(fmtUsageField(label, row.fields.get(label)))}</span>`
+    ).join("") + `</div>`).join("");
+  const costHtml = cost !== null
+    ? `<div class="ru-row"><span class="ru-scope">费用</span><span class="ru-metric">${esc(fmtUsageCost(cost))}</span></div>` : "";
+  const unknownHtml = Object.keys(unknown).length
+    ? `<div class="ru-extra">${Object.entries(unknown).map(([k, v]) =>
+        `${esc(k)}: ${esc(typeof v === "string" ? v : JSON.stringify(v))}`).join("\n")}</div>` : "";
+
+  const previewParts = [];
+  if (rows.some(row => row.scope)) {
+    rows.filter(row => row.scope && row.fields.has("合计"))
+      .forEach(row => previewParts.push(`${row.scope} ${fmtTokenCount(row.fields.get("合计"))}`));
+  }
+  if (!previewParts.length && current) previewParts.push(usageFieldsText(current.fields));
+  if (contextPreview) previewParts.push(contextPreview);
+  if (cost !== null) previewParts.push(fmtUsageCost(cost));
+  return {
+    html: `<div class="ru">${rowsHtml}${contextHtml}${costHtml}${unknownHtml}</div>`,
+    preview: previewParts.filter(Boolean).join(" · ") || "Token 用量",
+  };
+}
+
+// 后台 Agent 卡片里的一行用量摘要;认不出的字段以 key=value 原样附在后面
+function usageInlineSummary(usage) {
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return "";
+  const { known, unknown } = normalizeUsageFields(usage);
+  const parts = [usageFieldsText(known)];
+  Object.entries(unknown).forEach(([k, v]) =>
+    parts.push(`${k}=${typeof v === "string" ? v : JSON.stringify(v)}`));
+  return parts.filter(Boolean).join(" · ");
+}
+
 function runEventPreview(event) {
   const text = String(event.content || "").replace(/\s+/g, " ").trim();
   if (event.kind === "input") return `${event.content.length.toLocaleString()} 字符 · 完整原文`;
@@ -789,8 +975,10 @@ function renderRunEvent(run, event, openEventId) {
   } else if (event.kind === "usage") {
     const payload = parseStructuredRunEvent(event);
     if (payload) {
-      content = esc(JSON.stringify(payload, null, 2));
-      preview = "Token 用量";
+      // 认识的用量格式按区段/字段友好展示;整体认不出时保持原始 JSON 不丢信息
+      const friendly = renderUsagePayload(payload);
+      content = friendly ? friendly.html : esc(JSON.stringify(payload, null, 2));
+      preview = friendly ? friendly.preview : "Token 用量";
     }
   } else if (event.kind === "backend_agent") {
     const payload = parseStructuredRunEvent(event);

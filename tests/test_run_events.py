@@ -403,6 +403,23 @@ def test_chat_run_events_flow_to_api(seeded):
     assert agent_reply and all(e["content"].strip() != agent_reply for e in events)
 
 
+def test_chat_ui_renders_usage_events_friendly_with_raw_fallback(seeded):
+    """用量事件按别名表归一后友好展示;认不出的格式仍原样展示 JSON。"""
+    client = TestClient(create_app())
+    js = client.get("/assets/js/sidebar.js").text
+    css = client.get("/assets/css/app.css").text
+    assert "renderUsagePayload" in js and "usageInlineSummary(payload.usage)" in js
+    # 三类线上格式的字段都在别名表里:Codex 驼峰嵌套、pi 平铺、Claude 后台 Agent
+    for key in ("cachedInputTokens", "reasoningOutputTokens", "cacheRead", "totalTokens",
+                "total_tokens", "tool_uses", "duration_ms", "cache_read_input_tokens"):
+        assert f"{key}:" in js or f"{key}\"" in js or f" {key}" in js, key
+    assert '{ last: "本轮", total: "累计" }' in js and '"modelContextWindow"' in js
+    # 整体认不出时回退原始 JSON,未识别字段原样附在末尾
+    assert "friendly ? friendly.html : esc(JSON.stringify(payload, null, 2))" in js
+    assert 'class="ru-extra"' in js
+    assert ".ru-track.critical i" in css and ".ru-extra" in css
+
+
 def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     client = TestClient(create_app())
     js = client.get("/assets/js/sidebar.js").text
