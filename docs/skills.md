@@ -13,7 +13,7 @@ ${MISSIONCREW_HOME}/projects/<project-id>/skills/
     └── SKILL.md
 ```
 
-默认 `MISSIONCREW_HOME` 是启动目录下的 `.missioncrew`。Skill 页面会显示当前项目的绝对投放路径。
+默认 `MISSIONCREW_HOME` 是用户主目录下的 `~/.missioncrew`。Skill 页面会显示当前项目的绝对投放路径。
 
 ## 有效 Skill
 

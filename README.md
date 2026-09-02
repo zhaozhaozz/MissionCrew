@@ -59,7 +59,7 @@ uv run mc serve    # 启动 Web 服务，默认监听 127.0.0.1:8321
 
 **平台没有任何身份验证**，Web/API 能浏览本机目录、调度 Agent 执行命令，因此 `mc serve` 默认只监听本机 `127.0.0.1`。需要从局域网其他设备访问时显式传 `--host 0.0.0.0`（或设置环境变量 `MISSIONCREW_HOST`），并且只在可信网络中这样做，绝不要暴露到公网；详见 [SECURITY.md](SECURITY.md)。聊天执行并发上限默认 16，可用 `--chat-workers <N>` 或环境变量 `MISSIONCREW_CHAT_MAX_WORKERS` 调整。
 
-平台数据（SQLite、文档库、Agent 工作区、日志）默认放在当前目录的 `.missioncrew/`，可用环境变量 `MISSIONCREW_HOME` 覆盖；业务代码仓内不会被写入任何平台文件。
+平台数据（SQLite、文档库、Agent 工作区）默认放在用户主目录的 `~/.missioncrew/`，可用环境变量 `MISSIONCREW_HOME` 覆盖；pm2 部署配置 `ecosystem.config.cjs` 默认改用仓库内的 `.missioncrew/`（日志也在这里）。业务代码仓内不会被写入任何平台文件。
 
 ## 自动化闭环
 
@@ -120,17 +120,17 @@ scripts/serve.sh stop       # 停止
 
 除本机 CLI 外，MissionCrew 也支持直接接入 **OpenAI / Anthropic 兼容的 API**——自建推理服务、网关代理、第三方托管都可以，接口协议支持 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 和 Google Generative AI。这类模型由 [pi](https://www.npmjs.com/package/@mariozechner/pi-coding-agent) 执行：平台不重写 agent 循环，复用 pi 的工具执行与会话管理，通过它的 RPC 模式对接。接入步骤：
 
-1. **安装 pi**。pi 由平台以 vendored 方式装在数据目录内，检测只认这份安装、不探测系统级 pi。首次使用需要 Node.js/npm，手动装一次（`MISSIONCREW_HOME` 改过时替换路径前缀）：
+1. **安装 pi**。pi 由平台以 vendored 方式装在数据目录内，检测只认这份安装、不探测系统级 pi。首次使用需要 Node.js/npm，手动装一次（数据目录不是默认值时替换路径前缀）：
 
    ```bash
-   npm install --prefix .missioncrew/pi/vendor --no-fund --no-audit @mariozechner/pi-coding-agent@latest
+   npm install --prefix ~/.missioncrew/pi/vendor --no-fund --no-audit @mariozechner/pi-coding-agent@latest
    ```
 
    然后在「全局设置」点「重新检测」注册并启用 `pi`；之后的升级由该页的「更新」按钮完成，只写 vendor 目录，不会 `-g` 污染全局。
 2. **添加接入**。在「全局设置 → 自定义模型接入」新增一条：接入名、接口协议、Base URL、API Key（字面量或 `$ENV_VAR` 引用，密钥不会回传浏览器）和模型 id 列表。
 3. **绑定角色**。保存后模型以 `接入名/模型id` 的形态出现在角色编辑器的模型清单中，给角色选择 runtime `pi` 和该模型即可使用。
 
-接入配置落在 `.missioncrew/pi/agent/models.json`（权限 0600），会话文件在 `.missioncrew/pi/sessions`，不读写 `~/.pi`。对接细节见 [docs/runtimes.md](docs/runtimes.md) 的「pi RPC 与裸 API 接入」与「自定义模型接入」两节。
+接入配置落在数据目录的 `pi/agent/models.json`（权限 0600），会话文件在 `pi/sessions`，不读写 `~/.pi`。对接细节见 [docs/runtimes.md](docs/runtimes.md) 的「pi RPC 与裸 API 接入」与「自定义模型接入」两节。
 
 ## 许可证
 

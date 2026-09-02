@@ -55,3 +55,18 @@ def test_serve_chat_workers_flag_sets_env(monkeypatch):
 
     cli.serve()
     assert "MISSIONCREW_CHAT_MAX_WORKERS" not in cli.os.environ
+
+
+def test_mc_home_defaults_to_user_home(tmp_path, monkeypatch):
+    """默认数据目录固定在 ~/.missioncrew,不随启动目录漂移;显式变量优先且支持 ~。"""
+    from missioncrew.core.config import mc_home
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("MISSIONCREW_HOME", raising=False)
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    assert mc_home() == tmp_path / ".missioncrew"
+    assert not (tmp_path / "elsewhere" / ".missioncrew").exists()
+
+    monkeypatch.setenv("MISSIONCREW_HOME", "~/data-root")
+    assert mc_home() == tmp_path / "data-root"

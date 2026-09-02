@@ -23,8 +23,13 @@ from pathlib import Path
 
 
 def mc_home() -> Path:
-    """平台主目录:环境变量 MISSIONCREW_HOME 优先,默认当前目录下 .missioncrew/。"""
-    home = Path(os.environ.get("MISSIONCREW_HOME", Path.cwd() / ".missioncrew"))
+    """平台主目录:环境变量 MISSIONCREW_HOME 优先,默认用户主目录下 ~/.missioncrew/。
+
+    默认不再随启动目录变化:同一台机器上无论从哪里执行 `mc`,都读写同一份数据。
+    """
+    configured = os.environ.get("MISSIONCREW_HOME", "").strip()
+    home = (Path(configured).expanduser() if configured
+            else Path.home() / ".missioncrew")
     home.mkdir(parents=True, exist_ok=True)
     return home
 
