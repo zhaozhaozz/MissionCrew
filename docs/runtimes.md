@@ -153,7 +153,7 @@ pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平�
 
 自动批准和 sandbox 是两层：批准请求不等于忽略文件系统边界。Codex 对额外目录或网络的 `item/permissions/requestApproval` 会回传请求的精确 permission profile；Claude 使用 `updatedInput` 继续获准的工具调用。所有交互都设有与本轮相同的截止时间，超时按取消处理。
 
-Codex 的 workspace-write 沙箱还会把每个可写根下的 `.git`、`.agents`、`.codex` 以及 worktree 解析出的主仓 `.git/worktrees/<名字>` 挂成只读，git 写操作与仓内 Skill 编辑在沙箱内会报 `Read-only file system`。平台不改写这些根：把 `.git` 的子目录列为额外可写根会让沙箱因建占位挂载点失败而起不来，整个 `.git` 放开则暴露 hooks/config。取而代之的是公共上下文「必须遵守」与 manual 第 3 节引导 Agent 对清单内路径的这类失败申请升级重跑，而不是判定环境只读或绕道远端 API。
+Codex 的 workspace-write 沙箱还会把每个可写根下的 `.git`、`.agents`、`.codex` 以及 worktree 解析出的主仓 `.git/worktrees/<名字>` 挂成只读，git 写操作与仓内 Skill 编辑在沙箱内会报 `Read-only file system`。平台不改写这些根：把 `.git` 的子目录列为额外可写根会让沙箱因建占位挂载点失败而起不来，整个 `.git` 放开则暴露 hooks/config。取而代之的是公共上下文「必须遵守」与 manual 第 3 节引导 Agent 对清单内路径的这类失败申请升级重跑，而不是判定环境只读后放弃。
 
 聊天中的每条 Runtime 过程事件都渲染为可折叠项，包括输入、思考、命令、工具结果、日志、用量和交互请求。每个运行卡采用单项展开：首次载入时只展开最新事件；收到新的事件 id 时自动收起上一项并展开新项；用户手动展开任一旧项时会收起同卡片中的其他项。相同事件的流式内容追加不会被误判为新项。普通文本事件在 SQLite 中按 8000 字符物理分段，读取 API 会重组相邻同类分段后再展示，避免长 diff、路径或日志行从任意字符中间形成新的折叠项；权限、提问、用量和后端 Agent 等结构化 JSON 事件始终逐条保留。
 

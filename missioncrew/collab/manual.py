@@ -71,8 +71,7 @@ _MANUAL = """\
   git worktree 对应的主仓 `.git/worktrees/<名字>`,是 Runtime 沙箱(如 Codex 的 workspace-write)
   在沙箱内挂成只读的,宿主并未只读挂载,同目录其他文件仍可写。这类失败应带一句理由申请提升权限,
   原样重跑同一命令;平台在 auto 审批下自动批准并记录 permission_request 事件,prompt 下交人类决定。
-  不要据此判定环境只读而放弃,也不要改走远端 API、把文件复制到别处再提交或其他绕过沙箱的做法;
-  只有申请被拒绝时才按上一条停止并报告。典型症状:worktree 里 `git add/commit/fetch` 报
+  不要据此判定环境只读而放弃;只有申请被拒绝时才按上一条停止并报告。典型症状:worktree 里 `git add/commit/fetch` 报
   `index.lock`/`FETCH_HEAD` 只读,仓内 `.agents/skills` 下的 Skill 文档写不了。
 
 ## 4. Agent Tool 调用
