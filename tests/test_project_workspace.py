@@ -1464,6 +1464,9 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert str(workspace / "temp") in cfg.prompt
     assert "路径访问失败处理" in cfg.prompt
     assert "不要猜测或搜索 `.missioncrew` 的物理位置" in cfg.prompt
+    # 沙箱把授权根下的 .git/.codex/.agents 挂成只读,须引导申请升级而不是当作环境只读
+    assert "沙箱只读路径处理" in cfg.prompt
+    assert "不要据此判定环境只读而放弃" in cfg.prompt
     assert "MissionCrew 注入的项目 Skill 是额外能力" in cfg.prompt
     assert "不要把 `MISSIONCREW_SKILLS_DIR` 当作唯一 Skill 来源" in cfg.prompt
     assert "`.agent/skills`、`.agents/skills`、`.claude/skills`" in cfg.prompt
@@ -1474,6 +1477,8 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert "manual.md" in readme and "Shell 重定向" not in readme
     manual = (workspace / "manual.md").read_text(encoding="utf-8")
     assert "Shell 重定向、后台日志和工具自动生成" in manual
+    assert "清单内路径报 `Read-only file system` 时先看位置" in manual
+    assert "记录 permission_request 事件" in manual
     assert "dashboard.save" in manual and "guideline.save" in manual
     assert Path(cfg.env["MISSIONCREW_MANUAL"]) == workspace / "manual.md"
     assert str(workspace / "manual.md") in cfg.prompt
