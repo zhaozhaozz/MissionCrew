@@ -449,15 +449,32 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     (guideline_dir / "stale.md").write_text("stale")
     (guideline_dir.parent / "guidelines.json").write_text("{}")
 
-    # description 不变但正文更新时，内容版本仍会改变公共上下文版本，已有 session
-    # 下一轮会收到更新提示；完整文件也会原子刷新为新正文。
+    # description 不变只改正文:公共上下文版本不变(不触发完整重发),已有 session
+    # 下一轮只在本轮输入里收到「资源更新」提示;完整文件仍原子刷新为新正文。
     first_context_version = chat_cfg.context_version
+    assert "内容版本" not in chat_cfg.common_prompt
+    adapters.get_adapter("mock").run(chat_cfg)   # 持久化会话,记录已看到的正文版本
     next(row for row in project.guidelines if row.name == "dev-guide").content = "开发准则第二版"
     seeded.put_project(project)
     updated_cfg = chat._assemble(
         seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
         seeded.get_backend("std-1"), msg_id)
-    assert updated_cfg.context_version != first_context_version
+    assert updated_cfg.context_version == first_context_version
+    assert not updated_cfg.context_changed
+    assert "# MissionCrew 资源更新" in updated_cfg.turn_prompt
+    assert "准则 `dev-guide`" in updated_cfg.turn_prompt
+    assert "tester-guide" not in updated_cfg.turn_prompt.split("资源更新")[1].split("触发消息")[0]
+    adapters.get_adapter("mock").run(updated_cfg)   # 本轮已告知,下一轮不再提示
+    settled_cfg = chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), msg_id)
+    assert "# MissionCrew 资源更新" not in settled_cfg.turn_prompt
+    # description 属于索引信息,改动仍改变版本
+    next(row for row in project.guidelines if row.name == "dev-guide").description = "新描述"
+    seeded.put_project(project)
+    assert chat._assemble(
+        seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), msg_id).context_version != first_context_version
     updated_dir = Path(updated_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
     assert not (updated_dir / "stale.md").exists()
     assert not (updated_dir.parent / "guidelines.json").exists()

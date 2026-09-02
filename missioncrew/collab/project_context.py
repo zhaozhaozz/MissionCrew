@@ -107,23 +107,42 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary,
     return found
 
 
+def _guideline_content_version(doc: GuidelineDocument) -> str:
+    return hashlib.sha256(doc.render_markdown().encode("utf-8")).hexdigest()[:16]
+
+
 def _render_guideline_summary(project_id: str, doc: GuidelineDocument,
                               path: Path) -> str:
-    content_version = hashlib.sha256(
-        doc.render_markdown().encode("utf-8")).hexdigest()[:16]
+    # 索引行只含元信息:正文版本不进公共上下文,正文修改经本轮输入的
+    # 「资源更新」提示告知,不触发完整重发(见 project_resource_versions)
     description = " ".join(doc.description.split()) or "（未填写 description）"
-    return (f"- `{doc.name}` · {description} "
-            f"· 内容版本 `{content_version}` · 全文 `{path}` "
+    return (f"- `{doc.name}` · {description} · 全文 `{path}` "
             f"· Web `{guideline_resource_url(project_id, doc.name)}`")
 
 
 def _render_skill_summary(project_id: str, skill: ProjectSkill, path: Path,
                           canonical: Path) -> str:
     description = " ".join(skill.description.split()) or "（未填写 description）"
-    version = skill_directory_version(canonical)
     return (f"- `{skill.id}` · {skill.name or skill.id} · {description} "
-            f"· 内容版本 `{version}` · 入口 `{path}` "
+            f"· 入口 `{path}` "
             f"· Web `{skill_resource_url(project_id, skill.id)}`")
+
+
+def project_resource_versions(project: Project) -> dict[str, str]:
+    """已启用准则与 Skill 的正文版本表(键 `guideline:<name>` / `skill:<id>`)。
+
+    会话按轮保存该表;下一轮比对得出哪些正文改了,只在本轮输入里提示一句,
+    公共上下文(只含索引)的版本号不受正文影响。"""
+    versions = {
+        f"guideline:{doc.name}": _guideline_content_version(doc)
+        for doc in project.guidelines if doc.enabled
+    }
+    canonical_skills = project_skill_library_dir(project.id)
+    for skill in project.skills:
+        if skill.enabled and (canonical_skills / skill.id).is_dir():
+            versions[f"skill:{skill.id}"] = skill_directory_version(
+                canonical_skills / skill.id)
+    return versions
 
 
 def render_project_context(project: Project, library: DocumentLibrary,

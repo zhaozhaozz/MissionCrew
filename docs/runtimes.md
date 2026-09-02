@@ -195,7 +195,7 @@ ACP v1 把 `session/prompt` 响应定义为完整 prompt turn 的终止边界：
 
 ### Agent Tool、公共上下文与压缩
 
-聊天 Prompt 分为两部分：MissionCrew 公共上下文（harness 简介、角色、项目准则 description 与 Skills、独立 `.missioncrew` 工作区、目录权限、Agent Tool 和协作规则）和本轮任务输入。公共上下文明确 MissionCrew 是 Agent harness 而不是业务代码仓，并说明 harness 文件不会进入业务源码。公共区块带内容哈希版本及压缩提示，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；准则正文虽然不直接进入 Prompt，但其内容版本会参与公共上下文哈希，因此已有会话下一轮仍会收到更新标记和完整新上下文。后收到的版本整体替换旧版本。
+聊天 Prompt 分为两部分：MissionCrew 公共上下文（harness 简介、角色、项目准则 description 与 Skills、独立 `.missioncrew` 工作区、目录权限、Agent Tool 和协作规则）和本轮任务输入。公共上下文明确 MissionCrew 是 Agent harness 而不是业务代码仓，并说明 harness 文件不会进入业务源码。公共区块带内容哈希版本及压缩提示，要求 Runtime 只压缩普通对话、工具过程和任务细节，完整保留最新公共区块。项目或角色设置变更会改变版本；准则与 Skill 的正文不进入 Prompt，也不参与公共上下文哈希，正文修改只在下一轮的本轮输入里附一段「资源更新」提示（列出被修改的准则/Skill，要求重新读取），不触发完整重发；name/description 等索引信息变化仍会改变版本。后收到的版本整体替换旧版本。
 
 公共区块并非每轮重发。完整注入只发生在：新会话或恢复降级（附最近对话）、版本变化（附替换旧版本提示）、重注入触发（附刷新提示）。其余复用轮次为增量回合，只发送版本引用头和本轮任务输入。重注入触发有两类：Claude 的 `compact_boundary`/`microcompact_boundary` 事件与 Codex app-server 的 `thread/compacted` 通知会立即持久化压缩标记；对没有压缩信号的 Runtime（ACP、其余打印模式），按增量回合的累计输入/输出字节数与轮数计数兜底，默认约 200k 字节或 5 轮后强制完整重注入，`MISSIONCREW_CONTEXT_REINJECT_BYTES` / `MISSIONCREW_CONTEXT_REINJECT_TURNS` 可覆盖（<=0 关闭对应触发）。每轮的注入模式（完整/增量及原因）作为状态事件上报，便于核对实际发送内容。
 

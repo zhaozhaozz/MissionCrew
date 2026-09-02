@@ -78,12 +78,16 @@ def test_direct_drop_skill_is_discovered_with_complete_files_and_runtime_access(
     assert "运行 scripts/check.sh" not in cfg.prompt
     assert str(root.resolve()) in cfg.allowed_dirs
 
+    # Skill 文件改动不改公共上下文版本,已有会话下一轮只收到「资源更新」提示
+    from missioncrew.runtime import adapters
     first_version = cfg.context_version
+    adapters.get_adapter("mock").run(cfg)
     (skill_dir / "scripts" / "check.sh").write_text("echo second\n")
     updated = chat._assemble(
         seeded.get_channel("general"), seeded.get_role("webshop", "dev"),
         seeded.get_backend("std-1"), message)
-    assert updated.context_version != first_version
+    assert updated.context_version == first_version
+    assert "Skill `browser-check`" in updated.turn_prompt
 
     shutil.rmtree(skill_dir)
     project = next(item for item in client.get("/api/overview").json()["projects"]

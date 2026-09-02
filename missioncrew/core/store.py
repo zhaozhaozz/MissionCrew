@@ -70,7 +70,8 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   workdir TEXT NOT NULL, runtime_session_id TEXT DEFAULT '',
   context_version TEXT DEFAULT '', created_at REAL NOT NULL, updated_at REAL NOT NULL,
   needs_reinject INTEGER DEFAULT 0,
-  lean_turns INTEGER DEFAULT 0, lean_bytes INTEGER DEFAULT 0
+  lean_turns INTEGER DEFAULT 0, lean_bytes INTEGER DEFAULT 0,
+  resource_state TEXT DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS agent_tokens (
   token_hash TEXT PRIMARY KEY,
@@ -446,6 +447,9 @@ class Store:
             if name not in columns:
                 self._conn.execute(
                     f"ALTER TABLE chat_sessions ADD COLUMN {name} INTEGER DEFAULT 0")
+        if "resource_state" not in columns:   # 会话已看到的准则/Skill 正文版本表
+            self._conn.execute(
+                "ALTER TABLE chat_sessions ADD COLUMN resource_state TEXT DEFAULT ''")
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
         """写操作,返回 lastrowid。"""
@@ -1319,8 +1323,9 @@ class Store:
                          backend_id: str, adapter: str, workdir: str,
                          runtime_session_id: str, context_version: str, *,
                          turn_mode: str = "", turn_bytes: int = 0,
-                         clear_reinject: bool = False) -> None:
-        """保存会话 id 与公共上下文重注入状态。
+                         clear_reinject: bool = False,
+                         resource_state: str = "") -> None:
+        """保存会话 id、公共上下文重注入状态与已看到的资源正文版本表。
 
         turn_mode="lean" 累加增量回合计数;完整注入轮传 clear_reinject=True
         清零计数与压缩标记(本轮又检测到压缩时调用方不传 clear);turn_mode
@@ -1341,15 +1346,17 @@ class Store:
         self._execute(
             "INSERT INTO chat_sessions(session_key,channel,role_id,backend_id,adapter,"
             "workdir,runtime_session_id,context_version,created_at,updated_at,"
-            "needs_reinject,lean_turns,lean_bytes) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_key) DO UPDATE SET "
+            "needs_reinject,lean_turns,lean_bytes,resource_state) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(session_key) DO UPDATE SET "
             "channel=excluded.channel,role_id=excluded.role_id,"
             "backend_id=excluded.backend_id,adapter=excluded.adapter,"
             "workdir=excluded.workdir,runtime_session_id=excluded.runtime_session_id,"
-            "context_version=excluded.context_version,updated_at=excluded.updated_at"
+            "context_version=excluded.context_version,updated_at=excluded.updated_at,"
+            "resource_state=excluded.resource_state"
             + counters,
             (session_key, channel, role_id, backend_id, adapter, workdir,
-             runtime_session_id, context_version, now, now, *initial),
+             runtime_session_id, context_version, now, now, *initial,
+             resource_state),
         )
 
     def mark_chat_session_reinject(self, session_key: str) -> None:

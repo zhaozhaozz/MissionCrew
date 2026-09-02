@@ -44,7 +44,8 @@ from .workspace import (channel_uploads_dir, chat_workspace_dir,
 from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, INJECTION_FULL_MODES,
                            Backend, Channel, ExecutionConfig, Role,
                            RuntimePolicy)
-from .project_context import project_allowed_dirs, render_project_context
+from .project_context import (project_allowed_dirs, project_resource_versions,
+                              render_project_context)
 from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
@@ -130,10 +131,17 @@ DURABLE_CONTEXT_TEMPLATE = """\
 TURN_PROMPT = """\
 # MissionCrew Tool 本轮上下文
 {tool_context}
-
+{resource_notice}
 # 触发消息(JSON,你的任务简报由发起者撰写)
 {trigger}
 """
+
+# 准则/Skill 正文变化不改公共上下文版本,只在本轮输入里提示一句
+RESOURCE_NOTICE = (
+    "\n# MissionCrew 资源更新\n"
+    "以下资源的正文自你上一轮之后已修改,公共上下文里的索引条目未变:{items}。"
+    "需要用到时重新读取对应文件,不要沿用之前读到的旧内容。\n"
+)
 
 RECOVERY_PROMPT = """\
 # 最近对话(JSON,按消息边界格式化)
@@ -1354,15 +1362,6 @@ class ChatEngine:
             "本轮 Agent Tool capability 已由平台确定绑定到当前 Run；"
             "调用工具时不要传 `--run-id`，平台会从凭证确定归属。"
             if run_id else "本次仅装配上下文，未分配可执行的 Agent Tool capability。")
-        turn_prompt = TURN_PROMPT.format(
-            tool_context=tool_context,
-            trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2))
-        recovery_prompt = RECOVERY_PROMPT.format(
-            history=json.dumps(history_records, ensure_ascii=False, indent=2),
-            turn_prompt=turn_prompt,
-        )
-        prompt = common_prompt + "\n" + recovery_prompt
-
         session_key = self._session_key(channel, role.id)
 
         def _compatible_session(value: Optional[dict]) -> bool:
@@ -1389,6 +1388,32 @@ class ChatEngine:
         previous_context = (saved_session["context_version"]
                             if saved_session and compatible else "")
 
+        # 准则/Skill 正文版本:与会话上次看到的比对,改了的只提示一句
+        resource_versions = project_resource_versions(project) if project else {}
+        resource_state = json.dumps(resource_versions, sort_keys=True)
+        resource_notice = ""
+        if saved_session and compatible:
+            try:
+                seen = json.loads(saved_session.get("resource_state") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                seen = {}
+            changed = [key for key, version in resource_versions.items()
+                       if key in seen and seen[key] != version]
+            if changed:
+                labels = {"guideline": "准则", "skill": "Skill"}
+                items = "、".join(
+                    f"{labels.get(kind, kind)} `{name}`"
+                    for kind, name in (key.split(":", 1) for key in changed))
+                resource_notice = RESOURCE_NOTICE.format(items=items)
+        turn_prompt = TURN_PROMPT.format(
+            tool_context=tool_context, resource_notice=resource_notice,
+            trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2))
+        recovery_prompt = RECOVERY_PROMPT.format(
+            history=json.dumps(history_records, ensure_ascii=False, indent=2),
+            turn_prompt=turn_prompt,
+        )
+        prompt = common_prompt + "\n" + recovery_prompt
+
         def _load_session() -> tuple[str, str, bool]:
             latest = self.store.get_chat_session(session_key)
             if not _compatible_session(latest):
@@ -1413,6 +1438,7 @@ class ChatEngine:
                 str(workdir.resolve()), runtime_session_id,
                 accepted_context or previous_context,
                 turn_mode=turn_mode, turn_bytes=turn_bytes,
+                resource_state=resource_state,
                 clear_reinject=(turn_mode in INJECTION_FULL_MODES
                                 and not compact_seen),
             )
