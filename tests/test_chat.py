@@ -1468,4 +1468,5 @@ def test_missing_channel_workdir_falls_back_to_default_with_notice(chat, seeded,
     lead = seeded.get_role("webshop", project.orchestrator_role_id)
     lead_msg = seeded.add_message("general", "human", "human", "看看", [lead.id])
     lead_cfg = chat._assemble(seeded.get_channel("general"), lead, backend, lead_msg)
-    assert f"工作目录 {bound}(目录已不存在)" in lead_cfg.prompt
+    # 频道清单只列 id;目录缺失的标注由 channel.list 的 workdir_missing 给出
+    assert "gone" in lead_cfg.common_prompt.split("## 现有频道")[1].split("## 现有面板")[0]

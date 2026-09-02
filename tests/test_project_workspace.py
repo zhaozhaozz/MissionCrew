@@ -2055,6 +2055,10 @@ def test_orchestrator_roster_changes_notify_without_bumping_context_version(seed
     first = chat._assemble(seeded.get_channel("general"), lead, backend, msg)
     assert "# 项目清单" in first.common_prompt
     assert "## 现有频道" in first.common_prompt and "## 角色名册" in first.common_prompt
+    # 频道只留 id 列表,详情走 channel.list;当前频道行直接给出可用于 message.publish 的 id
+    assert "用 `channel.list` 按需查看(含归档)" in first.common_prompt
+    assert "当前频道:#大厅(id `general`)" in first.common_prompt
+    assert "channel.list" in first.common_prompt.split("# 项目主控权限")[1]
     adapters.get_adapter("mock").run(first)
 
     seeded.put_channel(Channel(id="webshop:hotfix", name="hotfix", project_id="webshop",

@@ -101,6 +101,9 @@ _MANUAL = """\
 
 ## 8. 频道(channel.*)
 
+- `channel.list`(仅主控,scope=active 默认 / archived / all):返回 id、name、purpose、
+  workdir(及是否已不存在)、archived、last_message_at、active_run_count、resource_url。
+  频道清单不预先写入上下文,引用其他频道、派发到其他频道或新建频道前先查。
 - `channel.create` 的 workdir 只能是项目代码仓路径或其子目录;不填时若项目只配了一个代码仓
   则自动使用它。新频道创建后是空的,用 `message.publish` 把任务简报发进去并在 `mentions` 里
   显式点名执行者开工。

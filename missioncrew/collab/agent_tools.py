@@ -188,8 +188,16 @@ ACTION_DEFINITIONS = {
         "automation_allowed": False,
         "arguments": {"run_id": "channel.runs.list 返回的正整数 Run id"},
     },
+    "channel.list": {
+        "description": (
+            "按需列出项目频道(id、名称、用途、工作目录、归档态、最近消息时间、"
+            "活动运行数);频道清单不预先写入聊天上下文,新建频道前先查避免重复"
+        ),
+        "orchestrator_only": True,
+        "arguments": {"scope": "active(默认)/archived/all"},
+    },
     "channel.create": {
-        "description": "创建项目频道",
+        "description": "创建项目频道(先用 channel.list 确认 id 未被占用)",
         "orchestrator_only": True,
         "arguments": {"id": "频道短 id", "name": "名称", "purpose": "用途",
                       "workdir": "可选项目仓库目录"},
@@ -317,6 +325,7 @@ ACTION_ARGUMENTS = {
     "message.publish": {"channel", "content", "mentions"},
     "channel.runs.list": set(),
     "channel.run.stop": {"run_id"},
+    "channel.list": {"scope"},
     "channel.create": {"id", "name", "purpose", "workdir"},
     "dashboard.save": {"id", "name", "description", "layout", "mode",
                        "kind", "source", "filters"},
@@ -736,6 +745,7 @@ class AgentActionService:
             "message.publish": self._publish_message,
             "channel.runs.list": self._list_channel_runs,
             "channel.run.stop": self._stop_channel_run,
+            "channel.list": self._list_channels,
             "channel.create": self._create_channel,
             "dashboard.save": self._save_dashboard,
             "dashboard.delete": self._delete_dashboard,
@@ -1121,6 +1131,35 @@ class AgentActionService:
                     "；注意:" + "、".join(f"@{r}" for r in dropped)
                     + " 未启动(协作链执行数已达上限)")
         return result
+
+    def _list_channels(self, project: Project, identity: AgentIdentity,
+                       arguments: dict, _context: AgentRunContext) -> dict:
+        """按需返回项目频道清单;与前端频道列表同一口径,归档频道也可查。"""
+        scope = str(arguments.get("scope") or "active").strip().lower()
+        if scope not in {"active", "archived", "all"}:
+            raise AgentToolError(
+                "invalid_arguments", "scope 只能是 active/archived/all")
+        channels = self.store.list_channels(project.id, include_archived=True)
+        if scope != "all":
+            channels = [c for c in channels if c.archived == (scope == "archived")]
+        run_counts = self.store.active_chat_run_counts()
+        rows = [{
+            "id": c.id.removeprefix(f"{project.id}:"),
+            "name": c.name,
+            "purpose": c.purpose,
+            "workdir": c.workdir or "",
+            "workdir_missing": bool(c.workdir) and not Path(c.workdir).is_dir(),
+            "archived": c.archived,
+            "last_message_at": c.last_message_at,
+            "active_run_count": run_counts.get(c.id, 0),
+            "is_current": c.id == identity.channel_id,
+            "resource_url": channel_resource_url(project.id, c.id),
+        } for c in channels]
+        return {
+            "summary": f"项目 {project.id} 的 {scope} 频道共 {len(rows)} 个",
+            "scope": scope,
+            "channels": rows,
+        }
 
     def _create_channel(self, project: Project, identity: AgentIdentity,
                         arguments: dict, _context: AgentRunContext) -> dict:

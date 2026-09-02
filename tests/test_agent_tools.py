@@ -746,3 +746,39 @@ def test_agent_tool_cli_encodes_file_and_preserves_structured_error(
     assert "run_id" not in captured["payload"]
     encoded = captured["payload"]["arguments"]["content_base64"]
     assert base64.b64decode(encoded) == b"evidence\x00"
+
+
+def test_channel_list_action_is_orchestrator_only_and_covers_archived(seeded):
+    """频道清单不再预先写进上下文:主控用 channel.list 按需查(含归档),执行角色无权。"""
+    chat = ChatEngine(seeded)
+    seeded.put_channel(Channel(id="webshop:old-topic", name="old-topic", project_id="webshop",
+                               purpose="已收尾", archived=True))
+    seeded.put_channel(Channel(id="webshop:hotfix", name="hotfix", project_id="webshop",
+                               purpose="修复结算页", workdir="/nonexistent/worktree"))
+    _config, lead_run, lead_token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(lead_token)
+    assert "channel.list" in chat.agent_tools.capabilities(identity)["actions"]
+
+    active = chat.agent_tools.execute(identity, "channel.list", {}, lead_run, "list-active")
+    ids = {row["id"]: row for row in active["channels"]}
+    assert active["scope"] == "active" and "old-topic" not in ids
+    assert ids["general"]["is_current"] is True
+    assert ids["hotfix"]["workdir_missing"] is True and ids["hotfix"]["archived"] is False
+    assert ids["hotfix"]["resource_url"] == "/resources/webshop/channels/hotfix"
+
+    archived = chat.agent_tools.execute(
+        identity, "channel.list", {"scope": "archived"}, lead_run, "list-archived")
+    assert [row["id"] for row in archived["channels"]] == ["old-topic"]
+    everything = chat.agent_tools.execute(
+        identity, "channel.list", {"scope": "all"}, lead_run, "list-all")
+    assert {"general", "old-topic", "hotfix"} <= {row["id"] for row in everything["channels"]}
+    with pytest.raises(AgentToolError) as bad:
+        chat.agent_tools.execute(identity, "channel.list", {"scope": "later"}, lead_run, "list-bad")
+    assert bad.value.code == "invalid_arguments"
+
+    _dev, dev_run, dev_token = _run_config(seeded, chat, "dev")
+    dev_identity = chat.agent_tools.authenticate(dev_token)
+    assert "channel.list" not in chat.agent_tools.capabilities(dev_identity)["actions"]
+    with pytest.raises(AgentToolError) as denied:
+        chat.agent_tools.execute(dev_identity, "channel.list", {}, dev_run, "list-denied")
+    assert denied.value.code == "permission_denied"

@@ -96,7 +96,7 @@ CHAT_COMMON_BODY = """\
 角色能力:{role_capabilities}
 角色偏好:{role_traits}
 固定执行组合:{role_runtime}/{role_model}{role_effort}
-当前频道:#{channel_name}
+当前频道:#{channel_name}(id `{channel_id}`)
 频道用途/讨论边界:{channel_purpose}
 {project_section}
 {tool_section}
@@ -222,8 +222,10 @@ ORCHESTRATOR_TEMPLATE = """\
 - 回答人类、汇总结论或说明状态时直接写最终回复：你在当前 turn 的最终回复会由平台自动发布
   到触发消息所在的 Channel，不要再调用空 `mentions` 的 `message.publish` 复制同一份答复。
   派工仍必须使用 `message.publish`，并在 `mentions` 中显式写入目标角色。
-- `channel.create` 的 workdir 只能是项目代码仓路径（见项目清单）或其子目录；新频道创建后
-  是空的，用 `message.publish` 把任务简报发进去并在 `mentions` 里点名执行者。
+- 频道清单不在上下文里：需要引用或派发到其他频道、或新建频道前，先用 `channel.list`
+  （scope=active/archived/all）查询，避免重复建同名频道。`channel.create` 的 workdir 只能是
+  项目代码仓路径（见项目清单）或其子目录；新频道创建后是空的，用 `message.publish` 把任务
+  简报发进去并在 `mentions` 里点名执行者。
 - 配置页协作消息会给出当前页面、当前条目、未保存草稿和用户选中的内容：只提问或讨论时直接回答，
   不要改配置；明确要求创建或修改时，必须用对应动作实际落库。
 - 面板、看板数据源、准则与 Skill 的保存格式、文档发布与重命名、自动化脚本、回收站的
@@ -242,7 +244,7 @@ ROSTER_TEMPLATE = """\
 ## 项目代码仓
 {repos}
 ## 现有频道
-{channels}
+用 `channel.list` 按需查看(含归档);新建前先查重。活跃频道 id:{channels}
 ## 现有面板
 {boards}
 ## 现有看板数据源
@@ -1332,6 +1334,8 @@ class ChatEngine:
             role_model=role.model or "(CLI 默认)",
             role_effort=f"/effort={role.effort}" if role.effort else "",
             channel_name=channel.name or channel.id,
+            channel_id=channel.id.removeprefix(f"{channel.project_id}:")
+            if channel.project_id else channel.id,
             channel_purpose=channel.purpose or "(未说明)",
             project_section=project_section,
             tool_section=tool_section,
@@ -1699,9 +1703,12 @@ class ChatEngine:
             return "\n".join(line for key, line in entries.items()
                              if key.startswith(kind + ":")) or empty
 
+        # 频道只列 id:详情走 channel.list;条目行仍保留在快照里供差异提示引用
+        channel_ids = ", ".join(key.partition(":")[2] for key in entries
+                                if key.startswith("channel:")) or "(无)"
         section = ROSTER_TEMPLATE.format(
             roles=_block("role", "(无其他已启用角色)"), repos=_block("repo", "(未配置)"),
-            channels=_block("channel"), boards=_block("board"),
+            channels=channel_ids, boards=_block("board"),
             sources=_block("source", "(无自定义源;内置源 built-in 始终可用)"),
             automations=_block("automation"), disabled=_block("disabled"))
         snapshot = {
