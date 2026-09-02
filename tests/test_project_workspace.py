@@ -262,12 +262,12 @@ def test_project_has_one_configurable_orchestrator_and_protects_it(seeded):
     cfg = chat._assemble(seeded.get_channel("general"),
                          seeded.get_role("webshop", "expert"),
                          seeded.get_backend("exp-1"), msg_id)
-    assert "项目主控权限" in cfg.prompt
+    assert "项目主控职责" in cfg.prompt
     assert "单条协作链最多 1000 次 Agent 执行" in cfg.prompt
     dev_cfg = chat._assemble(seeded.get_channel("general"),
                              seeded.get_role("webshop", "dev"),
                              seeded.get_backend("std-1"), msg_id)
-    assert "项目主控权限" not in dev_cfg.prompt
+    assert "项目主控职责" not in dev_cfg.prompt
 
     project["max_chain_runs"] = 0
     assert client.post("/api/projects", json=project).status_code == 422
@@ -430,7 +430,7 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert "/resources/webshop/dashboards/<面板 id>" in chat_cfg.prompt
     assert "最终回复引用项目文档时必须写成" in chat_cfg.prompt
     assert "不得输出内部读写目录" in chat_cfg.prompt
-    assert "# 路径访问失败处理" in chat_cfg.prompt
+    assert "路径访问失败处理" in chat_cfg.prompt
     assert "不要改为搜索共同父目录" in chat_cfg.prompt
     assert "$MISSIONCREW_DOCUMENTS_DIR/<相对路径>" in chat_cfg.prompt
     guideline_dir = Path(chat_cfg.env["MISSIONCREW_GUIDELINES_DIR"])
@@ -1462,7 +1462,7 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert "快照对当前执行只读" in cfg.prompt
     assert "包括 `/tmp`、`/var/tmp`" in cfg.prompt
     assert str(workspace / "temp") in cfg.prompt
-    assert "# 路径访问失败处理" in cfg.prompt
+    assert "路径访问失败处理" in cfg.prompt
     assert "不要猜测或搜索 `.missioncrew` 的物理位置" in cfg.prompt
     assert "MissionCrew 注入的项目 Skill 是额外能力" in cfg.prompt
     assert "不要把 `MISSIONCREW_SKILLS_DIR` 当作唯一 Skill 来源" in cfg.prompt
@@ -2058,7 +2058,7 @@ def test_orchestrator_roster_changes_notify_without_bumping_context_version(seed
     # 频道只留 id 列表,详情走 channel.list;当前频道行直接给出可用于 message.publish 的 id
     assert "用 `channel.list` 按需查看(含归档)" in first.common_prompt
     assert "当前频道:#大厅(id `general`)" in first.common_prompt
-    assert "channel.list" in first.common_prompt.split("# 项目主控权限")[1]
+    assert "channel.list" in first.common_prompt.split("# 项目主控职责")[1]
     adapters.get_adapter("mock").run(first)
 
     seeded.put_channel(Channel(id="webshop:hotfix", name="hotfix", project_id="webshop",
@@ -2072,7 +2072,7 @@ def test_orchestrator_roster_changes_notify_without_bumping_context_version(seed
     notice = second.turn_prompt.split("# MissionCrew 资源更新")[1].split("# 触发消息")[0]
     assert "新增频道:hotfix(#hotfix):修复结算页崩溃" in notice
     assert "角色 `dev` 已停用或删除" in notice
-    assert "hotfix" in second.common_prompt and "@dev(" not in second.common_prompt
+    assert "hotfix" in second.common_prompt and "- @dev " not in second.common_prompt
     adapters.get_adapter("mock").run(second)
 
     third = chat._assemble(seeded.get_channel("general"), lead, backend, msg)
@@ -2101,3 +2101,30 @@ def test_trigger_and_history_json_are_compact(seeded):
     history_raw = cfg.recovery_prompt.split("# 最近对话(JSON,按消息边界格式化)\n", 1)[1].split("\n# ", 1)[0]
     history = json.loads(history_raw)
     assert [m["content"] for m in history] == ["早前的消息"]
+
+
+def test_prompt_leads_with_workflow_and_marks_trigger_kind(seeded):
+    """上下文先读的先给:身份行带项目与工作目录,「怎么干活」按角色给五步;本轮输入
+    用「本轮触发」标明是人类消息还是执行角色回报;执行角色不见主控段。"""
+    chat = ChatEngine(seeded)
+    backend = seeded.get_backend("std-1")
+    dev = seeded.get_role("webshop", "dev")
+    lead = seeded.get_role("webshop", "lead")
+    human_msg = seeded.add_message("general", "human", "human", "@dev 干活", ["dev"])
+    dev_cfg = chat._assemble(seeded.get_channel("general"), dev, backend, human_msg)
+    body = dev_cfg.common_prompt
+    assert body.index("# 怎么干活") < body.index("# MissionCrew Agent Tool") < body.index("# 必须遵守")
+    assert "项目:WebShop 电商站 · " in body and "工作目录:`" in body
+    assert "1. 读任务:" in body and "5. 回复:" in body
+    assert "# 项目主控职责" not in body and "1. 读需求:" not in body
+    assert "# 本轮触发:人类消息" in dev_cfg.turn_prompt
+
+    report = seeded.add_message("general", "dev", "agent", "已完成,测试通过", ["lead"])
+    lead_cfg = chat._assemble(seeded.get_channel("general"), lead, backend, report)
+    assert "# 本轮触发:执行角色 @dev 的回报,请验收" in lead_cfg.turn_prompt
+    assert "1. 读需求:" in lead_cfg.common_prompt and "阶段结论用 `task.brief` 记进 Task 简报" in lead_cfg.common_prompt
+    assert "当前频道就传 `general`" in lead_cfg.common_prompt
+    roster = lead_cfg.common_prompt.split("# 项目清单")[1]
+    assert "- @dev 开发 · 能力 代码执行 · 偏好 全栈 · 定位 " in roster
+    assert "面板、看板数据源、自动化、停用的准则与 Skill:无" in roster   # 空段折叠成一行
+    assert "## 现有面板" not in roster

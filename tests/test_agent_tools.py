@@ -783,3 +783,16 @@ def test_channel_list_action_is_orchestrator_only_and_covers_archived(seeded):
     with pytest.raises(AgentToolError) as denied:
         chat.agent_tools.execute(dev_identity, "channel.list", {}, dev_run, "list-denied")
     assert denied.value.code == "permission_denied"
+
+
+def test_message_publish_reports_chain_budget(seeded):
+    """主控看不到预算余量:message.publish 的返回值带本条协作链已用次数与上限。"""
+    chat = ChatEngine(seeded)
+    _config, lead_run, lead_token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(lead_token)
+    result = chat.agent_tools.execute(
+        identity, "message.publish", {"channel": "general", "content": "进度说明"},
+        lead_run, "publish-budget")
+    budget = result["chain_budget"]
+    assert budget["limit"] == seeded.get_project("webshop").max_chain_runs
+    assert budget["used"] >= 1

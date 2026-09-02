@@ -200,8 +200,8 @@ def test_disabled_role_is_absent_from_orchestrator_roster(seeded):
         seeded.get_backend("std-1"),
         message_id,
     )
-    assert "@dev(" not in cfg.common_prompt
-    assert "@reviewer(" in cfg.common_prompt
+    assert "- @dev " not in cfg.common_prompt      # 停用角色不进名册
+    assert "- @reviewer 评审 · 能力" in cfg.common_prompt
     assert "无其他已启用角色" not in cfg.common_prompt
 
 

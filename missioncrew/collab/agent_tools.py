@@ -164,7 +164,8 @@ ACTION_DEFINITIONS = {
     "message.publish": {
         "description": (
             "向本项目频道发布消息；mentions 参数是唯一的角色派发通道；"
-            "实际派发成功后按返回的 handoff 结束当前 turn"
+            "返回的 dispatched(实际启动的角色)非空时结束当前 turn，"
+            "chain_budget 给出本条协作链已用次数与上限"
         ),
         "orchestrator_only": True,
         "arguments": {
@@ -1112,6 +1113,12 @@ class AgentActionService:
             "summary": f"已在 [#{channel.name}]({url}) 发布消息",
             "message_id": message_id, "resource_url": url,
         }
+        if context.root_id:
+            # 主控看不到预算余量;随返回值告知,避免临近上限时盲目派发
+            result["chain_budget"] = {
+                "used": self.store.count_chain_runs(context.root_id),
+                "limit": project.max_chain_runs,
+            }
         if unique_mentions:
             # 派发可能被协作链预算兜底丢弃:回传实际启动名单,
             # 避免主控误以为角色已开工。
