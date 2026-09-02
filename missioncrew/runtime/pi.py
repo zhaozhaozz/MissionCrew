@@ -27,8 +27,19 @@ from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider)
-from .native import (OutputAssembler, RuntimeProtocolError, emit_json,
-                     safe_emit)
+from .native import (OutputAssembler, RuntimeProtocolError, build_usage, emit_json,
+                     safe_emit, usage_section)
+
+# pi ``message_end`` 里 assistant 消息的 usage:平铺字段,totalTokens 已含缓存读写,
+# cost 是 {input, output, cacheRead, cacheWrite, total}(未配价格时全 0)
+_USAGE_FIELDS = {"input": "input", "cache_read": "cacheRead", "cache_write": "cacheWrite",
+                 "output": "output", "total": "totalTokens"}
+
+
+def _usage_payload(usage: dict) -> dict:
+    cost = usage.get("cost")
+    return build_usage(usage, turn=usage_section(usage, _USAGE_FIELDS),
+                       cost_usd=cost.get("total") if isinstance(cost, dict) else cost)
 
 # models.json 支持的 API 协议(与 pi 的 KnownApi 对齐,只放平台明确要
 # 支持的裸 API 形态;其余协议按需再放开)。
@@ -426,8 +437,9 @@ class _PiSession:
                     adapters._save_session(
                         config, self.session_file, injection_mode,
                         adapters._turn_bytes(prompt, output))
-                if self._last_usage:
-                    emit_json(config.emit, "usage", self._last_usage)
+                usage = _usage_payload(self._last_usage) if self._last_usage else {}
+                if usage:
+                    emit_json(config.emit, "usage", usage)
                 # 成功但零输出时 summary 保持为空:交给聊天层的"无输出"
                 # 守卫处理,固定文案不能被当成 Agent 回复发布。
                 if self._turn_error:

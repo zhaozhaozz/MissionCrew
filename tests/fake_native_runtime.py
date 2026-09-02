@@ -185,7 +185,9 @@ def claude_finish(session_id: str, number: int, answer: str) -> None:
     }})
     send({"type": "result", "subtype": "success", "is_error": False,
           "session_id": session_id, "result": answer, "num_turns": number,
-          "total_cost_usd": 0, "duration_ms": 1, "duration_api_ms": 1})
+          "total_cost_usd": 0, "duration_ms": 1, "duration_api_ms": 1,
+          "usage": {"input_tokens": 3, "cache_creation_input_tokens": 1,
+                    "cache_read_input_tokens": 20, "output_tokens": 7}})
 
 
 def claude_background_agent(session_id: str, task_id: str,

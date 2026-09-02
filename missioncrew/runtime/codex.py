@@ -14,8 +14,8 @@ from .base import host_isolated_environ
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageMetric, RuntimeUsageSnapshot,
                    RuntimeUsageWindow)
-from .native import (JsonLineProcess, OutputAssembler, RuntimeProtocolError, emit_json,
-                     safe_emit)
+from .native import (JsonLineProcess, OutputAssembler, RuntimeProtocolError,
+                     build_usage, emit_json, safe_emit, usage_section)
 
 
 def _unique_paths(paths: list[str]) -> list[str]:
@@ -147,6 +147,20 @@ def _question_answers(response: dict, questions: list[dict]) -> dict:
             value = value.get("answers", [])
         answers[key] = {"answers": [str(item) for item in value or []]}
     return answers
+
+
+# app-server ``thread/tokenUsage/updated`` 的 tokenUsage:last 为本轮、total 为
+# 会话累计,均为驼峰字段;cachedInputTokens 是 inputTokens 的子集
+_USAGE_FIELDS = {"input": "inputTokens", "cache_read": "cachedInputTokens",
+                 "cache_write": "cacheWriteInputTokens", "output": "outputTokens",
+                 "reasoning": "reasoningOutputTokens", "total": "totalTokens"}
+
+
+def _usage_payload(token_usage: dict) -> dict:
+    return build_usage(token_usage,
+                       turn=usage_section(token_usage.get("last"), _USAGE_FIELDS),
+                       total=usage_section(token_usage.get("total"), _USAGE_FIELDS),
+                       context_window=token_usage.get("modelContextWindow"))
 
 
 class _CodexSession:
@@ -422,7 +436,9 @@ class _CodexSession:
                       "检测到上下文压缩;下一轮将重新注入完整公共上下文\n")
             return
         if method == "thread/tokenUsage/updated":
-            emit_json(emit, "usage", params.get("tokenUsage") or {})
+            usage = _usage_payload(params.get("tokenUsage") or {})
+            if usage:
+                emit_json(emit, "usage", usage)
             return
         if method == "error":
             error = params.get("error") or {}

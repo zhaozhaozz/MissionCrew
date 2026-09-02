@@ -87,7 +87,10 @@ def test_pi_turn_streams_and_reuses_session(tmp_path):
         assert saved["id"] and Path(saved["id"]).is_file()
         assert any(kind == "tool" and "bash" in text for kind, text in events)
         assert any(kind == "thinking" for kind, _ in events)
-        assert any(kind == "usage" for kind, _ in events)
+        usage = json.loads(next(text for kind, text in events if kind == "usage"))
+        assert usage["schema"] == "usage/v1"
+        assert usage["turn"] == {"input": 10, "output": 5, "total": 15}
+        assert usage["cost_usd"] == 0.01 and usage["raw"]["cost"] == {"total": 0.01}
 
         second = provider.start(_config(tmp_path, "SECOND", saved, events))
         assert second.success and second.output == "pi answer 2"

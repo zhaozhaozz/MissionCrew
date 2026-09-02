@@ -155,6 +155,8 @@ pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平�
 
 聊天中的每条 Runtime 过程事件都渲染为可折叠项，包括输入、思考、命令、工具结果、日志、用量和交互请求。每个运行卡采用单项展开：首次载入时只展开最新事件；收到新的事件 id 时自动收起上一项并展开新项；用户手动展开任一旧项时会收起同卡片中的其他项。相同事件的流式内容追加不会被误判为新项。普通文本事件在 SQLite 中按 8000 字符物理分段，读取 API 会重组相邻同类分段后再展示，避免长 diff、路径或日志行从任意字符中间形成新的折叠项；权限、提问、用量和后端 Agent 等结构化 JSON 事件始终逐条保留。
 
+用量事件在 Runtime 层就统一成 `usage/v1` 结构：provider 用各自的字段表把上报映射为 `turn`（本轮）与 `total`（累计）两个区段，区段内固定字段 `input`/`cache_read`/`cache_write`/`output`/`reasoning`/`total`，另可带 `context_window`、`cost_usd`、`tool_uses`、`duration_ms`，`raw` 原样保留上报内容。Codex 取自 `thread/tokenUsage/updated`（last→turn、total→total、modelContextWindow→context_window），pi 取自 `message_end` 的 assistant usage（含 cost.total），Claude 主回合取自 `result`（Anthropic 字段加 total_cost_usd/duration_ms，raw 只留用量相关键），Claude 后台 Agent 的 total_tokens/tool_uses/duration_ms 随 `backend_agent` 事件携带。前端只按这一种结构排版（区段分行、k/M 压缩、上下文占用条、原始上报折叠），没有 `schema` 标记的历史事件原样显示 JSON；新增 Runtime 只需在其 provider 内给出字段表。
+
 ### 打印模式 CLI(`CliAdapter`)
 
 未实现原生双向 provider 的工具仍使用打印模式：一次执行 = 一个子进程，按内置命令模板渲染参数，在频道工作目录内启动，收集 stdout/stderr，以退出码判定成败。聊天执行按“频道 × 角色”持久化原生会话 id，每轮用对应 CLI 的 create/resume 参数继续；不同频道或不同角色不会共用会话。同一会话的执行串行化，避免并行轮次交叉。模板统一经 `DEFAULT_COMMANDS` 使用，不接受 Backend 数据覆盖。

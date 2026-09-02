@@ -78,6 +78,62 @@ def emit_json(emit: Optional[Callable[[str, str], None]],
     safe_emit(emit, kind, json.dumps(payload, ensure_ascii=False))
 
 
+# ---- 过程事件 ``usage`` 的统一结构 ----
+# 各 Runtime 上报的 token 用量字段名并不一致(Codex 驼峰且按 total/last 分区段,
+# pi 平铺 input/cacheRead,Claude 后台 Agent 是 total_tokens/tool_uses)。工具知识
+# 留在各 provider:它们用自己的 {统一字段: 上报字段} 表调用 usage_section(),再经
+# build_usage() 组装成下面这份结构 emit;前端只认这一种,raw 原样保留上报内容。
+USAGE_SCHEMA = "usage/v1"
+# 区段字段(turn=本轮/最近一次请求,total=会话累计),缺失的字段不出现
+USAGE_SECTION_FIELDS = ("input", "cache_read", "cache_write", "output", "reasoning", "total")
+
+
+def _usage_number(value: object) -> Optional[float]:
+    """数值(含数字字符串)原样返回;bool、空值、其他类型视为缺失。"""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def usage_section(source: object, fields: dict[str, str]) -> dict:
+    """按 ``{统一字段: 上报字段}`` 从 source 取数值,组成一个 turn/total 区段。"""
+    if not isinstance(source, dict):
+        return {}
+    section = {}
+    for name, key in fields.items():
+        value = _usage_number(source.get(key))
+        if value is not None and name in USAGE_SECTION_FIELDS:
+            section[name] = value
+    return section
+
+
+def build_usage(raw: object, *, turn: Optional[dict] = None, total: Optional[dict] = None,
+                context_window: object = None, cost_usd: object = None,
+                tool_uses: object = None, duration_ms: object = None) -> dict:
+    """组装 ``usage/v1`` payload;一个可识别的数值都没有时返回空 dict(调用方不 emit)。"""
+    payload: dict = {"schema": USAGE_SCHEMA}
+    if turn:
+        payload["turn"] = turn
+    if total:
+        payload["total"] = total
+    for key, value in (("context_window", context_window), ("cost_usd", cost_usd),
+                       ("tool_uses", tool_uses), ("duration_ms", duration_ms)):
+        number = _usage_number(value)
+        if number is not None:
+            payload[key] = number
+    if len(payload) == 1:
+        return {}
+    payload["raw"] = raw
+    return payload
+
+
 @dataclass
 class _PendingResponse:
     ready: threading.Event = field(default_factory=threading.Event)

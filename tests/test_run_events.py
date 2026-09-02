@@ -403,26 +403,28 @@ def test_chat_run_events_flow_to_api(seeded):
     assert agent_reply and all(e["content"].strip() != agent_reply for e in events)
 
 
-def test_chat_ui_renders_usage_events_friendly_with_raw_fallback(seeded):
-    """用量事件按别名表归一后友好展示;认不出的格式仍原样展示 JSON。"""
+def test_chat_ui_renders_usage_events_from_unified_schema(seeded):
+    """运行卡片只认 Runtime 层归一的 usage/v1;旧格式或未知结构仍原样展示 JSON。"""
     client = TestClient(create_app())
-    js = client.get("/assets/js/sidebar.js").text
+    js = client.get("/assets/js/run-events.js").text
     css = client.get("/assets/css/app.css").text
+    html = client.get("/").text
+    assert 'const USAGE_SCHEMA = "usage/v1"' in js
     assert "renderUsagePayload" in js and "usageInlineSummary(payload.usage)" in js
-    # 三类线上格式的字段都在别名表里:Codex 驼峰嵌套、pi 平铺、Claude 后台 Agent
-    for key in ("cachedInputTokens", "reasoningOutputTokens", "cacheRead", "totalTokens",
-                "total_tokens", "tool_uses", "duration_ms", "cache_read_input_tokens"):
-        assert f"{key}:" in js or f"{key}\"" in js or f" {key}" in js, key
-    assert '{ last: "本轮", total: "累计" }' in js and '"modelContextWindow"' in js
-    # 整体认不出时回退原始 JSON,未识别字段原样附在末尾
+    assert '{ turn: "本轮", total: "累计" }' in js and "payload.context_window" in js
+    # 前端不再认识各工具的私有字段名,工具知识留在 runtime 层
+    for key in ("cachedInputTokens", "cacheRead", "total_tokens", "cache_read_input_tokens"):
+        assert key not in js, key
     assert "friendly ? friendly.html : esc(JSON.stringify(payload, null, 2))" in js
-    assert 'class="ru-extra"' in js
-    assert ".ru-track.critical i" in css and ".ru-extra" in css
+    assert 'class="ru-raw"' in js and ".ru-raw pre" in css and ".ru-track.critical i" in css
+    # 运行卡片渲染被聊天与配置聊天共用,必须先于 sidebar.js 加载
+    assert html.index("/assets/js/run-events.js") < html.index("/assets/js/sidebar.js")
 
 
 def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     client = TestClient(create_app())
     js = client.get("/assets/js/sidebar.js").text
+    run_js = client.get("/assets/js/run-events.js").text
     css = client.get("/assets/css/app.css").text
     html = client.get("/").text
     assert "agentExecutionLabel" in js
@@ -430,9 +432,9 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert "model=${message.model" in js
     assert "effort=${message.effort" in js
     assert "MESSAGE_FOLD_AT" in js and "toggleMessageBody" in js
-    assert "renderRunEvent" in js and "latestEventId" in js
-    assert "backend_agent" in js and "renderBackendAgent" in js
-    assert 'body.querySelectorAll(".re-fold[open]")' in js
+    assert "renderRunEvent" in run_js and "latestEventId" in run_js
+    assert "backend_agent" in run_js and "renderBackendAgent" in run_js
+    assert 'body.querySelectorAll(".re-fold[open]")' in run_js
     assert (".re-fold { border:" in css
             and "padding: 0 8px 8px;\n             white-space: normal;" in css)
     assert 'flex: none; white-space: nowrap;' in css
@@ -441,7 +443,7 @@ def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     assert "清除上下文" in html
     assert 'id="stop-chat-btn"' in html and "stopChannelAgents" in js
     assert "/api/chat/${currentChan}/stop" in js
-    assert 'stopped: "已停止"' in js and ".rc-dot.stopped" in css
+    assert 'stopped: "已停止"' in run_js and ".rc-dot.stopped" in css
     assert "updateChatRunControls(d.active_runs || [])" in js
     assert 'id="input" contenteditable="true"' in html and 'id="mention-picker"' in html
     assert "composerPayload" in js and "mention_spans" in js

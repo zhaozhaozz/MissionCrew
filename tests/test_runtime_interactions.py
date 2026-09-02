@@ -146,7 +146,7 @@ def test_channel_stop_cancels_pending_interaction_without_reopening_run(
 
 def test_chat_assets_include_runtime_interaction_controls(seeded):
     client = TestClient(create_app())
-    js = client.get("/assets/js/sidebar.js").text
+    js = client.get("/assets/js/run-events.js").text
     assert "submitRuntimeAnswers" in js
     assert "sendRuntimeInteraction" in js
     assert "waiting_user" in js

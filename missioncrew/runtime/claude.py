@@ -15,8 +15,8 @@ from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import (RuntimeCapabilities, RuntimeExecutionInfo, RuntimeInstance,
                    RuntimeProvider, RuntimeUsageSnapshot)
-from .native import (OutputAssembler, RuntimeProtocolError, emit_json,
-                     safe_emit)
+from .native import (OutputAssembler, RuntimeProtocolError, build_usage, emit_json,
+                     safe_emit, usage_section)
 from .usage import probe_claude_usage
 
 # 后台任务结束后 Claude CLI 会自发开启新 turn(无用户输入)汇报结果。
@@ -27,6 +27,31 @@ _WAKE_HANDLER: Optional[Callable[[dict], None]] = None
 def set_wake_handler(handler: Optional[Callable[[dict], None]]) -> None:
     global _WAKE_HANDLER
     _WAKE_HANDLER = handler
+
+
+# ``result`` 消息的 usage 是 Anthropic API 字段(本轮累计;input_tokens 不含缓存
+# 读写),另带 total_cost_usd / duration_ms。raw 只保留用量相关键,不复制回复正文。
+_RESULT_USAGE_FIELDS = {"input": "input_tokens", "cache_read": "cache_read_input_tokens",
+                        "cache_write": "cache_creation_input_tokens",
+                        "output": "output_tokens"}
+_RESULT_USAGE_KEYS = ("usage", "total_cost_usd", "duration_ms", "duration_api_ms",
+                      "num_turns", "modelUsage")
+
+
+def _result_usage(result: dict) -> dict:
+    raw = {key: result[key] for key in _RESULT_USAGE_KEYS if key in result}
+    return build_usage(raw, turn=usage_section(result.get("usage"), _RESULT_USAGE_FIELDS),
+                       cost_usd=result.get("total_cost_usd"),
+                       duration_ms=result.get("duration_ms"))
+
+
+def _agent_usage(usage: object) -> dict:
+    """后台 Agent(task_progress/task_notification)的 usage:累计 total_tokens 与
+    tool_uses/duration_ms。"""
+    if not isinstance(usage, dict) or not usage:
+        return {}
+    return build_usage(usage, total=usage_section(usage, {"total": "total_tokens"}),
+                       tool_uses=usage.get("tool_uses"), duration_ms=usage.get("duration_ms"))
 
 
 @dataclass
@@ -608,7 +633,7 @@ class _ClaudeSession:
             status, meta,
             summary=str(message.get("summary") or ""),
             error=str((message.get("patch") or {}).get("error") or ""),
-            usage=message.get("usage") or {},
+            usage=_agent_usage(message.get("usage")),
         )
 
     def _finish_output_line(self, sink: _TurnSink) -> None:
@@ -751,7 +776,7 @@ class _ClaudeSession:
                         "progress", meta,
                         summary=str(message.get("summary") or ""),
                         last_tool_name=str(message.get("last_tool_name") or ""),
-                        usage=message.get("usage") or {},
+                        usage=_agent_usage(message.get("usage")),
                     )
                 return
             if subtype == "task_updated":
@@ -780,6 +805,9 @@ class _ClaudeSession:
                 self._finish_wake_turn(message)
                 return
             self._result = message
+            usage = _result_usage(message)
+            if usage:
+                emit_json(self._emit(), "usage", usage)
             success = (not bool(message.get("is_error"))
                        and str(message.get("subtype") or "success") == "success")
             if success and self._pending_native_agents:

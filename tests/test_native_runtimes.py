@@ -101,9 +101,19 @@ def test_native_provider_reuses_process_and_session(
         assert instances[0].native_session_id == saved["id"]
         assert (instances[0].project_id, instances[0].role_id) == ("project-a", "lead")
         kinds = {kind for kind, _ in events}
-        assert {"status", "thinking", "tool", "text"} <= kinds
+        assert {"status", "thinking", "tool", "text", "usage"} <= kinds
+        # 用量在 provider 源头归一成 usage/v1,raw 保留原始上报
+        usage = [json.loads(text) for kind, text in events if kind == "usage"][-1]
+        assert usage["schema"] == "usage/v1"
         if adapter == "codex":
-            assert {"tool_result", "usage"} <= kinds
+            assert "tool_result" in kinds
+            assert usage["total"] == {"input": 10, "output": 4}
+            assert usage["raw"] == {"total": {"inputTokens": 10, "outputTokens": 4}}
+        else:
+            assert usage["turn"] == {"input": 3, "cache_read": 20, "cache_write": 1, "output": 7}
+            assert usage["duration_ms"] == 1 and usage["cost_usd"] == 0
+            assert set(usage["raw"]) <= {"usage", "total_cost_usd", "duration_ms",
+                                         "duration_api_ms", "num_turns"}
     finally:
         provider.shutdown()
 
@@ -360,6 +370,14 @@ def test_claude_waits_for_background_agent_and_keeps_turn_policy_alive(
         assert "completed" in statuses
         waiting = next(event for event in lifecycle if event["status"] == "waiting")
         assert waiting["pending"] == 1
+        # 后台 Agent 的 usage 也在源头归一:累计 total_tokens 与 tool_uses/duration_ms
+        progress = next(event for event in lifecycle if event["status"] == "progress")
+        assert progress["usage"]["schema"] == "usage/v1"
+        assert progress["usage"]["total"] == {"total": 12}
+        assert (progress["usage"]["tool_uses"], progress["usage"]["duration_ms"]) == (2, 50)
+        completed = next(event for event in lifecycle if event["status"] == "completed")
+        assert completed["usage"]["total"] == {"total": 15}
+        assert completed["usage"]["raw"] == {"total_tokens": 15, "tool_uses": 2, "duration_ms": 55}
         assert sum(event["status"] == "waiting" for event in lifecycle) == 2
         assert any(kind == "permission_request"
                    and json.loads(text)["status"] == "auto_approved"
