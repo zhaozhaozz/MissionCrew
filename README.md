@@ -59,7 +59,7 @@ uv run mc serve    # 启动 Web 服务，默认监听 127.0.0.1:8321
 
 **平台没有任何身份验证**，Web/API 能浏览本机目录、调度 Agent 执行命令，因此 `mc serve` 默认只监听本机 `127.0.0.1`。需要从局域网其他设备访问时显式传 `--host 0.0.0.0`（或设置环境变量 `MISSIONCREW_HOST`），并且只在可信网络中这样做，绝不要暴露到公网；详见 [SECURITY.md](SECURITY.md)。聊天执行并发上限默认 16，可用 `--chat-workers <N>` 或环境变量 `MISSIONCREW_CHAT_MAX_WORKERS` 调整。
 
-平台数据（SQLite、文档库、Agent 工作区）默认放在用户主目录的 `~/.missioncrew/`，可用环境变量 `MISSIONCREW_HOME` 覆盖；pm2 部署配置 `ecosystem.config.cjs` 默认改用仓库内的 `.missioncrew/`（日志也在这里）。业务代码仓内不会被写入任何平台文件。
+平台数据（SQLite、文档库、Agent 工作区、pm2 日志）默认放在用户主目录的 `~/.missioncrew/`，可用环境变量 `MISSIONCREW_HOME` 覆盖，pm2 部署配置跟随同一变量；业务代码仓内不会被写入任何平台文件。
 
 ## 自动化闭环
 
@@ -87,7 +87,7 @@ scripts/serve.sh stop       # 停止
 几条约定：
 
 - 服务按常规继承调用方的环境变量，尤其是完整的 PATH——Runtime 检测靠它探测本机装了哪些 Agent CLI；新安装了 CLI 后执行 `scripts/serve.sh restart`（带 `--update-env`），新工具才会被检测到。宿主终端注入的变量（`VSCODE_*`、`CLAUDE_*`、`GIT_ASKPASS`、`SSH_AUTH_SOCK` 等）由派发层在启动 Agent 子进程前统一剥离，与启动方式无关。
-- 日志由 pm2 接管 stdout/stderr，写到 `.missioncrew/server.log`。
+- 日志由 pm2 接管 stdout/stderr，写到数据目录的 `server.log`（默认 `~/.missioncrew/server.log`）。
 - 健康检查请访问 `/api/overview` 这类会读取数据库的接口；首页是静态 HTML，返回 200 不代表服务正常。
 - 重启或停止前先确认没有正在执行的 Agent：「运行状态」页没有运行中的实例，频道里没有排队或运行中的任务。pm2 停服时会给服务最多 30 秒优雅退出，逐个结束常驻的 CLI 会话。
 
