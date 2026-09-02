@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 import shutil
 import stat
@@ -69,6 +70,17 @@ def _remove_context_entry(path: Path) -> None:
         pass
 
 
+def relative_link_target(link: Path, target: Path) -> str:
+    """平台生成的目录链接一律写相对路径:数据目录整体搬迁后链接不失效。"""
+    return os.path.relpath(target.resolve(), start=link.parent.resolve())
+
+
+def link_points_to(link: Path, target: Path) -> bool:
+    """链接已指向目标且是相对形式;历史遗留的绝对链接视为需要重建。"""
+    return (link.is_symlink() and link.resolve() == target.resolve()
+            and not os.path.isabs(os.readlink(link)))
+
+
 def write_skill_context(project: Project) -> Path:
     """刷新项目级 Skill 视图；所有 Agent workspace 共享这个入口。"""
     root = project_skill_library_dir(project.id)
@@ -87,11 +99,12 @@ def write_skill_context(project: Project) -> Path:
         for skill_id in sorted(expected):
             target = root / skill_id
             link = directory / skill_id
-            if link.is_symlink() and link.resolve() == target.resolve():
+            if link_points_to(link, target):
                 continue
             if link.exists() or link.is_symlink():
                 _remove_context_entry(link)
-            link.symlink_to(target.resolve(), target_is_directory=True)
+            link.symlink_to(relative_link_target(link, target),
+                            target_is_directory=True)
     return directory
 
 

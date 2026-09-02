@@ -287,3 +287,39 @@ def test_validate_pi_providers_rejects_bad_shapes():
     assert validate_pi_providers({"providers": {
         "a/b": {"baseUrl": "https://x", "api": "openai-completions",
                 "models": [{"id": "m"}]}}}) != ""
+
+
+def test_managed_pi_binary_relocates_with_data_dir():
+    """vendored pi 的可执行路径由数据目录推导:库里记的旧位置按当前数据目录
+    重新定位;非托管工具不动;安装缺失时清空路径。"""
+    from missioncrew.core.config import pi_vendor_bin
+    from missioncrew.runtime import runtime_manager
+    vendored = pi_vendor_bin()
+    vendored.parent.mkdir(parents=True, exist_ok=True)
+    vendored.write_text("#!/bin/sh\n")
+    stale = Backend(id="pi", name="pi", adapter="pi", version="0.73.1",
+                    binary_path="/old-root/.missioncrew/pi/vendor/node_modules/.bin/pi")
+    assert runtime_manager.relocate_managed_binary(stale) is True
+    assert stale.binary_path == str(vendored) and stale.version == "0.73.1"
+    assert runtime_manager.relocate_managed_binary(stale) is False
+    other = Backend(id="claude", name="c", adapter="claude_code",
+                    binary_path="/home/u/.local/bin/claude")
+    assert runtime_manager.relocate_managed_binary(other) is False
+    assert other.binary_path == "/home/u/.local/bin/claude"
+    vendored.unlink()
+    assert runtime_manager.relocate_managed_binary(stale) is True
+    assert stale.binary_path == ""
+
+
+def test_startup_relocates_stale_pi_binary_path(store):
+    """服务启动时按当前数据目录重定位托管安装,数据目录搬迁后不必手工改库。"""
+    from missioncrew.api import create_app
+    from missioncrew.core.config import pi_vendor_bin
+    vendored = pi_vendor_bin()
+    vendored.parent.mkdir(parents=True, exist_ok=True)
+    vendored.write_text("#!/bin/sh\n")
+    store.put_backend(Backend(
+        id="pi", name="pi", adapter="pi",
+        binary_path="/old-root/.missioncrew/pi/vendor/node_modules/.bin/pi"))
+    create_app()
+    assert store.get_backend("pi").binary_path == str(vendored)

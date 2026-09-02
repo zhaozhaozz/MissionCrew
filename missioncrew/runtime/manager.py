@@ -484,6 +484,19 @@ class RuntimeManager:
     def probe_version(self, binary: str) -> str:
         return _executors._cli_version(binary)
 
+    def relocate_managed_binary(self, backend: Backend) -> bool:
+        """平台托管安装的工具(CliSpec 声明了 locate_binary,如 vendored pi)的
+        可执行路径由当前数据目录推导:按数据目录重新定位并回写 binary_path,
+        数据目录搬迁后库里的旧位置不再生效。返回是否有变化;安装缺失时清空。"""
+        spec = _clis.BY_ADAPTER.get(backend.adapter)
+        if spec is None or spec.locate_binary is None:
+            return False
+        located = spec.locate_binary()
+        if located == backend.binary_path:
+            return False
+        backend.binary_path = located
+        return True
+
     def refresh_installation(self, backend: Backend) -> Backend:
         """重新解析 Runtime 可执行路径与版本，不向 API 泄漏探测细节。"""
         binary = Path(backend.binary_path).name if backend.binary_path else backend.adapter

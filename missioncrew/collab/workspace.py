@@ -23,7 +23,8 @@ from ..core.models import Project, Task
 from .documents import document_resource_url
 from .project_context import guideline_context_dir, write_guideline_context
 from .resource_urls import missioncrew_project_url
-from .skills import (skill_context_dir, sync_project_skill_library,
+from .skills import (link_points_to, relative_link_target, skill_context_dir,
+                     sync_project_skill_library,
                      write_skill_context)
 
 if TYPE_CHECKING:
@@ -253,15 +254,15 @@ def write_page_context_snapshot(project_id: str, channel_id: str, role_id: str,
 
 
 def _link_directory(link: Path, target: Path) -> None:
-    """建立平台生成的目录链接，并修复指向旧位置的链接。"""
+    """建立平台生成的目录链接(相对路径),并重建指向旧位置或绝对形式的链接。"""
     target.mkdir(parents=True, exist_ok=True)
     if link.is_symlink():
-        if link.resolve() == target.resolve():
+        if link_points_to(link, target):
             return
         link.unlink()
     elif link.exists():
         raise RuntimeError(f"MissionCrew 工作区入口已被普通文件占用：{link}")
-    link.symlink_to(target.resolve(), target_is_directory=True)
+    link.symlink_to(relative_link_target(link, target), target_is_directory=True)
 
 
 def _remove_managed_workspace_entry(path: Path) -> None:
@@ -275,12 +276,12 @@ def _remove_managed_workspace_entry(path: Path) -> None:
 def _link_managed_directory(link: Path, target: Path) -> bool:
     """把平台拥有的 workspace 目录收敛为共享实时视图入口。"""
     target.mkdir(parents=True, exist_ok=True)
-    if link.is_symlink() and link.resolve() == target.resolve():
+    if link_points_to(link, target):
         return False
     if link.exists() or link.is_symlink():
         _remove_managed_workspace_entry(link)
     link.parent.mkdir(parents=True, exist_ok=True)
-    link.symlink_to(target.resolve(), target_is_directory=True)
+    link.symlink_to(relative_link_target(link, target), target_is_directory=True)
     return True
 
 

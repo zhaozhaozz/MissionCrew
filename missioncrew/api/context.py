@@ -82,6 +82,16 @@ class ApiContext:
             store.audit(
                 "platform", "resource_workspace_links_migrated",
                 detail=f"paths={resource_links}")
+        # 平台托管安装(vendored pi)的可执行路径随数据目录走:启动时按当前
+        # 数据目录重新定位,数据目录搬迁后不必手工改库
+        relocated = []
+        for backend in store.list_backends():
+            if runtime_manager.relocate_managed_binary(backend):
+                store.put_backend(backend)
+                relocated.append(backend.id)
+        if relocated:
+            store.audit("platform", "managed_binary_relocated",
+                        detail=f"backends={relocated}")
         ctx = cls(store=store, chat=ChatEngine(store))
         ctx.chat.updating_backends = ctx.updating_backends
         ctx.automations = AutomationService(store, ctx.chat.agent_tools)

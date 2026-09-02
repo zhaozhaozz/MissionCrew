@@ -1,6 +1,7 @@
 """完整 Skill 包导入、直接投放与 Runtime 适配。"""
 from __future__ import annotations
 
+import os
 import io
 import shutil
 import zipfile
@@ -69,6 +70,7 @@ def test_direct_drop_skill_is_discovered_with_complete_files_and_runtime_access(
         seeded.get_backend("std-1"), message)
     exposed = Path(cfg.env["MISSIONCREW_SKILLS_DIR"]) / "browser-check"
     assert exposed.is_symlink() and exposed.resolve() == skill_dir.resolve()
+    assert not os.path.isabs(os.readlink(exposed))   # 相对链接,数据目录可搬迁
     assert (exposed / "scripts" / "check.sh").read_text() == "echo first\n"
     assert (exposed / "references" / "selectors.md").is_file()
     assert str(exposed / "SKILL.md") in cfg.prompt

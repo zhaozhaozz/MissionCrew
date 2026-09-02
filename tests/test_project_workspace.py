@@ -1,4 +1,5 @@
 """项目主控、频道、文档库、自定义面板和结构化上下文的集成测试。"""
+import os
 import json
 import time
 from pathlib import Path
@@ -1431,6 +1432,7 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert workspace.name == ".missioncrew"
     assert link.is_symlink()
     assert link.resolve() == library_for("webshop").root.resolve()
+    assert not os.path.isabs(os.readlink(link))
     assert Path(cfg.env["MISSIONCREW_DOCUMENTS_DIR"]) == workspace / "documents"
     assert not (workspace / "docs").exists()
     assert "MissionCrew 是本地多 Agent harness" in cfg.prompt
@@ -1979,3 +1981,37 @@ def test_overview_project_round_trip_keeps_guideline_and_skill_content(seeded):
     project["guidelines"] = [{"name": "ghost", "description": "",
                               "enabled": True, "markdown_fingerprint": "0" * 12}]
     assert client.post("/api/projects", json=project).status_code == 400
+
+
+def test_workspace_links_are_relative_and_legacy_absolute_links_get_rebuilt(seeded):
+    """平台生成的目录链接写相对路径;历史遗留的绝对链接在下次装配时重建,
+    数据目录整体搬迁后链接仍然有效。"""
+    from missioncrew.collab.workspace import _link_directory, migrate_resource_workspace_links
+    chat = ChatEngine(seeded)
+    msg = seeded.add_message("general", "human", "human", "@dev 干活", ["dev"])
+    cfg = chat._assemble(seeded.get_channel("general"),
+                         seeded.get_role("webshop", "dev"),
+                         seeded.get_backend("std-1"), msg)
+    workspace = Path(cfg.env["MISSIONCREW_WORKSPACE"])
+    targets = {
+        "documents": library_for("webshop").root,
+        "guidelines": guideline_context_dir(seeded.get_project("webshop")),
+        "skills": skill_context_dir(seeded.get_project("webshop")),
+    }
+    for name, target in targets.items():
+        link = workspace / name
+        assert link.is_symlink() and link.resolve() == target.resolve()
+        assert not os.path.isabs(os.readlink(link)), name
+    assert migrate_resource_workspace_links(seeded) == 0
+
+    # 遗留的绝对链接:documents 走装配路径重建,guidelines/skills 走迁移路径重建
+    for name, target in targets.items():
+        link = workspace / name
+        link.unlink()
+        link.symlink_to(target.resolve(), target_is_directory=True)
+        assert os.path.isabs(os.readlink(link))
+    _link_directory(workspace / "documents", targets["documents"])
+    assert migrate_resource_workspace_links(seeded) == 2
+    for name, target in targets.items():
+        link = workspace / name
+        assert not os.path.isabs(os.readlink(link)) and link.resolve() == target.resolve()
