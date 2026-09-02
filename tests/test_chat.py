@@ -1437,3 +1437,35 @@ def test_app_shutdown_waits_for_dispatched_runs(seeded, monkeypatch):
         assert response.status_code == 200, response.text
         assert seeded.active_chat_runs("general")
     assert seeded.active_chat_runs("general") == []
+
+
+def test_missing_channel_workdir_falls_back_to_default_with_notice(chat, seeded, tmp_path):
+    """频道绑定目录已删(如任务 worktree 清理后)不再静默 mkdir 重建:回退到平台
+    默认目录,公共上下文与主控的频道名册都给出提示。"""
+    import shutil
+    from missioncrew.core.config import mc_home
+    repo = tmp_path / "repo"
+    bound = repo / ".worktrees" / "gone"
+    bound.mkdir(parents=True)
+    seeded.put_channel(Channel(id="webshop:gone", name="gone", project_id="webshop",
+                               workdir=str(bound)))
+    channel = seeded.get_channel("webshop:gone")
+    dev = seeded.get_role("webshop", "dev")
+    backend = seeded.get_backend("std-1")
+    msg = seeded.add_message("webshop:gone", "human", "human", "@dev 干活", ["dev"])
+    cfg = chat._assemble(channel, dev, backend, msg)
+    assert Path(cfg.workdir) == bound and "已不存在" not in cfg.prompt
+
+    shutil.rmtree(repo)
+    cfg = chat._assemble(channel, dev, backend, msg)
+    default = mc_home() / "channels" / "webshop:gone"
+    assert Path(cfg.workdir) == default and default.is_dir()
+    assert not bound.exists()          # 不重建绑定目录
+    assert f"绑定的工作目录 `{bound}` 已不存在" in cfg.prompt
+    assert f"回退到平台默认目录 `{default}`" in cfg.prompt
+
+    project = seeded.get_project("webshop")
+    lead = seeded.get_role("webshop", project.orchestrator_role_id)
+    lead_msg = seeded.add_message("general", "human", "human", "看看", [lead.id])
+    lead_cfg = chat._assemble(seeded.get_channel("general"), lead, backend, lead_msg)
+    assert f"工作目录 {bound}(目录已不存在)" in lead_cfg.prompt

@@ -288,7 +288,7 @@ grok/copilot 的 effort 进的是 ACP serve 命令，改档位会改变 `acp.py`
 
 ## 执行环境
 
-每次执行的进程环境中，工作目录仍是 Channel workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`。`MISSIONCREW_WORKSPACE` 指向平台数据根内当前 channel×role 的 harness，集中放置项目资料、Task 快照、角色隔离历史、令牌和 Runtime 诊断。Agent 通过 Agent Tool 发布文档、编辑 Task 和追加状态简报；Task 快照只读，不参与执行后反向同步。Runtime 只能访问 Prompt 明确列出的目录，不应使用 `/tmp`、`/var/tmp` 或其他未授权路径；临时文件使用业务仓约定目录或 `$MISSIONCREW_WORKSPACE/temp`。Channel 中的 Agent 执行不设置时间上限，直到 Runtime 返回、失败或用户主动停止。
+每次执行的进程环境中，工作目录仍是 Channel workdir（绑定代码仓时就是该仓），平台不会在其中创建 `.missioncrew`。频道绑定目录已不存在时（例如任务 worktree 已清理），装配不会重建它，而是回退到平台数据根内的默认目录 `channels/<频道 id>`，并在公共上下文与主控的频道名册中提示；要继续原目录的工作需先重建目录或新建频道。`MISSIONCREW_WORKSPACE` 指向平台数据根内当前 channel×role 的 harness，集中放置项目资料、Task 快照、角色隔离历史、令牌和 Runtime 诊断。Agent 通过 Agent Tool 发布文档、编辑 Task 和追加状态简报；Task 快照只读，不参与执行后反向同步。Runtime 只能访问 Prompt 明确列出的目录，不应使用 `/tmp`、`/var/tmp` 或其他未授权路径；临时文件使用业务仓约定目录或 `$MISSIONCREW_WORKSPACE/temp`。Channel 中的 Agent 执行不设置时间上限，直到 Runtime 返回、失败或用户主动停止。
 
 环境变量方面，子进程环境是 `host_isolated_environ()` 的结果叠加本次执行的 `cfg.env`（平台注入的 `MISSIONCREW_*`）。服务进程的环境本来会整份铺给 Agent CLI，宿主注入的变量会让子进程以为自己跑在那个宿主里：CLI 去连宿主的 IPC，`git` 去调宿主的 askpass 而在无头执行中挂住。因此 `runtime/base.py` 按“变量来自宿主”剥掉一批——`VSCODE_*`、`CLAUDE_*`、`CURSOR_*`、`TERM_PROGRAM*` 等前缀，以及 `CLAUDECODE`（没有下划线，前缀匹配不到）、`GIT_ASKPASS`、`SSH_ASKPASS`、`GIT_EDITOR`、`PYTHONSTARTUP`、`SSH_AUTH_SOCK`、`SSH_CLIENT`、`SSH_CONNECTION` 这些名字上看不出来源的具体项。
 

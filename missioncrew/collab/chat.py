@@ -79,6 +79,14 @@ class _PendingInteraction:
 
 # 提示词结构约定:人格(role_desc)是"选人用的专长画像",不是任务;
 # 任务只来自触发消息(由发起者——人类或调度角色——撰写的简报)
+WORKDIR_SECTION = "工作目录就是当前目录,直接在其中读写文件、运行命令完成工作。"
+# 频道绑定目录缺失时的回退提示:让 Agent 知道当前目录不是代码仓,避免误操作
+MISSING_WORKDIR_NOTICE = (
+    "注意:本频道绑定的工作目录 `{bound}` 已不存在(例如任务 worktree 已清理),"
+    "本轮回退到平台默认目录 `{workdir}`。这里没有业务代码,不要在此执行 git 操作,"
+    "也不要把它当作代码仓;要继续原目录的工作,先重建该目录(如 git worktree add),"
+    "或新建频道绑定正确的目录。")
+
 CHAT_COMMON_BODY = """\
 # 聊天协作请求
 你是角色 @{role_id}({role_name})。
@@ -92,7 +100,7 @@ CHAT_COMMON_BODY = """\
 {project_section}
 {tool_section}
 {orchestrator_section}\
-工作目录就是当前目录,直接在其中读写文件、运行命令完成工作。
+{workdir_section}
 
 # 频道历史记录(JSON)
 完整频道历史文件:{channel_history_path}
@@ -1180,11 +1188,25 @@ class ChatEngine:
         combo = f"{b.id}+{model}" + (f"+effort={role.effort}" if role.effort else "")
         return b, f"角色固定组合 {combo}"
 
+    @staticmethod
+    def _resolve_workdir(channel: Channel) -> tuple[Path, Optional[Path]]:
+        """频道绑定目录缺失(如任务 worktree 已清理)时回退到平台默认目录,并返回
+        缺失的绑定路径供上下文提示。不能静默 mkdir 重建绑定目录:主仓内重建的
+        空目录会让 Agent 的 git 命令落到主仓当前分支。"""
+        default = mc_home() / "channels" / channel.id
+        bound = Path(channel.workdir) if channel.workdir else None
+        if bound is not None and bound.is_dir():
+            return bound, None
+        default.mkdir(parents=True, exist_ok=True)
+        return default, bound
+
     def _assemble(self, channel: Channel, role: Role, backend, msg_id: int,
                   run_id: int = 0) -> ExecutionConfig:
-        workdir = Path(channel.workdir) if channel.workdir \
-            else mc_home() / "channels" / channel.id
-        workdir.mkdir(parents=True, exist_ok=True)
+        workdir, missing_workdir = self._resolve_workdir(channel)
+        workdir_section = WORKDIR_SECTION
+        if missing_workdir is not None:
+            workdir_section += "\n" + MISSING_WORKDIR_NOTICE.format(
+                bound=missing_workdir, workdir=workdir)
 
         project_section = ""
         tool_section = ""
@@ -1321,6 +1343,7 @@ class ChatEngine:
             project_section=project_section,
             tool_section=tool_section,
             orchestrator_section=orchestrator_section,
+            workdir_section=workdir_section,
             channel_history_path=channel_history_path,
             collaboration_section=collaboration_section,
         )
@@ -1618,7 +1641,9 @@ class ChatEngine:
             for r in project.repos) or "(未配置)"
         channels = "\n".join(
             f"- {_short(c.id)}(#{c.name}):{c.purpose or '无用途说明'}"
-            + (f";工作目录 {c.workdir}" if c.workdir else "")
+            + (f";工作目录 {c.workdir}"
+               + ("(目录已不存在)" if not Path(c.workdir).is_dir() else "")
+               if c.workdir else "")
             + f";Web {channel_resource_url(project.id, c.id)}"
             for c in self.store.list_channels(
                 project.id, include_archived=False)) or "(无)"
