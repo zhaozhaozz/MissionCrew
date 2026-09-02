@@ -233,6 +233,13 @@ class _ClaudeSession:
         self._pending_native_agents: set[str] = set()
         self._agent_tool_calls: dict[str, dict] = {}
         self._provisional_result_count = 0
+        # 进程带着未结束的后台命令被杀后,下次 --resume 启动时 CLI 会在首个
+        # init 之前自行补一条 task_notification(stopped),并紧跟一对不调模型
+        # 的空 init/result。这对 result 不属于本轮发出的消息,不能当本轮结束。
+        self._process_inits = 0
+        self._stale_replays = 0
+        self._turn_activity = False
+        self._interrupt_requested = False
         self._control_lock = threading.Lock()
         self._control_pending: dict[str, tuple[threading.Event, dict]] = {}
         self._stderr_tail: list[str] = []
@@ -298,6 +305,7 @@ class _ClaudeSession:
         resume_id = self.session_id or config.session_id
         self._resume_attempt = resume_id
         self._stderr_tail = []
+        self._process_inits = 0
         command = self._args(config, resume_id)
         try:
             self.process = subprocess.Popen(
@@ -357,6 +365,9 @@ class _ClaudeSession:
                 self._pending_native_agents = set()
                 self._agent_tool_calls = {}
                 self._provisional_result_count = 0
+                self._stale_replays = 0
+                self._turn_activity = False
+                self._interrupt_requested = False
                 self._result_ready.clear()
             try:
                 self._ensure_process(config)
@@ -636,6 +647,40 @@ class _ClaudeSession:
             usage=_agent_usage(message.get("usage")),
         )
 
+    def _note_turn_activity(self) -> None:
+        """模型活动(正文、思考、工具调用/结果)登记到当前运行 turn。"""
+        if self._active_config is not None:
+            self._turn_activity = True
+
+    def _note_stale_replay(self, message: dict, status: str) -> None:
+        """首个 init 之前到达的任务通知是 --resume 启动时的回放:上个进程
+        遗留的后台任务被 CLI 标记为 stopped。只记数并提示,随后那对空
+        init/result 由 _is_replayed_result 跳过。"""
+        with self._turn_condition:
+            self._stale_replays += 1
+        task_id = str(message.get("task_id") or "")
+        safe_emit(self._emit(), "status",
+                  f"上个 Claude 进程遗留的后台任务 {task_id} 已由 CLI 标记为 "
+                  f"{status},本轮不受影响\n")
+
+    def _is_replayed_result(self, message: dict) -> bool:
+        """成功且 num_turns 为 0 的 result 没有调过模型,不可能是本轮发出的
+        消息的结果:刚记录过回放通知,或本轮尚无任何模型活动时跳过。
+        中断后的 result 一律认,否则中断会拖到超时。"""
+        success = (not bool(message.get("is_error"))
+                   and str(message.get("subtype") or "success") == "success")
+        if (not success or message.get("num_turns") != 0
+                or self._interrupt_requested):
+            return False
+        with self._turn_condition:
+            if self._stale_replays > 0:
+                self._stale_replays -= 1
+            elif self._turn_activity:
+                return False
+        safe_emit(self._emit(), "status",
+                  "跳过 Claude 启动回放的空 result(未调模型),继续等待本轮结果\n")
+        return True
+
     def _finish_output_line(self, sink: _TurnSink) -> None:
         """一条完整输出结束:空白消息丢弃,有内容才在下一条前插横线分隔。"""
         sink.assembler.finish_message()
@@ -676,6 +721,7 @@ class _ClaudeSession:
             if event.get("type") != "content_block_delta":
                 return
             delta = event.get("delta") or {}
+            self._note_turn_activity()
             if delta.get("type") == "text_delta":
                 sink.saw_partial_text = True
                 self._append_output_text(sink, str(delta.get("text") or ""))
@@ -686,6 +732,7 @@ class _ClaudeSession:
         if message_type == "assistant":
             if sink is None:
                 return
+            self._note_turn_activity()
             for block in (message.get("message") or {}).get("content") or []:
                 block_type = block.get("type")
                 if block_type == "text" and not sink.saw_partial_text:
@@ -711,6 +758,7 @@ class _ClaudeSession:
             self._finish_output_line(sink)
             return
         if message_type == "user":
+            self._note_turn_activity()
             for block in (message.get("message") or {}).get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     tool_use_id = str(block.get("tool_use_id") or "")
@@ -734,6 +782,7 @@ class _ClaudeSession:
         if message_type == "system":
             subtype = str(message.get("subtype") or "")
             if subtype == "init":
+                self._process_inits += 1
                 native_id = str(message.get("session_id") or "")
                 if native_id:
                     self.session_id = native_id
@@ -794,6 +843,8 @@ class _ClaudeSession:
                 return
             if subtype == "task_notification":
                 status = str(message.get("status") or "completed")
+                if self._process_inits == 0:
+                    self._note_stale_replay(message, status)
                 if str(message.get("task_id") or "") in self._background_tasks:
                     self._finish_background_task(message, status)
                 else:
@@ -803,6 +854,8 @@ class _ClaudeSession:
             if self._wake_sink is not None:
                 # 自唤醒 turn 的收尾:不触碰运行 turn 的 result 状态机
                 self._finish_wake_turn(message)
+                return
+            if self._is_replayed_result(message):
                 return
             self._result = message
             usage = _result_usage(message)
@@ -925,6 +978,8 @@ class _ClaudeSession:
             pass
 
     def interrupt(self, timeout: float = 10) -> None:
+        # 中断后 CLI 可能回一个零轮次 result,必须照常收口,不能被回放守卫跳过
+        self._interrupt_requested = True
         request_id = uuid.uuid4().hex
         ready = threading.Event()
         response: dict = {}

@@ -222,15 +222,30 @@ def run_claude() -> None:
     if "--resume" in args:
         session_id = args[args.index("--resume") + 1]
     missing_session = session_id == "missing-session"
-    if not missing_session:
-        send({"type": "system", "subtype": "init", "session_id": session_id,
-              "model": "claude-test", "cwd": os.getcwd()})
+    stale_replay = session_id == "stale-replay-session"
+    init = {"type": "system", "subtype": "init", "session_id": session_id,
+            "model": "claude-test", "cwd": os.getcwd()}
+    if stale_replay:
+        # 真实 CLI --resume 时的回放(实测 2.1.258):上个进程遗留的后台命令
+        # 先被标记 stopped,再紧跟一对不调模型的空 init/result,之后才处理 stdin
+        send({"type": "system", "subtype": "task_notification",
+              "task_id": "orphan-1", "status": "stopped",
+              "summary": "No completion record was found for this background "
+                         "shell command from the previous session."})
+        send(init)
+        send({"type": "result", "subtype": "success", "is_error": False,
+              "session_id": session_id, "result": "", "num_turns": 0,
+              "duration_ms": 47, "duration_api_ms": 0, "total_cost_usd": 0})
+    elif not missing_session:
+        send(init)
     turn_number = 0
     pending: tuple[str, int] | None = None
     for raw in sys.stdin:
         message = json.loads(raw)
         if message.get("type") == "user":
             turn_number += 1
+            if stale_replay:
+                send(init)   # 真实 CLI 每个查询都发一次 init
             prompt = str((message.get("message") or {}).get("content") or "")
             if missing_session:
                 print("Conversation not found for session", file=sys.stderr,

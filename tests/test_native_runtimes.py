@@ -627,6 +627,127 @@ def test_claude_background_task_records_origin_trigger(tmp_path):
     assert session._wake_reasons[0]["origin_trigger"] == 42
 
 
+def test_claude_resume_replay_does_not_end_turn(tmp_path):
+    """--resume 启动回放的 stopped 通知与空 init/result 不结束本轮;
+    真正的 result 到达后正常收口,过程流里能看到两条说明。"""
+    provider = ClaudeRuntimeProvider(_Fallback(), _fake_command("claude_code"))
+    events: list[tuple[str, str]] = []
+    saved = {"id": "stale-replay-session", "context": "v1"}
+    try:
+        result = provider.start(
+            _config(tmp_path, "claude_code", "AFTER REPLAY", saved, events))
+        assert result.success
+        assert result.output == "claude answer 1"
+        statuses = [text for kind, text in events if kind == "status"]
+        assert any("遗留的后台任务 orphan-1" in text and "stopped" in text
+                   for text in statuses)
+        assert any("跳过 Claude 启动回放的空 result" in text for text in statuses)
+        # 回放的空 result 不计入用量;只有真正那轮的 usage
+        assert sum(1 for kind, _ in events if kind == "usage") == 1
+    finally:
+        provider.shutdown()
+
+
+def _run_session_in_thread(session, tmp_path, monkeypatch, prompt="TURN"):
+    """在线程里跑 session.run,进程与写入都打桩,由测试直接喂事件。"""
+    monkeypatch.setattr(session, "_ensure_process", lambda _config: None)
+    monkeypatch.setattr(session, "_write", lambda _payload: None)
+    events: list[tuple[str, str]] = []
+    config = _config(tmp_path, "claude_code", prompt, {}, events)
+    config.session_key = session.session_key
+    result: dict = {}
+    worker = threading.Thread(
+        target=lambda: result.setdefault("value", session.run(config)))
+    worker.start()
+    deadline = time.time() + 2
+    while session._active_config is None and time.time() < deadline:
+        time.sleep(0.01)
+    assert session._active_config is not None
+    return worker, result, events
+
+
+def test_claude_zero_turn_result_without_activity_is_skipped(
+        tmp_path, monkeypatch):
+    """兜底:即使没收到回放通知,本轮尚无模型活动时的零轮次成功 result
+    也不结束 turn;有活动后的零轮次 result 才被当作结果。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "claude_code", "channel::dev2", str(tmp_path), persistent=True)
+    worker, result, _events = _run_session_in_thread(session, tmp_path, monkeypatch)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-1"})
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "", "num_turns": 0})
+        worker.join(timeout=0.3)
+        assert worker.is_alive(), "零轮次空 result 不应结束本轮"
+        assert not session._result_ready.is_set()
+
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-1"})
+        session._handle_message({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "real answer"}]}})
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "real answer", "num_turns": 1})
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert result["value"].success
+        assert result["value"].output == "real answer"
+    finally:
+        session.close()
+        worker.join(timeout=2)
+
+
+def test_claude_zero_turn_result_after_interrupt_ends_turn(
+        tmp_path, monkeypatch):
+    """中断后的零轮次 result 必须照常收口,否则中断会拖到超时。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "claude_code", "channel::dev2", str(tmp_path), persistent=True)
+    worker, result, _events = _run_session_in_thread(session, tmp_path, monkeypatch)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-1"})
+        with pytest.raises(TimeoutError):   # _write 已打桩,收不到应答
+            session.interrupt(timeout=0.05)
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "", "num_turns": 0})
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert result["value"].success
+        assert result["value"].output == ""
+    finally:
+        session.close()
+        worker.join(timeout=2)
+
+
+def test_claude_zero_turn_error_result_still_ends_turn(tmp_path, monkeypatch):
+    """错误 result 不受回放守卫影响:零轮次也立即结束本轮并报错。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "claude_code", "channel::dev2", str(tmp_path), persistent=True)
+    worker, result, _events = _run_session_in_thread(session, tmp_path, monkeypatch)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "task_notification",
+            "task_id": "orphan-9", "status": "stopped"})
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-1"})
+        session._handle_message({
+            "type": "result", "subtype": "error_during_execution",
+            "is_error": True, "error": "boom", "num_turns": 0})
+        worker.join(timeout=2)
+        assert not worker.is_alive()
+        assert not result["value"].success
+        assert "boom" in result["value"].summary
+    finally:
+        session.close()
+        worker.join(timeout=2)
+
+
 @pytest.mark.parametrize("adapter,provider_cls", [
     ("claude_code", ClaudeRuntimeProvider),
     ("codex", CodexRuntimeProvider),
