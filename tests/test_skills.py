@@ -73,7 +73,7 @@ def test_direct_drop_skill_is_discovered_with_complete_files_and_runtime_access(
     assert not os.path.isabs(os.readlink(exposed))   # 相对链接,数据目录可搬迁
     assert (exposed / "scripts" / "check.sh").read_text() == "echo first\n"
     assert (exposed / "references" / "selectors.md").is_file()
-    assert str(exposed / "SKILL.md") in cfg.prompt
+    assert str(exposed.parent) in cfg.prompt          # 目录一次说明,入口按 id 推导
     assert "浏览器交互或视觉验证时使用" in cfg.prompt
     assert "运行 scripts/check.sh" not in cfg.prompt
     assert str(root.resolve()) in cfg.allowed_dirs

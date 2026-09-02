@@ -111,21 +111,16 @@ def _guideline_content_version(doc: GuidelineDocument) -> str:
     return hashlib.sha256(doc.render_markdown().encode("utf-8")).hexdigest()[:16]
 
 
-def _render_guideline_summary(project_id: str, doc: GuidelineDocument,
-                              path: Path) -> str:
-    # 索引行只含元信息:正文版本不进公共上下文,正文修改经本轮输入的
-    # 「资源更新」提示告知,不触发完整重发(见 project_resource_versions)
+def _render_guideline_summary(doc: GuidelineDocument) -> str:
+    # 索引行只含元信息:全文路径与 Web URL 按目录规则推导,一次说明;正文版本
+    # 不进公共上下文,正文修改经本轮输入的「资源更新」提示告知,不触发完整重发
     description = " ".join(doc.description.split()) or "（未填写 description）"
-    return (f"- `{doc.name}` · {description} · 全文 `{path}` "
-            f"· Web `{guideline_resource_url(project_id, doc.name)}`")
+    return f"- `{doc.name}` · {description}"
 
 
-def _render_skill_summary(project_id: str, skill: ProjectSkill, path: Path,
-                          canonical: Path) -> str:
+def _render_skill_summary(skill: ProjectSkill) -> str:
     description = " ".join(skill.description.split()) or "（未填写 description）"
-    return (f"- `{skill.id}` · {skill.name or skill.id} · {description} "
-            f"· 入口 `{path}` "
-            f"· Web `{skill_resource_url(project_id, skill.id)}`")
+    return f"- `{skill.id}` · {skill.name or skill.id} · {description}"
 
 
 def project_resource_versions(project: Project) -> dict[str, str]:
@@ -153,20 +148,16 @@ def render_project_context(project: Project, library: DocumentLibrary,
     extra_dirs 是项目之外额外授权的目录(如 Runtime 工具自有目录),
     追加进"本次可读写目录"清单,让 Agent 知道可以使用。
     """
-    canonical_guidelines = write_guideline_context(project)
+    write_guideline_context(project)
     guideline_dir = (workspace_dir / "guidelines" if workspace_dir is not None
                      else guideline_context_dir(project))
-    guideline_files = {
-        name: guideline_dir / path.name for name, path in canonical_guidelines.items()
-    }
     legacy_guidelines = []
     if project.charter:
         legacy_guidelines.append(f"## 项目章程（兼容字段）\n{project.charter}")
     if project.dev_guidelines:
         legacy_guidelines.append(f"## 开发准则（兼容字段）\n{project.dev_guidelines}")
     guideline_summaries = [
-        _render_guideline_summary(project.id, doc, guideline_files[doc.name])
-        for doc in project.guidelines if doc.enabled
+        _render_guideline_summary(doc) for doc in project.guidelines if doc.enabled
     ]
     documents_dir = (workspace_dir / "documents" if workspace_dir is not None
                      else library.root)
@@ -175,14 +166,7 @@ def render_project_context(project: Project, library: DocumentLibrary,
     skills_dir = workspace_dir / "skills" if workspace_dir is not None else None
     canonical_skills = project_skill_library_dir(project.id)
     skill_summaries = [
-        _render_skill_summary(
-            project.id,
-            skill,
-            (skills_dir / skill.id / "SKILL.md") if skills_dir is not None
-            else canonical_skills / skill.id / "SKILL.md",
-            canonical_skills / skill.id,
-        )
-        for skill in project.skills if skill.enabled
+        _render_skill_summary(skill) for skill in project.skills if skill.enabled
     ]
     allowed_dirs = project_allowed_dirs(project, library, workspace_dir)
     for raw in extra_dirs or []:
@@ -214,14 +198,14 @@ def render_project_context(project: Project, library: DocumentLibrary,
         f"- Skill：`{project_url}/skills/<id>`\n"
         f"- 文档：`{project_url}/documents/<文档库相对路径>`\n"
         f"- 回收站：`{project_url}/recycle-bin`\n"
-        "这些 URL 是 Web 标识，不是文件路径；不要把内部 `.missioncrew` 路径或 `file://` 链接发到聊天中。",
+        "这些 URL 是 Web 标识，不是文件路径。",
         ("# 项目兼容准则\n" + "\n\n".join(legacy_guidelines))
         if legacy_guidelines else "# 项目兼容准则\n（未配置）",
         "# 项目准则索引\n"
         + ("\n".join(guideline_summaries) if guideline_summaries else "（未配置）")
-        + f"\n准则 Markdown 目录：{guideline_dir}\n"
-        "也可通过环境变量 MISSIONCREW_GUIDELINES_DIR 获取该目录。"
-        "先根据 description 判断相关性，仅在任务需要时读取对应的 Markdown 文件；不要预加载全部正文。",
+        + f"\n全文：`{guideline_dir}/<name>.md`（环境变量 MISSIONCREW_GUIDELINES_DIR）；"
+        f"Web：`{project_url}/guidelines/<name>`。"
+        "先根据 description 判断相关性，仅在任务需要时读取全文；不要预加载，不要机械执行无关条目。",
         f"# 项目文档库\n内部读写目录：{documents_dir}\n"
         f"对外资源 URL：{documents_url}/<文档库相对路径>\n"
         "所有角色可在该普通目录中读写正式文档、协作草稿、报告和普通聊天产生的验证记录；"
@@ -264,11 +248,11 @@ def render_project_context(project: Project, library: DocumentLibrary,
         "（如 `.agent/skills`、`.agents/skills`、`.claude/skills`）仍可按原生规则发现"
         "和使用；不要把 `MISSIONCREW_SKILLS_DIR` 当作唯一 Skill 来源。仓内文件仍须位于"
         "本次授权的代码仓目录中。\n"
-        + (f"MissionCrew Skill 目录：{skills_dir}\n" if skills_dir is not None else "")
         + ("\n".join(skill_summaries) if skill_summaries else
            "（本项目未配置额外的 MissionCrew Skill）")
-        + "\n先根据 description 判断相关性；需要时读取对应 SKILL.md，"
+        + (f"\n入口：`{skills_dir}/<id>/SKILL.md`（环境变量 MISSIONCREW_SKILLS_DIR）；"
+           if skills_dir is not None else "\n")
+        + f"Web：`{project_url}/skills/<id>`。"
+          "先根据 description 判断相关性；需要时读取对应 SKILL.md，"
           "并以 Skill 目录为根解析 scripts/、references/、assets/ 等相对文件。",
-        "# 准则与 Skill 使用方式\n结合当前任务自行判断哪些条目适用；"
-        "准则先看 description、相关时再读全文，不要机械执行无关条目。",
     ])

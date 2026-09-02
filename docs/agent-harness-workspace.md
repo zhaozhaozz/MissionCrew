@@ -31,6 +31,7 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 ```text
 .missioncrew/
 ├── README.md
+├── manual.md
 ├── project.md
 ├── documents/              # 项目版本化文档库入口
 ├── tasks/                  # 项目任务的 Markdown 视图

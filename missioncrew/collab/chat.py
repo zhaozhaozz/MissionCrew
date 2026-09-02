@@ -103,17 +103,21 @@ CHAT_COMMON_BODY = """\
 {orchestrator_section}\
 {workdir_section}
 
+# MissionCrew 手册
+完整手册:`{manual_path}`(环境变量 MISSIONCREW_MANUAL)。本区块只保留必须时刻遵守的规则;
+涉及文档发布、Task、频道、面板与数据源、准则/Skill 格式、自动化、回收站、配置页协作的
+操作细节,先读手册对应章节再动手。
+
 # 频道历史记录(JSON)
 完整频道历史文件:{channel_history_path}
-也可以通过环境变量 MISSIONCREW_CHANNEL_HISTORY 获取该路径。仅在最近对话不足以完成任务时按需读取。
+也可通过环境变量 MISSIONCREW_CHANNEL_HISTORY 获取该路径。仅在最近对话不足以完成任务时按需读取。
 
 # 回复要求
 - 只完成触发消息交代的工作;信息不足时在回复中提出,不要臆测扩大范围。
-- 你的最终回复会被完整、原样发布到聊天频道,人类可以看到。
-- 引用 MissionCrew 项目文档时使用项目上下文给出的 `/resources/...` URL；
-  不要把内部 `.missioncrew` 路径、绝对文件路径或 `file://` 链接发布到频道。
-- 回复用中文,先说结论,再简述做了什么;不要贴大段日志。
+- 你的最终回复会被完整、原样发布到聊天频道,人类可以看到;用中文,先说结论,再简述做了什么;不要贴大段日志。
+- 引用平台资源用「MissionCrew 资源 URL」一节的 `/resources/...` 链接,不要输出内部路径。
 {collaboration_section}
+{roster_section}
 """
 
 DURABLE_CONTEXT_TEMPLATE = """\
@@ -136,12 +140,56 @@ TURN_PROMPT = """\
 {trigger}
 """
 
-# 准则/Skill 正文变化不改公共上下文版本,只在本轮输入里提示一句
+# 准则/Skill 正文与主控清单条目的变化都不改公共上下文版本,只在本轮输入里列差异
 RESOURCE_NOTICE = (
     "\n# MissionCrew 资源更新\n"
-    "以下资源的正文自你上一轮之后已修改,公共上下文里的索引条目未变:{items}。"
-    "需要用到时重新读取对应文件,不要沿用之前读到的旧内容。\n"
+    "自你上一轮之后发生了以下变化,公共上下文版本未变:\n{items}\n"
 )
+_CHANGE_LABELS = {
+    "guideline": "准则", "skill": "Skill", "role": "角色", "repo": "代码仓",
+    "channel": "频道", "board": "面板", "source": "数据源", "automation": "自动化",
+    "disabled": "停用清单",
+}
+_ROSTER_KINDS = frozenset({"role", "repo", "channel", "board", "source", "automation", "disabled"})
+_REMOVED_HINT = {
+    "role": "已停用或删除,不可再派发", "channel": "已归档或删除", "board": "已删除",
+    "source": "已删除", "automation": "已删除", "repo": "已移除",
+}
+
+
+def _change_notice(snapshot: dict[str, tuple[str, str]], seen: dict[str, str]) -> str:
+    """比对会话上次看到的版本表,生成本轮差异提示。
+
+    snapshot 的值是 (版本, 展示行):准则/Skill 正文项没有展示行,只报「正文已修改」;
+    清单项新增/更新时给出整行,移除时按类型说明。seen 里还没有任何清单项时视为
+    基线(旧会话首次带清单),不把整份清单当作新增。
+    """
+    if not seen:
+        return ""
+    baseline = not any(key.partition(":")[0] in _ROSTER_KINDS for key in seen)
+    lines = []
+    for key, (version, line) in snapshot.items():
+        kind, _, name = key.partition(":")
+        label = _CHANGE_LABELS.get(kind, kind)
+        text = line.strip().removeprefix("- ")   # 清单行自带列表符号,提示里去掉
+        if key not in seen:
+            if line and not baseline and kind != "disabled":
+                lines.append(f"- 新增{label}:{text}")
+        elif seen[key] != version:
+            lines.append(f"- {label}更新:{text}" if line
+                         else f"- {label} `{name}` 正文已修改,需要用到时重新读取")
+    for key in seen:
+        kind, _, name = key.partition(":")
+        if key not in snapshot and kind in _REMOVED_HINT:
+            lines.append(f"- {_CHANGE_LABELS[kind]} `{name}` {_REMOVED_HINT[kind]}")
+    return RESOURCE_NOTICE.format(items="\n".join(lines)) if lines else ""
+
+
+def _compact_records(records: list[dict]) -> str:
+    """最近对话 JSON:一条消息一行,省掉缩进,仍是合法 JSON 数组。"""
+    if not records:
+        return "[]"
+    return "[\n" + ",\n".join(json.dumps(r, ensure_ascii=False) for r in records) + "\n]"
 
 RECOVERY_PROMPT = """\
 # 最近对话(JSON,按消息边界格式化)
@@ -155,116 +203,54 @@ ORCHESTRATOR_TEMPLATE = """\
 你是本项目唯一主控，负责理解项目目标、拆解工作并调度其他角色。所有 MissionCrew
 写操作必须使用上方显式 Agent Tool；不要在最终回复中生成 missioncrew-action 文本块。
 要点：
-- `channel.create` 的 workdir 只能是项目代码仓路径（见下方仓库清单）或其子目录；
-  不填时若项目只配了一个代码仓则自动使用它。新频道创建后是空的，
-  用 `message.publish` 把任务简报发进去，并通过 `mentions` 数组显式选择执行者开工。
-- `dashboard.save` 不携带 layout 字段时保留现有布局；携带则全量替换。
-  layout 每项含 id、type、title、x、y、width、height、content。
-  type 是通用展示原语（领域含义来自数据，不是类型）：
-    markdown（content.markdown）、table（columns+rows）、card（metrics 数值卡）、
-    chart（kind=bar|line|pie + data + x_key/y_key）、list（items）、
-    log（lines）、code（code+language）。
-  卡片可用 content.source 绑定平台实时数据，渲染时自动取数：
-    {{"from":"tasks","status":["待处理"],"labels":[]}}（项目任务→表格行）
-    {{"from":"document","path":"specs/x.md"}}（文档库文件→markdown）
-    {{"from":"audit","actions":[],"limit":30}}（审计事件→列表）
-    {{"from":"messages","channel":"general","limit":20}}（频道消息→列表）
-  例:需求管理面板 = table 卡片(静态 columns/rows 由你维护) + tasks 源的
-  实时任务表;测试记录面板 = table + list;日志分析 = list/log + markdown 结论。
-- 任务看板面板:`dashboard.save` 传 `kind: "taskboard"` 与 `source`(数据源 id,
-  内置 `built-in` 或自定义源短 id)即可创建。看板按 `filters` 分列,每项
-  {{"title","query","color"}} 定义一列,query 是标签表达式(& | ! 与括号,
-  `属性: *` 匹配带该属性标签的任务);状态就是 `status: 待处理` 这样的标签,
-  可写 `status: 处理中 & bug` 这类组合;也可传 `group_by` 按属性取值动态
-  分列(如 `group_by: "owner"`);不传 filters 时新建看板按数据源状态取值
-  生成默认列,用户也可在看板页直接增删筛选列。
-- `board_source.save` 创建或更新自定义任务数据源:cards 按 id 整体同步为
-  该源的任务(新增/覆盖/删除本次未出现的),每张必须有 id、title,可选
-  summary、status(状态文本)、labels、updated_at、meta、url(外部链接,
-  点击卡片打开);新任务会走项目自动处理规则。典型用法:配合
-  `automation.save` 的定时脚本同步 GitCode/GitHub Issue 等外部列表到数据源,
-  再用 `dashboard.save` 建任务看板绑定该源。删除用 `board_source.delete`
-  (仍被面板引用时会拒绝,删除连带该源全部任务)。
-- `guideline.save` 接收完整 markdown，文件必须以只含 name、description 的 YAML
-  frontmatter 开头；后端直接读取这两个属性，不使用 id/title/summary，也不做字段转换。
-  修改并重命名现有准则时传 original_name。`skill.save` 按 id 新建或覆盖，markdown 是
-  完整 SKILL.md 原文：frontmatter 至少含 name、description，附加属性原样保留。
-  不要建立文件、Runtime 或角色绑定列表；需要关联项目文档时，在正文中写标准相对
-  Markdown 链接。description 应简洁说明适用场景；所有执行者只会收到已启用准则的
-  description，并在相关时从对应准则 Markdown 文件读取完整正文。
-  Skill 仍结合当前任务自行判断是否适用、是否需要读取链接文件。
-- 验证、审查、安全和审批等项目要求也统一写入准则 Markdown，由 Agent 根据任务
-  判断是否适用；平台不再维护或机械执行独立的验证规则。`document.publish` 写入项目
-  版本化文档库并立即生成 Git 版本，覆盖已有路径时必须显式传 `overwrite: true`。
-  移动或重命名文档时使用 `document.rename`，传入 `source` 和尚不存在的 `target`；
-  目录由文档相对路径隐式形成，不需要也不存在独立的目录创建、移动或删除动作。
-  删除文档、准则或 Skill 时分别使用 `document.delete`、`guideline.delete`、`skill.delete`；
-  删除仅限主控，所有资源进入项目统一回收站。使用 `recycle.list` 查看，
-  `recycle.restore` 恢复；只有用户明确要求永久删除时才使用 `recycle.purge`。
-- 配置页面协作消息会明确给出当前页面、当前条目、未保存草稿，以及用户选中的
-  字段、行号和原文。只提问或讨论时直接回答，不要改配置；明确要求创建或修改时，
-  必须使用对应的 `guideline.save` / `skill.save` / `document.publish` 动作实际落库。
-- 你在当前 turn 的最终回复会由平台自动发布到触发消息所在的 Channel。
-  回答人类、汇总结论或说明当前状态时，直接写最终回复即可；除非确实需要向
-  另一个 Channel 单独发布消息，不要再调用空 `mentions` 的 `message.publish`
-  复制同一份答复或结果。派工仍必须使用 `message.publish`，并在 `mentions`
-  中显式写入目标角色。
-- 每个角色的 runtime/模型在项目定义角色时已经固定，你不能也不需要调整；
-  调度就是在角色名册中选人：结合角色定位、能力与偏好(风格/领域)挑选
-  最合适的角色，执行 `message.publish` 并把角色 id 写进 `mentions` 数组、
-  content 写清任务简报。这个显式命令是**唯一**的派发方式；你发出的任何消息
-  正文（包括最终回复）里的 @角色ID、@[角色ID] 都只是普通文字，永不触发执行，
-  可放心用于描述已完成工作或引用其他角色。
-- `message.publish` 返回非空 `dispatched` 时，当前 turn 的派发职责已经完成。
-  不要使用 `sleep`，不要周期性轮询频道历史、工作树或运行状态来等待执行角色，也不要
-  代替执行角色继续其任务。也不要向仍在执行的角色再次 `message.publish` 追问
-  中间状态或重复派发；同一频道同一角色的持久会话无法中途插入新 turn，这类请求
-  只会排在原任务后面，不能提供实时进度。
-  活动 Run 状态不会自动写入你的上下文；只有人类询问当前运行情况，或要求停止角色时，
-  才调用 `channel.runs.list` 获取当前 Channel 的一次性快照，并用返回的 `run_id` 调用
-  `channel.run.stop`。不要把按需查询变成等待循环。
-  立即在当前 Runtime 的最终回复中简短说明已派发，然后结束当前 turn；
-  不要为这条说明再调用一次 `message.publish`。执行角色完成或失败后，平台会
-  自动启动新的主控 turn 并交回完整结果，
-  届时再验收、继续调度或汇总。只有 `dispatched` 为空，或仍有不依赖已派发角色
-  的即时工作时，才继续当前 turn。
-- 当人类在同一条触发消息中选择多个角色时，平台只启动你，不会直接启动这些
-  角色。触发消息 JSON 的 `mentions` 和 `mention_spans` 保留了用户选择的完整名单；
-  请理解整体目标后决定并行、顺序或调整人选，再用 `message.publish` 的
-  `mentions` 分别写清任务并派发。
-- `automation.save` 创建或更新项目自动化脚本：script 是脚本全文（有 shebang 按
-  可执行文件运行，否则用 bash），cron 是五段 crontab（空字符串 = 仅手动触发），
-  actions 是脚本 token 允许调用的动作白名单。脚本由平台统一定时入口触发，
-  运行时可用 `missioncrew.agent_tool` CLI 调用平台动作（如定时刷新面板数据、
-  同步外部系统生成 Task、向频道发布巡检报告）。脚本内 `message.publish` 只有
-  显式传 mentions 才会触发角色；用户可在项目设置中按 Task label 配置自动处理
-  规则，脚本同步进来的 Task 会按规则自动派发。删除用 `automation.delete`。
+- 派发是唯一的调度方式：`message.publish` 传 `mentions` 角色数组，content 写清背景、
+  要求和验收标准。你发出的任何消息正文（包括最终回复）里的 @角色ID、@[角色ID] 都只是
+  普通文字，永不触发执行。角色的 runtime/模型在项目定义时已固定，你不能也不需要调整；
+  调度就是在角色名册中结合定位、能力与偏好选人。
+- `message.publish` 返回非空 `dispatched` 时，当前 turn 的派发职责已经完成：立即在最终
+  回复中简短说明已派发，然后结束当前 turn；不要为这条说明再调用一次 `message.publish`。
+  不要使用 `sleep`，不要周期性轮询频道历史、
+  工作树或运行状态，不要代替执行角色继续其任务，也不要向仍在执行的角色再次 `message.publish` 追问
+  中间状态——同一频道同一角色的持久会话无法中途插入新 turn，这类请求只会排在原任务后面，
+  不能提供实时进度。执行角色完成或失败后，平台会自动启动新的主控 turn 并交回完整结果，
+  届时再验收、继续调度或汇总。只有 `dispatched` 为空，或仍有不依赖已派发角色的即时工作时，
+  才继续当前 turn。
+- 活动 Run 状态不会自动写入你的上下文；只有人类询问运行情况或要求停止角色时，才调用
+  `channel.runs.list` 取一次性快照，并用返回的 `run_id` 调用 `channel.run.stop`。
+- 人类在同一条触发消息中选择多个角色时，平台只启动你；触发消息 JSON 的 `mentions` 和
+  `mention_spans` 保留了完整名单，由你决定并行、顺序或调整人选后分别派发。
+- 回答人类、汇总结论或说明状态时直接写最终回复：你在当前 turn 的最终回复会由平台自动发布
+  到触发消息所在的 Channel，不要再调用空 `mentions` 的 `message.publish` 复制同一份答复。
+  派工仍必须使用 `message.publish`，并在 `mentions` 中显式写入目标角色。
+- `channel.create` 的 workdir 只能是项目代码仓路径（见项目清单）或其子目录；新频道创建后
+  是空的，用 `message.publish` 把任务简报发进去并在 `mentions` 里点名执行者。
+- 配置页协作消息会给出当前页面、当前条目、未保存草稿和用户选中的内容：只提问或讨论时直接回答，
+  不要改配置；明确要求创建或修改时，必须用对应动作实际落库。
+- 面板、看板数据源、准则与 Skill 的保存格式、文档发布与重命名、自动化脚本、回收站的
+  规则见手册对应章节，操作前先读。
 - 协作链预算：本项目单条协作链最多 {max_runs} 次 Agent 执行。这只是防止失控循环的
   总次数兜底，不限制调度层级；请在预算内自主拆解、分派、验收并推进任务。
+"""
 
+# 主控的项目清单:附在公共区块末尾但不参与版本哈希,差异经本轮输入提示
+ROSTER_TEMPLATE = """\
+
+# 项目清单
+以下为实时数据,不参与公共上下文版本;条目新增、更新、归档或停用时,本轮输入会列出差异。
+## 角色名册（仅主控可见，各自定位供你选人参考）
+{roles}
 ## 项目代码仓
 {repos}
-
 ## 现有频道
 {channels}
-
 ## 现有面板
 {boards}
-
 ## 现有看板数据源
-{board_sources}
-
-## 现有准则文档
-{guidelines}
-
-## 现有 Skills
-{skills}
-
-## 现有自动化脚本
+{sources}
+## 现有自动化
 {automations}
-
-## 现有 Runtime
-{runtimes}
+## 停用的准则与 Skill
+{disabled}
 """
 
 
@@ -1224,6 +1210,7 @@ class ChatEngine:
         env = {}
         allowed_dirs = []
         agent_action = None
+        manual_path = "(本次执行未提供工作区)"
         if channel.project_id:
             project = self.store.get_project(channel.project_id)
             if project:
@@ -1242,6 +1229,8 @@ class ChatEngine:
                 env["MISSIONCREW_GUIDELINES_DIR"] = str(workspace.guidelines)
                 env["MISSIONCREW_SKILLS_DIR"] = str(workspace.skills)
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
+                env["MISSIONCREW_MANUAL"] = str(workspace.manual)
+                manual_path = str(workspace.manual)
                 token_file, token_id = self.agent_tools.ensure_token_file(
                     project, channel, role.id, workspace.root, run_id=run_id)
                 tool_url = default_agent_tool_url()
@@ -1319,17 +1308,13 @@ class ChatEngine:
             head = f"@{r.id}({r.name}" + (f"|{labels}" if labels else "") + ")"
             desc = " ".join((r.description or "").split())
             return f"  - {head}: {desc}" if desc else f"  - {head}"
+        roster_section, roster_snapshot = "", {}
         if is_orchestrator:
-            roster = "\n".join(
-                _tag(r) for r in self.store.list_roles(channel.project_id or "")
-                if r.id != role.id and r.enabled) or "(无其他已启用角色)"
+            roster_section, roster_snapshot = self._roster_snapshot(
+                project, role, _tag)
             collaboration_section = (
-                "- 只有你（项目主控）可以调度其他角色。派发必须执行显式命令："
-                "`message.publish` 传 `mentions` 角色数组，content 写清背景、"
-                "要求和验收标准。消息正文里的 @角色ID、@[角色ID] 都只是普通文字，"
-                "永不触发执行。\n"
-                "- 不需要协作就不要传 mentions；不要调度你自己，不要编造不存在的角色。\n"
-                "- 角色名册（仅主控可见，各自定位供你选人参考）：\n" + roster
+                "- 不需要协作就不要传 mentions；不要调度你自己，不要编造不存在的角色；"
+                "角色名册见下方「项目清单」。"
             )
         else:
             collaboration_section = (
@@ -1339,7 +1324,7 @@ class ChatEngine:
                 "自动交回主控；若由人类直接点名，结果只发布到频道，不会自动触发"
                 "主控，主控在后续被人类唤起时仍可读取完整记录。"
             )
-        common_body = CHAT_COMMON_BODY.format(
+        body_fields = dict(
             role_id=role.id, role_name=role.name, role_desc=role.description,
             role_capabilities=", ".join(role.capabilities) or "无特别标注",
             role_traits=role.preference or "无特别标注",
@@ -1352,10 +1337,16 @@ class ChatEngine:
             tool_section=tool_section,
             orchestrator_section=orchestrator_section,
             workdir_section=workdir_section,
+            manual_path=manual_path,
             channel_history_path=channel_history_path,
             collaboration_section=collaboration_section,
         )
-        context_version = hashlib.sha256(common_body.encode("utf-8")).hexdigest()[:16]
+        # 版本号只覆盖规则与索引;项目清单是实时数据,变化经本轮输入的差异提示告知
+        context_version = hashlib.sha256(
+            CHAT_COMMON_BODY.format(**body_fields, roster_section="")
+            .encode("utf-8")).hexdigest()[:16]
+        common_body = CHAT_COMMON_BODY.format(
+            **body_fields, roster_section=roster_section)
         common_prompt = DURABLE_CONTEXT_TEMPLATE.format(
             context_version=context_version, common_body=common_body)
         tool_context = (
@@ -1388,28 +1379,26 @@ class ChatEngine:
         previous_context = (saved_session["context_version"]
                             if saved_session and compatible else "")
 
-        # 准则/Skill 正文版本:与会话上次看到的比对,改了的只提示一句
-        resource_versions = project_resource_versions(project) if project else {}
-        resource_state = json.dumps(resource_versions, sort_keys=True)
+        # 准则/Skill 正文版本与主控清单条目:与会话上次看到的快照比对,只把
+        # 差异写进本轮输入,公共上下文版本不受影响
+        snapshot: dict[str, tuple[str, str]] = {
+            key: (version, "") for key, version in
+            (project_resource_versions(project) if project else {}).items()}
+        snapshot.update(roster_snapshot)
+        resource_state = json.dumps(
+            {key: version for key, (version, _) in snapshot.items()}, sort_keys=True)
         resource_notice = ""
         if saved_session and compatible:
             try:
                 seen = json.loads(saved_session.get("resource_state") or "{}")
             except (json.JSONDecodeError, TypeError):
                 seen = {}
-            changed = [key for key, version in resource_versions.items()
-                       if key in seen and seen[key] != version]
-            if changed:
-                labels = {"guideline": "准则", "skill": "Skill"}
-                items = "、".join(
-                    f"{labels.get(kind, kind)} `{name}`"
-                    for kind, name in (key.split(":", 1) for key in changed))
-                resource_notice = RESOURCE_NOTICE.format(items=items)
+            resource_notice = _change_notice(snapshot, seen)
         turn_prompt = TURN_PROMPT.format(
             tool_context=tool_context, resource_notice=resource_notice,
-            trigger=json.dumps(trigger_record, ensure_ascii=False, indent=2))
+            trigger=json.dumps(trigger_record, ensure_ascii=False))
         recovery_prompt = RECOVERY_PROMPT.format(
-            history=json.dumps(history_records, ensure_ascii=False, indent=2),
+            history=_compact_records(history_records),
             turn_prompt=turn_prompt,
         )
         prompt = common_prompt + "\n" + recovery_prompt
@@ -1554,7 +1543,6 @@ class ChatEngine:
             },
             "content": content,
             "mentions": mentions,
-            "mention_spans": mention_spans,
             "thread": {
                 "reply_to": message.get("reply_to"),
                 "root_id": message.get("root_id"),
@@ -1562,6 +1550,8 @@ class ChatEngine:
             },
             "created_at": message.get("created_at"),
         }
+        if mention_spans:
+            record["mention_spans"] = mention_spans
         if message_context:
             record["context"] = message_context
         if not redact_author and any(message.get(key) for key in
@@ -1653,66 +1643,71 @@ class ChatEngine:
         return visible_path
 
     def _orchestrator_section(self, project) -> str:
-        """主控专属上下文:动作说明 + 代码仓/现有频道/现有面板清单与调度预算。
+        """主控专属规则(派发纪律、频道创建、预算);动作细节在手册,清单见 _roster_snapshot。"""
+        return ORCHESTRATOR_TEMPLATE.format(max_runs=project.max_chain_runs)
 
-        清单让 create/update 决策有据可依(否则主控只能靠聊天历史猜 id,
-        容易触发"频道已存在/面板不存在")。
+    def _roster_snapshot(self, project, role: Role, tag) -> tuple[str, dict]:
+        """主控的项目清单:角色名册、代码仓、频道、面板、数据源、自动化、停用项。
+
+        清单附在公共区块末尾但不参与版本哈希;返回 (清单文本, {key: (版本, 行)})。
+        会话保存上次看到的版本,下一轮只把差异写进本轮输入,避免新建频道、配额停用
+        角色、数据源同步这类高频变化让主控整块重发。
         """
         def _short(cid: str) -> str:
             return cid.removeprefix(f"{project.id}:")
 
-        repos = "\n".join(
-            f"- {r.name or r.id}: {r.path or '(无本地路径)'}"
-            + (f"(git 远程 {r.remote})" if r.remote else "")
-            for r in project.repos) or "(未配置)"
-        channels = "\n".join(
-            f"- {_short(c.id)}(#{c.name}):{c.purpose or '无用途说明'}"
-            + (f";工作目录 {c.workdir}"
-               + ("(目录已不存在)" if not Path(c.workdir).is_dir() else "")
-               if c.workdir else "")
-            + f";Web {channel_resource_url(project.id, c.id)}"
-            for c in self.store.list_channels(
-                project.id, include_archived=False)) or "(无)"
-        def _board_line(b) -> str:
+        entries: dict[str, str] = {}
+
+        def _add(kind: str, ident: str, line: str) -> None:
+            entries[f"{kind}:{ident}"] = line
+
+        for r in self.store.list_roles(project.id):
+            if r.id != role.id and r.enabled:
+                _add("role", r.id, tag(r))
+        for r in project.repos:
+            _add("repo", r.id or r.name,
+                 f"- {r.name or r.id}: {r.path or '(无本地路径)'}"
+                 + (f"(git 远程 {r.remote})" if r.remote else ""))
+        for c in self.store.list_channels(project.id, include_archived=False):
+            _add("channel", _short(c.id),
+                 f"- {_short(c.id)}(#{c.name}):{c.purpose or '无用途说明'}"
+                 + (f";工作目录 {c.workdir}"
+                    + ("(目录已不存在)" if not Path(c.workdir).is_dir() else "")
+                    if c.workdir else "")
+                 + f";Web {channel_resource_url(project.id, c.id)}")
+        for b in self.store.list_boards(project.id):
             body = (f"数据源 {b.source},{len(b.filters)} 个筛选列"
                     if b.kind == "taskboard" else
-                    "组件 " + (", ".join(f"{w.id}/{w.type}" for w in b.layout)
-                               or "无"))
-            return (f"- {_short(b.id)}({b.name}):{b.description or '无描述'};"
-                    f"{body};Web {dashboard_resource_url(project.id, b.id)}")
+                    "组件 " + (", ".join(f"{w.id}/{w.type}" for w in b.layout) or "无"))
+            _add("board", _short(b.id),
+                 f"- {_short(b.id)}({b.name}):{b.description or '无描述'};{body};"
+                 f"Web {dashboard_resource_url(project.id, b.id)}")
+        for s in self.store.list_board_datasources(project.id):
+            _add("source", _short(s.id),
+                 f"- {_short(s.id)}({s.name}):{s.description or '无描述'}")
+        for a in self.store.list_automations(project.id):
+            _add("automation", _short(a.id),
+                 f"- {_short(a.id)}({a.name}):{a.description or '无描述'};"
+                 + (f"cron `{a.cron}`" if a.cron else "仅手动触发")
+                 + ("[停用]" if not a.enabled else ""))
+        _add("disabled", "guidelines", "- 停用的准则:"
+             + (", ".join(g.name for g in project.guidelines if not g.enabled) or "无"))
+        _add("disabled", "skills", "- 停用的 Skill:"
+             + (", ".join(s.id for s in project.skills if not s.enabled) or "无"))
 
-        boards = "\n".join(
-            _board_line(b) for b in self.store.list_boards(project.id)) or "(无)"
-        datasources = "\n".join(
-            f"- {_short(s.id)}({s.name}):{s.description or '无描述'};"
-            f"{len(self.store.list_tasks(project.id, source_id=_short(s.id)))}"
-            " 个任务"
-            for s in self.store.list_board_datasources(project.id)
-        ) or "(无自定义源;内置源 built-in 始终可用)"
-        guidelines = "\n".join(
-            f"- {g.name}:{g.description or '未填写 description'}"
-            f"{'[停用]' if not g.enabled else ''}"
-            f";Web {guideline_resource_url(project.id, g.name)}"
-            for g in project.guidelines) or "(无)"
-        skills = "\n".join(
-            f"- {s.id}({s.name or s.id}){'[停用]' if not s.enabled else ''}"
-            f";Web {skill_resource_url(project.id, s.id)}"
-            for s in project.skills) or "(无)"
-        automations = "\n".join(
-            f"- {_short(a.id)}({a.name}):{a.description or '无描述'};"
-            + (f"cron `{a.cron}`" if a.cron else "仅手动触发")
-            + f"{'[停用]' if not a.enabled else ''}"
-            for a in self.store.list_automations(project.id)) or "(无)"
-        runtimes = "\n".join(
-            f"- {backend.id}: adapter={backend.adapter};"
-            f"{'启用' if backend.enabled else '停用'}"
-            for backend in self.store.list_backends()) or "(无)"
-        return ORCHESTRATOR_TEMPLATE.format(
-            max_runs=project.max_chain_runs,
-            repos=repos, channels=channels, boards=boards,
-            board_sources=datasources,
-            guidelines=guidelines, skills=skills, automations=automations,
-            runtimes=runtimes)
+        def _block(kind: str, empty: str = "(无)") -> str:
+            return "\n".join(line for key, line in entries.items()
+                             if key.startswith(kind + ":")) or empty
+
+        section = ROSTER_TEMPLATE.format(
+            roles=_block("role", "(无其他已启用角色)"), repos=_block("repo", "(未配置)"),
+            channels=_block("channel"), boards=_block("board"),
+            sources=_block("source", "(无自定义源;内置源 built-in 始终可用)"),
+            automations=_block("automation"), disabled=_block("disabled"))
+        snapshot = {
+            key: (hashlib.sha256(line.encode("utf-8")).hexdigest()[:16], line)
+            for key, line in entries.items()}
+        return section, snapshot
 
     def _apply_orchestrator_actions(self, project, role_id: str, reply: str,
                                     root_id: int, depth: int) -> str:

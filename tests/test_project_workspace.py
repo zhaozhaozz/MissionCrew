@@ -418,7 +418,9 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     checkout_skill = (Path(chat_cfg.env["MISSIONCREW_SKILLS_DIR"])
                       / "checkout-dev" / "SKILL.md")
     assert "[结算说明](specs/checkout.md)" in checkout_skill.read_text()
-    assert str(checkout_skill) in chat_cfg.prompt
+    # 索引行不再逐条带路径:目录一次说明,入口按 <id>/SKILL.md 推导
+    assert str(checkout_skill) not in chat_cfg.prompt
+    assert f"{checkout_skill.parent.parent}/<id>/SKILL.md" in chat_cfg.prompt
     assert "# Checkout v2" not in chat_cfg.prompt  # 链接文件不再预注入
     assert "仅在任务需要时读取链接文件" in chat_cfg.prompt
     assert chat_cfg.env["MISSIONCREW_DOCUMENTS_DIR"] in chat_cfg.prompt
@@ -437,7 +439,8 @@ def test_document_library_versions_and_context_use_links_on_demand(seeded):
     assert str(guideline_dir) in chat_cfg.prompt
     assert guideline_dir.is_symlink()
     assert guideline_dir.resolve() == guideline_context_dir(project)
-    assert str(dev_guideline) in chat_cfg.prompt
+    assert str(dev_guideline) not in chat_cfg.prompt
+    assert f"{guideline_dir}/<name>.md" in chat_cfg.prompt
     assert str(guideline_dir.parent) in chat_cfg.allowed_dirs
     assert str(guideline_context_dir(project)) in chat_cfg.allowed_dirs
     assert str(skill_context_dir(project)) in chat_cfg.allowed_dirs
@@ -1179,9 +1182,9 @@ def test_orchestrator_can_generate_project_config_and_documents(seeded):
     assert all(action in prompt for action in (
         "guideline.save", "skill.save", "document.publish"))
     assert "save_rule" not in prompt and "只提问或讨论时直接回答" in prompt
-    assert "api-style:修改 API 时使用" in prompt
-    assert "local-ci(本地 CI)" in prompt
-    assert "## 现有 Runtime" in prompt and "std-1: adapter=" in prompt
+    assert "`api-style` · 修改 API 时使用" in prompt     # 准则索引对主控同样可见
+    assert "`local-ci` · 本地 CI" in prompt
+    assert "## 现有 Runtime" not in prompt              # Runtime 清单对调度无价值,已移除
 
 
 def test_project_config_managers_are_full_pages_with_orchestrator_requests(seeded):
@@ -1466,8 +1469,15 @@ def test_harness_workspace_contains_documents_without_polluting_source_workdir(s
     assert "`.agent/skills`、`.agents/skills`、`.claude/skills`" in cfg.prompt
     assert "MissionCrew 是一个本地 Agent harness" in (
         workspace / "README.md").read_text(encoding="utf-8")
-    assert "Shell 重定向、后台日志和工具自动生成" in (
-        workspace / "README.md").read_text(encoding="utf-8")
+    # 规则细节走渐进式披露:README 只留地图,边界与动作用法在手册里
+    readme = (workspace / "README.md").read_text(encoding="utf-8")
+    assert "manual.md" in readme and "Shell 重定向" not in readme
+    manual = (workspace / "manual.md").read_text(encoding="utf-8")
+    assert "Shell 重定向、后台日志和工具自动生成" in manual
+    assert "dashboard.save" in manual and "guideline.save" in manual
+    assert Path(cfg.env["MISSIONCREW_MANUAL"]) == workspace / "manual.md"
+    assert str(workspace / "manual.md") in cfg.prompt
+    assert "dashboard.save" not in cfg.prompt   # 面板用法不再占公共上下文
     assert (workspace / "project.md").is_file()
     assert (workspace / "tasks").is_dir()
     assert (workspace / "guidelines").is_dir()
@@ -2032,3 +2042,58 @@ def test_workspace_links_are_relative_and_legacy_absolute_links_get_rebuilt(seed
     for name, target in targets.items():
         link = workspace / name
         assert not os.path.isabs(os.readlink(link)) and link.resolve() == target.resolve()
+
+
+def test_orchestrator_roster_changes_notify_without_bumping_context_version(seeded):
+    """主控的项目清单不参与版本哈希:新建/归档频道、配额停用角色只在下一轮
+    的本轮输入里列差异,不触发整块公共上下文重发;清单本身仍随完整注入更新。"""
+    from missioncrew.runtime import adapters
+    chat = ChatEngine(seeded)
+    lead = seeded.get_role("webshop", "lead")
+    backend = seeded.get_backend("std-1")
+    msg = seeded.add_message("general", "human", "human", "@lead 看看", ["lead"])
+    first = chat._assemble(seeded.get_channel("general"), lead, backend, msg)
+    assert "# 项目清单" in first.common_prompt
+    assert "## 现有频道" in first.common_prompt and "## 角色名册" in first.common_prompt
+    adapters.get_adapter("mock").run(first)
+
+    seeded.put_channel(Channel(id="webshop:hotfix", name="hotfix", project_id="webshop",
+                               purpose="修复结算页崩溃"))
+    dev = seeded.get_role("webshop", "dev")
+    dev.enabled = False
+    seeded.put_role(dev)
+    second = chat._assemble(seeded.get_channel("general"), lead, backend, msg)
+    assert second.context_version == first.context_version
+    assert not second.context_changed
+    notice = second.turn_prompt.split("# MissionCrew 资源更新")[1].split("# 触发消息")[0]
+    assert "新增频道:hotfix(#hotfix):修复结算页崩溃" in notice
+    assert "角色 `dev` 已停用或删除" in notice
+    assert "hotfix" in second.common_prompt and "@dev(" not in second.common_prompt
+    adapters.get_adapter("mock").run(second)
+
+    third = chat._assemble(seeded.get_channel("general"), lead, backend, msg)
+    assert "# MissionCrew 资源更新" not in third.turn_prompt
+    channel = seeded.get_channel("webshop:hotfix")
+    channel.archived = True
+    seeded.put_channel(channel)
+    fourth = chat._assemble(seeded.get_channel("general"), lead, backend, msg)
+    assert fourth.context_version == first.context_version
+    assert "频道 `hotfix` 已归档或删除" in fourth.turn_prompt
+    assert "hotfix" not in fourth.common_prompt.split("## 现有频道")[1].split("## 现有面板")[0]
+
+
+def test_trigger_and_history_json_are_compact(seeded):
+    """触发消息与最近对话不再缩进,空的 mention_spans 省略,仍是合法 JSON。"""
+    chat = ChatEngine(seeded)
+    lead = seeded.get_role("webshop", "lead")
+    backend = seeded.get_backend("std-1")
+    seeded.add_message("general", "human", "human", "早前的消息", [])
+    msg = seeded.add_message("general", "human", "human", "@lead 看看", ["lead"])
+    cfg = chat._assemble(seeded.get_channel("general"), lead, backend, msg)
+    trigger_raw = cfg.turn_prompt.split("# 触发消息(JSON,你的任务简报由发起者撰写)\n", 1)[1].strip()
+    assert "\n" not in trigger_raw
+    trigger = json.loads(trigger_raw)
+    assert trigger["content"] == "@lead 看看" and "mention_spans" not in trigger
+    history_raw = cfg.recovery_prompt.split("# 最近对话(JSON,按消息边界格式化)\n", 1)[1].split("\n# ", 1)[0]
+    history = json.loads(history_raw)
+    assert [m["content"] for m in history] == ["早前的消息"]

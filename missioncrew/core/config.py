@@ -103,8 +103,8 @@ def chat_max_workers() -> int:
     return max(1, value)
 
 
-DEFAULT_CONTEXT_REINJECT_BYTES = 200_000
-DEFAULT_CONTEXT_REINJECT_TURNS = 5
+DEFAULT_CONTEXT_REINJECT_BYTES = 500_000
+DEFAULT_CONTEXT_REINJECT_TURNS = 20
 
 
 def _int_env(name: str, default: int) -> int:

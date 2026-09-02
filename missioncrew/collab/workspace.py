@@ -21,6 +21,7 @@ import yaml
 from ..core.config import mc_home, workspaces_dir
 from ..core.models import Project, Task
 from .documents import document_resource_url
+from .manual import render_manual
 from .project_context import guideline_context_dir, write_guideline_context
 from .resource_urls import missioncrew_project_url
 from .skills import (link_points_to, relative_link_target, skill_context_dir,
@@ -47,6 +48,7 @@ class AgentWorkspace:
     skills: Path
     tasks: Path
     channel_history: Path | None = None
+    manual: Path | None = None       # 完整手册,Agent 按需读取
 
 
 def _safe_segment(value: str) -> str:
@@ -336,66 +338,34 @@ def _render_project_file(project: Project) -> str:
 
 def _render_workspace_readme(workspace: AgentWorkspace, project_id: str,
                              *, has_history: bool) -> str:
+    """工作区目录说明;规则细节都在 manual.md,这里只留地图和三条硬约束。"""
     history = (
         "- `channel-history.json`：当前频道的完整历史；执行角色看到的是脱敏视图。\n"
         if has_history else "")
-    mutation = (
-        """## 修改 MissionCrew 资源
-
-当前聊天角色必须使用 Prompt 中的 MissionCrew Agent Tool 发布文档、创建或修改任务、
-发送消息、创建频道，以及保存或删除面板、文档、准则或 Skill。平台资源删除后进入统一
-回收站；主控可列出、恢复或永久删除回收项。工具会在当前回合返回结构化错误并记录角色
-审计。`documents/` 和 `tasks/` 中的直接写入同步只用于旧会话兼容。
-
-不要读取或打印 `.agent-tool-token`；使用 Agent Tool CLI，它会自行读取令牌文件。
-平台会把该短期 capability 确定绑定到当前 Run，调用时不要传 `--run-id`。
-"""
-        if has_history else ""
-    )
     return f"""# MissionCrew Agent Harness Workspace
 
 MissionCrew 是一个本地 Agent harness：它负责装配角色、Runtime/模型、项目上下文、
-共享资料和 Channel 协作；它不是当前业务代码仓。
+共享资料和 Channel 协作；它不是当前业务代码仓。此 `.missioncrew` 目录是平台提供的
+独立工作区（`{workspace.root}`），位于业务代码仓之外，这里的文件不会进入业务代码提交。
 
-此 `.missioncrew` 目录是平台提供的独立工作区，绝对路径为：
-`{workspace.root}`
+## 目录
 
-它位于业务代码仓之外。在这里创建或修改文件不会进入业务代码目录，也不会成为业务
-代码提交；源代码仍应在本轮提示词给出的工作目录或项目代码仓中修改。
-
-## 可用内容
-
-- `documents/`：项目版本化文档库的读取入口；协作草稿、报告和普通聊天产生的验证记录也归入该文档库。
-- `tasks/`：项目 Task 的 Markdown 快照；Task 是可编辑 Issue，状态简报是只读快照。
+- `manual.md`：MissionCrew 完整手册（平台规则、Agent Tool 各动作用法、文件系统边界、
+  资源 URL 规则）。做平台操作前先读对应章节。
+- `documents/`：项目版本化文档库的读取入口；协作草稿、报告和验证记录也归入该文档库。
+- `tasks/`：项目 Task 的只读 Markdown 快照；修改 Task 必须走 Agent Tool。
 - `guidelines/`：已启用项目准则的共享实时视图；根据 description 判断是否需要读取。
-- `skills/`：已启用项目 Skill 的共享实时视图；先读 SKILL.md，再按需使用同目录 scripts/、references/、assets/ 等文件。
-- `project.md`：项目简介与资源索引。
+- `skills/`：已启用项目 Skill 的共享实时视图；先读 SKILL.md，再按需使用同目录文件。
+- `project.md`：项目简介与代码仓；`temp/`：无项目约定时的临时目录，任务结束后清理。
 {history}
-{mutation}
-## 文件系统边界
+## 必须遵守
 
-只能读写 Prompt 中“本次可读写目录”列出的路径及其子目录。禁止访问 `/tmp`、
-`/var/tmp`、其他项目目录和未授权的用户文件；Shell 重定向、后台日志和工具自动生成
-文件同样受此限制。临时文件优先放在业务仓已有的任务目录；没有项目约定时使用
-`{workspace.root / "temp"}`，任务结束后清理。不要先尝试外部路径再等待权限批准。
-
-## 对外引用
-
-`.missioncrew` 下的目录是 Runtime 内部读写入口。向频道回复 MissionCrew 资源时，
-使用 `{missioncrew_project_url(project_id)}/<资源类型>/<稳定标识>`；频道、任务、面板、
-准则、Skill、文档、回收站的类型依次为 `channels`、`tasks`、`dashboards`、
-`guidelines`、`skills`、`documents`、`recycle-bin`。
-
-向频道回复项目文档时，使用
-`{document_resource_url(project_id)}/<文档库相对路径>`，例如
-`[设计说明]({document_resource_url(project_id)}/specs/design.md)`。不要在回复中输出
-本工作区绝对路径、`.missioncrew` 真实路径或 `file://` 链接。
-
-## Task 修改
-
-`tasks/` 中的 Markdown 全部是平台生成的只读快照。创建、更新、追加简报或删除 Task
-必须显式调用 Prompt 提供的 Agent Tool；回合结束时平台只刷新快照，不会把文件修改
-同步回 Task。正式项目文档和协作草稿应通过 `document.publish` 写入 `documents/`。
+- 只能读写 Prompt 中「本次可读写目录」列出的路径；边界与路径失败处理见手册第 3 节。
+- 修改 MissionCrew 资源（文档、Task、消息、频道、面板、准则、Skill）必须使用 Agent Tool；
+  不要读取或打印 `.agent-tool-token`，调用时不要传 `--run-id`。
+- 向频道引用平台资源用 `{missioncrew_project_url(project_id)}/<资源类型>/<稳定标识>`，
+  引用文档用 `{document_resource_url(project_id)}/<文档库相对路径>`；不要输出本工作区
+  绝对路径、`.missioncrew` 真实路径或 `file://` 链接。
 """
 
 
@@ -491,6 +461,7 @@ def prepare_agent_workspace(store: Store, project: Project,
         skills=root / "skills",
         tasks=root / "tasks",
         channel_history=(root / "channel-history.json") if has_history else None,
+        manual=root / "manual.md",
     )
     with _workspace_lock(root):
         root.mkdir(parents=True, exist_ok=True)
@@ -512,6 +483,7 @@ def prepare_agent_workspace(store: Store, project: Project,
 
         write_task_files(store, project.id, workspace.tasks)
         _atomic_write_text(root / "project.md", _render_project_file(project))
+        _atomic_write_text(root / "manual.md", render_manual(project))
         _atomic_write_text(
             root / "README.md",
             _render_workspace_readme(workspace, project.id, has_history=has_history))
