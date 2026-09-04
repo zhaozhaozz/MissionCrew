@@ -248,8 +248,16 @@ function miniMarkdown(text) {
       while (index < lines.length && !new RegExp(`^\\s*${fence[1]}`).test(lines[index]))
         body.push(lines[index++]);
       if (index < lines.length) index += 1;
+      const source = esc(body.join("\n"));
+      if (fence[2].toLowerCase() === "mermaid") {
+        // 图表围栏输出待渲染容器并保留源码:diagrams.js 按需加载 Mermaid 渲染成 SVG,
+        // 渲染库缺失或语法错误时读者仍能看到原文。
+        output.push(`<div class="markdown-diagram" data-diagram="mermaid">` +
+          `<pre class="markdown-diagram-source"><code class="language-mermaid">${source}</code></pre></div>`);
+        continue;
+      }
       const language = fence[2] ? ` class="language-${esc(fence[2])}"` : "";
-      output.push(`<pre><code${language}>${esc(body.join("\n"))}</code></pre>`);
+      output.push(`<pre><code${language}>${source}</code></pre>`);
       continue;
     }
 

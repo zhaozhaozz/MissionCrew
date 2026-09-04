@@ -1181,6 +1181,13 @@
   .markdown-frontmatter-table th:first-child { width: 1%; white-space: nowrap; }
   .markdown-body .markdown-frontmatter-value { display: block; padding: 0; background: transparent;
                                                 white-space: pre-wrap; overflow-wrap: anywhere; }
+  /* Markdown 图表:容器先显示源码,diagrams.js 渲染成功后换成 SVG,失败时源码上方标注原因 */
+  .markdown-diagram { margin: .9em 0; }
+  .markdown-diagram > pre { margin: 0; }
+  .markdown-diagram-canvas { overflow-x: auto; padding: 14px 12px; border: 1px solid var(--line);
+                             border-radius: 9px; background: var(--card); text-align: center; }
+  .markdown-diagram-canvas svg { max-width: 100%; height: auto; }
+  .markdown-diagram-error { margin-bottom: 6px; color: var(--bad); font-size: 12.5px; }
 
   /* ---- 项目统一回收站 ---- */
   .recycle-bin-head { display: flex; align-items: flex-start; justify-content: space-between;

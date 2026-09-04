@@ -3,6 +3,9 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
+
+from missioncrew.api import create_app
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -108,3 +111,26 @@ def test_list_item_carries_indented_block_content():
     html = render_markdown("- 第一项\n\n  ```py\n  x = 1\n  ```\n- 第二项\n")
 
     assert '<pre><code class="language-py">x = 1</code></pre></li>' in html
+
+
+def test_mermaid_fence_becomes_diagram_container_keeping_source():
+    html = render_markdown(
+        "```mermaid\nflowchart LR\n  A[\"甲<br/>乙\"] --> B\n```\n\n```text\nplain\n```\n",
+    )
+
+    assert '<div class="markdown-diagram" data-diagram="mermaid">' in html
+    assert ('<pre class="markdown-diagram-source"><code class="language-mermaid">'
+            "flowchart LR\n  A[&quot;甲&lt;br/&gt;乙&quot;] --&gt; B</code></pre></div>") in html
+    assert '<pre><code class="language-text">plain</code></pre>' in html
+
+
+def test_diagram_renderer_and_vendored_mermaid_are_served():
+    """图表渲染库随仓库落库、按需加载,页面不依赖外网 CDN。"""
+    client = TestClient(create_app())
+    html = client.get("/").text
+    diagrams = client.get("/assets/js/diagrams.js").text
+    vendor = client.get("/assets/vendor/mermaid.min.js")
+    assert "/assets/js/diagrams.js" in html
+    assert 'const LIBRARY_URL = "/assets/vendor/mermaid.min.js"' in diagrams
+    assert 'securityLevel: "strict"' in diagrams
+    assert vendor.status_code == 200 and 'globalThis["mermaid"]' in vendor.text
