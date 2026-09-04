@@ -219,7 +219,8 @@
                         color: var(--muted); font-size: 13px; }
   .msg .body h3 { color: var(--text); font-size: 15px; margin: 10px 0 4px; }
   .msg .body h4 { color: var(--text); font-size: 13.5px; margin: 8px 0 3px; }
-  .msg .body code { background: var(--bg-soft); border-radius: 4px; padding: 0 5px; font-size: 12.5px; }
+  /* 只作用于行内代码:pre 里的 code 沿用 .markdown-body pre code,否则内边距会在代码块首行前露出一个空格 */
+  .msg .body :not(pre) > code { background: var(--bg-soft); border-radius: 4px; padding: 0 5px; font-size: 12.5px; }
   .msg .body ul { margin: 4px 0; padding-left: 20px; }
   .msg .body.folded { position: relative; max-height: 300px; overflow: hidden; }
   .msg .body.folded:not(.expanded)::after { content: ""; position: absolute; inset: auto 0 0;
