@@ -585,25 +585,158 @@ def test_claude_waits_for_wake_turn_before_starting_channel_turn(
         worker.join(timeout=2)
 
 
-def test_claude_background_task_finishing_inside_turn_is_not_wake_reason(tmp_path):
-    """运行 turn 内结束的后台任务由 CLI 直接喂给当前回合,不再触发唤醒。"""
+def test_claude_background_task_finishing_inside_turn_follows_cli_queue(tmp_path):
+    """运行 turn 内结束的后台任务:本 turn 随后还有模型调用时由 CLI 就地喂给
+    模型,不再单独唤醒;最后一次模型调用期间结束的通知则排队等下一个唤醒。"""
     from types import SimpleNamespace
 
     from missioncrew.runtime import claude as claude_mod
     session = claude_mod._ClaudeSession(
         ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
-    session._handle_message({
-        "type": "system", "subtype": "task_started", "task_id": "bg2",
-        "task_type": "local_bash", "description": "quick job"})
-    session._active_config = SimpleNamespace(emit=None)
+    with session._turn_condition:
+        session._active_config = SimpleNamespace(emit=None, trigger_message_id=7)
+        session._turn_serial += 1
     try:
+        for task_id in ("bg2", "bg3"):
+            session._handle_message({
+                "type": "system", "subtype": "task_started", "task_id": task_id,
+                "task_type": "local_bash", "description": task_id})
+        # bg2 结束后模型又调了一次工具:通知已随该调用喂给模型
         session._handle_message({
             "type": "system", "subtype": "task_notification", "task_id": "bg2",
             "status": "completed", "summary": ""})
-        assert session._wake_reasons == []
+        session._handle_message({"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}})
+        assert session._pending_wakes == []
+        # bg3 在最后一次模型调用期间结束:turn 结束后 CLI 会单独唤醒
+        session._handle_message({
+            "type": "system", "subtype": "task_notification", "task_id": "bg3",
+            "status": "failed", "summary": "exit 1"})
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "done"})
         assert session._background_tasks == {}
     finally:
-        session._active_config = None
+        with session._turn_condition:
+            session._active_config = None
+    assert [task["task_id"] for task in session._pending_wakes] == ["bg3"]
+    session._handle_message({
+        "type": "system", "subtype": "init", "session_id": "native-3"})
+    assert [task["task_id"] for task in session._wake_sink.tasks] == ["bg3"]
+    assert session._wake_sink.tasks[0]["origin_trigger"] == 7
+    assert session._pending_wakes == []
+
+
+def _finish_wake_turn(session, text: str) -> None:
+    """模拟 CLI 的一个自唤醒 turn:init、正文、result。"""
+    session._handle_message({
+        "type": "system", "subtype": "init", "session_id": "native-2"})
+    session._handle_message({"type": "assistant", "message": {"content": [
+        {"type": "text", "text": text}]}})
+    session._handle_message({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": text})
+
+
+def _wait_wakes(woken: list, count: int) -> list:
+    deadline = time.time() + 5
+    while len(woken) < count and time.time() < deadline:
+        time.sleep(0.01)
+    assert len(woken) == count, f"期望 {count} 次唤醒,实际 {len(woken)}"
+    return sorted(woken, key=lambda payload: payload["output"])
+
+
+def test_claude_each_wake_turn_reports_exactly_one_task(tmp_path):
+    """同批结束的多个后台任务:CLI 按先后各起一个自唤醒 turn(2.1.261 实测),
+    每个唤醒只带自己那条任务及其 origin_trigger,不会被第一个唤醒整体取走;
+    唤醒 turn 进行中结束且该 turn 不再调模型的任务留给紧接着的下一个唤醒。"""
+    from types import SimpleNamespace
+
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    session.last_project_id = "webshop"
+    session.last_role_id = "dev2"
+    woken: list[dict] = []
+    claude_mod.set_wake_handler(woken.append)
+    try:
+        for task_id, trigger in (("bgA", 11), ("bgB", 22), ("bgC", 33)):
+            with session._turn_condition:
+                session._active_config = SimpleNamespace(
+                    emit=None, trigger_message_id=trigger)
+            session._handle_message({
+                "type": "system", "subtype": "task_started", "task_id": task_id,
+                "task_type": "local_bash", "description": f"wait {task_id}"})
+            with session._turn_condition:
+                session._active_config = None
+        # 空闲时 bgA、bgB 同时结束
+        for task_id in ("bgA", "bgB"):
+            session._handle_message({
+                "type": "system", "subtype": "task_notification",
+                "task_id": task_id, "status": "completed", "summary": "exit 0"})
+        _finish_wake_turn(session, "ACK bgA")
+        # bgC 在第二个唤醒 turn 进行中结束,该 turn 未再调模型
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-2"})
+        session._handle_message({
+            "type": "system", "subtype": "task_notification",
+            "task_id": "bgC", "status": "completed", "summary": "exit 0"})
+        session._handle_message({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "ACK bgB"}]}})
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "ACK bgB"})
+        _finish_wake_turn(session, "ACK bgC")
+
+        payloads = _wait_wakes(woken, 3)
+        assert [[task["task_id"] for task in p["tasks"]] for p in payloads] == [
+            ["bgA"], ["bgB"], ["bgC"]]
+        assert [p["tasks"][0]["origin_trigger"] for p in payloads] == [11, 22, 33]
+        assert session._pending_wakes == []
+        assert session._wake_sink is None
+    finally:
+        claude_mod.set_wake_handler(None)
+
+
+def test_claude_wake_turn_tool_permission_follows_last_run_policy(tmp_path):
+    """自唤醒 turn 没有对应运行:工具审批沿用最近一轮的策略(auto 放行,
+    审批事件写进唤醒缓冲而不是旧运行),需要人工确认或提问的场景明确拒绝。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    # 没有任何历史运行:仍然拒绝
+    assert session._permission_response(
+        "Bash", {"command": "ls"})["behavior"] == "deny"
+
+    events: list[tuple[str, str]] = []
+    asked: list[str] = []
+
+    def interact(kind, payload):
+        asked.append(kind)
+        return {"decision": "approve"}
+
+    config = _config(tmp_path, "claude_code", "PROMPT", {}, events,
+                     interact=interact)
+    with session._turn_condition:
+        session._last_config = config
+    session._handle_message({
+        "type": "system", "subtype": "init", "session_id": "native-w"})
+    assert session._wake_sink is not None
+
+    allowed = session._permission_response("Bash", {"command": "cat out.log"})
+    assert allowed["behavior"] == "allow"
+    assert events == []
+    assert any(kind == "permission_request"
+               for kind, _ in session._wake_sink.events)
+    # 提问工具无人可答
+    denied = session._permission_response("AskUserQuestion", {"questions": []})
+    assert denied["behavior"] == "deny"
+    # 需要人工审批的策略:不能挂到已结束的运行上,明确拒绝
+    config.runtime_policy.permissions.approval = "prompt"
+    denied = session._permission_response("Bash", {"command": "make"})
+    assert denied["behavior"] == "deny"
+    assert "汇报回合" in denied["message"]
+    assert asked == []
 
 
 def test_claude_background_task_records_origin_trigger(tmp_path):
@@ -624,7 +757,7 @@ def test_claude_background_task_records_origin_trigger(tmp_path):
     session._handle_message({
         "type": "system", "subtype": "task_notification", "task_id": "bg9",
         "status": "completed", "summary": ""})
-    assert session._wake_reasons[0]["origin_trigger"] == 42
+    assert session._pending_wakes[0]["origin_trigger"] == 42
 
 
 def test_claude_resume_replay_does_not_end_turn(tmp_path):

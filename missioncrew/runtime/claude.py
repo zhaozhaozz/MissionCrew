@@ -63,6 +63,8 @@ class _TurnSink:
     saw_partial_text: bool = False
     saw_partial_thinking: bool = False
     events: list[tuple[str, str]] = field(default_factory=list)
+    # 自唤醒 turn 对应的后台任务(CLI 一条 task_notification 起一个 turn)
+    tasks: list[dict] = field(default_factory=list)
 
 
 _QUESTION_TOOLS = {
@@ -223,10 +225,17 @@ class _ClaudeSession:
         self._result: dict = {}
         self._run_sink = _TurnSink()
         # 后台命令(run_in_background 的 local_bash 等)跨 turn 存活;
-        # 结束时 CLI 自发唤醒模型,输出经 _wake_sink 缓冲后交给 wake handler
+        # 结束时 CLI 自发唤醒模型,输出经 _wake_sink 缓冲后交给 wake handler。
+        # CLI 把每条 task_notification 排成队列,turn 之间按先后各起一个
+        # 自唤醒 turn;turn 内到达且随后还有模型调用的通知则就地喂给模型,
+        # 不再单独唤醒。_pending_wakes 按同样规则排队,唤醒 turn 开始时
+        # 取队首一条作为它的任务,这样 origin_trigger 不会串到别的唤醒上。
         self._background_tasks: dict[str, dict] = {}
         self._wake_sink: Optional[_TurnSink] = None
-        self._wake_reasons: list[dict] = []
+        self._pending_wakes: list[dict] = []
+        self._turn_serial = 0
+        # 最近一轮运行的配置:自唤醒 turn 没有对应运行,工具审批沿用它的策略
+        self._last_config: Optional[ExecutionConfig] = None
         # Claude 的后台 Agent 会跨越一次或多次顶层 result。task lifecycle
         # 消息是权威状态；tool id 只用于兼容尚未发送 task_started 的旧版本。
         self._native_agents: dict[str, dict] = {}
@@ -353,6 +362,8 @@ class _ClaudeSession:
                 # 与 _current_sink 使用同一条件锁：从确认无 wake turn 到登记
                 # 当前 run 之间不留可新建 _wake_sink 的竞态窗口。
                 self._active_config = config
+                self._last_config = config
+                self._turn_serial += 1
                 self.last_activity = time.time()
                 self.last_task_id = config.task_id
                 self.last_stage_name = config.stage_name
@@ -536,23 +547,35 @@ class _ClaudeSession:
             "description": f"后台命令：{meta['description']}",
             "summary": summary,
         })
-        # 运行 turn 内结束的任务由 CLI 直接把结果喂给当前回合;只有空闲
-        # 或自唤醒场景需要记为唤醒原因,供 wake handler 说明这轮因何而起。
+        # 先按"会单独唤醒"入队并记下到达时所在的 turn;若该 turn 随后
+        # 还有模型调用(收到 user 消息),CLI 已把通知就地喂给模型,届时
+        # 从队列剔除。空闲时到达的通知 turn 记 0,只能由下一个唤醒消费。
         with self._turn_condition:
-            if self._active_config is None or self._wake_sink is not None:
-                self._wake_reasons.append({
-                    **meta, "status": status, "summary": summary,
-                    "output_file": str(message.get("output_file") or ""),
-                })
-                del self._wake_reasons[:-10]
+            in_turn = (self._active_config is not None
+                       or self._wake_sink is not None)
+            self._pending_wakes.append({
+                **meta, "status": status, "summary": summary,
+                "output_file": str(message.get("output_file") or ""),
+                "turn": self._turn_serial if in_turn else 0,
+            })
+            del self._pending_wakes[:-10]
+
+    def _consume_in_turn_wakes(self) -> None:
+        """当前 turn 又发起了模型调用:本 turn 内到达的通知已随该调用
+        喂给模型,不会再单独唤醒,从待唤醒队列剔除。"""
+        with self._turn_condition:
+            if self._active_config is None and self._wake_sink is None:
+                return
+            self._pending_wakes = [
+                task for task in self._pending_wakes
+                if task.get("turn") != self._turn_serial]
 
     def _finish_wake_turn(self, result: dict) -> None:
         payload = None
         with self._turn_condition:
             sink = self._wake_sink
             self._wake_sink = None
-            reasons = self._wake_reasons
-            self._wake_reasons = []
+            reasons = list(sink.tasks) if sink is not None else []
             if sink is not None:
                 if result.get("session_id"):
                     self.session_id = str(result["session_id"])
@@ -700,6 +723,11 @@ class _ClaudeSession:
             if begin_wake and self.persistent:
                 sink = _TurnSink()
                 sink.emit = lambda kind, text: sink.events.append((kind, text))
+                # 一个唤醒 turn 只对应队首一条通知;同批的下一条由 CLI
+                # 紧接着再起一个 turn 来汇报
+                if self._pending_wakes:
+                    sink.tasks = [self._pending_wakes.pop(0)]
+                self._turn_serial += 1
                 self._wake_sink = sink
                 return sink
             return None
@@ -759,6 +787,7 @@ class _ClaudeSession:
             return
         if message_type == "user":
             self._note_turn_activity()
+            self._consume_in_turn_wakes()
             for block in (message.get("message") or {}).get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     tool_use_id = str(block.get("tool_use_id") or "")
@@ -878,13 +907,23 @@ class _ClaudeSession:
     def _permission_response(self, tool_name: str, tool_input: dict,
                              request: Optional[dict] = None) -> dict:
         config = self._active_config
+        # 自唤醒 turn(后台命令结束后的自动汇报)没有对应运行:沿用该会话
+        # 最近一轮的权限策略,让 Agent 能读到后台输出;但没有可交互的
+        # 运行,需要人工确认的工具与提问只能拒绝。
+        wake_turn = config is None
+        if wake_turn:
+            config = self._last_config
         if not config:
             return {"behavior": "deny", "message": "MissionCrew turn 已结束"}
+        interact = None if wake_turn else config.interact
+        emit = self._emit()
         if tool_name in _QUESTION_TOOLS:
             questions = _normalized_questions(tool_input)
-            if not config.interact:
-                return {"behavior": "deny", "message": "当前执行入口无法接收用户回答"}
-            response = config.interact("user_input_request", {
+            if not interact:
+                return {"behavior": "deny", "message": (
+                    "后台命令汇报回合无法接收用户回答" if wake_turn
+                    else "当前执行入口无法接收用户回答")}
+            response = interact("user_input_request", {
                 "runtime": "claude", "request_type": tool_name,
                 "questions": questions,
             })
@@ -925,18 +964,21 @@ class _ClaudeSession:
         })
         denial = _policy_denial(tool_name, tool_input, config)
         if denial:
-            emit_json(config.emit, "permission_request",
+            emit_json(emit, "permission_request",
                       {**payload, "status": "denied", "reason": denial})
             return {"behavior": "deny", "message": denial}
         if policy == "auto":
-            emit_json(config.emit, "permission_request",
+            emit_json(emit, "permission_request",
                       {**payload, "status": "auto_approved"})
             return {"behavior": "allow", "updatedInput": tool_input}
-        if policy == "deny" or not config.interact:
-            emit_json(config.emit, "permission_request",
-                      {**payload, "status": "denied"})
-            return {"behavior": "deny", "message": "MissionCrew 权限策略拒绝了工具调用"}
-        response = config.interact("permission_request", payload)
+        if policy == "deny" or not interact:
+            reason = ("后台命令汇报回合无法交互审批,请在下一轮频道回合中重试"
+                      if wake_turn and policy != "deny"
+                      else "MissionCrew 权限策略拒绝了工具调用")
+            emit_json(emit, "permission_request",
+                      {**payload, "status": "denied", "reason": reason})
+            return {"behavior": "deny", "message": reason}
+        response = interact("permission_request", payload)
         if response.get("decision") in ("approve", "approve_session"):
             allowed = {"behavior": "allow", "updatedInput": tool_input}
             if response.get("decision") == "approve_session" and suggestions:
@@ -1019,7 +1061,7 @@ class _ClaudeSession:
         with self._turn_condition:
             self._background_tasks.clear()
             self._wake_sink = None
-            self._wake_reasons = []
+            self._pending_wakes = []
             if self._active_config and not self._result_ready.is_set():
                 self._result = {
                     "subtype": "error_during_execution", "is_error": True,
