@@ -214,7 +214,7 @@ ACTION_DEFINITIONS = {
             "filters": ("taskboard 筛选列数组 [{title,query,color}],query 是"
                         "标签表达式(& | ! 与括号,`属性: *` 匹配带该属性的"
                         "任务);新建时缺省按数据源状态取值生成 status 列"),
-            "group_by": "可选分组属性名;非空时按属性取值动态分列,忽略 filters",
+            "group_by": "可选分组属性名;非空时在每个筛选列内按属性取值分组,保留 filters",
         },
     },
     "dashboard.delete": {
@@ -329,7 +329,7 @@ ACTION_ARGUMENTS = {
     "channel.list": {"scope"},
     "channel.create": {"id", "name", "purpose", "workdir"},
     "dashboard.save": {"id", "name", "description", "layout", "mode",
-                       "kind", "source", "filters"},
+                       "kind", "source", "filters", "group_by"},
     "dashboard.delete": {"id"},
     "board_source.save": {"id", "name", "description", "columns", "cards",
                           "mode"},
@@ -1230,7 +1230,7 @@ class AgentActionService:
             board.group_by = str(arguments.get("group_by") or "").strip()
         # 与 Web 端一致:新建看板未显式给筛选列时按数据源状态取值物化默认列
         if (board.kind == "taskboard" and created
-                and "filters" not in arguments and not board.group_by):
+                and "filters" not in arguments):
             board.filters = board_sources.default_filters(
                 board_sources.source_status_values(
                     self.store, project.id, board.source))

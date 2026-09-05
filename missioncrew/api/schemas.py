@@ -243,7 +243,7 @@ class BoardInput(BaseModel):
     source: Optional[str] = None         # taskboard 的数据源 id;None = 保留现值
     # taskboard 的筛选列 [{title,query,color}];None = 保留现值
     filters: Optional[list[dict]] = None
-    # taskboard 的分组属性;None = 保留现值,空串 = 回到筛选列模式
+    # taskboard 的列内分组属性;None = 保留现值,空串 = 清除列内分组
     group_by: Optional[str] = None
 
 

@@ -245,16 +245,7 @@ let taskboardLastData = null;   // 最近一次 /data 响应,增删筛选列时�
 function taskboardFilterBarHtml(data) {
   const options = (data.labels || [])
     .map(l => `<option value="${esc(l)}"></option>`).join("");
-  if (data.group_by) {
-    // 分组模式:列由属性取值动态生成,不提供手工增删
-    return `<div class="tb-filter-bar">
-      <span class="muted">分组:</span>
-      <span class="tb-chip" title="按属性「${esc(data.group_by)}」的取值分列">
-        ${esc(data.group_by)}<button class="tb-chip-x" title="退出分组,回到筛选列"
-        onclick="setTaskboardGroupBy('')">×</button></span>
-    </div>`;
-  }
-  const chips = data.columns.map((col, i) =>
+  const chips = taskboardFilters(data).map((col, i) =>
     `<span class="tb-chip" title="${esc(col.query)}">${esc(col.title)}<button
        class="tb-chip-x" data-index="${i}" title="移除此列"
        onclick="removeTaskboardFilter(+this.dataset.index)">×</button></span>`).join("");
@@ -265,16 +256,21 @@ function taskboardFilterBarHtml(data) {
       onkeydown="if(event.key==='Enter')addTaskboardFilter()">
     <datalist id="tb-label-options">${options}</datalist>
     <button class="ghost" onclick="addTaskboardFilter()">＋加列</button>
-    <input id="tb-group-by" placeholder="按属性分组,如 owner"
+    <input id="tb-group-by" placeholder="列内按属性分组,如 owner" value="${esc(data.group_by || "")}"
       onkeydown="if(event.key==='Enter')setTaskboardGroupBy(this.value)">
     <button class="ghost"
       onclick="setTaskboardGroupBy(document.getElementById('tb-group-by').value)">分组</button>
+    <button class="ghost" onclick="setTaskboardGroupBy('')"${data.group_by ? "" : " disabled"}>清除分组</button>
   </div>`;
 }
 
+function taskboardFilters(data) {
+  // columns 是渲染结果;增删筛选时以服务端回传的筛选配置为准。
+  return data?.filters?.length ? data.filters : (data?.columns || []);
+}
+
 function currentTaskboardFilters() {
-  // 面板未持久化 filters 时(旧版/默认状态列),把当前渲染列物化成显式筛选列
-  return (taskboardLastData?.columns || [])
+  return taskboardFilters(taskboardLastData)
     .map(c => ({ title: c.title, query: c.query, color: c.color || "" }));
 }
 
@@ -298,7 +294,7 @@ async function setTaskboardGroupBy(value) {
     uiAlert("分组属性名不能包含冒号或表达式运算符"); return;
   }
   await saveTaskboardConfig({ group_by: prop });
-  toast(prop ? `已按属性「${prop}」分组` : "已退出分组,回到筛选列", "success");
+  toast(prop ? `已在列内按属性「${prop}」分组` : "已清除列内分组", "success");
 }
 
 async function addTaskboardFilter() {
@@ -317,6 +313,18 @@ async function removeTaskboardFilter(index) {
   if (filters.length <= 1) { uiAlert("看板至少保留一列"); return; }
   filters.splice(index, 1);
   await saveTaskboardFilters(filters);
+}
+
+function taskboardColumnCardsHtml(col) {
+  const empty = `<div class="empty" style="padding:6px 4px">暂无条目</div>`;
+  if (!col.groups) return col.cards.map(boardCardHtml).join("") || empty;
+  const cards = new Map(col.cards.map(card => [card.id, card]));
+  return col.groups.map(group => {
+    const items = group.card_ids.map(id => cards.get(id)).filter(Boolean);
+    return `<section class="tb-card-group">
+      <h3 class="tb-group-title">${esc(group.title)}<span class="col-count">${items.length}</span></h3>
+      ${items.map(boardCardHtml).join("")}</section>`;
+  }).join("") || empty;
 }
 
 async function renderTaskboardBoard(board) {
@@ -340,6 +348,7 @@ async function renderTaskboardBoard(board) {
     return;
   }
   if (token !== taskboardRenderToken) return;
+  const previousData = taskboardLastData;
   taskboardLastData = data;
   const desc = document.getElementById("custom-board-desc");
   const sourceUpdated = data.source.updated_at
@@ -347,13 +356,15 @@ async function renderTaskboardBoard(board) {
   if (desc) desc.textContent =
     `数据源:${data.source.name}${sourceUpdated}`;
   const scrollState = captureKeyedScrollPositions(preview);
-  // 轮询重绘会整体替换 DOM:保留筛选输入框的草稿与焦点
-  const prevInput = preview.querySelector("#tb-new-filter");
-  const draft = prevInput ? prevInput.value : "";
-  const hadFocus = prevInput && document.activeElement === prevInput;
+  // 轮询重绘会整体替换 DOM:筛选与分组输入框都需要保留草稿和焦点。
+  const inputState = ["tb-new-filter", "tb-group-by"].flatMap(id => {
+    if (id === "tb-group-by" && previousData?.group_by !== data.group_by) return [];
+    const input = preview.querySelector(`#${id}`);
+    return input ? [{ id, value: input.value, focused: document.activeElement === input,
+      start: input.selectionStart, end: input.selectionEnd }] : [];
+  });
   const columns = data.columns.map(col => {
-    const cards = col.cards.map(boardCardHtml).join("")
-      || `<div class="empty" style="padding:6px 4px">暂无条目</div>`;
+    const cards = taskboardColumnCardsHtml(col);
     const rule = ruleForQuery(col.query);
     const ruleState = rule ? (rule.enabled ? "rule-on" : "rule-off") : "";
     const ruleTitle = rule
@@ -367,10 +378,16 @@ async function renderTaskboardBoard(board) {
       <div class="col-list" data-scroll-key="tb:${esc(col.key)}">${cards}</div></section>`;
   }).join("");
   preview.innerHTML = taskboardFilterBarHtml(data)
-    + `<div class="taskboard-grid">${columns}</div>`;
-  const nextInput = preview.querySelector("#tb-new-filter");
-  if (nextInput && draft) nextInput.value = draft;
-  if (nextInput && hadFocus) nextInput.focus();
+    + `<div class="taskboard-grid" data-scroll-key="tb:grid">${columns}</div>`;
+  for (const state of inputState) {
+    const input = preview.querySelector(`#${state.id}`);
+    if (!input) continue;
+    input.value = state.value;
+    if (state.focused) {
+      input.focus();
+      input.setSelectionRange(state.start, state.end);
+    }
+  }
   restoreKeyedScrollPositions(preview, scrollState);
 }
 

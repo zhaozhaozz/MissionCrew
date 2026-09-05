@@ -149,7 +149,7 @@ _MANUAL = """\
 - 任务看板:`dashboard.save` 传 `kind: "taskboard"` 与 `source`(数据源 id,内置 `built-in`
   或自定义源短 id)。看板按 `filters` 分列,每项 `{"title","query","color"}`,query 是标签
   表达式(& | ! 与括号,`属性: *` 匹配带该属性标签的任务);状态就是 `status: 待处理` 这样的
-  标签,可写 `status: 处理中 & bug`;也可传 `group_by` 按属性取值动态分列(如 `group_by: "owner"`);
+  标签,可写 `status: 处理中 & bug`;也可传 `group_by` 在各筛选列内按属性取值分组(如 `group_by: "owner"`),保留原有列与筛选条件;
   不传 filters 时按数据源状态取值生成默认列,用户也可在看板页直接增删筛选列。
 - `board_source.save` 创建或更新自定义任务数据源:cards 按 id 整体同步为该源的任务(新增/
   覆盖/删除本次未出现的),每张必须有 id、title,可选 summary、status、labels、updated_at、

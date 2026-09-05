@@ -811,7 +811,7 @@ class Board:
     # taskboard:筛选列 [{title,query,color}],每列一个标签表达式;
     # 空列表 = 按数据源状态取值分列(创建看板时默认物化为状态筛选列)
     filters: list[dict] = field(default_factory=list)
-    # taskboard:按属性分组模式;非空时忽略 filters,按该属性取值动态分列
+    # taskboard:非空时在各筛选列内按属性取值分组,不改变 filters 列定义
     group_by: str = ""
 
     def to_dict(self) -> dict:

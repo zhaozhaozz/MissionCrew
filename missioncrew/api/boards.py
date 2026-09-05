@@ -194,7 +194,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         # 新建看板未显式给筛选列时,把数据源状态取值物化为默认筛选列,
         # 用户后续可在看板上直接增删列
         if (board.kind == "taskboard" and existing is None
-                and body.filters is None and not board.group_by):
+                and body.filters is None):
             board.filters = board_sources.default_filters(
                 board_sources.source_status_values(
                     store, project_id, board.source))

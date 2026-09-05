@@ -262,12 +262,19 @@ def test_orchestrator_creates_taskboard_bound_to_custom_source(seeded):
         "id": "sync-board", "name": "同步看板", "kind": "taskboard",
         "source": "sync-list",
         "filters": [{"title": "P0", "query": "p0 & !已完成"}],
+        "group_by": "owner",
     }, context)
     board = seeded.get_board("webshop:sync-board")
     assert board.kind == "taskboard" and board.source == "sync-list"
+    assert board.group_by == "owner"
     assert board.filters == [{"title": "P0", "query": "p0 & !已完成",
                               "color": ""}]
     assert "同步看板" in result["summary"]
+    tools._execute_action(identity, "dashboard.save", {
+        "id": "grouped-default", "kind": "taskboard", "source": "sync-list",
+        "group_by": "owner",
+    }, context)
+    assert len(seeded.get_board("webshop:grouped-default").filters) == 4
     # 未知数据源拒绝
     with pytest.raises(AgentToolError):
         tools._execute_action(identity, "dashboard.save", {

@@ -538,6 +538,9 @@
   .taskboard-grid { flex: 1; min-height: 0; display: grid; grid-auto-flow: column;
                     grid-auto-columns: 320px; gap: 14px; align-items: stretch;
                     overflow-x: auto; overscroll-behavior-x: contain; }
+  .tb-group-title { display: flex; align-items: center; gap: 8px;
+                    margin: 8px 4px; font-size: 12px; color: var(--text-2); }
+  .tb-group-title .col-count { margin-left: auto; font-size: 11px; color: var(--muted); }
   .new-board-kinds { display: grid; gap: 6px; margin: 4px 0 10px; }
   .new-board-kinds label { display: flex; align-items: baseline; gap: 8px;
                            font-weight: 500; }
