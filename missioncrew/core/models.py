@@ -385,7 +385,12 @@ class TaskAutoRule:
 
 @dataclass
 class Project:
-    """项目中心条目:领域知识的主要载体，并显式指定唯一主控角色。"""
+    """项目中心条目:领域知识的主要载体，并显式指定唯一主控角色。
+
+    ``orchestrator_role_id`` 为空表示无主控模式:所有角色权限相同,都能看到角色
+    名册并经 message.publish 派发;人类同时点名多个角色时各自启动;由角色派发的
+    结果自动交回派发者,人类直接点名的结果只留在频道。
+    """
 
     id: str
     name: str
@@ -393,7 +398,7 @@ class Project:
     repos: list[ProjectResource] = field(default_factory=list)
     charter: str = ""            # 项目准则:目标、范围、业务边界
     dev_guidelines: str = ""     # 开发准则:架构原则、代码要求、变更约束
-    orchestrator_role_id: str = "lead"  # 负责整个项目和其他角色调度的唯一角色
+    orchestrator_role_id: str = "lead"  # 负责整个项目和其他角色调度的唯一角色;空 = 无主控
     max_chain_runs: int = DEFAULT_MAX_CHAIN_RUNS  # 单条人类消息最多触发的 Agent 执行数
     guidelines: list[GuidelineDocument] = field(default_factory=list)
     skills: list[ProjectSkill] = field(default_factory=list)
@@ -491,6 +496,15 @@ class Project:
         if legacy_boards and not d.get("task_board_filters"):
             d["task_board_filters"] = legacy_boards
         return cls(**d)
+
+    @property
+    def has_orchestrator(self) -> bool:
+        """是否有主控;False 即无主控模式(所有角色同权、点名各自启动)。"""
+        return bool(self.orchestrator_role_id)
+
+    def controls_platform(self, role_id: str) -> bool:
+        """角色是否拥有主控级权限:有主控时只有主控,无主控时所有角色。"""
+        return not self.orchestrator_role_id or role_id == self.orchestrator_role_id
 
 
 @dataclass

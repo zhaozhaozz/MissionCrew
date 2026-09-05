@@ -65,6 +65,8 @@ class PageContextInput(BaseModel):
     page_kind: str = Field(max_length=32)
     page_key: str = Field(max_length=1000)
     content: str = Field(max_length=2_000_000)
+    # 快照写进哪个角色的工作区;省略时用项目主控,无主控项目必须指定
+    role_id: Optional[str] = None
 
 
 class RuntimeInteractionInput(BaseModel):

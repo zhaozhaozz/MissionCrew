@@ -331,7 +331,9 @@ def _render_project_file(project: Project) -> str:
         f"# {project.name}\n\n"
         f"- Project ID: `{project.id}`\n"
         f"- Description: {project.description or '未填写'}\n"
-        f"- Orchestrator: `@{project.orchestrator_role_id}`\n\n"
+        f"- Orchestrator: "
+        + (f"`@{project.orchestrator_role_id}`" if project.orchestrator_role_id
+           else "无(所有角色权限相同)") + "\n\n"
         f"## 本地代码仓\n\n{repos}\n"
     )
 

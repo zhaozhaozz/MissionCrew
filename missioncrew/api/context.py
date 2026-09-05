@@ -131,9 +131,12 @@ class ApiContext:
 
     def validate_orchestrator_actor(self, project: Project,
                                     actor_role_id: Optional[str]) -> str:
-        """人类请求无需角色身份;以角色身份调用时只允许项目主控。"""
-        if actor_role_id and actor_role_id != project.orchestrator_role_id:
+        """人类请求无需角色身份;以角色身份调用时只允许拥有主控级权限的角色
+        (有主控时是主控,无主控时是本项目任一角色)。"""
+        if actor_role_id and not project.controls_platform(actor_role_id):
             raise HTTPException(403, f"只有项目主控 @{project.orchestrator_role_id} 可以执行此操作")
+        if actor_role_id and self.store.get_role(project.id, actor_role_id) is None:
+            raise HTTPException(403, f"角色不属于本项目: @{actor_role_id}")
         return actor_role_id or "human"
 
     def namespaced_id(self, project_id: str, raw_id: str, kind: str) -> str:

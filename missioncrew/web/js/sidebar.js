@@ -194,11 +194,18 @@ function roleInfo(id) {
   return projRoles().find(role => role.id === id) || null;
 }
 
+function chatEmptyHint() {
+  return peerModeProject()
+    ? "还没有消息：本项目没有主控，发送前请 @ 至少一个角色；@ 多个角色时各自启动。"
+    : "还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。";
+}
+
 function legalMentionTitle(id) {
   const role = roleInfo(id);
   if (role?.enabled === false)
     return `${roleDisabledReason(role)}：@${id}${role.name ? `（${role.name}）` : ""}，不会触发新执行`;
-  return `已确认提及：单选会触发 @${id}${role?.name ? `（${role.name}）` : ""}，多选由主控协调`;
+  return `已确认提及：单选会触发 @${id}${role?.name ? `（${role.name}）` : ""}，` +
+    (peerModeProject() ? "多选各自启动" : "多选由主控协调");
 }
 
 function createComposerMention(id) {
@@ -682,7 +689,7 @@ async function pollMessages() {
       refreshChannelRunningMarkers();
     const pane = document.getElementById("msgs");
     if (!pane.children.length)
-      pane.innerHTML = `<div class="chat-empty empty">还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。</div>`;
+      pane.innerHTML = `<div class="chat-empty empty">${chatEmptyHint()}</div>`;
   } catch (e) { /* 服务重启间隙,忽略 */ }
 }
 

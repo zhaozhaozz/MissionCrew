@@ -2,8 +2,14 @@
 
 function projObj() { return overview.projects.find(project => project.id === currentProject); }
 
+// 无主控模式:项目未选择主控,所有角色权限相同,多选提及各自启动
+function peerModeProject(project = projObj()) {
+  return Boolean(project) && !project.orchestrator_role_id;
+}
+
 function projectOrchestratorOptions(project, selectedId = project.orchestrator_role_id) {
-  return activeProjRoles().map(role =>
+  return `<option value="" ${selectedId ? "" : "selected"}>无主控 — 所有角色权限相同,@ 多个角色时各自启动</option>` +
+    activeProjRoles().map(role =>
     `<option value="${esc(role.id)}" ${role.id === selectedId ? "selected" : ""}>` +
     `@${esc(role.id)} — ${esc(role.name)} · ` +
     `${esc(role.runtime_id)}/${esc(role.model || "CLI 默认")}</option>`
@@ -14,7 +20,7 @@ function refreshProjectOrchestratorOptions() {
   const project = projObj();
   const select = document.getElementById("pf-orchestrator");
   if (!project || !select) return;
-  const selected = activeProjRoles().some(role => role.id === select.value)
+  const selected = (select.value === "" || activeProjRoles().some(role => role.id === select.value))
     ? select.value : project.orchestrator_role_id;
   select.innerHTML = projectOrchestratorOptions(project, selected);
 }
@@ -38,7 +44,7 @@ async function renderProjSettings() {
       <div><label>名称</label><input type="text" id="pf-name" value="${esc(project.name)}"></div>
     </div>
     <label>一句话描述</label><input type="text" id="pf-desc" value="${esc(project.description)}">
-    <label>项目主控角色（唯一；其固定 Runtime / 模型负责项目与其他角色调度）</label>
+    <label>项目主控角色（唯一；负责项目与其他角色调度。选“无主控”则所有角色权限相同，角色可互相派发，@ 多个角色时各自启动）</label>
     <select id="pf-orchestrator">${orchestratorOptions}</select>
     <label>单条协作链最大 Agent 执行次数（仅作失控兜底，不限制调度层级）</label>
     <input type="number" id="pf-max-chain-runs" min="1" step="1" value="${esc(project.max_chain_runs || 100)}">

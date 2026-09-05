@@ -10,6 +10,9 @@
   执行角色看不到其他角色名册,主控调度的结果自动交回主控，
   人类直接调度的结果只留在频道等待后续消息;
 - 所有主控调度与执行结果都对人类完全可见,全程审计。
+- 无主控模式(项目未选择主控):所有角色权限相同,都能看到名册并经 message.publish
+  派发;人类同时点名多个角色时各自启动;由角色显式派发的结果自动交回派发者,
+  人类直接点名的结果只留在频道。
 
 防失控:项目可配置的单条协作链执行总数上限 + 不响应自己 @ 自己。
 """
@@ -130,6 +133,15 @@ ORCHESTRATOR_WORKFLOW = """\
 4. 收尾等回报:`message.publish` 返回非空 `dispatched` 时,当前 turn 的派发职责已经完成,立即在最终回复中简短说明已派发,然后结束当前 turn;不要为这条说明再调用一次 `message.publish`。执行角色完成或失败后,平台会自动启动新的主控 turn 并交回完整结果,届时再验收、继续调度或汇总。
 5. 验收汇总:收到回报后对照验收标准核对,再继续派发或写结论;阶段结论用 `task.brief` 记进 Task 简报,跨轮状态靠它而不是会话记忆;验收要跑命令时到「项目代码仓」目录里做,当前工作目录不一定是代码仓。"""
 
+# 无主控项目:每个角色既执行也可派发,流程是执行与主控两条线的合并
+PEER_WORKFLOW = """\
+1. 读任务:本轮输入是最下方「触发消息」里的人类请求、其他角色派发的任务简报或回报,类型见「本轮触发」一行;角色定位不是任务;简报信息不足就在回复中提出,不要臆测扩大范围。
+2. 补背景:需要时再看,不要预加载。频道历史在「工作区一览」的 `channel-history.json`;准则和 Skill 先看「项目资料」里的 description,相关再读全文;项目文档在 `{documents_dir}`。
+3. 干活或派发:能自己完成的就在工作目录读写代码、运行命令;只能碰「必须遵守」里列出的可读写目录;临时文件优先放当前业务仓已有的任务目录,没有项目约定时使用 `{temp_dir}`,并在任务完成后清理。需要其他角色时在下方「角色名册」按定位、能力与偏好选人,用 `message.publish` 传 `channel`(当前频道就传 `{channel_id}`)和 `mentions` 角色数组派发,content 写清背景、要求和验收标准;这是唯一的派发方式。
+4. 写回平台:发布文档、创建或更新 Task、追加状态简报,一律用下方 Agent Tool;不要直接改 `documents/`、`tasks/` 里的文件。
+5. 回复:你的最终回复会被完整、原样发布到聊天频道;用中文,先说结论,再简述做了什么;不要贴大段日志;引用平台资源用 `/resources/...` 链接,不要输出内部路径。`message.publish` 返回非空 `dispatched` 时,当前 turn 的派发职责已经完成,简短说明已派发后立即结束 turn;被派发角色完成或失败后,平台会自动启动你的新 turn 并交回完整结果,届时再验收、继续派发或汇总。
+- 本项目没有主控:所有角色权限相同。由你派发的任务,结果自动交回你;由人类直接点名的任务,结果只发布到频道,不会自动触发其他角色;人类同时点名多个角色时各自启动、互不等待。"""
+
 DURABLE_CONTEXT_TEMPLATE = """\
 # MissionCrew 持久公共上下文
 上下文版本:{context_version}
@@ -206,9 +218,17 @@ RECOVERY_PROMPT = """\
 {turn_prompt}
 """
 
-ORCHESTRATOR_TEMPLATE = """\
+ORCHESTRATOR_HEADER = """\
 # 项目主控职责
-你是本项目唯一主控,负责理解项目目标、拆解工作并调度其他角色;所有 MissionCrew 写操作必须使用上方 Agent Tool。
+你是本项目唯一主控,负责理解项目目标、拆解工作并调度其他角色;所有 MissionCrew 写操作必须使用上方 Agent Tool。"""
+
+PEER_HEADER = """\
+# 协作职责(无主控项目)
+本项目没有主控,所有角色权限相同:你既执行任务,也可以按需把工作派发给其他角色;所有 MissionCrew 写操作必须使用上方 Agent Tool。"""
+
+# 主控级规则(派发纪律、按需查询、预算):有主控时给主控,无主控时给每个角色
+CONTROL_RULES_TEMPLATE = """\
+{header}
 纪律:
 - 你发出的任何消息正文(包括最终回复)里的 @角色ID、@[角色ID] 都只是普通文字,永不触发执行;派发只认 `message.publish` 的 `mentions`。不需要协作就不要传 mentions;不要调度你自己,不要编造不存在的角色;角色的 runtime/模型在项目定义时已固定,你不能也不需要调整。
 - 派发后不要使用 `sleep`,不要周期性轮询频道历史、工作树或运行状态,不要代替执行角色继续其任务,也不要向仍在执行的角色再次 `message.publish` 追问中间状态:同一频道同一角色的持久会话无法中途插入新 turn,这类请求只会排在原任务后面,不能提供实时进度。只有 `dispatched` 为空,或仍有不依赖已派发角色的即时工作时,才继续当前 turn。
@@ -234,14 +254,23 @@ def _role_line(r: Role) -> str:
             f" · 偏好 {r.preference or '未标注'} · 定位 {desc}")
 
 
-def _trigger_kind(record: dict, orchestrator_id: str, is_orchestrator: bool) -> str:
-    """一句话说明本轮触发是谁发的,主控据此区分人类请求与执行角色回报。"""
+def _trigger_kind(record: dict, orchestrator_id: str, is_orchestrator: bool,
+                  role_id: str = "") -> str:
+    """一句话说明本轮触发是谁发的,主控据此区分人类请求与执行角色回报。
+
+    无主控项目里没有固定的派发方:触发消息的提及范围点到自己就是派发,
+    否则是回报。"""
     author = record.get("author") or {}
     kind, author_id = str(author.get("type") or ""), str(author.get("id") or "")
     if kind == "human":
         text = "人类消息"
     elif kind == "agent":
-        if is_orchestrator:
+        if not orchestrator_id:
+            dispatched = any(span.get("role_id") == role_id
+                             for span in record.get("mention_spans") or [])
+            text = (f"角色 @{author_id} 派发的任务" if dispatched
+                    else f"角色 @{author_id} 的回报,请验收")
+        elif is_orchestrator:
             text = f"执行角色 @{author_id} 的回报,请验收"
         elif author_id == orchestrator_id:
             text = f"主控 @{author_id} 派发的任务"
@@ -364,17 +393,24 @@ class ChatEngine:
                 if author_type == "agent" else None)
 
         legal_spans: list[dict] = []
+        # 无主控模式:项目未选择主控,所有角色同权
+        peer_mode = bool(project) and not orchestrator
         # Agent 派发只认 message.publish 显式命令传入的结构化范围;正文里的
-        # 任何 @（含 @[role] 旧语法）都是普通文字。执行角色无论写什么，
-        # 都只把完整结果交回主控，避免横向看见或调用名册。
+        # 任何 @（含 @[role] 旧语法）都是普通文字。有主控时执行角色无论写
+        # 什么,都只把完整结果交回主控,避免横向看见或调用名册;无主控时
+        # 由角色显式派发的结果交回派发者,人类直接点名的留在频道。
         if author_type == "agent":
-            if author == orchestrator and mention_spans:
+            can_dispatch = peer_mode or author == orchestrator
+            if can_dispatch and mention_spans:
                 mentions, legal_spans = self._validate_mention_spans(
                     content, mention_spans, channel.project_id or "")
                 if author in mentions:
                     mentions = [item for item in mentions if item != author]
                     legal_spans = [span for span in legal_spans
                                    if span["role_id"] != author]
+            elif peer_mode:
+                dispatcher = self._dispatching_role(reply_to, author)
+                mentions = [dispatcher] if dispatcher else []
             elif (author != orchestrator and orchestrator_available
                   and not self._is_direct_human_dispatch(reply_to, author)):
                 mentions = [orchestrator]
@@ -428,8 +464,8 @@ class ChatEngine:
                 channel_id, author, author_type, content, mentions, reply_to,
                 root_id, depth, runtime_id or "", model or "", effort or "",
                 kind=kind, mention_spans=legal_spans, context=context)
-            if (author_type == "agent" and author == orchestrator
-                    and not legal_spans):
+            if (author_type == "agent" and not legal_spans
+                    and (peer_mode or author == orchestrator)):
                 # 旧契约的存量会话可能仍在正文里写 @[角色] 试图派发;
                 # 静默不触发会让协作链无声死亡,补一条平台提示。
                 known = {r.id for r in
@@ -465,6 +501,25 @@ class ChatEngine:
             and trigger.get("author_type") in ("human", "automation")
             and role_id in self._decoded_mentions(trigger)
         )
+
+    def _dispatching_role(self, trigger_message_id: Optional[int],
+                          role_id: str) -> str:
+        """无主控模式:触发消息若是其他角色经 message.publish 显式点名本角色
+        的派发,返回派发者 id;人类消息、平台消息或平台自动交回的消息返回空。
+
+        只认落库的结构化提及范围:自动交回的消息 mentions 由平台写入而没有
+        范围,因此验收方的最终回复不会再弹回执行方,避免两个角色互相唤起。
+        """
+        if trigger_message_id is None:
+            return ""
+        trigger = self.store.get_message(trigger_message_id)
+        if not trigger or trigger.get("author_type") != "agent":
+            return ""
+        author = str(trigger.get("author") or "")
+        if not author or author == role_id:
+            return ""
+        spans = self._decoded_mention_spans(trigger)
+        return author if any(span.get("role_id") == role_id for span in spans) else ""
 
     def wait_idle(self) -> None:
         """等待当前所有聊天执行(含级联)结束,供 CLI 同步模式与测试使用。"""
@@ -831,7 +886,7 @@ class ChatEngine:
 
     def _post_failure(self, channel: Channel, role_id: str, msg_id: int,
                       root_id: int, depth: int, content: str) -> None:
-        """公开执行失败；仅把主控派发的失败自动交回主控。"""
+        """公开执行失败;有主控时只把主控派发的失败交回主控,无主控时交回派发者。"""
         project = self.store.get_project(channel.project_id or "")
         if project:
             content = normalize_document_resource_urls(
@@ -846,7 +901,11 @@ class ChatEngine:
             self.store.get_role(channel.project_id or "", orchestrator)
             if orchestrator else None
         )
-        if (orchestrator_role and orchestrator_role.enabled
+        if project and not orchestrator:
+            dispatcher = self._dispatching_role(msg_id, role_id)
+            if dispatcher:
+                self._trigger(channel, dispatcher, failure_id, root_id, result_depth)
+        elif (orchestrator_role and orchestrator_role.enabled
                 and role_id != orchestrator
                 and not self._is_direct_human_dispatch(msg_id, role_id)):
             self._trigger(channel, orchestrator, failure_id, root_id, result_depth)
@@ -919,7 +978,7 @@ class ChatEngine:
             self.store.append_run_event(run_id, str(kind), _normalized(str(text)))
 
         reply = output
-        if project and role.id == project.orchestrator_role_id:
+        if project and project.controls_platform(role.id):
             reply = self._apply_orchestrator_actions(
                 project, role.id, reply, root_id=trigger_id, depth=0)
         elif ACTION_RE.search(reply):
@@ -930,13 +989,15 @@ class ChatEngine:
                 reply, project.id, document_roots)
         # 唤醒汇报继承"启动后台任务的那轮"的派发语义:该轮由人类直接点名
         # 时,汇报挂回原人类消息(post 会因此不再交回主控);否则按常规
-        # Agent 回复回路交回主控验收。
+        # Agent 回复回路交回主控验收。无主控项目一律挂回原触发消息,由
+        # post 按派发者(角色显式点名)或人类直达决定是否交回。
         origin_trigger = next(
             (int(task.get("origin_trigger") or 0) for task in tasks
              if task.get("origin_trigger")), 0)
         origin = (self.store.get_message(origin_trigger)
                   if origin_trigger else None)
-        if origin and self._is_direct_human_dispatch(origin_trigger, role_id):
+        if origin and ((project and not project.has_orchestrator)
+                       or self._is_direct_human_dispatch(origin_trigger, role_id)):
             reply_anchor = origin_trigger
             reply_root = int(origin.get("root_id") or origin_trigger)
             reply_depth = int(origin.get("depth") or 0) + 1
@@ -1088,7 +1149,7 @@ class ChatEngine:
                 return
 
             reply = result_output or result_summary
-            if project and role.id == project.orchestrator_role_id:
+            if project and project.controls_platform(role.id):
                 reply = self._apply_orchestrator_actions(
                     project, role.id, reply, root_id=root_id, depth=depth)
             elif ACTION_RE.search(reply):
@@ -1283,11 +1344,13 @@ class ChatEngine:
                     "可用动作:" + ", ".join(allowed_actions)
                 )
                 allowed_dirs = project_allowed_dirs(project, library, workspace.root)
-                if role.id == project.orchestrator_role_id:
+                if project.controls_platform(role.id):
                     orchestrator_section = self._orchestrator_section(project)
 
-        is_orchestrator = bool(project and role.id == project.orchestrator_role_id)
+        # 有主控时只有主控是"控制方";无主控时每个角色都是
+        is_orchestrator = bool(project and project.controls_platform(role.id))
         orchestrator_id = project.orchestrator_role_id if project else ""
+        peer_mode = bool(project and not orchestrator_id)
         known_roles = {r.id for r in self.store.list_roles(channel.project_id or "")}
 
         history_records = []
@@ -1317,7 +1380,13 @@ class ChatEngine:
         short_channel_id = (channel.id.removeprefix(f"{channel.project_id}:")
                             if channel.project_id else channel.id)
         roster_section, roster_snapshot = "", {}
-        if is_orchestrator:
+        if peer_mode:
+            roster_section, roster_snapshot = self._roster_snapshot(
+                project, role, _role_line)
+            workflow_section = PEER_WORKFLOW.format(
+                documents_dir=documents_dir, temp_dir=temp_dir,
+                channel_id=short_channel_id)
+        elif is_orchestrator:
             roster_section, roster_snapshot = self._roster_snapshot(
                 project, role, _role_line)
             workflow_section = ORCHESTRATOR_WORKFLOW.format(channel_id=short_channel_id)
@@ -1395,7 +1464,8 @@ class ChatEngine:
             resource_notice = _change_notice(snapshot, seen)
         turn_prompt = TURN_PROMPT.format(
             resource_notice=resource_notice,
-            trigger_kind=_trigger_kind(trigger_record, orchestrator_id, is_orchestrator),
+            trigger_kind=_trigger_kind(trigger_record, orchestrator_id,
+                                       is_orchestrator, role.id),
             trigger=json.dumps(trigger_record, ensure_ascii=False))
         recovery_prompt = RECOVERY_PROMPT.format(
             history=_compact_records(history_records), turn_prompt=turn_prompt)
@@ -1508,7 +1578,8 @@ class ChatEngine:
         known_roles = (known_roles if known_roles is not None else
                        ({r.id for r in self.store.list_roles(project.id)}
                         if project else set()))
-        full_view = role is None or not project or role.id == orchestrator_id
+        full_view = (role is None or not project or not orchestrator_id
+                     or role.id == orchestrator_id)
         redact_author = (not full_view and author_type == "agent"
                          and author not in {role.id, orchestrator_id})
 
@@ -1589,7 +1660,8 @@ class ChatEngine:
         project_id = channel.project_id or "_unscoped"
         canonical = platform_history_dir(project_id, channel.id) / "channel-history.json"
         orchestrator_id = project.orchestrator_role_id if project else ""
-        scoped = bool(role and project and role.id != orchestrator_id)
+        scoped = bool(role and project and orchestrator_id
+                      and role.id != orchestrator_id)
         visible_path = (chat_workspace_dir(project.id, channel.id, role.id)
                         / "channel-history.json"
                         if role and project else canonical)
@@ -1632,7 +1704,7 @@ class ChatEngine:
                               / "channel-history.json")
                     if not target.parent.is_dir():
                         continue
-                    target_scoped = target_role.id != project.orchestrator_role_id
+                    target_scoped = not project.controls_platform(target_role.id)
                     records = (
                         [self._message_record(m, target_role, project, known_roles)
                          for m in messages]
@@ -1641,8 +1713,11 @@ class ChatEngine:
         return visible_path
 
     def _orchestrator_section(self, project) -> str:
-        """主控专属规则(派发纪律、频道创建、预算);动作细节在手册,清单见 _roster_snapshot。"""
-        return ORCHESTRATOR_TEMPLATE.format(max_runs=project.max_chain_runs)
+        """主控级规则(派发纪律、频道创建、预算);动作细节在手册,清单见 _roster_snapshot。
+        有主控时给主控,无主控时给每个角色。"""
+        header = ORCHESTRATOR_HEADER if project.has_orchestrator else PEER_HEADER
+        return CONTROL_RULES_TEMPLATE.format(
+            header=header, max_runs=project.max_chain_runs)
 
     def _roster_snapshot(self, project, role: Role, tag) -> tuple[str, dict]:
         """主控的项目清单:角色名册、代码仓、频道、面板、数据源、自动化、停用项。
@@ -1702,7 +1777,9 @@ class ChatEngine:
                                 if key.startswith("channel:")) or "(无)"
         parts = [
             ROSTER_HEADER,
-            "## 角色名册（仅主控可见，各自定位供你选人参考）\n"
+            ("## 角色名册（仅主控可见，各自定位供你选人参考）\n"
+             if project.has_orchestrator else
+             "## 角色名册（各自定位供你派发时选人参考）\n")
             + (_block("role") or "(无其他已启用角色)"),
             "## 项目代码仓\n" + (_block("repo") or "(未配置)"),
             "## 现有频道\n用 `channel.list` 按需查看(含归档);新建前先查重。活跃频道 id:"

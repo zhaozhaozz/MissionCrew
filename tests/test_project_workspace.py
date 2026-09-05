@@ -1352,7 +1352,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "fileRefPicker" not in js and "runtime_instructions" not in js
     assert "line_start" in js and "selected_text" in js
     assert "context: { page_collaboration:" in js
-    assert "content: request" in js
+    assert "content: peer ? `@${targetRole} ${request}` : request" in js
     assert "/content-channel" in js and "content_key: context.contentKey" in js
     assert "resolveConfigChatChannel" in js
     assert '"POST", `/api/projects/${encodeURIComponent(currentProject)}/content-channel`' in js
@@ -1401,7 +1401,7 @@ def test_binary_document_chat_context_keeps_file_identity_without_text_selection
     assert "effectiveSelection = currentPage?.text_snapshot_available === false" in configs
     assert "? null : selection" in configs
     assert "没有 current_page.content_path、selection 或行号" in configs
-    assert "非文本文件；主控将收到文件名与文档路径" in configs
+    assert "将收到文件名与文档路径" in configs
     assert 'docPaneContentType = "binary"' in documents
     binary_branch = documents.index('docPaneContentType = "binary"')
     clear_selection = documents.index("configChatSelection = null", binary_branch)

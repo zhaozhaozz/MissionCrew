@@ -482,8 +482,12 @@ function renderSidebar() {
   if (!_secState("automations", "automation-list", "cnt-automations", automations.length))
     document.getElementById("automation-list").innerHTML = automations.map(automationSidebarItem).join("")
       || `<div class="side-item" onclick="openAutomationEditor(null)">＋ 新建自动化脚本…</div>`;
-  // 角色 -> 聊天 @(主控带标记)
+  // 角色 -> 聊天 @(主控带标记);无主控项目改提示文字
   const orch = projObj()?.orchestrator_role_id;
+  const roleHelp = document.getElementById("role-help-text");
+  if (roleHelp) roleHelp.textContent = peerModeProject()
+    ? "输入 @ 后从列表选择角色；本项目没有主控，必须 @ 至少一个角色，多个角色各自启动"
+    : "输入 @ 后从列表选择角色；单个角色直接执行，多个角色交给主控协调";
   if (!_secState("roles", "role-list", "cnt-roles", projRoles().length))
     document.getElementById("role-list").innerHTML = projRoles().map(r => {
       const disabled = r.enabled === false;

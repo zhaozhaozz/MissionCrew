@@ -440,7 +440,7 @@ def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seed
     assert result["dispatched"] == ["dev"]
     assert result["handoff"] == "end_turn"
     assert "不要向仍在执行的角色追问中间状态" in result["resume"]
-    assert "自动启动新的主控 turn" in result["resume"]
+    assert "自动启动你的新 turn" in result["resume"]
     assert "not_dispatched" not in result
 
 

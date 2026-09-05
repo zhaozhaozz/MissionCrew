@@ -32,15 +32,20 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 new_roles = seed_mod.project_roles_from_templates(store, body.id)
             except RuntimeError as exc:
                 raise HTTPException(400, str(exc))
-        orchestrator = body.orchestrator_role_id or (
-            existing.orchestrator_role_id if existing else new_roles[0].id)
-        if existing:
+        # None = 保留现值(新项目取模板首项);空字符串 = 无主控模式
+        if body.orchestrator_role_id is None:
+            orchestrator = (existing.orchestrator_role_id if existing
+                            else new_roles[0].id)
+        else:
+            orchestrator = body.orchestrator_role_id.strip()
+        if orchestrator and existing:
             orchestrator_role = store.get_role(body.id, orchestrator)
             if orchestrator_role is None:
                 raise HTTPException(400, f"主控角色不属于当前项目: @{orchestrator}")
             if not orchestrator_role.enabled:
                 raise HTTPException(400, f"主控角色已停用，请先启用: @{orchestrator}")
-        if is_new and orchestrator not in {role.id for role in new_roles}:
+        if (orchestrator and is_new
+                and orchestrator not in {role.id for role in new_roles}):
             raise HTTPException(400, f"主控角色不属于全局角色模板: @{orchestrator}")
         data["orchestrator_role_id"] = orchestrator
         data["max_chain_runs"] = (body.max_chain_runs if body.max_chain_runs is not None

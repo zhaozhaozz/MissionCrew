@@ -579,7 +579,7 @@ async function openNewBoardDialog() {
       <label><input type="radio" name="nb-kind" value="taskboard" checked
         onchange="toggleNewBoardKind()"> 任务看板 <span class="muted">选数据源,按标签表达式筛选,按状态分列</span></label>
       <label><input type="radio" name="nb-kind" value="agent"
-        onchange="toggleNewBoardKind()"> 主控创建面板 <span class="muted">一句话提需求,主控用组件搭建</span></label>
+        onchange="toggleNewBoardKind()"> ${peerModeProject() ? "角色创建面板" : "主控创建面板"} <span class="muted">一句话提需求,${peerModeProject() ? "由指定角色" : "主控"}用组件搭建</span></label>
     </div>
     <div id="nb-taskboard">
       <label>名称</label><input type="text" id="nb-name" placeholder="例如 缺陷追踪">
@@ -589,10 +589,13 @@ async function openNewBoardDialog() {
         状态(待处理/处理中/已阻塞/已完成)也是可筛选标签。</p>
     </div>
     <div id="nb-agent" style="display:none">
+      ${peerModeProject() ? `<label>交给哪个角色</label>
+      <select id="nb-role">${activeProjRoles().map(r =>
+        `<option value="${esc(r.id)}">@${esc(r.id)} — ${esc(r.name)}</option>`).join("")}</select>` : ""}
       <label>需求描述</label>
       <textarea id="nb-request" rows="4" style="height:auto"
         placeholder="例如:建一个需求管理面板,上面是需求清单表格,下面实时显示进行中的任务"></textarea>
-      <p class="muted">需求会发到项目 general 频道交给主控,过程可在聊天页查看;创建完成后面板自动出现在侧栏,之后的修改在面板编辑模式的专属频道里继续对话。</p>
+      <p class="muted">需求会发到项目 general 频道${peerModeProject() ? "交给所选角色" : "交给主控"},过程可在聊天页查看;创建完成后面板自动出现在侧栏,之后的修改在面板编辑模式的专属频道里继续对话。</p>
     </div>`,
     `<button class="action" onclick="submitNewBoard()">创建</button>
      <button class="ghost" onclick="fdlg.close()">取消</button>`);
@@ -625,20 +628,25 @@ async function submitNewBoard() {
     toast(`已创建任务看板「${name}」`, "success");
     return;
   }
-  // 主控创建:需求发到 general 频道,创建过程全程可见
+  // Agent 创建:需求发到 general 频道,创建过程全程可见;有主控交主控,
+  // 无主控交所选角色(结构化提及,正文 @ 只是普通文字)
   const project = projObj();
   const request = document.getElementById("nb-request").value.trim();
   if (!request) { uiAlert("请描述你想要的面板"); return; }
+  const target = peerModeProject()
+    ? document.getElementById("nb-role")?.value : project.orchestrator_role_id;
+  if (!target) { uiAlert("本项目没有可用角色"); return; }
   const channel = projChannels().find(c =>
     c.id.endsWith(":general") || c.id === "general") || projChannels()[0];
   if (!channel) { uiAlert("本项目还没有频道,请先在项目设置中创建"); return; }
   await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
     author: "human",
-    content: `@${project.orchestrator_role_id} 自定义面板需求:${request}\n` +
+    content: `@${target} 自定义面板需求:${request}\n` +
       `请用 MissionCrew Agent Tool 的 dashboard.save 完成,面板 id 用英文短横线命名。`,
+    mentions: [{ role_id: target, start: 0, end: target.length + 1 }],
   });
   fdlg.close();
-  toast(`已交给主控 @${project.orchestrator_role_id}(频道 #${channel.name});完成后面板会出现在侧栏`, "success", 6000);
+  toast(`已交给 @${target}(频道 #${channel.name});完成后面板会出现在侧栏`, "success", 6000);
 }
 
 async function openTaskboardDialog(boardId) {

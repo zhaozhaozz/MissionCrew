@@ -133,12 +133,12 @@
           <button class="danger compact" type="button" onclick="deleteChannel(currentChan)">删除频道</button>
         </span>
       </div>
-      <div id="msgs"><div class="chat-empty empty">还没有消息：从角色列表选择提及对象；不选择时默认交给项目主控。</div></div>
+      <div id="msgs"><div class="chat-empty empty">还没有消息：从角色列表选择提及对象。</div></div>
       <div id="composer">
         <div id="chat-composer-head">
           <div class="role-selector">
             <span class="role-help" tabindex="0" aria-label="角色选择说明">i
-              <span class="role-help-tip" role="tooltip">输入 @ 后从列表选择角色；单个角色直接执行，多个角色交给主控协调</span>
+              <span class="role-help-tip" role="tooltip" id="role-help-text">输入 @ 后从列表选择角色；单个角色直接执行，多个角色交给主控协调</span>
             </span>
             <div id="role-bar"></div>
           </div>
@@ -371,7 +371,8 @@
       <button class="config-chat-toggle" id="config-chat-toggle" type="button"
         onclick="toggleConfigChatCollapsed()" aria-label="收起主控对话" title="收起主控对话">−</button>
       <div class="config-chat-head">
-        <strong>与项目主控交流</strong>
+        <strong id="config-chat-title">与项目主控交流</strong>
+        <select id="config-chat-role" class="compact" title="本项目没有主控，选择接收本页对话的角色" hidden></select>
         <span id="config-chat-context">当前页面：—</span>
         <button class="ghost" id="config-chat-open-channel" type="button"
           onclick="openConfigChatChannel()" style="display:none">打开频道</button>

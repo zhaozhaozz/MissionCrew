@@ -200,9 +200,48 @@ _MANUAL = """\
 """
 
 
+_PEER_FLOW = """\
+## 0. 典型流程
+
+本项目没有主控,所有角色权限相同:每个角色既执行任务,也可以把工作派发给其他角色。
+一轮的流程:
+1. 读任务:触发消息是人类请求、其他角色派发的简报或回报;信息不足就在回复中提出,不要扩大范围。
+2. 补背景:需要时再看频道历史、准则、Skill、项目文档,不要预加载。
+3. 干活或派发:能自己完成的在工作目录读写代码、运行命令;需要其他角色时按角色名册选人,
+   `message.publish` 传 `channel`、`mentions` 和写清背景、要求、验收标准的简报。
+4. 写回平台:发布文档、创建或更新 Task、追加状态简报一律走 Agent Tool。
+5. 回复:先说结论,再说做了什么;引用资源用 `/resources/...` 链接。`dispatched` 非空就说一句
+   已派发并结束 turn,不轮询、不追问、不代劳,平台会在被派发角色完成后自动唤起你并交回结果。
+"""
+
+# 无主控项目:去掉"仅主控"限定,派发与回传按派发者口径描述
+_PEER_REPLACEMENTS = (
+    ("(仅主控)", ""),
+    ("(删除仅主控)", ""),
+    ("(仅主控,scope=", "(scope="),
+    ("动作的说明、参数与是否仅主控可用。", "动作的说明与参数(本项目无主控,所有动作对每个角色开放)。"),
+    ("## 7. 消息与派发(主控)", "## 7. 消息与派发"),
+    ("交由主控或人类调整", "交由派发者或人类调整"),
+    ("完成或失败后,平台自动启动新的主控 turn 并交回完整结果,届时再验收、继续调度或汇总。",
+     "完成或失败后,平台自动启动派发者的新 turn 并交回完整结果,届时再验收、继续派发或汇总。"),
+    ("- 人类在同一条触发消息中选择多个角色时,平台只启动主控;触发消息 JSON 的 `mentions` 和\n"
+     "  `mention_spans` 保留完整名单,由主控决定并行、顺序或调整人选,再分别派发。",
+     "- 本项目没有主控:人类在同一条触发消息中选择多个角色时,每个被点名的角色都会启动、互不等待;\n"
+     "  由角色 `message.publish` 派发的结果自动交回派发者,人类直接点名的结果只留在频道。"),
+)
+
+
 def render_manual(project: Project) -> str:
     """按项目渲染手册;占位用字符串替换而非 format,正文里的 JSON 花括号不必转义。"""
-    return (_MANUAL
+    text = _MANUAL
+    if not project.has_orchestrator:
+        head, _, rest = text.partition("## 0. 典型流程")
+        rest = rest[rest.index("## 1. "):]
+        text = head + _PEER_FLOW + "\n" + rest
+        for old, new in _PEER_REPLACEMENTS:
+            assert old in text, old
+            text = text.replace(old, new)
+    return (text
             .replace("__PROJECT_URL__", missioncrew_project_url(project.id))
             .replace("__DOCUMENTS_URL__", document_resource_url(project.id))
             .replace("__MAX_RUNS__", str(project.max_chain_runs)))

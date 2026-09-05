@@ -9,7 +9,7 @@ repos:
 
 # 项目唯一主控角色。新项目先使用自动创建的 lead；之后可在 Web 中切换到其他角色，
 # 该角色自身配置的 runtime/model 就是项目主控执行组合。
-orchestrator_role_id: lead
+orchestrator_role_id: lead   # 写空字符串 "" 即无主控模式:所有角色同权,可互相派发
 
 # 单条人类消息引发的整条协作链最多执行多少次 Agent。只限制总次数，
 # 不限制主控的调度层级；默认值为 100。

@@ -232,13 +232,14 @@ function configPageSnapshot(context) {
   return null;
 }
 
-async function stageConfigPage(channel, context) {
+async function stageConfigPage(channel, context, roleId) {
   const snapshot = configPageSnapshot(context);
-  if (!snapshot) throw new Error("当前页面还没有可提供给主控的文件信息");
+  if (!snapshot) throw new Error("当前页面还没有可提供给 Agent 的文件信息");
   if (snapshot.content === null) return snapshot.metadata;
   const stored = await api(
     "POST", `/api/chat/${encodeURIComponent(channel.id)}/page-context`, {
       page_kind: context.tab, page_key: snapshot.pageKey, content: snapshot.content,
+      ...(roleId ? { role_id: roleId } : {}),
     });
   return { content_path: stored.path, ...snapshot.metadata };
 }
@@ -500,6 +501,28 @@ function renderConfigChatThread(context) {
     root.innerHTML = `<div class="chat-empty empty">此内容频道还没有消息。</div>`;
 }
 
+// 配置页对话的接收角色:有主控时固定为主控;无主控时由用户在下拉框里选
+function configChatTargetRole() {
+  const project = projObj();
+  if (!project) return "";
+  if (project.orchestrator_role_id) return project.orchestrator_role_id;
+  return document.getElementById("config-chat-role")?.value || activeProjRoles()[0]?.id || "";
+}
+
+function syncConfigChatRoleSelect() {
+  const select = document.getElementById("config-chat-role");
+  const title = document.getElementById("config-chat-title");
+  if (!select) return;
+  const peer = peerModeProject();
+  select.hidden = !peer;
+  if (title) title.textContent = peer ? "与角色交流" : "与项目主控交流";
+  if (!peer) return;
+  const current = select.value;
+  select.innerHTML = activeProjRoles().map(r =>
+    `<option value="${esc(r.id)}">@${esc(r.id)} ${esc(r.name)}</option>`).join("");
+  if (activeProjRoles().some(r => r.id === current)) select.value = current;
+}
+
 function updateConfigChatContext() {
   const panel = document.getElementById("config-chat");
   if (!panel) return;
@@ -507,6 +530,7 @@ function updateConfigChatContext() {
   panel.classList.toggle("visible", Boolean(context));
   applyConfigChatLayout();
   if (!context) return;
+  syncConfigChatRoleSelect();
   if (configChatSelection?.context_key !== context.key) configChatSelection = null;
   document.getElementById("config-chat-context").textContent =
     `当前页面：${context.label} · 当前对象：${context.item}`;
@@ -521,11 +545,11 @@ function updateConfigChatContext() {
     selection.classList.add("has-selection");
     clear.style.display = "inline-block";
   } else if (context.tab === "docs" && docPaneContentType === "binary" && docSelected) {
-    selection.textContent = `非文本文件；主控将收到文件名与文档路径：${docSelected}`;
+    selection.textContent = `非文本文件；${peerModeProject() ? "所选角色" : "主控"}将收到文件名与文档路径：${docSelected}`;
     selection.classList.remove("has-selection");
     clear.style.display = "none";
   } else {
-    selection.textContent = "未选择文本；主控仍会收到当前页面与当前对象。";
+    selection.textContent = `未选择文本；${peerModeProject() ? "所选角色" : "主控"}仍会收到当前页面与当前对象。`;
     selection.classList.remove("has-selection");
     clear.style.display = "none";
   }
@@ -553,8 +577,9 @@ function updateConfigChatContext() {
       "内容频道已归档；恢复后才能继续对话。";
   } else if (thread) {
     document.getElementById("config-chat-status").textContent = thread.running
-      ? "项目主控正在处理…"
-      : (thread.entries.some(entry => entry.author_type === "agent") ? "项目主控已回复。" : "");
+      ? (peerModeProject() ? "角色正在处理…" : "项目主控正在处理…")
+      : (thread.entries.some(entry => entry.author_type === "agent")
+          ? (peerModeProject() ? "角色已回复。" : "项目主控已回复。") : "");
   }
   renderConfigChatThread(context);
   if (context.contentKey && !thread?.resolved) {
@@ -591,13 +616,19 @@ async function sendConfigChat() {
   }
   const selection = configChatSelection?.context_key === context.key
     ? configChatSelection : null;
-  status.textContent = `正在发送给 @${project.orchestrator_role_id}…`;
+  const targetRole = configChatTargetRole();
+  if (!targetRole) {
+    status.textContent = "本项目没有可用角色，无法发送。";
+    return;
+  }
+  status.textContent = `正在发送给 @${targetRole}…`;
   try {
     const thread = await ensureConfigChatChannel(context);
     const channel = projChannels().find(item => item.id === thread.channelId);
     if (!channel) throw new Error("内容频道尚未就绪");
     const fileBackedPage = context.tab === "guidelines" || context.tab === "docs";
-    const currentPage = fileBackedPage ? await stageConfigPage(channel, context) : null;
+    const currentPage = fileBackedPage
+      ? await stageConfigPage(channel, context, targetRole) : null;
     const effectiveSelection = currentPage?.text_snapshot_available === false
       ? null : selection;
     const selectionPayload = effectiveSelection ? {
@@ -644,13 +675,17 @@ async function sendConfigChat() {
       `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
       guidelineEditingTip + documentEditingTip + skillEditingTip + dashboardEditingTip;
     input.value = "";
+    // 无主控项目没有"默认交给主控":用结构化提及点名所选角色
+    const peer = peerModeProject();
     await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
-      author: "human", content: request,
+      author: "human",
+      content: peer ? `@${targetRole} ${request}` : request,
+      mentions: peer ? [{ role_id: targetRole, start: 0, end: targetRole.length + 1 }] : [],
       context: { page_collaboration: { ...payload, instructions } },
     });
     thread.running = true;
     thread.refreshedAfterReply = false;
-    status.textContent = `@${project.orchestrator_role_id} 正在处理；回复会显示在此处。`;
+    status.textContent = `@${targetRole} 正在处理；回复会显示在此处。`;
     if (currentChan === channel.id) pollMessages();
     await pollConfigChat();
   } catch (error) {

@@ -24,7 +24,7 @@ MissionCrew 的日常操作在 Web 页面完成，频道、Task、文档、准�
 
 | 命令 | 说明 |
 |---|---|
-| `mc project add --file <yaml>` | 从 YAML 导入/更新项目（含 Skill、受控资源）。准则只在新建项目时随 YAML 一并导入；更新已有项目时准则以项目准则文件库为准，请在 Web 准则页修改。新项目会复制当时的全局角色模板并初始化 `general` 频道和文档库；未指定 `orchestrator_role_id` 时用模板首项作为主控。示例见 `examples/project.template.yaml`。 |
+| `mc project add --file <yaml>` | 从 YAML 导入/更新项目（含 Skill、受控资源）。准则只在新建项目时随 YAML 一并导入；更新已有项目时准则以项目准则文件库为准，请在 Web 准则页修改。新项目会复制当时的全局角色模板并初始化 `general` 频道和文档库；未指定 `orchestrator_role_id` 时用模板首项作为主控，显式写空字符串则为无主控模式（所有角色同权）。示例见 `examples/project.template.yaml`。 |
 | `mc project list` | 列出项目与准则数量。 |
 | `mc project show <project_id>` | 以 JSON 输出项目完整定义。 |
 

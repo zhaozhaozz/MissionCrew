@@ -175,7 +175,7 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
     - ``mention_spans``:message 内含角色选择器生成的结构化提及,提及目标
       即派发目标(单角色直达、多角色由聊天路由收敛给主控);
     - ``target_role_ids``:自动规则等程序化调用,由平台生成 ``@角色`` 前缀;
-    - 两者都为空:默认交给项目主控,message 作为本次补充。
+    - 两者都为空:默认交给项目主控,message 作为本次补充;无主控项目必须点名角色。
     """
     if task.archived:
         raise ValueError("Task 已归档，请先恢复后再派发")
@@ -212,6 +212,8 @@ def dispatch_task(store: Store, chat, task: Task, *, message: str = "",
         target_ids = targets
     else:
         lead_id = project.orchestrator_role_id
+        if not lead_id:
+            raise ValueError("本项目没有主控,请 @ 指定处理角色")
         lead = store.get_role(project.id, lead_id)
         if lead is None:
             raise ValueError(f"项目主控角色不存在: @{lead_id}")

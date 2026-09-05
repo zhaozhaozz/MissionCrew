@@ -373,7 +373,8 @@ class AgentActionService:
         return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
     def allowed_actions(self, project: Project, role_id: str) -> list[str]:
-        is_orchestrator = role_id == project.orchestrator_role_id
+        # 无主控项目里每个角色都拥有主控级动作
+        is_orchestrator = project.controls_platform(role_id)
         return [
             name for name, definition in ACTION_DEFINITIONS.items()
             if is_orchestrator or not definition["orchestrator_only"]
@@ -710,7 +711,7 @@ class AgentActionService:
 
     def _identity_actions(self, project: Project,
                           identity: AgentIdentity) -> list[str]:
-        """身份可用动作:脚本身份只看白名单,角色身份按主控权限位过滤。"""
+        """身份可用动作:脚本身份只看白名单,角色身份按主控级权限位过滤。"""
         if identity.is_automation:
             return [action for action in identity.issued_scopes
                     if action in AUTOMATION_ACTIONS]
@@ -768,7 +769,7 @@ class AgentActionService:
     def _require_chat_identity(identity: AgentIdentity) -> None:
         if identity.is_automation or not identity.channel_id:
             raise AgentToolError(
-                "permission_denied", "该动作只允许当前 Channel 的项目主控调用", 403)
+                "permission_denied", "该动作只允许当前 Channel 内的角色运行调用", 403)
 
     def _list_channel_runs(self, project: Project, identity: AgentIdentity,
                            _arguments: dict, context: AgentRunContext) -> dict:
@@ -796,9 +797,9 @@ class AgentActionService:
             "runs": runs,
         }
 
-    def _stop_channel_run(self, _project: Project, identity: AgentIdentity,
+    def _stop_channel_run(self, project: Project, identity: AgentIdentity,
                           arguments: dict, context: AgentRunContext) -> dict:
-        """停止当前频道内显式选中的 Run，不允许当前主控终止自身调用。"""
+        """停止当前频道内显式选中的 Run，不允许调用者终止自身运行。"""
         self._require_chat_identity(identity)
         run_id = arguments.get("run_id")
         if isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0:
@@ -806,7 +807,7 @@ class AgentActionService:
         if run_id == context.run_id:
             raise AgentToolError(
                 "cannot_stop_self",
-                "主控不能通过当前工具调用停止自己的 Run；请直接结束当前 turn",
+                "不能通过当前工具调用停止自己的 Run；请直接结束当前 turn",
                 409,
             )
         target = self.store.get_chat_run(run_id)
@@ -820,7 +821,8 @@ class AgentActionService:
         try:
             result = self._stop_run(
                 run_id, actor=identity.actor,
-                actor_label=f"主控 @{identity.role_id}")
+                actor_label=(f"主控 @{identity.role_id}" if project.has_orchestrator
+                             else f"角色 @{identity.role_id}"))
         except ValueError as exc:
             # 校验后目标可能恰好自然结束；向调用者返回稳定的并发冲突语义。
             raise AgentToolError("run_inactive", str(exc), 409) from exc
@@ -1067,7 +1069,7 @@ class AgentActionService:
         unique_mentions: list[str] = []
         for role_id in mentions:
             if not identity.is_automation and role_id == identity.role_id:
-                raise AgentToolError("invalid_arguments", "主控不能调度自己")
+                raise AgentToolError("invalid_arguments", "不能调度自己")
             target_role = self.store.get_role(project.id, role_id)
             if target_role is None or not target_role.enabled:
                 raise AgentToolError("role_not_found", f"角色不存在: {role_id}", 404)
@@ -1130,7 +1132,7 @@ class AgentActionService:
                 result["handoff"] = "end_turn"
                 result["resume"] = (
                     "不要向仍在执行的角色追问中间状态；MissionCrew 会在已派发角色"
-                    "完成或失败后自动启动新的主控 turn"
+                    "完成或失败后自动启动你的新 turn 交回结果"
                 )
             if dropped:
                 result["not_dispatched"] = dropped

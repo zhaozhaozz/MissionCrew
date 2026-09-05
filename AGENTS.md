@@ -41,4 +41,5 @@ docs/runtimes.md      Runtime 层的详细设计文档(会话恢复/权限/effor
 - 钩子体内如需 adapters 工具函数,用函数内延迟导入,避免 clis↔adapters 环形依赖。
 - 过程事件 `usage` 由各 provider 在源头用自己的字段表映射成 `native.build_usage` 的 `usage/v1`(turn/total 区段 + context_window/cost_usd/tool_uses/duration_ms,raw 保留上报);前端只按这一结构排版,不得出现工具私有字段名(有测试钉住),新增 Runtime 只改 provider。
 - 数据目录(`MISSIONCREW_HOME`,默认 `~/.missioncrew`)必须可整体搬迁:平台生成的目录链接一律经 `relative_link_target` 写相对路径;声明了 `locate_binary` 的工具视为平台托管安装(如 vendored pi),启动时按当前数据目录重新定位 `binary_path`,不要把数据目录内的绝对路径写进库或文件。
+- 主控权限只经 `Project.controls_platform(role_id)` / `has_orchestrator` 判定,不要直接比较 `orchestrator_role_id`:该字段为空即无主控模式(所有角色同权、可互相派发,人类多选各自启动,角色派发的结果交回派发者);新增"仅主控"的动作、API 校验或 Prompt 分支都要走这两个入口。
 - 总览分层(均带 ETag,前端 8s 轮询):`/api/overview` 只含全局数据(projects/backends/role_templates,准则/Skill 只留元信息+内容指纹);角色/面板/自动化走 `/api/projects/{id}/overview`;频道与任务走 `/api/projects/{id}/channels|tasks?scope=active|archived|all`(响应含全量口径 counts,任务不含 body,且任务只在看板页拉取)。全文走准则单条端点、`skills/library` 与 `/api/tasks/{id}`。项目整对象回传时,带指纹的精简条目由 `save_project` 按主键回填现有全文,不得清空正文;给总览新增字段前先掂量轮询体积。

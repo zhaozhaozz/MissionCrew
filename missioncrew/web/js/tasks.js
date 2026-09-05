@@ -339,10 +339,12 @@ function processTask(id) {
   const task = currentTaskDetail?.task;
   if (!task || task.id !== id) return;
   closeTaskDialog(false);
-  openFormDialog(`交给主控处理 · ${task.id}`, `
+  const peer = peerModeProject();
+  openFormDialog(`${peer ? "派发给角色" : "交给主控处理"} · ${task.id}`, `
     <p class="muted" style="margin-top:0">将在所有绑定 Channel 中发送这条 Task。
-      可补充处理要求;输入 @ 从列表选择角色可指定处理人:单个角色直接执行
-      (不经主控),多个角色由主控协调。不 @ 任何角色则交给项目主控。</p>
+      ${peer ? "本项目没有主控:输入 @ 从列表选择处理角色(必填),多个角色各自启动。"
+             : "可补充处理要求;输入 @ 从列表选择角色可指定处理人:单个角色直接执行" +
+               "(不经主控),多个角色由主控协调。不 @ 任何角色则交给项目主控。"}</p>
     <div class="composer-wrap task-dispatch-wrap">
       <div id="task-dispatch-input" class="task-dispatch-input" contenteditable="true"
         role="textbox" aria-multiline="true" aria-label="处理要求"
@@ -365,6 +367,10 @@ function cancelProcessTask(id) {
 async function submitProcessTask(id) {
   const box = document.getElementById("task-dispatch-input");
   const { content, mentions } = composerPayload(box);
+  if (peerModeProject() && !mentions.length) {
+    uiAlert("本项目没有主控，请 @ 指定处理角色。");
+    return;
+  }
   await api("POST", `/api/tasks/${id}/process`, { message: content, mentions });
   activateComposer("input", "mention-picker");
   fdlg.close();
@@ -501,7 +507,8 @@ function openColumnRule(query) {
   openFormDialog(`自动处理规则 · ${query}`, `
     <p class="muted" style="margin-top:0">新建 Task(含脚本同步的 Task)的标签
       命中表达式「${esc(query)}」时,按下面的处理要求自动派发。输入 @ 从列表选择角色:
-      单个角色直接执行(不经主控),多个角色由主控协调;不 @ 任何角色则交给项目主控。</p>
+      ${peerModeProject() ? "本项目没有主控,必须 @ 至少一个角色,多个角色各自启动。"
+                          : "单个角色直接执行(不经主控),多个角色由主控协调;不 @ 任何角色则交给项目主控。"}</p>
     <div class="composer-wrap task-dispatch-wrap">
       <div id="task-rule-input" class="task-dispatch-input" contenteditable="true"
         role="textbox" aria-multiline="true" aria-label="处理要求"
