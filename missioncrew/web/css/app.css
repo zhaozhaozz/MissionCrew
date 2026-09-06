@@ -1272,13 +1272,14 @@
                         background: rgba(12, 16, 24, .45); display: block; }
     #sidebar-backdrop[hidden] { display: none; }
 
-    /* 角色选择独占一行,横向滚动;操作按钮换到下一行靠右 */
-    #chat-composer-head { flex-direction: column; align-items: stretch; gap: 6px; }
-    .role-selector { align-items: flex-start; }
-    #role-bar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 3px;
+    /* 角色选择与操作按钮同一行:角色栏占满余宽横向滚动,按钮固定靠右,不另起一行 */
+    #chat-composer-head { align-items: center; gap: 8px; }
+    .role-selector { flex: 1; align-items: center; }
+    .role-help { margin-top: 0; }
+    #role-bar { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 3px; margin-bottom: -3px;
                 -webkit-overflow-scrolling: touch; scrollbar-width: thin; }
     #role-bar button { flex: none; white-space: nowrap; }
-    .chat-composer-actions { justify-content: flex-end; }
+    .chat-composer-actions button { padding: 3px 8px; font-size: 11.5px; white-space: nowrap; }
 
     /* 频道头只留标题行,元信息点击标题行展开,省出屏幕给消息 */
     .channel-head { padding: 8px 12px; }
