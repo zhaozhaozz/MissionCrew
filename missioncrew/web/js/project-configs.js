@@ -288,20 +288,6 @@ async function restoreConfigChatChannel() {
   toast("频道已恢复", "success");
 }
 
-async function stopConfigChatAgents() {
-  const context = configChatContext();
-  const channelId = context ? configChatTargetChannelId(context) : null;
-  const thread = channelId ? configChatThread(channelId) : null;
-  const count = thread?.activeRuns.filter(run =>
-    ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
-  if (!channelId || !count) return;
-  if (!await uiConfirm(
-      `停止此频道中正在排队、运行或等待交互的 ${count} 个 Agent，并终止对应 Runtime 进程？原生会话 ID 会保留，已完成的文件修改不会自动回滚。`,
-      "停止频道 Agent")) return;
-  await api("POST", `/api/chat/${encodeURIComponent(channelId)}/stop`);
-  await pollConfigChat();
-}
-
 function configFieldLabel(element) {
   if (CONFIG_FIELD_LABELS[element.id]) return CONFIG_FIELD_LABELS[element.id];
   if (element.id?.endsWith("-extra")) return "额外引用路径";
@@ -707,11 +693,6 @@ function updateConfigChatContext() {
   document.getElementById("config-chat-open-channel").style.display =
     channelId ? "inline-block" : "none";
   document.getElementById("config-chat-restore").hidden = !(channelId && archived);
-  const stop = document.getElementById("config-chat-stop");
-  const activeCount = thread?.activeRuns.filter(run =>
-    ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
-  stop.hidden = activeCount === 0;
-  stop.textContent = activeCount > 1 ? `停止全部 (${activeCount})` : "停止 Agent";
   const disabled = !target || archived;
   input.contentEditable = String(!disabled);
   input.setAttribute("aria-disabled", String(disabled));
