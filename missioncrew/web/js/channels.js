@@ -99,6 +99,17 @@ function toggleChannelActions(event, button) {
   menu.hidden = !opening;
 }
 
+// 窄屏下频道元信息默认收起,记录当前展开的频道 id(切换频道自动收起)
+let channelHeadExpandedFor = null;
+
+function toggleChannelHead() {
+  const head = document.getElementById("channel-head");
+  const expanded = !head.classList.contains("expanded");
+  channelHeadExpandedFor = expanded ? currentChan : null;
+  head.classList.toggle("expanded", expanded);
+  head.querySelector(".channel-head-toggle")?.setAttribute("aria-expanded", String(expanded));
+}
+
 function renderChannelState() {
   const channel = projChannels().find(item => item.id === currentChan);
   const archived = Boolean(channel?.archived);
@@ -106,14 +117,18 @@ function renderChannelState() {
   head.hidden = !channel;
   if (channel) {
     const displayName = channel.name || channel.id;
+    const expanded = channelHeadExpandedFor === channel.id;
+    head.classList.toggle("expanded", expanded);
     head.innerHTML = `
-      <div class="channel-title-row">
+      <div class="channel-title-row" onclick="toggleChannelHead()">
         <h2># ${esc(displayName)}</h2>
         ${channelIsGeneral(channel) ? `<span class="badge">默认频道</span>` : ""}
         ${channelIsContent(channel) ? `<span class="badge">内容专属频道</span>` : ""}
         <span class="badge">${archived ? "已归档" : "活跃"}</span>
+        <button class="channel-head-toggle" type="button" title="展开/收起频道信息"
+          aria-controls="channel-meta" aria-expanded="${expanded}">▾</button>
       </div>
-      <div class="channel-meta">
+      <div class="channel-meta" id="channel-meta">
         <span><b>用途</b>${esc(channel.purpose || "未说明")}</span>
         <span><b>工作目录</b><code>${esc(channel.workdir || "平台内置工作区")}</code></span>
         <span><b>创建者</b>${esc(channel.created_by_role_id ? "@" + channel.created_by_role_id : "human/platform")}</span>

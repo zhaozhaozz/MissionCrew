@@ -379,6 +379,7 @@
   .channel-meta b { display: inline-block; margin-right: 6px; color: var(--muted);
                     font-weight: 500; white-space: nowrap; }
   .channel-meta code { color: inherit; }
+  .channel-head-toggle { display: none; }   /* 仅窄屏显示,见移动端适配 */
 
   #composer { flex: none; border-top: 1px solid var(--line); padding: 12px 24px 14px;
               background: var(--card); }
@@ -1279,8 +1280,19 @@
     #role-bar button { flex: none; white-space: nowrap; }
     .chat-composer-actions { justify-content: flex-end; }
 
-    .channel-head { padding: 11px 12px 10px; }
-    .channel-meta { gap: 5px 12px; }
+    /* 频道头只留标题行,元信息点击标题行展开,省出屏幕给消息 */
+    .channel-head { padding: 8px 12px; }
+    .channel-title-row { cursor: pointer; gap: 8px; }
+    .channel-title-row h2 { font-size: 15px; }
+    .channel-head-toggle { display: inline-grid; place-items: center; flex: none;
+                           margin-left: auto; width: 26px; height: 26px; border: none;
+                           border-radius: 6px; background: transparent; color: var(--muted);
+                           font-size: 14px; line-height: 1; cursor: pointer;
+                           transition: transform .15s; }
+    .channel-head.expanded .channel-head-toggle { transform: rotate(180deg); }
+    .channel-meta { display: none; }
+    .channel-head.expanded .channel-meta { display: flex; flex-direction: column;
+                                           gap: 4px; margin-top: 8px; }
     #msgs { padding: 14px 12px 8px; }
     #composer { padding: 10px 12px 12px; }
     .run-card { margin-left: 20px; }
