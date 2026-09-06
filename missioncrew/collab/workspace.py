@@ -87,6 +87,14 @@ def channel_uploads_dir(project_id: str, channel_id: str) -> Path:
             / "channels" / _safe_segment(channel_name) / "uploads").resolve()
 
 
+def channel_page_context_dir(project_id: str, channel_id: str) -> Path:
+    """Web 页面对话发到频道的正文快照目录；与附件目录同级,装配时授权给
+    频道内所有角色,因此消息无论交给主控、单个角色还是多个角色都能读到。"""
+    channel_name = channel_id.removeprefix(f"{project_id}:")
+    return (mc_home() / "agent-workspaces" / _safe_segment(project_id)
+            / "channels" / _safe_segment(channel_name) / "page-context").resolve()
+
+
 def purge_channel_workspaces(project_id: str, channel_id: str) -> int:
     """删除平台持有的频道历史、角色工作区和默认 Runtime 工作目录。"""
     removed = 0
@@ -237,9 +245,9 @@ def _atomic_write_text(path: Path, content: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def write_page_context_snapshot(project_id: str, channel_id: str, role_id: str,
+def write_page_context_snapshot(project_id: str, channel_id: str,
                                 page_kind: str, page_key: str, content: str) -> Path:
-    """把配置页正文写入目标角色工作区，并只向聊天消息暴露文件路径。"""
+    """把页面正文写入频道级快照目录，并只向聊天消息暴露文件路径。"""
     if page_kind not in {"guidelines", "docs"}:
         raise ValueError("页面类型只支持 guidelines 或 docs")
     key_digest = hashlib.sha256(page_key.encode("utf-8")).hexdigest()[:12]
@@ -247,8 +255,7 @@ def write_page_context_snapshot(project_id: str, channel_id: str, role_id: str,
     suffix = Path(page_key).suffix.lower()
     if not re.fullmatch(r"\.[a-z0-9]{1,10}", suffix):
         suffix = ".md" if page_kind == "guidelines" else ".txt"
-    directory = (chat_workspace_dir(project_id, channel_id, role_id)
-                 / "page-context" / page_kind)
+    directory = channel_page_context_dir(project_id, channel_id) / page_kind
     path = directory / f"{key_digest}-{content_digest}{suffix}"
     with _workspace_lock(directory):
         _atomic_write_text(path, content)

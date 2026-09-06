@@ -21,7 +21,8 @@ from missioncrew.collab.resource_urls import (channel_resource_url,
 from missioncrew.collab.skills import (materialize_project_skills,
                                        project_skill_library_dir,
                                        skill_context_dir)
-from missioncrew.collab.workspace import (migrate_legacy_workspace_layout,
+from missioncrew.collab.workspace import (channel_page_context_dir,
+                                          migrate_legacy_workspace_layout,
                                           platform_history_dir,
                                           migrate_resource_workspace_links,
                                           write_task_files)
@@ -1351,8 +1352,19 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "roleBindingPicker" not in js and "role_ids" not in js
     assert "fileRefPicker" not in js and "runtime_instructions" not in js
     assert "line_start" in js and "selected_text" in js
-    assert "context: { page_collaboration:" in js
-    assert "content: peer ? `@${targetRole} ${request}` : request" in js
+    assert "page_collaboration: { ...pagePayload, instructions }" in js
+    # 页面对话与频道输入框同一套交付:结构化提及、附件、粘贴/拖入与频道选择器
+    assert "composerPayload(box)" in js and "restoreComposerPayload(payload.content, mentions, box)" in js
+    assert 'bindComposerEvents("config-chat-input", "config-chat-picker"' in js
+    assert 'bindDropZone("config-chat-input-wrap", configChatOnFiles)' in js
+    assert "uploadChatFile(item.file, channel.id)" in js
+    assert "messageContext.attachments = attachments" in js
+    assert "attachmentBlock(attachments)" in js
+    assert 'id="config-chat-channel"' in html and "chooseConfigChatChannel" in js
+    assert 'id="config-chat-attachments"' in html and 'id="config-chat-picker"' in html
+    assert "openConfigChatMentionPicker" in js and 'id="config-chat-role"' not in html
+    assert "targetRole" not in js and "role_id: roleId" not in js
+    assert 'CONFIG_CHAT_FOCUSED = "focused"' in js and "configChatTarget(" in js
     assert "/content-channel" in js and "content_key: context.contentKey" in js
     assert "resolveConfigChatChannel" in js
     assert '"POST", `/api/projects/${encodeURIComponent(currentProject)}/content-channel`' in js
@@ -1418,8 +1430,20 @@ def test_guideline_and_document_chat_context_is_staged_as_a_file(seeded):
     path = Path(response.json()["path"])
     assert path.read_text(encoding="utf-8") == markdown
     assert path.parent.name == "guidelines"
-    assert path.parent.parent.name == "page-context"
-    assert "/lead/.missioncrew/" in path.as_posix()
+    assert path.parent == channel_page_context_dir("webshop", "general") / "guidelines"
+    # 快照是频道级目录,不进任何角色的 .missioncrew 工作区
+    assert ".missioncrew" not in path.as_posix()
+
+    # 目录出现后装配才授权,且频道内任何角色(不只主控)都能读
+    chat = ChatEngine(seeded)
+    trigger = seeded.add_message("general", "human", "human", "看看这份准则", [])
+    for role_id in ("lead", "dev"):
+        config = chat._assemble(seeded.get_channel("general"),
+                                seeded.get_role("webshop", role_id),
+                                seeded.get_backend("std-1"), trigger)
+        assert str(channel_page_context_dir("webshop", "general")) in config.allowed_dirs
+        assert str(channel_page_context_dir("webshop", "general")) \
+            in config.runtime_policy.readable_paths
 
     same = client.post("/api/chat/general/page-context", json={
         "page_kind": "guidelines", "page_key": "api-style.md", "content": markdown,
@@ -1458,7 +1482,7 @@ def test_background_refresh_preserves_scrollable_view_state(seeded):
     assert '".skill-file-viewer-body"' in configs
     assert "appendMessagesToSurface(pending" in configs
     assert "syncRuns(thread.runs" in configs
-    assert "root.dataset.contextKey !== context.key" in configs
+    assert "root.dataset.threadKey !== threadKey" in configs
     assert "thread.lastRenderedId" in configs
 
     assert "renderDocuments(true)" in router

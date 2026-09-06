@@ -423,8 +423,8 @@
   #input-wrap.drop-target #input { border-color: var(--accent); border-style: dashed;
                                    box-shadow: 0 0 0 3px var(--accent-soft); }
   #attach-btn { flex: none; padding: 8px 11px; font-size: 15px; }
-  #composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
-  #composer-attachments[hidden] { display: none; }
+  .composer-attachments { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+  .composer-attachments[hidden] { display: none; }
   .attachment-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 260px;
                      padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px;
                      background: var(--card-2); font-size: 12px; color: var(--text); }
@@ -441,21 +441,23 @@
   #idlg::backdrop { background: rgba(8, 11, 18, .78); backdrop-filter: blur(3px); }
   #idlg img { display: block; max-width: 94vw; max-height: 94vh; object-fit: contain;
               border-radius: 10px; }
-  #mention-picker, .task-dispatch-picker {
+  #mention-picker, .task-dispatch-picker, .config-chat-picker {
                     position: absolute; z-index: 30; left: 0; bottom: calc(100% + 7px);
                     width: min(360px, 100%); max-height: 240px; overflow-y: auto;
                     padding: 6px; border: 1px solid var(--line); border-radius: 10px;
                     background: var(--card); box-shadow: var(--shadow); }
-  #mention-picker[hidden], .task-dispatch-picker[hidden] { display: none; }
-  #mention-picker button, .task-dispatch-picker button {
+  #mention-picker[hidden], .task-dispatch-picker[hidden], .config-chat-picker[hidden] {
+    display: none; }
+  #mention-picker button, .task-dispatch-picker button, .config-chat-picker button {
                            display: flex; width: 100%; align-items: center; gap: 8px;
                            padding: 7px 9px; border: 0; border-radius: 7px;
                            background: transparent; color: var(--text); text-align: left;
                            cursor: pointer; }
   #mention-picker button:hover, #mention-picker button.active,
-  .task-dispatch-picker button:hover, .task-dispatch-picker button.active {
+  .task-dispatch-picker button:hover, .task-dispatch-picker button.active,
+  .config-chat-picker button:hover, .config-chat-picker button.active {
     background: var(--accent-soft); }
-  #mention-picker small, .task-dispatch-picker small {
+  #mention-picker small, .task-dispatch-picker small, .config-chat-picker small {
                           margin-left: auto; color: var(--muted); overflow: hidden;
                           text-overflow: ellipsis; white-space: nowrap; }
   textarea { flex: 1; resize: none; background: var(--card-2); color: var(--text);
@@ -938,6 +940,13 @@
                              text-overflow: ellipsis; white-space: nowrap; }
   .config-chat-head .ghost { padding: 2px 8px; font-size: 11px; }
   #config-chat-open-channel { margin-left: auto; }
+  /* 频道选择器:发到已有活跃频道,或围绕当前条目新建/沿用专注频道 */
+  .config-chat-target { display: inline-flex; align-items: center; gap: 5px; flex: none;
+                        max-width: min(46%, 340px); color: var(--muted); font-size: 12px; }
+  .config-chat-target select { min-width: 0; max-width: 100%; padding: 2px 6px; font-size: 12px;
+                               color: var(--text); background: var(--bg); border: 1px solid var(--line);
+                               border-radius: 7px; }
+  .config-chat-target select:disabled { opacity: .6; cursor: not-allowed; }
   .config-chat-selection { color: var(--muted); font-size: 11.5px; min-height: 18px;
                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .config-chat-selection.has-selection { color: var(--warn); }
@@ -956,10 +965,19 @@
   .config-chat-thread .run-card { max-width: calc(100% - 31px); margin: -4px 0 10px 31px; }
   .config-chat-thread .rc-events { max-height: 220px; }
   .config-chat-thread .chat-empty { padding: 24px 12px; font-size: 12px; }
+  /* 输入区与频道输入框同构:结构化 @ 提及、附件、粘贴/拖入,选择器向上展开 */
   .config-chat-compose { display: flex; gap: 9px; align-items: flex-end; }
-  .config-chat-compose textarea { min-height: 44px; height: 48px; max-height: 120px;
-                                   resize: vertical; background: var(--bg); }
+  .config-chat-compose .composer-wrap { flex: 1; min-width: 0; }
+  .config-chat-compose .config-chat-input { min-height: 44px; max-height: 120px;
+                                           padding: 9px 12px; font-size: 13px;
+                                           background: var(--bg); }
+  .config-chat-input-wrap.drop-target .config-chat-input {
+    border-color: var(--accent); border-style: dashed; box-shadow: 0 0 0 3px var(--accent-soft); }
+  .config-chat-input[aria-disabled="true"] { opacity: .65; cursor: not-allowed; }
+  .config-chat-compose .config-chat-tool { flex: none; height: 44px; padding: 0 11px;
+                                          font-size: 15px; }
   .config-chat-compose .send { height: 44px; flex: none; }
+  .config-chat-compose .send:disabled { opacity: .45; cursor: not-allowed; }
   #config-chat-status { min-height: 16px; flex: none; padding-top: 3px; }
   .config-chat.collapsed { left: auto; width: 50px; min-height: 50px; height: 50px !important;
                            padding: 0; border-radius: 50%; overflow: visible; }

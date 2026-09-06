@@ -151,7 +151,7 @@
         </div>
         <div id="input-row">
           <div id="input-wrap">
-            <div id="composer-attachments" hidden></div>
+            <div id="composer-attachments" class="composer-attachments" hidden></div>
             <div id="input" contenteditable="true" role="textbox" aria-multiline="true"
               aria-label="聊天消息"
               data-placeholder="输入 @ 后从列表选择角色；直接输入 @角色 只作为普通文字（Enter 发送，Shift+Enter 换行）"></div>
@@ -365,14 +365,17 @@
       </div>
     </div>
 
-    <section id="config-chat" class="config-chat" aria-label="当前配置页主控对话">
+    <section id="config-chat" class="config-chat" aria-label="当前页面对话">
       <div class="config-chat-resize" id="config-chat-resize"
         onpointerdown="startConfigChatResize(event)" title="拖动调整对话框高度"></div>
       <button class="config-chat-toggle" id="config-chat-toggle" type="button"
-        onclick="toggleConfigChatCollapsed()" aria-label="收起主控对话" title="收起主控对话">−</button>
+        onclick="toggleConfigChatCollapsed()" aria-label="收起页面对话" title="收起页面对话">−</button>
       <div class="config-chat-head">
-        <strong id="config-chat-title">与项目主控交流</strong>
-        <select id="config-chat-role" class="compact" title="本项目没有主控，选择接收本页对话的角色" hidden></select>
+        <strong id="config-chat-title">页面对话</strong>
+        <label class="config-chat-target">发到
+          <select id="config-chat-channel" title="选择接收本页消息的频道；也可新建围绕当前条目的专注频道"
+            onchange="chooseConfigChatChannel(this.value)"></select>
+        </label>
         <span id="config-chat-context">当前页面：—</span>
         <button class="ghost" id="config-chat-open-channel" type="button"
           onclick="openConfigChatChannel()" style="display:none">打开频道</button>
@@ -386,10 +389,20 @@
       <div class="config-chat-selection" id="config-chat-selection">未选择文本</div>
       <div class="config-chat-thread" id="config-chat-thread"></div>
       <div class="config-chat-compose">
-        <textarea id="config-chat-input"
-          placeholder="询问当前内容，或要求主控创建、修改当前条目…（Enter 发送，Shift+Enter 换行）"></textarea>
+        <div class="composer-wrap config-chat-input-wrap" id="config-chat-input-wrap">
+          <div id="config-chat-attachments" class="composer-attachments" hidden></div>
+          <div id="config-chat-input" class="task-dispatch-input config-chat-input" contenteditable="true"
+            role="textbox" aria-multiline="true" aria-label="页面对话消息"
+            data-placeholder="询问当前内容，或要求创建、修改当前条目；输入 @ 从列表选择角色…（Enter 发送，Shift+Enter 换行）"></div>
+          <div id="config-chat-picker" class="config-chat-picker" role="listbox" hidden></div>
+        </div>
+        <button class="ghost config-chat-tool" type="button" title="从列表选择要 @ 的角色"
+          aria-label="提及角色" onclick="openConfigChatMentionPicker()">@</button>
+        <button class="ghost config-chat-tool" type="button" title="上传文件或图片（也可直接粘贴或拖入）"
+          aria-label="上传附件" onclick="document.getElementById('config-chat-file-input').click()">📎</button>
         <button class="send" onclick="sendConfigChat()">发送</button>
       </div>
+      <input id="config-chat-file-input" type="file" multiple hidden onchange="handleConfigChatFileInput(this)">
       <div class="muted" id="config-chat-status"></div>
     </section>
   </div>

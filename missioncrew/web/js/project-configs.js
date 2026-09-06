@@ -1,4 +1,4 @@
-/* ---- 项目准则 / Skills 全页管理与底部主控对话 ---- */
+/* ---- 项目准则 / Skills 全页管理与底部页面对话 ---- */
 let selectedGuidelineName;
 let selectedSkillId;
 const GUIDELINE_MARKDOWN_PLACEHOLDER = "---\nname: \ndescription: \n---\n\n";
@@ -6,11 +6,12 @@ const configEditorDirty = { guidelines: false, skills: false };
 let skillLibraryInfo = null;
 let skillFolderImportOpen = false;
 const CONFIG_CHAT_TABS = new Set(["guidelines", "skills", "docs", "custom"]);
+// kind 与后端 CONTENT_KIND_LABELS 一致,用于专注频道的名称
 const CONFIG_CHAT_TARGETS = {
-  guidelines: { label: "准则文档", action: "guideline.save" },
-  skills: { label: "Skill", action: "skill.save" },
-  docs: { label: "版本化文档", action: "document.publish" },
-  custom: { label: "自定义面板", action: "dashboard.save" },
+  guidelines: { label: "准则文档", kind: "准则", action: "guideline.save" },
+  skills: { label: "Skill", kind: "Skill", action: "skill.save" },
+  docs: { label: "版本化文档", kind: "文档", action: "document.publish" },
+  custom: { label: "自定义面板", kind: "面板", action: "dashboard.save" },
 };
 const CONFIG_FIELD_LABELS = {
   "gf-content": "准则 Markdown 文件",
@@ -19,8 +20,18 @@ const CONFIG_FIELD_LABELS = {
 };
 let configChatSelection = null;
 let configChatPolling = false;
+/* 页面对话的三层状态:
+   configChatBindings  contextKey → 当前条目专注频道的查找结果(是否已存在、id、归档)
+   configChatChoices   contextKey → 用户在频道选择器里的选择(CONFIG_CHAT_FOCUSED 或频道 id)
+   configChatThreads   channelId  → 该频道在页面对话里的消息缓存与运行卡片 */
+const CONFIG_CHAT_FOCUSED = "focused";
+const CONFIG_CHAT_TARGET_KEY = "mc.configChatTarget";   // 每个项目最近一次明确选择的目标
+const configChatBindings = new Map();
+const configChatChoices = new Map();
 const configChatThreads = new Map();
 const configChatResolving = new Map();
+let configChatUploads = [];   // 待随下一条页面消息上传的本地文件(发送时才上传到目标频道)
+let configChatSending = false;   // 发送进行中:轮询不要覆盖"正在发送…"状态
 const CONFIG_CHAT_COLLAPSED_KEY = "mc.configChatCollapsed";
 const CONFIG_CHAT_HEIGHT_KEY = "mc.configChatHeight";
 let configChatCollapsed = localStorage.getItem(CONFIG_CHAT_COLLAPSED_KEY) === "1";
@@ -39,8 +50,8 @@ function applyConfigChatLayout() {
   panel.classList.toggle("collapsed", configChatCollapsed);
   panel.style.height = configChatCollapsed ? "" : `${configChatHeight}px`;
   toggle.textContent = configChatCollapsed ? "💬" : "−";
-  toggle.setAttribute("aria-label", configChatCollapsed ? "展开主控对话" : "收起主控对话");
-  toggle.title = configChatCollapsed ? "展开主控对话" : "收起主控对话";
+  toggle.setAttribute("aria-label", configChatCollapsed ? "展开页面对话" : "收起页面对话");
+  toggle.title = configChatCollapsed ? "展开页面对话" : "收起页面对话";
   views.style.setProperty("--config-chat-space",
     configChatCollapsed ? "86px" : `${configChatHeight + 38}px`);
 }
@@ -232,14 +243,14 @@ function configPageSnapshot(context) {
   return null;
 }
 
-async function stageConfigPage(channel, context, roleId) {
+// 正文快照写进目标频道的共享目录,频道内任何角色都能按路径读取
+async function stageConfigPage(channel, context) {
   const snapshot = configPageSnapshot(context);
   if (!snapshot) throw new Error("当前页面还没有可提供给 Agent 的文件信息");
   if (snapshot.content === null) return snapshot.metadata;
   const stored = await api(
     "POST", `/api/chat/${encodeURIComponent(channel.id)}/page-context`, {
       page_kind: context.tab, page_key: snapshot.pageKey, content: snapshot.content,
-      ...(roleId ? { role_id: roleId } : {}),
     });
   return { content_path: stored.path, ...snapshot.metadata };
 }
@@ -262,32 +273,32 @@ function clearConfigChatSelection() {
 
 function openConfigChatChannel() {
   const context = configChatContext();
-  const channelId = context ? configChatThread(context)?.channelId : null;
+  const channelId = context ? configChatTargetChannelId(context) : null;
   if (channelId) selectChannel(channelId);
 }
 
 async function restoreConfigChatChannel() {
   const context = configChatContext();
-  const thread = context ? configChatThread(context) : null;
-  if (!thread?.channelId || !thread.archived) return;
-  await api(
-    "POST", `/api/chat/channels/${encodeURIComponent(thread.channelId)}/restore`);
-  thread.archived = false;
+  const channelId = context ? configChatTargetChannelId(context) : null;
+  if (!channelId) return;
+  await api("POST", `/api/chat/channels/${encodeURIComponent(channelId)}/restore`);
+  setConfigChatChannelArchived(channelId, false);
   await loadOverview();
   updateConfigChatContext();
-  toast("内容频道已恢复", "success");
+  toast("频道已恢复", "success");
 }
 
 async function stopConfigChatAgents() {
   const context = configChatContext();
-  const thread = context ? configChatThread(context) : null;
+  const channelId = context ? configChatTargetChannelId(context) : null;
+  const thread = channelId ? configChatThread(channelId) : null;
   const count = thread?.activeRuns.filter(run =>
     ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
-  if (!thread?.channelId || !count) return;
+  if (!channelId || !count) return;
   if (!await uiConfirm(
-      `停止此内容频道中正在排队、运行或等待交互的 ${count} 个 Agent，并终止对应 Runtime 进程？原生会话 ID 会保留，已完成的文件修改不会自动回滚。`,
-      "停止内容频道 Agent")) return;
-  await api("POST", `/api/chat/${encodeURIComponent(thread.channelId)}/stop`);
+      `停止此频道中正在排队、运行或等待交互的 ${count} 个 Agent，并终止对应 Runtime 进程？原生会话 ID 会保留，已完成的文件修改不会自动回滚。`,
+      "停止频道 Agent")) return;
+  await api("POST", `/api/chat/${encodeURIComponent(channelId)}/stop`);
   await pollConfigChat();
 }
 
@@ -343,18 +354,38 @@ function captureConfigChatSelection() {
   });
 }
 
-function configChatThread(context, create = false) {
-  let thread = configChatThreads.get(context.key);
+const CONFIG_CHAT_RELOOKUP_MS = 10000;   // 专注频道尚不存在时的复查间隔
+
+function configChatBinding(context, create = false) {
+  let binding = configChatBindings.get(context.key);
+  if (!binding && create) {
+    binding = { channelId: null, resolved: false, missing: false, archived: false,
+                checkedAt: 0 };
+    configChatBindings.set(context.key, binding);
+  }
+  return binding;
+}
+
+function configChatThread(channelId, create = false) {
+  let thread = configChatThreads.get(channelId);
   if (!thread && create) {
     thread = {
-      channelId: null, cursor: 0, entries: [], runs: [], activeRuns: [],
+      cursor: 0, entries: [], runs: [], activeRuns: [],
       runCards: new Map(), lastMsgDate: "", lastRenderedId: 0,
-      running: false, loaded: false, resolved: false, missing: false,
-      refreshedAfterReply: false, archived: false,
+      running: false, loaded: false, archived: false,
+      refreshedAfterReply: true, notice: "",
     };
-    configChatThreads.set(context.key, thread);
+    configChatThreads.set(channelId, thread);
   }
   return thread;
+}
+
+// 条目被删除时忘掉它的专注频道绑定与缓存(频道本身由后端一并清空)
+function forgetConfigChatBinding(context) {
+  const binding = configChatBindings.get(context.key);
+  configChatBindings.delete(context.key);
+  configChatChoices.delete(context.key);
+  if (binding?.channelId) configChatThreads.delete(binding.channelId);
 }
 
 function upsertOverviewChannel(channel) {
@@ -365,23 +396,31 @@ function upsertOverviewChannel(channel) {
 }
 
 function setConfigChatChannelArchived(channelId, archived) {
-  for (const thread of configChatThreads.values()) {
-    if (thread.channelId === channelId) thread.archived = archived;
+  const thread = configChatThreads.get(channelId);
+  if (thread) thread.archived = archived;
+  for (const binding of configChatBindings.values()) {
+    if (binding.channelId === channelId) binding.archived = archived;
   }
   if (configChatContext()) updateConfigChatContext();
 }
 
 function resetConfigChatChannel(channelId) {
-  for (const [key, thread] of configChatThreads.entries()) {
-    if (thread.channelId === channelId) configChatThreads.delete(key);
+  configChatThreads.delete(channelId);
+  for (const [key, binding] of configChatBindings.entries()) {
+    if (binding.channelId === channelId) configChatBindings.delete(key);
   }
   if (configChatContext()) updateConfigChatContext();
 }
 
+// 只读查找当前条目的专注频道;refresh=true 时即使上次没找到也隔一段时间再查,
+// 使其他页面首次发起的对话能同步回来,又不至于每轮轮询都打一次 404
 async function resolveConfigChatChannel(context, refresh = false) {
   if (!context?.contentKey) return null;
-  const thread = configChatThread(context, true);
-  if (thread.channelId || (thread.resolved && !refresh)) return thread;
+  const binding = configChatBinding(context, true);
+  if (binding.channelId) return binding;
+  if (binding.resolved
+      && (!refresh || Date.now() - binding.checkedAt < CONFIG_CHAT_RELOOKUP_MS))
+    return binding;
   const resolvingKey = `${context.key}:lookup`;
   if (configChatResolving.has(resolvingKey))
     return configChatResolving.get(resolvingKey);
@@ -391,25 +430,24 @@ async function resolveConfigChatChannel(context, refresh = false) {
     });
     const response = await fetch(
       `/api/projects/${encodeURIComponent(currentProject)}/content-channel?${query}`);
+    binding.checkedAt = Date.now();
     if (response.status === 404) {
-      thread.resolved = true;
-      thread.missing = true;
-      thread.loaded = true;
-      return thread;
+      binding.resolved = true;
+      binding.missing = true;
+      return binding;
     }
     if (!response.ok) {
-      let detail = "内容频道连接失败";
+      let detail = "专注频道连接失败";
       try { detail = (await response.json()).detail || detail; } catch (_) {}
       throw new Error(detail);
     }
     const channel = await response.json();
-    thread.resolved = true;
-    thread.channelId = channel.id;
-    thread.missing = false;
-    thread.loaded = false;
-    thread.archived = Boolean(channel.archived);
+    binding.resolved = true;
+    binding.channelId = channel.id;
+    binding.missing = false;
+    binding.archived = Boolean(channel.archived);
     upsertOverviewChannel(channel);
-    return thread;
+    return binding;
   })();
   configChatResolving.set(resolvingKey, request);
   try { return await request; }
@@ -420,8 +458,8 @@ async function resolveConfigChatChannel(context, refresh = false) {
 }
 
 async function ensureConfigChatChannel(context) {
-  const thread = await resolveConfigChatChannel(context);
-  if (!thread || thread.channelId) return thread;
+  const binding = await resolveConfigChatChannel(context);
+  if (!binding || binding.channelId) return binding;
   const resolvingKey = `${context.key}:create`;
   if (configChatResolving.has(resolvingKey))
     return configChatResolving.get(resolvingKey);
@@ -432,13 +470,12 @@ async function ensureConfigChatChannel(context) {
         content_key: context.contentKey,
         label: context.item.replace(/（.*$/, ""),
       });
-    thread.channelId = channel.id;
-    thread.resolved = true;
-    thread.missing = false;
-    thread.loaded = false;
-    thread.archived = Boolean(channel.archived);
+    binding.channelId = channel.id;
+    binding.resolved = true;
+    binding.missing = false;
+    binding.archived = Boolean(channel.archived);
     upsertOverviewChannel(channel);
-    return thread;
+    return binding;
   })();
   configChatResolving.set(resolvingKey, request);
   try { return await request; }
@@ -446,6 +483,83 @@ async function ensureConfigChatChannel(context) {
     if (configChatResolving.get(resolvingKey) === request)
       configChatResolving.delete(resolvingKey);
   }
+}
+
+/* ---- 频道选择器 ----
+   第一项始终是当前条目的专注频道(已存在则沿用,不存在则发送时新建),其后是项目内
+   所有活跃频道;projChannels() 只含当前侧栏筛选范围,筛选"已归档"时只剩专注频道。 */
+function configChatChannelChoices(context) {
+  const binding = configChatBinding(context);
+  const focusedId = binding?.channelId || null;
+  const focusedChannel = focusedId
+    ? overview.channels.find(channel => channel.id === focusedId) : null;
+  const title = context.item.replace(/（.*$/, "");
+  const archived = Boolean(focusedChannel ? focusedChannel.archived : binding?.archived);
+  let label;
+  if (!context.contentKey) label = "新建专注频道（请先保存当前条目）";
+  else if (focusedId) label = `专注频道 · ${focusedChannel?.name || `${context.kind} · ${title}`}${
+    archived ? "（已归档）" : ""}`;
+  else label = `＋ 新建专注频道（${context.kind} · ${title}）`;
+  const focused = { value: CONFIG_CHAT_FOCUSED, label, disabled: !context.contentKey };
+  const others = projChannels()
+    .filter(channel => !channel.archived && channel.id !== focusedId)
+    .map(channel => ({ value: channel.id, label: `# ${channel.name || channel.id}`,
+                       disabled: false }));
+  return [focused, ...others];
+}
+
+/* 目标优先级:本次会话对该条目的明确选择 > 已存在的专注频道 > 本项目最近一次明确
+   选择 > 聊天页当前所在频道 > general > 新建专注频道。 */
+function configChatTarget(context, choices = configChatChannelChoices(context)) {
+  const usable = value => Boolean(value)
+    && choices.some(choice => choice.value === value && !choice.disabled);
+  const chosen = configChatChoices.get(context.key);
+  if (usable(chosen)) return chosen;
+  if (configChatBinding(context)?.channelId && usable(CONFIG_CHAT_FOCUSED))
+    return CONFIG_CHAT_FOCUSED;
+  let preferred = null;
+  try { preferred = localStorage.getItem(`${CONFIG_CHAT_TARGET_KEY}:${currentProject}`); }
+  catch (_) { /* 无本地存储时忽略 */ }
+  if (usable(preferred)) return preferred;
+  if (usable(currentChan)) return currentChan;
+  const general = projChannels().find(channel => channelIsGeneral(channel) && !channel.archived);
+  if (general && usable(general.id)) return general.id;
+  return choices.find(choice => !choice.disabled)?.value || null;
+}
+
+// 目标对应的频道 id;专注频道尚未创建时为 null(发送时才创建)
+function configChatTargetChannelId(context, target = configChatTarget(context)) {
+  if (!target) return null;
+  if (target === CONFIG_CHAT_FOCUSED) return configChatBinding(context)?.channelId || null;
+  return target;
+}
+
+function chooseConfigChatChannel(value) {
+  const context = configChatContext();
+  if (!context || !value) return;
+  configChatChoices.set(context.key, value);
+  try { localStorage.setItem(`${CONFIG_CHAT_TARGET_KEY}:${currentProject}`, value); }
+  catch (_) { /* 无本地存储时忽略 */ }
+  updateConfigChatContext();
+  void pollConfigChat();
+}
+
+function syncConfigChatChannelSelect(context) {
+  const select = document.getElementById("config-chat-channel");
+  const choices = configChatChannelChoices(context);
+  const target = configChatTarget(context, choices);
+  if (!select) return target;
+  // 轮询频繁重绘会打断展开中的下拉框,内容不变就不动 DOM
+  const signature = JSON.stringify([choices, target]);
+  if (select.dataset.signature !== signature) {
+    select.dataset.signature = signature;
+    select.innerHTML = choices.map(choice =>
+      `<option value="${esc(choice.value)}"${choice.disabled ? " disabled" : ""}${
+        choice.value === target ? " selected" : ""}>${esc(choice.label)}</option>`).join("");
+    select.value = target || "";
+    select.disabled = !target;
+  }
+  return target;
 }
 
 function findConfigChatRunCard(runId) {
@@ -456,13 +570,14 @@ function findConfigChatRunCard(runId) {
   return null;
 }
 
-function renderConfigChatThread(context) {
+function renderConfigChatThread(context, channelId, target) {
   const root = document.getElementById("config-chat-thread");
   if (!root) return;
-  const thread = configChatThread(context);
-  if (root.dataset.contextKey !== context.key) {
+  const threadKey = channelId || `${context.key}:${target || "none"}`;
+  const thread = channelId ? configChatThread(channelId, true) : null;
+  if (root.dataset.threadKey !== threadKey) {
     root.replaceChildren();
-    root.dataset.contextKey = context.key;
+    root.dataset.threadKey = threadKey;
     if (thread) {
       thread.lastMsgDate = "";
       thread.lastRenderedId = 0;
@@ -470,23 +585,18 @@ function renderConfigChatThread(context) {
     }
   }
   if (!thread) {
-    root.innerHTML = context.contentKey
-      ? `<div class="chat-empty empty">正在查找已有内容频道…</div>`
-      : `<div class="chat-empty empty">请先保存当前条目；发送第一条消息时会创建专属频道。</div>`;
-    return;
-  }
-  if (!thread.channelId) {
+    const binding = configChatBinding(context);
+    root.classList.remove("has-messages");
     root.innerHTML = `<div class="chat-empty empty">${
-      thread.resolved
-        ? "发送第一条消息时会创建专属频道。"
-        : "正在查找已有内容频道…"
-    }</div>`;
+      !context.contentKey ? "请先保存当前条目；发送第一条消息时会创建专注频道。"
+      : binding?.resolved ? "发送第一条消息时会创建专注频道。"
+      : "正在查找专注频道…"}</div>`;
     return;
   }
   const pending = thread.entries.filter(entry => entry.id > thread.lastRenderedId);
   if (pending.length) {
     const surface = {
-      pane: root, channelId: thread.channelId,
+      pane: root, channelId,
       lastMsgDate: thread.lastMsgDate, lastMsgId: thread.lastRenderedId,
     };
     appendMessagesToSurface(pending, surface);
@@ -495,32 +605,61 @@ function renderConfigChatThread(context) {
   }
   syncRuns(thread.runs, { pane: root, runCards: thread.runCards });
   root.classList.toggle("has-messages", Boolean(thread.entries.length));
-  if (!thread.entries.length && !thread.loaded && !root.querySelector(".chat-empty"))
-    root.innerHTML = `<div class="chat-empty empty">正在加载内容频道记录…</div>`;
-  if (!thread.entries.length && thread.loaded && !root.querySelector(".chat-empty"))
-    root.innerHTML = `<div class="chat-empty empty">此内容频道还没有消息。</div>`;
+  if (!thread.entries.length) {
+    const hint = thread.loaded ? "此频道还没有消息。" : "正在加载频道记录…";
+    const existing = root.querySelector(".chat-empty");
+    if (!existing) root.innerHTML = `<div class="chat-empty empty">${hint}</div>`;
+    else if (existing.textContent !== hint) existing.textContent = hint;
+  }
 }
 
-// 配置页对话的接收角色:有主控时固定为主控;无主控时由用户在下拉框里选
-function configChatTargetRole() {
-  const project = projObj();
-  if (!project) return "";
-  if (project.orchestrator_role_id) return project.orchestrator_role_id;
-  return document.getElementById("config-chat-role")?.value || activeProjRoles()[0]?.id || "";
+/* ---- 附件:与频道输入框同一套附件条,但目标频道要到发送时才确定,
+   所以这里只暂存本地文件,发送时再上传到所选频道 ---- */
+function configChatOnFiles(files) {
+  if (!configChatContext() || !files.length) return false;
+  for (const file of files) {
+    const isImage = String(file.type || "").startsWith("image/");
+    configChatUploads.push({
+      file, name: file.name || "pasted-image.png", display: file.name || "粘贴的图片",
+      is_image: isImage, url: isImage ? URL.createObjectURL(file) : "",
+    });
+  }
+  renderConfigChatUploads();
+  return true;
 }
 
-function syncConfigChatRoleSelect() {
-  const select = document.getElementById("config-chat-role");
-  const title = document.getElementById("config-chat-title");
-  if (!select) return;
-  const peer = peerModeProject();
-  select.hidden = !peer;
-  if (title) title.textContent = peer ? "与角色交流" : "与项目主控交流";
-  if (!peer) return;
-  const current = select.value;
-  select.innerHTML = activeProjRoles().map(r =>
-    `<option value="${esc(r.id)}">@${esc(r.id)} ${esc(r.name)}</option>`).join("");
-  if (activeProjRoles().some(r => r.id === current)) select.value = current;
+function handleConfigChatFileInput(input) {
+  configChatOnFiles([...input.files]);
+  input.value = "";
+}
+
+function removeConfigChatUpload(index) {
+  const [item] = configChatUploads.splice(index, 1);
+  if (item?.url) URL.revokeObjectURL(item.url);
+  renderConfigChatUploads();
+}
+
+function clearConfigChatUploads() {
+  for (const item of configChatUploads) if (item.url) URL.revokeObjectURL(item.url);
+  configChatUploads = [];
+  renderConfigChatUploads();
+}
+
+function renderConfigChatUploads() {
+  const wrap = document.getElementById("config-chat-attachments");
+  if (!wrap) return;
+  wrap.hidden = !configChatUploads.length;
+  wrap.innerHTML = attachmentChipsHtml(configChatUploads, "removeConfigChatUpload");
+}
+
+// "@" 按钮:不用手输 @ 也能从列表选角色,插入位置沿用输入框光标
+function openConfigChatMentionPicker() {
+  const box = document.getElementById("config-chat-input");
+  if (!box || box.getAttribute("aria-disabled") === "true") return;
+  box.focus();
+  activateComposer("config-chat-input", "config-chat-picker");
+  mentionPickerIndex = 0;
+  renderMentionPicker("");
 }
 
 function updateConfigChatContext() {
@@ -530,8 +669,16 @@ function updateConfigChatContext() {
   panel.classList.toggle("visible", Boolean(context));
   applyConfigChatLayout();
   if (!context) return;
-  syncConfigChatRoleSelect();
   if (configChatSelection?.context_key !== context.key) configChatSelection = null;
+  const peer = peerModeProject();
+  const target = syncConfigChatChannelSelect(context);
+  const channelId = configChatTargetChannelId(context, target);
+  const binding = configChatBinding(context);
+  const thread = channelId ? configChatThread(channelId) : null;
+  const channel = channelId
+    ? overview.channels.find(item => item.id === channelId) : null;
+  const archived = Boolean(channel ? channel.archived
+    : (thread?.archived || (target === CONFIG_CHAT_FOCUSED && binding?.archived)));
   document.getElementById("config-chat-context").textContent =
     `当前页面：${context.label} · 当前对象：${context.item}`;
   const selection = document.getElementById("config-chat-selection");
@@ -545,90 +692,120 @@ function updateConfigChatContext() {
     selection.classList.add("has-selection");
     clear.style.display = "inline-block";
   } else if (context.tab === "docs" && docPaneContentType === "binary" && docSelected) {
-    selection.textContent = `非文本文件；${peerModeProject() ? "所选角色" : "主控"}将收到文件名与文档路径：${docSelected}`;
+    selection.textContent = `非文本文件；接收方将收到文件名与文档路径：${docSelected}`;
     selection.classList.remove("has-selection");
     clear.style.display = "none";
   } else {
-    selection.textContent = `未选择文本；${peerModeProject() ? "所选角色" : "主控"}仍会收到当前页面与当前对象。`;
+    selection.textContent = "未选择文本；接收方仍会收到当前页面与当前对象。";
     selection.classList.remove("has-selection");
     clear.style.display = "none";
   }
-  document.getElementById("config-chat-input").placeholder =
-    `询问或修改${context.label}「${context.item}」…（Enter 发送）`;
-  const thread = configChatThread(context);
-  const openChannel = document.getElementById("config-chat-open-channel");
-  openChannel.style.display = thread?.channelId ? "inline-block" : "none";
-  const restore = document.getElementById("config-chat-restore");
-  restore.hidden = !thread?.archived;
+  const input = document.getElementById("config-chat-input");
+  input.dataset.placeholder = peer
+    ? `询问或修改${context.label}「${context.item}」；本项目没有主控，输入 @ 至少选择一个角色…（Enter 发送，Shift+Enter 换行）`
+    : `询问或修改${context.label}「${context.item}」；输入 @ 可指定角色，不指定则交给主控…（Enter 发送，Shift+Enter 换行）`;
+  document.getElementById("config-chat-open-channel").style.display =
+    channelId ? "inline-block" : "none";
+  document.getElementById("config-chat-restore").hidden = !(channelId && archived);
   const stop = document.getElementById("config-chat-stop");
   const activeCount = thread?.activeRuns.filter(run =>
     ["queued", "running", "waiting_user"].includes(run.status)).length || 0;
   stop.hidden = activeCount === 0;
   stop.textContent = activeCount > 1 ? `停止全部 (${activeCount})` : "停止 Agent";
-  const input = document.getElementById("config-chat-input");
-  input.disabled = !context.contentKey || Boolean(thread?.archived);
-  document.querySelector("#config-chat .config-chat-compose .send").disabled =
-    input.disabled;
-  if (!context.contentKey) {
-    document.getElementById("config-chat-status").textContent =
-      "请先保存当前条目；发送第一条消息时会创建专属频道。";
-  } else if (thread?.archived) {
-    document.getElementById("config-chat-status").textContent =
-      "内容频道已归档；恢复后才能继续对话。";
+  const disabled = !target || archived;
+  input.contentEditable = String(!disabled);
+  input.setAttribute("aria-disabled", String(disabled));
+  document.querySelector("#config-chat .config-chat-compose .send").disabled = disabled;
+  document.querySelectorAll("#config-chat .config-chat-tool")
+    .forEach(button => { button.disabled = disabled; });
+  const status = document.getElementById("config-chat-status");
+  if (configChatSending) {
+    /* 发送过程中的状态由 sendConfigChat 维护 */
+  } else if (!target) {
+    status.textContent = "请先保存当前条目；发送第一条消息时会创建专注频道。";
+  } else if (archived) {
+    status.textContent = "频道已归档；恢复后才能继续对话。";
+  } else if (thread?.running) {
+    status.textContent = "Agent 正在处理…";
+  } else if (target === CONFIG_CHAT_FOCUSED && !channelId) {
+    status.textContent = binding?.resolved ? "发送第一条消息时会创建专注频道。" : "正在查找专注频道…";
   } else if (thread) {
-    document.getElementById("config-chat-status").textContent = thread.running
-      ? (peerModeProject() ? "角色正在处理…" : "项目主控正在处理…")
-      : (thread.entries.some(entry => entry.author_type === "agent")
-          ? (peerModeProject() ? "角色已回复。" : "项目主控已回复。") : "");
+    status.textContent = thread.notice
+      || (thread.entries.some(entry => entry.author_type === "agent") ? "Agent 已回复。" : "");
   }
-  renderConfigChatThread(context);
-  if (context.contentKey && !thread?.resolved) {
+  renderConfigChatThread(context, channelId, target);
+  // 专注频道的存在与否决定选择器首项文案,所以无论当前目标是什么都先查一次
+  if (context.contentKey && !binding?.resolved) {
     void resolveConfigChatChannel(context).then(resolved => {
-      if (resolved?.channelId) return pollConfigChat();
-      if (configChatContext()?.key === context.key) updateConfigChatContext();
-      return null;
+      if (configChatContext()?.key !== context.key) return null;
+      return resolved?.channelId ? pollConfigChat() : updateConfigChatContext();
     }).catch(error => {
       if (configChatContext()?.key === context.key)
-        document.getElementById("config-chat-status").textContent =
-          error.message || "内容频道连接失败。";
+        status.textContent = error.message || "专注频道连接失败。";
     });
   }
 }
 
+// 把选择器目标落实为可发送的频道:专注频道不存在时在此创建;归档频道拒绝发送
+async function resolveConfigChatTargetChannel(context, target) {
+  if (target === CONFIG_CHAT_FOCUSED) {
+    const binding = await ensureConfigChatChannel(context);
+    const channel = binding?.channelId
+      ? overview.channels.find(item => item.id === binding.channelId) : null;
+    if (!channel) throw new Error("专注频道尚未就绪");
+    if (channel.archived || binding.archived) throw new Error("专注频道已归档；请先恢复后再继续对话。");
+    return channel;
+  }
+  const channel = projChannels().find(item => item.id === target);
+  if (!channel) throw new Error("所选频道不存在，请重新选择。");
+  if (channel.archived) throw new Error("所选频道已归档，请先恢复后再发送。");
+  return channel;
+}
+
+/* 发送与频道输入框同一套交付:结构化 @ 提及决定接收者(不 @ 则由后端交给主控,
+   无主控项目不 @ 就不触发),附件路径追加在正文尾部;页面身份、正文快照与选区
+   放在 context.page_collaboration 里随消息带给接收方。 */
 async function sendConfigChat() {
   const project = projObj();
   const context = configChatContext();
-  const input = document.getElementById("config-chat-input");
+  const box = document.getElementById("config-chat-input");
   const status = document.getElementById("config-chat-status");
-  const request = input.value.trim();
-  if (!project || !context || !request) {
-    status.textContent = project ? "请输入要询问或修改的内容。" : "请先选择项目。";
+  const payload = composerPayload(box);
+  const { mentions } = payload;
+  const files = configChatUploads.slice();
+  if (!project || !context) {
+    status.textContent = project ? "当前页面没有可对话的对象。" : "请先选择项目。";
     return;
   }
-  if (!context.contentKey) {
+  if (!payload.content && !files.length) {
+    status.textContent = "请输入要询问或修改的内容。";
+    return;
+  }
+  const target = configChatTarget(context);
+  if (!target) {
     status.textContent = "请先保存当前条目，再开始页面内对话。";
-    return;
-  }
-  const existingThread = configChatThread(context);
-  if (existingThread?.archived) {
-    status.textContent = "内容频道已归档；请先恢复后再继续对话。";
     return;
   }
   const selection = configChatSelection?.context_key === context.key
     ? configChatSelection : null;
-  const targetRole = configChatTargetRole();
-  if (!targetRole) {
-    status.textContent = "本项目没有可用角色，无法发送。";
-    return;
-  }
-  status.textContent = `正在发送给 @${targetRole}…`;
+  const peer = peerModeProject();
+  configChatSending = true;
+  status.textContent = "正在发送…";
+  box.replaceChildren();
+  configChatUploads = [];
+  renderConfigChatUploads();
+  savedComposerRange = null;
+  hideMentionPicker();
   try {
-    const thread = await ensureConfigChatChannel(context);
-    const channel = projChannels().find(item => item.id === thread.channelId);
-    if (!channel) throw new Error("内容频道尚未就绪");
+    const channel = await resolveConfigChatTargetChannel(context, target);
+    const attachments = [];
+    for (const item of files) {
+      const stored = await uploadChatFile(item.file, channel.id);
+      if (!stored) throw new Error(`附件上传失败：${item.display}`);
+      attachments.push(stored);
+    }
     const fileBackedPage = context.tab === "guidelines" || context.tab === "docs";
-    const currentPage = fileBackedPage
-      ? await stageConfigPage(channel, context, targetRole) : null;
+    const currentPage = fileBackedPage ? await stageConfigPage(channel, context) : null;
     const effectiveSelection = currentPage?.text_snapshot_available === false
       ? null : selection;
     const selectionPayload = effectiveSelection ? {
@@ -639,11 +816,11 @@ async function sendConfigChat() {
         selected_text_truncated: effectiveSelection.truncated,
       }),
     } : null;
-    const payload = {
+    const pagePayload = {
       page_kind: context.tab, page_label: context.label, current_item: context.item,
       ...(fileBackedPage ? { current_page: currentPage }
                          : { current_draft: currentConfigDraft(context) }),
-      selection: selectionPayload, user_message: request,
+      selection: selectionPayload, user_message: payload.content,
     };
     const guidelineEditingTip = context.tab === "guidelines"
       ? `当前准则正文没有内嵌在消息中；先读取 current_page.content_path。文件包含 YAML frontmatter 和正文，` +
@@ -674,22 +851,33 @@ async function sendConfigChat() {
       `若用户明确要求创建或修改，则使用 ${context.action} 控制动作实际保存完整结果。` +
       `优先处理 selection 指定的字段和行；修改现有条目时沿用当前 name、id、match 或路径。` +
       guidelineEditingTip + documentEditingTip + skillEditingTip + dashboardEditingTip;
-    input.value = "";
-    // 无主控项目没有"默认交给主控":用结构化提及点名所选角色
-    const peer = peerModeProject();
+    // 附件路径追加在正文尾部,不影响前面提及范围的字符偏移
+    let content = payload.content;
+    if (attachments.length)
+      content = (content ? content + "\n\n" : "") + attachmentBlock(attachments);
+    const messageContext = { page_collaboration: { ...pagePayload, instructions } };
+    if (attachments.length) messageContext.attachments = attachments;
     await api("POST", `/api/chat/${encodeURIComponent(channel.id)}/messages`, {
-      author: "human",
-      content: peer ? `@${targetRole} ${request}` : request,
-      mentions: peer ? [{ role_id: targetRole, start: 0, end: targetRole.length + 1 }] : [],
-      context: { page_collaboration: { ...payload, instructions } },
+      author: "human", content, mentions, context: messageContext,
     });
-    thread.running = true;
+    const thread = configChatThread(channel.id, true);
+    thread.running = Boolean(mentions.length) || !peer;
     thread.refreshedAfterReply = false;
-    status.textContent = `@${targetRole} 正在处理；回复会显示在此处。`;
+    const named = [...new Set(mentions.map(item => `@${item.role_id}`))];
+    thread.notice = named.length
+      ? `已发送给 ${named.join("、")}${named.length > 1 && !peer ? "（由主控协调）" : ""}；回复会显示在此处。`
+      : peer ? "已发送；本项目没有主控，未 @ 角色的消息不会触发执行。"
+             : "已发送给项目主控；回复会显示在此处。";
+    status.textContent = thread.notice;
+    configChatSending = false;
     if (currentChan === channel.id) pollMessages();
     await pollConfigChat();
   } catch (error) {
-    input.value = request;
+    // 发送失败:附件退回待发区,还原结构化提及而不降级成文本
+    configChatSending = false;
+    configChatUploads = files;
+    renderConfigChatUploads();
+    restoreComposerPayload(payload.content, mentions, box);
     status.textContent = error.message || "发送失败，请重试。";
   }
 }
@@ -697,32 +885,49 @@ async function sendConfigChat() {
 async function pollConfigChat() {
   if (configChatPolling) return;
   const context = configChatContext();
-  if (!context?.contentKey) return;
+  if (!context) return;
   configChatPolling = true;
   try {
-    // 尚未创建时也定期做只读查找，使其他页面首次发起的对话能同步回来。
-    const thread = await resolveConfigChatChannel(context, true);
-    if (!thread?.channelId) return;
-    const response = await fetch(`/api/chat/${encodeURIComponent(thread.channelId)}/messages?after_id=${thread.cursor}`);
+    // 专注频道尚未创建时也定期只读查找,使其他页面首次发起的对话能同步回来
+    if (context.contentKey) await resolveConfigChatChannel(context, true);
+    const target = configChatTarget(context);
+    const channelId = configChatTargetChannelId(context, target);
+    if (!channelId) {
+      if (configChatContext()?.key === context.key) updateConfigChatContext();
+      return;
+    }
+    const thread = configChatThread(channelId, true);
+    // 首屏直接定位频道末尾一页(活跃频道历史可能很长),之后按 after_id 增量
+    const query = thread.loaded ? `after_id=${thread.cursor}` : "tail=true";
+    const response = await fetch(
+      `/api/chat/${encodeURIComponent(channelId)}/messages?${query}`);
     if (!response.ok) return;
     const data = await response.json();
     thread.archived = Boolean(data.channel?.archived);
+    const channel = overview.channels.find(item => item.id === channelId);
+    if (channel && data.channel) {
+      const lastMessageAt = channel.last_message_at;
+      Object.assign(channel, data.channel);
+      channel.last_message_at = Math.max(Number(lastMessageAt || 0),
+                                         Number(data.channel.last_message_at || 0));
+    }
+    let agentReplied = false;
     for (const message of data.messages || []) {
       thread.cursor = Math.max(thread.cursor, message.id);
       if (thread.entries.some(entry => entry.id === message.id)) continue;
       thread.entries.push(message);
+      if (message.author_type === "agent") agentReplied = true;
     }
+    if (agentReplied) thread.notice = "";
     thread.runs = data.runs || [];
     thread.activeRuns = data.active_runs || [];
     thread.running = thread.activeRuns.some(run =>
       ["queued", "running", "waiting_user"].includes(run.status));
     thread.loaded = true;
-    if (setChannelRunningCount(thread.channelId, thread.activeRuns.length))
+    if (setChannelRunningCount(channelId, thread.activeRuns.length))
       refreshChannelRunningMarkers();
-    const stillCurrent = configChatContext()?.key === context.key;
-    if (stillCurrent) {
-      updateConfigChatContext();
-    }
+    if (configChatContext()?.key === context.key) updateConfigChatContext();
+    // 本页发出的消息得到回复后刷新一次总览,让保存的准则/文档/Skill 立即出现
     if (!thread.running && !thread.refreshedAfterReply
         && thread.entries.some(entry => entry.author_type === "agent")) {
       thread.refreshedAfterReply = true;
@@ -734,12 +939,10 @@ async function pollConfigChat() {
 
 document.addEventListener("selectionchange", captureConfigChatSelection);
 document.addEventListener("select", captureConfigChatSelection, true);
-document.getElementById("config-chat-input").addEventListener("keydown", event => {
-  if (event.key === "Enter" && !event.shiftKey && !imeComposing(event)) {
-    event.preventDefault();
-    sendConfigChat();
-  }
-});
+// 与频道输入框共用同一套提及选择器、Enter 发送、粘贴与拖入附件逻辑
+bindComposerEvents("config-chat-input", "config-chat-picker", () => sendConfigChat(),
+                   configChatOnFiles);
+bindDropZone("config-chat-input-wrap", configChatOnFiles);
 window.addEventListener("resize", applyConfigChatLayout);
 applyConfigChatLayout();
 

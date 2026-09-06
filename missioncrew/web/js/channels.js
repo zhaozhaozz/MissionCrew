@@ -172,7 +172,7 @@ async function deleteChannel(id) {
   if (!id || !await uiConfirm(message, content ? "永久清空对话" : "回收频道")) return;
   await api("DELETE", `/api/chat/channels/${id}`);
   if (currentChan === id) currentChan = null;
-  if (content) resetConfigChatChannel(id);
+  resetConfigChatChannel(id);
   await loadOverview(); renderSidebar();
   toast(content ? "内容页对话已永久清空" : "频道已移入回收站", "success");
 }

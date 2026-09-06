@@ -221,14 +221,15 @@ def test_project_api_accepts_empty_orchestrator_and_frees_lead(seeded):
     assert fresh.status_code == 200 and fresh.json()["orchestrator_role_id"] == ""
 
 
-def test_page_context_requires_target_role_without_orchestrator(peer):
+def test_page_context_is_channel_shared_without_orchestrator(peer):
+    # 无主控项目不需要指定接收角色:快照落在频道级目录,人类 @ 谁都能读到
     client = TestClient(create_app())
     body = {"page_kind": "guidelines", "page_key": "api-style.md", "content": "# x\n"}
-    assert client.post("/api/chat/general/page-context", json=body).status_code == 400
-    stored = client.post("/api/chat/general/page-context",
-                         json={**body, "role_id": "dev"})
+    stored = client.post("/api/chat/general/page-context", json=body)
     assert stored.status_code == 200
-    assert "/dev/.missioncrew/" in Path(stored.json()["path"]).as_posix()
+    path = Path(stored.json()["path"])
+    assert path.parent.parent.name == "page-context"
+    assert ".missioncrew" not in path.as_posix()
 
 
 def test_task_dispatch_and_manual_in_peer_mode(peer):

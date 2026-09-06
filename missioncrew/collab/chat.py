@@ -41,9 +41,9 @@ from .documents import (document_resource_url, library_for,
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
                             guideline_resource_url, missioncrew_project_url,
                             skill_resource_url)
-from .workspace import (channel_uploads_dir, chat_workspace_dir,
-                        platform_history_dir, prepare_agent_workspace,
-                        write_task_files)
+from .workspace import (channel_page_context_dir, channel_uploads_dir,
+                        chat_workspace_dir, platform_history_dir,
+                        prepare_agent_workspace, write_task_files)
 from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, INJECTION_FULL_MODES,
                            Backend, Channel, ExecutionConfig, Role,
                            RuntimePolicy)
@@ -1370,10 +1370,13 @@ class ChatEngine:
             allowed_dirs.append(history_parent)
         env["MISSIONCREW_CHANNEL_HISTORY"] = str(channel_history_path)
 
-        # 人类经输入框上传的频道附件;目录存在才授权,消息正文已含具体路径
-        uploads_dir = channel_uploads_dir(channel.project_id or "", channel.id)
-        if uploads_dir.is_dir() and str(uploads_dir) not in allowed_dirs:
-            allowed_dirs.append(str(uploads_dir))
+        # 人类经输入框上传的频道附件与页面对话的正文快照:都是频道级目录,
+        # 存在才授权;消息正文/上下文已含具体路径
+        for shared_dir in (channel_uploads_dir(channel.project_id or "", channel.id),
+                           channel_page_context_dir(channel.project_id or "",
+                                                    channel.id)):
+            if shared_dir.is_dir() and str(shared_dir) not in allowed_dirs:
+                allowed_dirs.append(str(shared_dir))
 
         # 只有主控拿到项目角色名册;执行角色只接收当前任务简报,不知道也
         # 不能横向调度其他执行角色。

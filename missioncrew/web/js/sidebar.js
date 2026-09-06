@@ -774,9 +774,9 @@ function isLongPaste(text) {
 
 function uploadDisplayName(name) { return String(name || "").replace(/^\d+(?:-\d+)?-/, ""); }
 
-async function uploadChatFile(file) {
+async function uploadChatFile(file, channelId = currentChan) {
   const filename = encodeURIComponent(file.name || "pasted-image.png");
-  const r = await fetch(`/api/chat/${currentChan}/uploads?filename=${filename}`, {
+  const r = await fetch(`/api/chat/${encodeURIComponent(channelId)}/uploads?filename=${filename}`, {
     method: "POST",
     headers: { "Content-Type": file.type || "application/octet-stream" },
     body: file,
@@ -803,14 +803,15 @@ function handleChatFileInput(input) {
   input.value = "";
 }
 
-/* 拖文件进聊天输入框即上传为附件;文件落在页面其他位置一律拦截,
-   防止浏览器直接打开文件顶掉页面。角色表的行排序拖拽不带 Files 类型,不受影响。 */
+/* 拖文件进输入框即作为附件;文件落在页面其他位置一律拦截,
+   防止浏览器直接打开文件顶掉页面。角色表的行排序拖拽不带 Files 类型,不受影响。
+   聊天主输入框和页面对话输入框都经 bindDropZone 接入,各自决定文件去向。 */
 function dragHasFiles(event) {
   return [...(event.dataTransfer?.types || [])].includes("Files");
 }
 
-function bindChatDropZone() {
-  const wrap = document.getElementById("input-wrap");
+function bindDropZone(wrapId, onFiles) {
+  const wrap = document.getElementById(wrapId);
   let depth = 0;   // dragenter/dragleave 在子元素间成对触发,计数避免高亮闪烁
   wrap.addEventListener("dragenter", event => {
     if (!dragHasFiles(event)) return;
@@ -831,8 +832,11 @@ function bindChatDropZone() {
     event.preventDefault();
     depth = 0;
     wrap.classList.remove("drop-target");
-    addChatAttachments([...event.dataTransfer.files]);
+    onFiles([...event.dataTransfer.files]);
   });
+}
+
+function bindGlobalDropGuard() {
   window.addEventListener("dragover", event => {
     if (dragHasFiles(event)) event.preventDefault();
   });
@@ -846,18 +850,24 @@ function removePendingUpload(index) {
   renderPendingUploads();
 }
 
+/* 待发附件条;removeFn 是全局函数名,按下标移除。已上传项带服务端 name/path,
+   尚未上传的本地文件(页面对话在发送时才上传)用 display 显示原文件名。 */
+function attachmentChipsHtml(items, removeFn) {
+  return items.map((a, i) => `
+    <span class="attachment-chip" title="${esc(a.path || a.display || a.name)}">
+      ${a.is_image && a.url ? `<img src="${esc(a.url)}" alt="">`
+                            : `<span class="attachment-kind">📄</span>`}
+      <span class="attachment-name">${esc(a.display ?? uploadDisplayName(a.name))}</span>
+      <button type="button" class="attachment-remove" title="移除附件"
+        onclick="${removeFn}(${i})">×</button>
+    </span>`).join("");
+}
+
 function renderPendingUploads() {
   const wrap = document.getElementById("composer-attachments");
   if (!wrap) return;
   wrap.hidden = !pendingUploads.length;
-  wrap.innerHTML = pendingUploads.map((a, i) => `
-    <span class="attachment-chip" title="${esc(a.path)}">
-      ${a.is_image ? `<img src="${esc(a.url)}" alt="">`
-                   : `<span class="attachment-kind">📄</span>`}
-      <span class="attachment-name">${esc(uploadDisplayName(a.name))}</span>
-      <button type="button" class="attachment-remove" title="移除附件"
-        onclick="removePendingUpload(${i})">×</button>
-    </span>`).join("");
+  wrap.innerHTML = attachmentChipsHtml(pendingUploads, "removePendingUpload");
 }
 
 function attachmentBlock(attachments) {
@@ -943,8 +953,10 @@ async function stopChannelAgents() {
 }
 
 /* 给一个 contenteditable 输入框绑定完整的提及选择器与提交行为;
-   聊天主输入框和 Task 派发弹窗都通过它接入同一套逻辑。 */
-function bindComposerEvents(boxId, pickerId, onSubmit) {
+   聊天主输入框、页面对话和 Task 派发弹窗都通过它接入同一套逻辑。
+   onFiles(files) 接收粘贴的文件与转成附件的长文本,返回 true 表示已接收;
+   不传则输入框只收纯文本。 */
+function bindComposerEvents(boxId, pickerId, onSubmit, onFiles = null) {
   const box = document.getElementById(boxId);
   box.addEventListener("focus", () => activateComposer(boxId, pickerId));
   box.addEventListener("keydown", e => {
@@ -975,14 +987,12 @@ function bindComposerEvents(boxId, pickerId, onSubmit) {
   box.addEventListener("mousedown", () => activateComposer(boxId, pickerId));
   box.addEventListener("paste", event => {
     event.preventDefault();
-    // 聊天输入框支持直接粘贴图片/文件；其他 composer 仍只收纯文本
     const files = [...(event.clipboardData?.files || [])];
-    if (files.length && boxId === "input") { addChatAttachments(files); return; }
+    if (files.length && onFiles?.(files)) return;
     const text = event.clipboardData.getData("text/plain");
     // 长文本粘贴转为 .txt 附件,输入框里已有的内容保持原样
-    if (boxId === "input" && currentChan && isLongPaste(text)) {
-      addChatAttachments([new File([text], "粘贴文本.txt",
-                                   { type: "text/plain" })]);
+    if (onFiles && isLongPaste(text)
+        && onFiles([new File([text], "粘贴文本.txt", { type: "text/plain" })])) {
       toast("粘贴的长文本已转为附件", "success");
       return;
     }
@@ -990,8 +1000,16 @@ function bindComposerEvents(boxId, pickerId, onSubmit) {
   });
 }
 
-bindComposerEvents("input", "mention-picker", () => send());
-bindChatDropZone();
+// 主输入框的附件立刻上传到当前频道;没有频道时退回纯文本粘贴
+function acceptChatFiles(files) {
+  if (!currentChan) return false;
+  addChatAttachments(files);
+  return true;
+}
+
+bindComposerEvents("input", "mention-picker", () => send(), acceptChatFiles);
+bindDropZone("input-wrap", files => addChatAttachments(files));
+bindGlobalDropGuard();
 document.addEventListener("selectionchange", rememberComposerSelection);
 document.addEventListener("mousedown", event => {
   if (!event.target.closest(".composer-wrap") && !event.target.closest("#input-wrap")

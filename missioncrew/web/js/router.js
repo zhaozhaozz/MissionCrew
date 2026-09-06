@@ -229,6 +229,7 @@ async function setProject(id, updateRoute = true) {
   skillFolderImportOpen = false;
   recycleBinItems = [];
   configChatSelection = null;
+  clearConfigChatUploads();
   configEditorDirty.guidelines = false;
   configEditorDirty.skills = false;
   document.getElementById("msgs").innerHTML = "";

@@ -263,14 +263,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if not channel.project_id:
             raise HTTPException(400, "频道未归属项目")
         project = ctx.must_project(channel.project_id)
-        role_id = body.role_id or project.orchestrator_role_id
-        if not role_id:
-            raise HTTPException(400, "本项目没有主控,请指定接收页面上下文的角色")
-        if store.get_role(project.id, role_id) is None:
-            raise HTTPException(400, f"角色不属于本项目: @{role_id}")
+        # 快照落在频道级目录,装配时授权给频道内所有角色;不绑定接收者
         try:
             path = write_page_context_snapshot(
-                project.id, channel.id, role_id,
+                project.id, channel.id,
                 body.page_kind, body.page_key, body.content,
             )
         except ValueError as exc:
