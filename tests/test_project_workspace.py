@@ -1503,6 +1503,37 @@ def test_background_refresh_preserves_scrollable_view_state(seeded):
     assert "restoreKeyedScrollPositions(board, columnScroll)" in tasks
 
 
+def test_switching_document_clears_previous_pane_before_loading(seeded):
+    """从频道或另一篇文档跳到目标文档时,主区不得残留上一篇:先换成目标的空白页与读取占位。"""
+    client = _client(seeded)
+    documents = client.get("/assets/js/documents.js").text
+    viewer = client.get("/assets/js/viewer.js").text
+    css = client.get("/assets/css/app.css").text
+
+    # 查看器以 DOM 标记判断主区正显示哪一条目,宿主改写容器后仍能识别
+    assert ':scope > .viewer-head")?.dataset.identity' in viewer
+    assert viewer.count('data-identity="${esc(config.identity())}"') == 3
+    assert "V.showLoading = () => {" in viewer
+    assert "if (displayedIdentity() === config.identity()) return;" in viewer
+    assert 'class="viewer-loading" role="status"' in viewer
+    # 查看与编辑两条读取路径都先放占位再请求
+    assert viewer.index("V.showLoading();\n      const content = await config.loadEdit()") > 0
+    assert viewer.index("V.showLoading();\n      try {\n        data = { ...(await config.loadView") > 0
+
+    # 文档页在拉清单之前同步换页;新建表单/空态直接渲染,已选文档放占位
+    prime = documents.index("const primedSignature = backgroundRefresh ? null : primeDocPane();")
+    fetch_list = 'const d = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/documents`)'
+    assert documents.index(fetch_list, prime) - prime < 200   # 紧随其后的清单请求
+    assert "function primeDocPane()" in documents
+    assert "function renderDocPaneShell()" in documents
+    assert "docViewer.showLoading();" in documents
+    # 清单到达后签名未变(新建表单/空态已就位)不再重画,避免抹掉草稿
+    assert "signature !== primedSignature" in documents
+    assert "signature !== docPaneRenderSignature" in documents
+
+    assert ".viewer-loading i" in css and "@keyframes viewerSpin" in css
+
+
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----
 
 def test_document_restore_creates_new_version(seeded):

@@ -130,6 +130,9 @@ async function renderDocuments(backgroundRefresh = false) {
   const projectId = currentProject;
   const refreshToken = ++documentRefreshToken;
   const fileListBefore = JSON.stringify(docFilesMeta);
+  // 用户主动进入/切换时，先把主区换成目标文档的页面，再去拉清单：
+  // 否则清单与正文加载期间会一直显示上一篇文档
+  const primedSignature = backgroundRefresh ? null : primeDocPane();
   const d = await api("GET", `/api/projects/${encodeURIComponent(projectId)}/documents`);
   if (refreshToken !== documentRefreshToken || projectId !== currentProject
       || currentTab !== "docs") return;
@@ -147,9 +150,21 @@ async function renderDocuments(backgroundRefresh = false) {
     updateConfigChatContext();
     return;
   }
-  if (!backgroundRefresh || signature !== docPaneRenderSignature)
+  if (signature !== primedSignature
+      && (!backgroundRefresh || signature !== docPaneRenderSignature))
     await renderDocPane(backgroundRefresh);
   updateConfigChatContext();
+}
+
+// 同步地让主区先对应当前选择：新建表单与空态不依赖网络，直接渲染完成并返回其签名
+// （清单到达后签名未变就不再重画，避免抹掉正在填写的草稿）；已选文档只放读取占位，
+// 正文仍由 renderDocPane 异步装入，返回 null
+function primeDocPane() {
+  if (docMode === "new" && document.getElementById("doc-new-path"))
+    return currentDocPaneSignature();
+  if (renderDocPaneShell()) return docPaneRenderSignature;
+  docViewer.showLoading();
+  return null;
 }
 
 function buildDocTree(files) {
@@ -319,10 +334,11 @@ async function newDocument() {
 
 async function openNewDocumentFromSidebar() {
   if (!await confirmDocDiscard()) return;
-  if (currentTab !== "docs") switchTab("docs");
+  // 先置状态再切页:切页时 renderDocuments 会同步渲染新建表单,清单到达后不再重画
   docSelected = null; docMode = "new";
   configChatSelection = null;
   docViewer.activate();
+  if (currentTab !== "docs") { switchTab("docs"); return; }
   renderSidebar();
   renderDocPane();
   syncUrl();
@@ -453,9 +469,11 @@ const docViewer = createTextViewer({
   onChange: () => updateConfigChatContext(),
 });
 
-async function renderDocPane(preserveScroll = false) {
+// 主区的非文档页面（新建表单、空态）：不含 await，DOM 同步更新；返回 true 表示已处理完，
+// false 表示当前选择是文档，要由 docViewer 装入正文
+function renderDocPaneShell() {
   const pane = document.getElementById("doc-pane");
-  if (!pane) return;
+  if (!pane) return true;
   if (docMode === "new") {
     docPaneContent = "";
     docPaneContentIdentity = currentDocContentIdentity();
@@ -472,7 +490,7 @@ async function renderDocPane(preserveScroll = false) {
     document.getElementById("doc-new-path")?.focus();
     docPaneRenderSignature = currentDocPaneSignature();
     updateConfigChatContext();
-    return;
+    return true;
   }
   if (!docSelected) {
     docPaneContent = null;
@@ -481,8 +499,13 @@ async function renderDocPane(preserveScroll = false) {
     pane.innerHTML = `<div class="empty">从左侧目录树选择一个文档查看，或用侧栏「文档」分区的按钮上传、新建文档。</div>`;
     docPaneRenderSignature = currentDocPaneSignature();
     updateConfigChatContext();
-    return;
+    return true;
   }
+  return false;
+}
+
+async function renderDocPane(preserveScroll = false) {
+  if (renderDocPaneShell()) return;
   await docViewer.render(preserveScroll);
   docPaneRenderSignature = currentDocPaneSignature();
 }

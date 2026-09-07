@@ -121,6 +121,10 @@ function createTextViewer(config) {
     viewData: null,           // {identity, kind, content}
     editIdentity: null,
   };
+  // 容器里当前正显示的条目：头部元素带 data-identity 标记。以 DOM 为准而不是记内存变量，
+  // 宿主直接改写容器（空态、新建表单）后也能判断出主区已不属于目标条目
+  const displayedIdentity = () =>
+    container.querySelector(":scope > .viewer-head")?.dataset.identity ?? null;
 
   /* ---- 事件委托：容器本身稳定，内部按钮统一走 data-vact ---- */
   container.addEventListener("click", event => {
@@ -198,7 +202,7 @@ function createTextViewer(config) {
     const meta = config.metaLine();
     const editable = kind === "markdown" || kind === "text" || kind === "html";
     const previewable = kind === "markdown" || kind === "html";
-    return `<div class="viewer-head">
+    return `<div class="viewer-head" data-identity="${esc(config.identity())}">
       <b>${esc(config.title())}</b>
       ${meta ? `<span class="muted">${esc(meta)}</span>` : ""}
       ${historical ? `<span class="guideline-history-badge">历史版本
@@ -223,7 +227,7 @@ function createTextViewer(config) {
 
   function editHeadHtml() {
     const kind = config.editKind();
-    return `<div class="viewer-head">
+    return `<div class="viewer-head" data-identity="${esc(config.identity())}">
       <b>${esc(config.title())}</b><span class="muted">编辑中</span>${dirtyBadgeHtml()}
       <span class="guideline-toolbar-spacer"></span>
       ${config.extrasHtml("edit", kind)}
@@ -238,6 +242,27 @@ function createTextViewer(config) {
       <button class="ghost" type="button" data-vact="cancel-edit">取消</button>
     </div>`;
   }
+
+  // 切换条目的读取占位：只留标题（与已知元信息）和转圈，不带任何作用于正文的按钮；
+  // 历史面板是同一文档内的状态，切换版本时保留，避免表格消失再出现
+  function loadingHtml() {
+    const meta = config.metaLine();
+    const historical = V.viewingRevision;
+    return `<div class="viewer-head" data-identity="${esc(config.identity())}">
+      <b>${esc(config.title())}</b>
+      ${meta ? `<span class="muted">${esc(meta)}</span>` : ""}
+      ${historical ? `<span class="guideline-history-badge">历史版本
+        <code>${esc(historical.slice(0, 10))}</code></span>` : ""}
+    </div>${historyPanelHtml()}
+    <div class="viewer-loading" role="status" aria-label="正在读取"><i></i></div>`;
+  }
+
+  // 主区若还显示着别的条目，立即换成目标条目的空白页；同一条目的重新读取
+  // （保存后、进入编辑）保留现有内容直到新内容就绪。同步执行，可在发起请求前调用
+  V.showLoading = () => {
+    if (displayedIdentity() === config.identity()) return;
+    container.innerHTML = loadingHtml();
+  };
 
   function editBodyHtml(content) {
     const kind = config.editKind();
@@ -346,6 +371,7 @@ function createTextViewer(config) {
     if (V.mode === "edit") {
       // 已有未保存内容时不得重新拉取覆盖编辑器
       if (V.editIdentity === identity && document.getElementById(config.textareaId)) return;
+      V.showLoading();
       const content = await config.loadEdit();
       if (!stillCurrent()) return;
       V.editIdentity = identity;
@@ -358,6 +384,7 @@ function createTextViewer(config) {
     V.editIdentity = null;
     let data = V.viewData?.identity === identity ? V.viewData : null;
     if (!data) {
+      V.showLoading();
       try {
         data = { ...(await config.loadView(V.viewingRevision)), identity };
       } catch (error) {

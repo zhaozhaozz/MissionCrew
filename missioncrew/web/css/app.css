@@ -1118,6 +1118,16 @@
                         border-radius: 999px; padding: 0 8px; font-size: 11.5px;
                         color: var(--warn); }
   .viewer-dirty-badge[hidden] { display: none; }
+  /* 切换条目时主区先只剩标题的空白页；读取超过 150ms 才淡入转圈，快速加载不闪烁 */
+  .viewer-loading { display: flex; justify-content: center; align-items: center;
+                    flex: 1; min-height: 160px; }
+  .viewer-loading i { width: 22px; height: 22px; border-radius: 50%;
+                      border: 2px solid var(--line); border-top-color: var(--accent);
+                      opacity: 0;
+                      animation: viewerSpin .8s linear infinite,
+                                 viewerSpinIn .2s ease .15s forwards; }
+  @keyframes viewerSpin { to { transform: rotate(360deg); } }
+  @keyframes viewerSpinIn { to { opacity: 1; } }
   .text-lines { font: 12.5px/1.65 ui-monospace, SFMono-Regular, Menlo, monospace; }
   .text-line { display: flex; }
   .text-line .line-no { flex: none; width: 3.4em; padding-right: 10px; margin-right: 10px;
