@@ -99,15 +99,23 @@ function toggleChannelActions(event, button) {
   menu.hidden = !opening;
 }
 
-// 窄屏下频道元信息默认收起,记录当前展开的频道 id(切换频道自动收起)
-let channelHeadExpandedFor = null;
+// 频道头元信息可收起:偏好按浏览器记住;未设置时窄屏默认收起、桌面默认展开
+function channelHeadCollapsed() {
+  const saved = localStorage.getItem("mc.channelHeadCollapsed");
+  if (saved !== null) return saved === "1";
+  return window.matchMedia("(max-width: 820px)").matches;
+}
+
+function applyChannelHeadState() {
+  const head = document.getElementById("channel-head");
+  const collapsed = channelHeadCollapsed();
+  head.classList.toggle("collapsed", collapsed);
+  head.querySelector(".channel-head-toggle")?.setAttribute("aria-expanded", String(!collapsed));
+}
 
 function toggleChannelHead() {
-  const head = document.getElementById("channel-head");
-  const expanded = !head.classList.contains("expanded");
-  channelHeadExpandedFor = expanded ? currentChan : null;
-  head.classList.toggle("expanded", expanded);
-  head.querySelector(".channel-head-toggle")?.setAttribute("aria-expanded", String(expanded));
+  localStorage.setItem("mc.channelHeadCollapsed", channelHeadCollapsed() ? "0" : "1");
+  applyChannelHeadState();
 }
 
 function renderChannelState() {
@@ -117,22 +125,20 @@ function renderChannelState() {
   head.hidden = !channel;
   if (channel) {
     const displayName = channel.name || channel.id;
-    const expanded = channelHeadExpandedFor === channel.id;
-    head.classList.toggle("expanded", expanded);
     head.innerHTML = `
-      <div class="channel-title-row" onclick="toggleChannelHead()">
+      <div class="channel-title-row" onclick="toggleChannelHead()" title="展开/收起频道信息">
         <h2># ${esc(displayName)}</h2>
         ${channelIsGeneral(channel) ? `<span class="badge">默认频道</span>` : ""}
         ${channelIsContent(channel) ? `<span class="badge">内容专属频道</span>` : ""}
         <span class="badge">${archived ? "已归档" : "活跃"}</span>
-        <button class="channel-head-toggle" type="button" title="展开/收起频道信息"
-          aria-controls="channel-meta" aria-expanded="${expanded}">▾</button>
+        <button class="channel-head-toggle" type="button" aria-controls="channel-meta">▾</button>
       </div>
       <div class="channel-meta" id="channel-meta">
         <span><b>用途</b>${esc(channel.purpose || "未说明")}</span>
         <span><b>工作目录</b><code>${esc(channel.workdir || "平台内置工作区")}</code></span>
         <span><b>创建者</b>${esc(channel.created_by_role_id ? "@" + channel.created_by_role_id : "human/platform")}</span>
       </div>`;
+    applyChannelHeadState();
   }
   const banner = document.getElementById("channel-archive-banner");
   banner.hidden = !archived;
