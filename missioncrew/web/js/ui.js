@@ -183,6 +183,26 @@ function restoreKeyedScrollPositions(root, positions) {
   }
 }
 
+/* 看板滚轮:看板(内置 main.board 与自定义 .taskboard-grid 同构)横向排列,
+   纵向滚轮落在列标题、列空白处或装得下的列上时转为横向滚动看板;只有指针
+   落在纵向溢出的列里,才保留浏览器默认行为纵向滚动该列。两个看板都会整体
+   重绘 DOM,所以在 document 上委托一次,不随渲染重复绑定。 */
+const BOARD_GRID_SELECTOR = "main.board, .taskboard-grid";
+const WHEEL_LINE_PX = 40;   // deltaMode=1(Firefox 按行计)时每行折算的像素
+
+document.addEventListener("wheel", event => {
+  if (event.ctrlKey || event.shiftKey) return;   // 缩放与浏览器原生横滚不干预
+  const grid = event.target.closest?.(BOARD_GRID_SELECTOR);
+  if (!grid || grid.scrollWidth <= grid.clientWidth) return;
+  if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;   // 触控板横向手势走原生
+  const list = event.target.closest(".col-list");
+  if (list && list.scrollHeight > list.clientHeight + 1) return;   // 溢出的列:纵向滚该列
+  event.preventDefault();
+  const unit = event.deltaMode === 1 ? WHEEL_LINE_PX
+    : event.deltaMode === 2 ? grid.clientWidth : 1;
+  grid.scrollLeft += event.deltaY * unit;
+}, { passive: false });
+
 function isNearScrollBottom(element, threshold = 40) {
   return !element || element.scrollHeight - element.scrollTop - element.clientHeight < threshold;
 }
