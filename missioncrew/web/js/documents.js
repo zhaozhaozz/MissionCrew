@@ -112,7 +112,6 @@ async function revealMissionCrewDocument(path) {
     return;
   }
   docSelected = target.path || null;
-  expandDocAncestors(docSelected);
   docMode = "view";
   docViewer.activate();
   configChatSelection = null;
@@ -205,6 +204,36 @@ function documentSidebarHtml() {
 function toggleDocDir(key) {
   docExpanded.has(key) ? docExpanded.delete(key) : docExpanded.add(key);
   renderSidebar();
+}
+
+// ---- 侧栏定位当前文档 ----
+// 无论从侧栏、地址栏直链、Markdown 链接、上传还是新建保存打开文档,侧栏都要能看到它:
+// 展开「文档」分区与所在目录,并把条目滚进视野。只在所选文档变化时定位一次(以
+// 项目+路径为键),之后的轮询重绘、用户手动收起目录或滚动侧栏都不再被打扰
+let docSidebarRevealed = null;
+
+function docSidebarRevealKey() {
+  return currentTab === "docs" && docSelected ? `${currentProject}\n${docSelected}` : null;
+}
+
+// renderSidebar 渲染前调用:展开分区与目录,让条目进入 DOM
+function prepareDocSidebarReveal() {
+  const key = docSidebarRevealKey();
+  if (!key) { docSidebarRevealed = null; return; }
+  if (key === docSidebarRevealed) return;
+  expandSection("docs");
+  expandDocAncestors(docSelected);
+}
+
+// renderSidebar 渲染并恢复滚动位置后调用:条目已在 DOM 里才滚动并记为已定位;
+// 清单尚未到达时条目不存在,留待下次渲染
+function finishDocSidebarReveal() {
+  const key = docSidebarRevealKey();
+  if (!key || key === docSidebarRevealed) return;
+  const item = document.querySelector("#doc-list .side-item.selected");
+  if (!item) return;
+  if (revealWithinScrollBox(document.getElementById("side-scroll"), item))
+    docSidebarRevealed = key;
 }
 
 // 新建文档草稿（路径或正文已填写）也算未保存修改。
@@ -301,7 +330,6 @@ async function uploadDocuments(input) {
     await renderDocuments();
     if (uploaded.length) {
       docSelected = uploaded[0];
-      expandDocAncestors(docSelected);
       docMode = "view";
       docViewer.activate();
       renderSidebar();
@@ -532,7 +560,6 @@ async function saveDocument() {
     content: document.getElementById("doc-content").value,
     message: `Update ${path} from project document editor`,
   });
-  expandDocAncestors(path);
   docMode = "view";
   docViewer.activate();
   await renderDocuments();

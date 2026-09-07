@@ -1534,6 +1534,33 @@ def test_switching_document_clears_previous_pane_before_loading(seeded):
     assert ".viewer-loading i" in css and "@keyframes viewerSpin" in css
 
 
+def test_opening_document_reveals_its_sidebar_entry(seeded):
+    """打开文档(侧栏/直链/Markdown 链接/上传/新建保存)后,侧栏展开其分区与目录并把条目滚进视野;
+    只在所选文档变化时定位一次,轮询重绘不打扰用户手动收起的目录与滚动位置。"""
+    client = _client(seeded)
+    documents = client.get("/assets/js/documents.js").text
+    router = client.get("/assets/js/router.js").text
+    ui = client.get("/assets/js/ui.js").text
+
+    # 定位分两步挂在 renderSidebar 前后:渲染前展开分区与目录,恢复滚动位置后再滚动条目
+    render = router.index("function renderSidebar() {")
+    doc_list = router.index(
+        'document.getElementById("doc-list").innerHTML = documentSidebarHtml();', render)
+    assert router.index("prepareDocSidebarReveal();", render) < doc_list
+    assert router.index("restoreScrollPositions(scrollState);", render) \
+        < router.index("finishDocSidebarReveal();", render)
+    assert "function expandSection(sec)" in router
+    # 以项目+路径为键,同一文档只定位一次
+    assert "if (key === docSidebarRevealed) return;" in documents
+    assert 'expandSection("docs");' in documents
+    assert "expandDocAncestors(docSelected);" in documents
+    assert '#doc-list .side-item.selected' in documents
+    # 只滚侧栏自身,不连带滚动页面;条目尚无布局时返回 false 留待下次渲染
+    assert "function revealWithinScrollBox(container, element)" in ui
+    assert "container.scrollTop +=" in ui
+    assert 'revealWithinScrollBox(document.getElementById("side-scroll"), item)' in documents
+
+
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----
 
 def test_document_restore_creates_new_version(seeded):

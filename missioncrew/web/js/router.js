@@ -403,6 +403,12 @@ function toggleSection(sec) {
   renderSidebar();
 }
 
+// 程序性展开分区(如定位到分区内某条目),与手动展开一样记住;由调用方随后渲染侧栏
+function expandSection(sec) {
+  if (!sideCollapsed.delete(sec)) return;
+  localStorage.setItem("mc.sideCollapsed", JSON.stringify([...sideCollapsed]));
+}
+
 function _secState(sec, listId, countId, count) {
   const closed = sideCollapsed.has(sec);
   const head = document.getElementById(`sec-${sec}`);
@@ -416,6 +422,7 @@ function _secState(sec, listId, countId, count) {
 
 function renderSidebar() {
   const scrollState = captureScrollPositions(["#side-scroll"]);
+  prepareDocSidebarReveal();   // 新打开的文档:先展开其分区与目录,渲染后再滚进视野
   // 频道 -> 聊天
   const chans = visibleProjChannels();
   if (!_secState("channels", "chan-list", "cnt-channels", chans.length))
@@ -510,4 +517,5 @@ function renderSidebar() {
   refreshRuntimeIndicators();
   renderChannelState();
   restoreScrollPositions(scrollState);
+  finishDocSidebarReveal();
 }

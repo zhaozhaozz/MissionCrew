@@ -151,6 +151,18 @@ function restoreScrollPositions(positions) {
   }
 }
 
+// 把 element 滚进 container 视野:已完整可见则不动,否则滚到容器中部(带出前后相邻条目)。
+// 只改容器自身的 scrollTop,不像 scrollIntoView 那样连带滚动页面与其他祖先;
+// element 没有布局(所在区域 display:none)时返回 false,由调用方稍后重试
+function revealWithinScrollBox(container, element) {
+  if (!container || !element || !element.getClientRects().length) return false;
+  const box = container.getBoundingClientRect();
+  const rect = element.getBoundingClientRect();
+  if (rect.top >= box.top && rect.bottom <= box.bottom) return true;
+  container.scrollTop += rect.top - box.top - (box.height - rect.height) / 2;
+  return true;
+}
+
 function captureKeyedScrollPositions(root) {
   if (!root) return [];
   return [...root.querySelectorAll("[data-scroll-key]")].map(element => ({
