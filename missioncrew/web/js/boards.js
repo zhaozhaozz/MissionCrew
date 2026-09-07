@@ -239,7 +239,8 @@ function boardCardHtml(card) {
   </div>`;
 }
 
-/* ---- 筛选列工具条:每列一个标签表达式,状态(待处理/处理中/…)也是标签 ---- */
+/* ---- 筛选列工具条:每列一个标签表达式,状态(待处理/处理中/…)也是标签;
+   设置分组属性后改为按该属性取值横向分列,筛选列退为卡片范围(各列并集) ---- */
 let taskboardLastData = null;   // 最近一次 /data 响应,增删筛选列时物化当前列
 
 function taskboardFilterBarHtml(data) {
@@ -249,18 +250,20 @@ function taskboardFilterBarHtml(data) {
     `<span class="tb-chip" title="${esc(col.query)}">${esc(col.title)}<button
        class="tb-chip-x" data-index="${i}" title="移除此列"
        onclick="removeTaskboardFilter(+this.dataset.index)">×</button></span>`).join("");
+  const grouped = Boolean(data.group_by);
   return `<div class="tb-filter-bar">
-    <span class="muted">筛选列:</span>${chips}
+    <span class="muted" title="${grouped ? "分组时各筛选列的并集决定进入看板的卡片" : ""}">${
+      grouped ? "范围:" : "筛选列:"}</span>${chips}
     <input id="tb-new-filter" list="tb-label-options"
       placeholder="标签表达式,如 status: 处理中 & bug 或 owner: *"
       onkeydown="if(event.key==='Enter')addTaskboardFilter()">
     <datalist id="tb-label-options">${options}</datalist>
-    <button class="ghost" onclick="addTaskboardFilter()">＋加列</button>
-    <input id="tb-group-by" placeholder="列内按属性分组,如 owner" value="${esc(data.group_by || "")}"
+    <button class="ghost" onclick="addTaskboardFilter()">${grouped ? "＋加范围" : "＋加列"}</button>
+    <input id="tb-group-by" placeholder="按属性取值分列,如 owner" value="${esc(data.group_by || "")}"
       onkeydown="if(event.key==='Enter')setTaskboardGroupBy(this.value)">
     <button class="ghost"
       onclick="setTaskboardGroupBy(document.getElementById('tb-group-by').value)">分组</button>
-    <button class="ghost" onclick="setTaskboardGroupBy('')"${data.group_by ? "" : " disabled"}>清除分组</button>
+    <button class="ghost" onclick="setTaskboardGroupBy('')"${grouped ? "" : " disabled"}>清除分组</button>
   </div>`;
 }
 
@@ -294,7 +297,7 @@ async function setTaskboardGroupBy(value) {
     uiAlert("分组属性名不能包含冒号或表达式运算符"); return;
   }
   await saveTaskboardConfig({ group_by: prop });
-  toast(prop ? `已在列内按属性「${prop}」分组` : "已清除列内分组", "success");
+  toast(prop ? `已按属性「${prop}」的取值分列` : "已恢复按筛选列分列", "success");
 }
 
 async function addTaskboardFilter() {
@@ -316,15 +319,8 @@ async function removeTaskboardFilter(index) {
 }
 
 function taskboardColumnCardsHtml(col) {
-  const empty = `<div class="empty" style="padding:6px 4px">暂无条目</div>`;
-  if (!col.groups) return col.cards.map(boardCardHtml).join("") || empty;
-  const cards = new Map(col.cards.map(card => [card.id, card]));
-  return col.groups.map(group => {
-    const items = group.card_ids.map(id => cards.get(id)).filter(Boolean);
-    return `<section class="tb-card-group">
-      <h3 class="tb-group-title">${esc(group.title)}<span class="col-count">${items.length}</span></h3>
-      ${items.map(boardCardHtml).join("")}</section>`;
-  }).join("") || empty;
+  return col.cards.map(boardCardHtml).join("")
+    || `<div class="empty" style="padding:6px 4px">暂无条目</div>`;
 }
 
 async function renderTaskboardBoard(board) {

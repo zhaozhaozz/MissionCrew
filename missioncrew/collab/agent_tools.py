@@ -214,7 +214,8 @@ ACTION_DEFINITIONS = {
             "filters": ("taskboard 筛选列数组 [{title,query,color}],query 是"
                         "标签表达式(& | ! 与括号,`属性: *` 匹配带该属性的"
                         "任务);新建时缺省按数据源状态取值生成 status 列"),
-            "group_by": "可选分组属性名;非空时在每个筛选列内按属性取值分组,保留 filters",
+            "group_by": ("可选分列属性名;非空时改为按该属性取值横向分列(末尾"
+                         "「未设置」列),filters 的并集只划定卡片范围"),
         },
     },
     "dashboard.delete": {

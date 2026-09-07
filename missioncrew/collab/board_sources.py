@@ -6,7 +6,8 @@
 数据源只声明状态取值的顺序与颜色,用于生成默认筛选列。
 
 看板由 filters([{title,query,color}],每列一个标签表达式)分列;
-group_by 可进一步在各列内按属性取值分组,缺少属性的卡片归入「未设置」。
+group_by 非空时改为按该属性的取值横向分列(每个取值一列,末尾追加「未设置」列),
+此时各筛选列的并集只用来划定进入看板的卡片范围。
 标签匹配在服务端完成,前端只做通用渲染。
 """
 from __future__ import annotations
@@ -281,9 +282,10 @@ def _builtin_meta(store, task: Task) -> list[str]:
     return meta
 
 
-def _property_groups(tasks: list[Task], prop: str,
-                     status_values: list[dict]) -> list[dict]:
-    """按属性取值动态分组;status 属性按数据源声明的顺序与颜色排前。"""
+def _property_columns(tasks: list[Task], prop: str,
+                      status_values: list[dict]) -> list[dict]:
+    """按属性取值动态分列;status 属性按数据源声明的顺序与颜色排前,
+    其余取值按出现的值排序,末尾固定一列收纳缺少该属性的卡片。"""
     prop = str(prop or "").strip()
     declared = ([{"value": c["value"], "color": c.get("color") or ""}
                  for c in status_values]
@@ -307,9 +309,10 @@ def _property_groups(tasks: list[Task], prop: str,
 def resolve_board_data(store, project_id: str, source_id: str,
                        filters: Optional[list] = None,
                        group_by: str = "") -> dict:
-    """解析看板数据:按源取任务 -> 按筛选列分列 -> 可选的列内属性分组。
+    """解析看板数据:按源取任务 -> 按筛选列分列,或按 group_by 属性取值分列。
 
     卡片可命中多列(列是标签视角,不是互斥状态);表达式非法抛 ValueError。
+    响应里的 filters 始终是筛选列配置,分组模式下前端据此增删范围列。
     """
     source_id = normalize_source_id(source_id)
     if source_id == BUILTIN_SOURCE_ID:
@@ -335,27 +338,26 @@ def resolve_board_data(store, project_id: str, source_id: str,
     group_by = str(group_by or "").strip()
     column_filters = (validate_filters(filters) if filters
                       else default_filters(status_values))
+    filter_asts = [label_query.parse(item["query"]) for item in column_filters]
+    if group_by:
+        # 分组模式:筛选列的并集划定卡片范围,列改为该属性的各个取值。
+        scoped = [task for task in tasks
+                  if any(label_query.matches(ast, task.labels)
+                         for ast in filter_asts)]
+        columns = _property_columns(scoped, group_by, status_values)
+        key_prefix = "g"
+    else:
+        scoped, columns, key_prefix = tasks, column_filters, "f"
     out_columns = []
-    for index, item in enumerate(column_filters):
+    for index, item in enumerate(columns):
         ast = label_query.parse(item["query"])
-        column_tasks = [task for task in tasks
-                        if label_query.matches(ast, task.labels)]
-        column = {
-            "key": f"f{index}", "title": item["title"], "query": item["query"],
-            "color": item["color"] or "var(--muted)",
-            "cards": [_task_card(task) for task in column_tasks],
-        }
-        if group_by:
-            column["groups"] = []
-            for group in _property_groups(column_tasks, group_by, status_values):
-                group_ast = label_query.parse(group["query"])
-                card_ids = [task.id for task in column_tasks
-                            if label_query.matches(group_ast, task.labels)]
-                if card_ids:
-                    # 只传卡片引用,避免分组再次复制正文与元信息。
-                    column["groups"].append({**group, "card_ids": card_ids})
-        out_columns.append(column)
-    # 可筛选标签全集,供前端做筛选输入建议
+        out_columns.append({
+            "key": f"{key_prefix}{index}", "title": item["title"],
+            "query": item["query"], "color": item["color"] or "var(--muted)",
+            "cards": [_task_card(task) for task in scoped
+                      if label_query.matches(ast, task.labels)],
+        })
+    # 可筛选标签全集(整个数据源,不受分组范围影响),供前端做筛选输入建议
     labels = {label for task in tasks for label in task.labels}
     labels.update(f"{STATUS_PROPERTY}: {c['value']}" for c in status_values)
     labels.discard("")

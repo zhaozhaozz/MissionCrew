@@ -1053,7 +1053,7 @@ def test_builtin_board_locks_status_columns_and_appends_custom_filters(seeded):
     assert [f["query"] for f in payload["filters"]] == ["bug"]
 
 
-def test_taskboard_group_by_preserves_default_columns(seeded):
+def test_taskboard_group_by_splits_columns_by_value(seeded):
     client = _client(seeded)
     client.post("/api/tasks", json={
         "project_id": "webshop", "title": "任务A",
@@ -1067,23 +1067,24 @@ def test_taskboard_group_by_preserves_default_columns(seeded):
         "layout": [], "group_by": "owner"})
     assert saved.status_code == 200, saved.text
     assert saved.json()["group_by"] == "owner"
+    # 分组不改变筛选列配置:新建仍物化四个状态列,供工具条增删
     assert len(saved.json()["filters"]) == 4
     payload = client.get("/api/projects/webshop/boards/byowner/data").json()
     assert payload["group_by"] == "owner"
-    assert [c["title"] for c in payload["columns"]] == [
+    assert [f["title"] for f in payload["filters"]] == [
         "待处理", "处理中", "已阻塞", "已完成"]
-    column = payload["columns"][0]
-    cards = {card["id"]: card["title"] for card in column["cards"]}
-    by_title = {g["title"]: [cards[id] for id in g["card_ids"]]
-                for g in column["groups"]}
-    assert by_title["张三"] == ["任务A"]
-    assert by_title["李四"] == ["任务B"]
-    assert by_title["未设置 owner"] == ["无主任务"]
-    # 属性值组 + 未设置组都位于原有状态列内部。
-    assert [g["query"] for g in column["groups"]] == [
+    # 看板列 = 属性各取值一列 + 末尾「未设置」列,列查询是可复用的标签表达式
+    assert [c["title"] for c in payload["columns"]] == [
+        "张三", "李四", "未设置 owner"]
+    assert [c["query"] for c in payload["columns"]] == [
         "owner: 张三", "owner: 李四", "!owner: *"]
-    assert all(c["groups"] == [] for c in payload["columns"][1:])
-    # group_by 置空清除列内分组,筛选仍可修改。
+    assert [c["key"] for c in payload["columns"]] == ["g0", "g1", "g2"]
+    by_title = {c["title"]: [card["title"] for card in c["cards"]]
+                for c in payload["columns"]}
+    assert by_title == {"张三": ["任务A"], "李四": ["任务B"],
+                        "未设置 owner": ["无主任务"]}
+    assert all("groups" not in c for c in payload["columns"])
+    # group_by 置空恢复按筛选列分列,筛选配置仍可修改
     cleared = client.post("/api/projects/webshop/boards", json={
         "id": "byowner", "name": "按负责人", "group_by": "",
         "filters": [{"query": "bug"}]})
@@ -1091,11 +1092,36 @@ def test_taskboard_group_by_preserves_default_columns(seeded):
     payload = client.get("/api/projects/webshop/boards/byowner/data").json()
     assert payload["group_by"] == ""
     assert [c["title"] for c in payload["columns"]] == ["bug"]
-    assert "groups" not in payload["columns"][0]
+    assert payload["columns"][0]["key"] == "f0"
+
+
+def test_taskboard_group_by_status_keeps_declared_order(seeded):
+    from missioncrew.core.models import BoardDataSource, Task
+
+    seeded.put_board_datasource(BoardDataSource(
+        id="webshop:ext", project_id="webshop",
+        status_values=[{"value": "Open", "color": "#0f0"},
+                       {"value": "Closed", "color": "#999"}]))
+    for id, labels in [("c", ["status: Closed"]), ("o", ["status: Open"]),
+                       ("odd", ["status: Reopened"]), ("none", ["bug"])]:
+        seeded.put_task(Task(id=id, title=id, project_id="webshop",
+                             source_id="ext", labels=labels))
+    client = _client(seeded)
+    client.post("/api/projects/webshop/boards", json={
+        "id": "bystatus", "kind": "taskboard", "source": "ext",
+        "filters": [{"title": "全部", "query": "status: * | bug"}],
+        "group_by": "status"})
+    payload = client.get("/api/projects/webshop/boards/bystatus/data").json()
+    # 声明过的状态按数据源顺序与颜色排前(空列也保留),其余取值排序,未设置殿后
+    assert [(c["title"], c["color"]) for c in payload["columns"]] == [
+        ("Open", "#0f0"), ("Closed", "#999"), ("Reopened", "var(--muted)"),
+        ("未设置 status", "var(--muted)")]
+    assert [[card["id"] for card in c["cards"]] for c in payload["columns"]] == [
+        ["o"], ["c"], ["odd"], ["none"]]
 
 
 @pytest.mark.parametrize("source_id", ["built-in", "external"])
-def test_taskboard_filters_and_grouping_work_together(seeded, source_id):
+def test_taskboard_filters_scope_grouped_columns(seeded, source_id):
     from missioncrew.core.models import BoardDataSource, Task
 
     if source_id == "external":
@@ -1118,37 +1144,32 @@ def test_taskboard_filters_and_grouping_work_together(seeded, source_id):
         "filters": filters})
     assert saved.status_code == 200, saved.text
     url = "/api/projects/webshop/boards/combined/data"
-    before = client.get(url).json()
     client.post("/api/projects/webshop/boards", json={
         "id": "combined", "group_by": "owner"})
     grouped = client.get(url).json()
+    # 筛选配置原样回传供工具条增删;筛选列并集(全部 bug)划定卡片范围,
+    # feature 不在任何筛选列内所以 Carol 不成列;多属性值的卡片进入多列。
     assert grouped["filters"] == filters
-    # 分组前后列定义、卡片全集、计数与顺序完全一致;每列只增加组信息。
-    assert [{k: v for k, v in c.items() if k != "groups"}
-            for c in grouped["columns"]] == before["columns"]
-    for column in grouped["columns"]:
-        groups = {g["title"]: set(g["card_ids"]) for g in column["groups"]}
-        assert set(groups) == {"Alice", "Bob", "未设置 owner"}
-        assert groups["Bob"] == {"bug-ab"}
-        assert groups["未设置 owner"] == {"bug-none"}
-        assert set.union(*groups.values()) == {c["id"] for c in column["cards"]}
-    assert set(grouped["columns"][0]["groups"][0]["card_ids"]) == {"bug-a", "bug-ab"}
-    assert grouped["columns"][1]["groups"][0]["card_ids"] == ["bug-ab"]
+    columns = {c["title"]: {card["id"] for card in c["cards"]}
+               for c in grouped["columns"]}
+    assert list(columns) == ["Alice", "Bob", "未设置 owner"]
+    assert columns == {"Alice": {"bug-a", "bug-ab"}, "Bob": {"bug-ab"},
+                       "未设置 owner": {"bug-none"}}
+    # 标签建议仍覆盖整个数据源,不受范围影响
+    assert "feature" in grouped["labels"] and "owner: Carol" in grouped["labels"]
 
     # 分组期间修改筛选会立即改变卡片范围,不会清除 group_by。
     changed = client.post("/api/projects/webshop/boards", json={
         "id": "combined", "filters": [{"title": "功能", "query": "feature"}]})
     assert changed.json()["group_by"] == "owner"
-    column = client.get(url).json()["columns"][0]
-    assert column["title"] == "功能"
-    assert column["groups"][0]["card_ids"] == ["feature"]
-    assert column["groups"][0]["title"] == "Carol"
+    payload = client.get(url).json()
+    assert [c["title"] for c in payload["columns"]] == ["Carol", "未设置 owner"]
+    assert [card["id"] for card in payload["columns"][0]["cards"]] == ["feature"]
     client.post("/api/projects/webshop/boards", json={
         "id": "combined", "group_by": ""})
-    cleared = client.get(url).json()["columns"][0]
-    assert cleared == {k: v for k, v in column.items() if k != "groups"}
-
-
+    cleared = client.get(url).json()
+    assert [c["title"] for c in cleared["columns"]] == ["功能"]
+    assert [card["id"] for card in cleared["columns"][0]["cards"]] == ["feature"]
 def test_non_orchestrator_actions_are_stripped_end_to_end(seeded):
     """非主控回复中的控制动作:端到端验证被剥离且不生效(mock 回显动作块)。"""
     chat = ChatEngine(seeded)
