@@ -1561,6 +1561,25 @@ def test_opening_document_reveals_its_sidebar_entry(seeded):
     assert 'revealWithinScrollBox(document.getElementById("side-scroll"), item)' in documents
 
 
+def test_top_bar_lives_in_sidebar_column_on_desktop(seeded):
+    """顶栏只有 logo/标题/主题按钮,不该横贯整页:桌面并入侧栏列让主区占满整高,
+    窄屏抽屉模式下由 main.js 挪回页面顶部,保证 ☰ 常驻可见。"""
+    client = _client(seeded)
+    html = client.get("/").text
+    main = client.get("/assets/js/main.js").text
+    css = client.get("/assets/css/app.css").text
+
+    sidebar_open = html.index('<aside id="sidebar">')
+    top_bar = html.index('<header id="top-bar">')
+    assert sidebar_open < top_bar < html.index('<div id="proj-row">')
+    assert html.index('id="sidebar-toggle"', top_bar) < html.index("</header>", top_bar)
+    assert "mobile ? document.body.prepend(topBar) : sidebar.prepend(topBar)" in main
+    assert "placeTopBar(mobileLayout.matches);" in main
+    assert "placeTopBar(m.matches);" in main
+    # 侧栏内抵消内边距贴齐边缘,底边线与侧栏同宽
+    assert "#sidebar > #top-bar { margin: -12px -12px 12px;" in css
+
+
 # ---- 文档库:恢复 / 软链可达性 / 二进制读取 / 审计 ----
 
 def test_document_restore_creates_new_version(seeded):

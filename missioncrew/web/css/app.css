@@ -79,6 +79,9 @@
                font-size: 15px; line-height: 1; transition: all .15s; }
   .theme-btn:hover { border-color: var(--accent); color: var(--accent); }
   .sidebar-toggle { display: none; }
+  /* 桌面:顶栏是侧栏列的首行,抵消侧栏内边距贴齐左右边缘,底边线与侧栏同宽 */
+  #sidebar > #top-bar { margin: -12px -12px 12px; padding: 0 14px; }
+  #top-bar h1 { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* ---- 布局:持久左侧栏(承载全部导航)+ 视图区 ---- */
   #app { flex: 1; display: flex; min-height: 0; }
   #sidebar { width: 232px; flex: none; border-right: 1px solid var(--line);

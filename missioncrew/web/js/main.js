@@ -41,13 +41,21 @@
   };
   window.toggleMobileSidebar = () => setOpen(!sidebar.classList.contains("open"));
   window.closeMobileSidebar = () => setOpen(false);
+  // 顶栏在桌面并入侧栏列(主区占满整高);抽屉模式下它会随侧栏一起藏起来,
+  // 所以窄屏时挪回页面顶部常驻,保证 ☰ 与标题始终可见
+  const topBar = document.getElementById("top-bar");
+  const placeTopBar = mobile => mobile ? document.body.prepend(topBar) : sidebar.prepend(topBar);
+  placeTopBar(mobileLayout.matches);
   // 选中频道/面板/角色或点击导航后收起抽屉,展开/折叠分区不收起
   sidebar.addEventListener("click", e => {
     if (mobileLayout.matches
         && e.target.closest(".side-item, .side-nav, .role-chip, .sec-act .icon-btn"))
       closeMobileSidebar();
   });
-  mobileLayout.addEventListener("change", m => { if (!m.matches) setOpen(false); });
+  mobileLayout.addEventListener("change", m => {
+    placeTopBar(m.matches);
+    if (!m.matches) setOpen(false);
+  });
 })();
 
 loadOverview();

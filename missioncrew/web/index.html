@@ -7,16 +7,16 @@
 <link rel="stylesheet" href="/assets/css/app.css">
 </head>
 <body>
-<header>
-  <button class="theme-btn sidebar-toggle" id="sidebar-toggle" onclick="toggleMobileSidebar()"
-    title="显示/隐藏侧栏" aria-label="显示/隐藏侧栏" aria-expanded="false">☰</button>
-  <div class="logo">M</div>
-  <h1>MissionCrew</h1>
-  <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="切换明暗主题">🌙</button>
-</header>
-
 <div id="app">
   <aside id="sidebar">
+    <!-- 顶栏:桌面并入侧栏列(与侧栏同宽,主区占满整高);窄屏由 main.js 挪回页面顶部 -->
+    <header id="top-bar">
+      <button class="theme-btn sidebar-toggle" id="sidebar-toggle" onclick="toggleMobileSidebar()"
+        title="显示/隐藏侧栏" aria-label="显示/隐藏侧栏" aria-expanded="false">☰</button>
+      <div class="logo">M</div>
+      <h1>MissionCrew</h1>
+      <button class="theme-btn" id="theme-btn" onclick="toggleTheme()" title="切换明暗主题">🌙</button>
+    </header>
     <div id="proj-row">
       <select id="proj-sel" onchange="setProject(this.value)"></select>
       <button class="proj-btn" id="proj-cfg" onclick="switchTab('proj')" title="项目设置">⚙</button>
