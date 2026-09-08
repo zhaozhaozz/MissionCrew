@@ -421,6 +421,17 @@ def test_chat_ui_renders_usage_events_from_unified_schema(seeded):
     assert html.index("/assets/js/run-events.js") < html.index("/assets/js/sidebar.js")
 
 
+def test_chat_ui_live_output_shows_elapsed_time(seeded):
+    """实时输出框头部按 created_at 起算并每秒刷新已用时长。"""
+    client = TestClient(create_app())
+    run_js = client.get("/assets/js/run-events.js").text
+    css = client.get("/assets/css/app.css").text
+    assert "function fmtElapsed(seconds)" in run_js and "function tickRunElapsed()" in run_js
+    assert "setInterval(tickRunElapsed, 1000)" in run_js
+    assert 'class="rc-elapsed" data-since="${esc(run.created_at)}"' in run_js
+    assert ".run-live-output .rc-elapsed" in css
+
+
 def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):
     client = TestClient(create_app())
     js = client.get("/assets/js/sidebar.js").text

@@ -297,6 +297,7 @@
   .run-live-output .body { border-style: dashed; border-left: 3px solid var(--line); }
   .run-live-output .via::after { content: "●"; color: var(--accent); font-size: 8px;
                                  margin-left: 6px; animation: blink 1.2s infinite; }
+  .run-live-output .rc-elapsed { font-variant-numeric: tabular-nums; }
   .re { margin-top: 8px; white-space: pre-wrap; word-break: break-word;
         line-height: 1.55; }
   .re .re-k { display: inline-block; font-size: 10.5px; color: var(--muted);

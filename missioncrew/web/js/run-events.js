@@ -322,6 +322,25 @@ function submitRuntimeAnswers(runId, requestId, button) {
   sendRuntimeInteraction(runId, requestId, "submit", answers);
 }
 
+/* 实时输出框头部的已用时长:按运行入队时间(created_at)起算,与运行卡片
+   结束后显示的总耗时同一口径;秒位补零避免跳动时宽度抖动 */
+function fmtElapsed(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds) || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, "0")}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+
+function tickRunElapsed() {
+  const now = Date.now() / 1000;
+  document.querySelectorAll(".rc-elapsed[data-since]").forEach(el => {
+    el.textContent = fmtElapsed(now - Number(el.dataset.since));
+  });
+}
+// 实时框随运行结束移除,平时无匹配元素,每秒一次的扫描开销可忽略
+setInterval(tickRunElapsed, 1000);
+
 /* 运行期间的实时输出:把 text 过程事件聚合成一个跟随更新的输出框,
    一轮运行只有一个(消息之间是 Runtime 拼好的 Markdown 横线),不随
    每次输出新建气泡;运行结束后移除,由正式发布的 Agent 消息接替展示。 */
@@ -346,7 +365,7 @@ function syncRunLiveOutput(run, card, pane, events, liveOutput) {
     bubble.innerHTML = `<span class="avatar" style="background:${esc(color)}">${esc((run.role_id[0] || "?").toUpperCase())}</span>
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${esc(color)}">@${esc(run.role_id)}</span>
-          <span class="via">运行中 · 过程输出实时更新</span></div>
+          <span class="via">运行中 · 已用 <span class="rc-elapsed" data-since="${esc(run.created_at)}">${fmtElapsed(Date.now() / 1000 - run.created_at)}</span> · 过程输出实时更新</span></div>
         <div class="body markdown-body"></div>
       </div>`;
     // 多个 Agent 并行时各自的输出框以角色色左描边区分归属
