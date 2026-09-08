@@ -1584,6 +1584,25 @@ def test_background_refresh_preserves_scrollable_view_state(seeded):
     assert "renderTaskboard(builtinTaskboardBinding())" in tasks
 
 
+def test_document_title_tracks_current_item_and_project(seeded):
+    """浏览器标签标题 = 当前条目-项目-MissionCrew,过长部分截断;随 URL 同步与侧栏重绘更新。"""
+    client = _client(seeded)
+    html = client.get("/").text
+    router = client.get("/assets/js/router.js").text
+
+    assert "<title>MissionCrew</title>" in html
+    assert 'document.title = [...parts.filter(Boolean), "MissionCrew"].join("-");' in router
+    assert 'return chars.slice(0, max).join("").trimEnd() + "...";' in router
+    for tab in ("chat", "board", "custom", "docs", "guidelines", "skills",
+                "automations", "recycle-bin", "proj", "runtime-status", "settings"):
+        assert f'case "{tab}"' in router
+    # 两个刷新入口:URL 同步(每次导航)与侧栏重绘(总览轮询把名字带到后)
+    sync = router.index("function syncUrl(push = true) {")
+    assert router.index("updateDocumentTitle();", sync) < router.index("if (!routeRestored", sync)
+    sidebar = router.index("function renderSidebar() {")
+    assert router.index("updateDocumentTitle();", sidebar) < router.index("captureScrollPositions", sidebar)
+
+
 def test_switching_document_clears_previous_pane_before_loading(seeded):
     """从频道或另一篇文档跳到目标文档时,主区不得残留上一篇:先换成目标的空白页与读取占位。"""
     client = _client(seeded)

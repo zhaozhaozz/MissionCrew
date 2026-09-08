@@ -47,7 +47,62 @@ function parsePath() {
            chan: parts.slice(2).join("/") || null };
 }
 
+/* ---- 浏览器标签标题:<当前条目>-<项目>-MissionCrew,过长的部分截断成「...」。
+   条目按页签取当前打开的频道/任务/面板/文档/准则/Skill/自动化,没有具体条目时用
+   页面名;随 URL 同步与侧栏重绘更新,名字异步加载到位后也会补上。 ---- */
+const TITLE_ITEM_MAX = 20;
+const TITLE_PROJECT_MAX = 16;
+
+function titlePart(text, max) {
+  const chars = Array.from(String(text || "").trim());
+  if (chars.length <= max) return chars.join("");
+  return chars.slice(0, max).join("").trimEnd() + "...";
+}
+
+function currentTitleItem() {
+  const shortId = id => String(id || "").replace(`${currentProject}:`, "");
+  switch (currentTab) {
+    case "chat": {
+      const channel = (overview.channels || []).find(item => item.id === currentChan);
+      return channel ? `#${channel.name || shortId(channel.id)}` : "频道";
+    }
+    case "board":
+      return currentTaskDetail?.task?.title || "任务看板";
+    case "custom": {
+      const board = projBoards().find(item => item.id === currentCustomBoard);
+      return board ? (board.name || shortId(board.id)) : "自定义面板";
+    }
+    case "docs":
+      return docSelected ? docSelected.split("/").pop() : "文档";
+    case "guidelines":
+      return selectedGuidelineName || "准则";
+    case "skills": {
+      const skill = (projObj()?.skills || []).find(item => item.id === selectedSkillId);
+      return skill ? (skill.name || skill.id) : "Skill";
+    }
+    case "automations": {
+      const automation = projAutomations().find(item => item.id === selectedAutomationId);
+      return automation ? (automation.name || shortId(automation.id)) : "自动化";
+    }
+    case "recycle-bin": return "项目回收站";
+    case "proj": return "项目设置";
+    case "runtime-status": return "运行状态";
+    case "settings": return "全局设置";
+    default: return "";
+  }
+}
+
+function updateDocumentTitle() {
+  const project = projObj();
+  const parts = currentProject
+    ? [titlePart(currentTitleItem(), TITLE_ITEM_MAX),
+       titlePart(project?.name || currentProject, TITLE_PROJECT_MAX)]
+    : [];
+  document.title = [...parts.filter(Boolean), "MissionCrew"].join("-");
+}
+
 function syncUrl(push = true) {
+  updateDocumentTitle();
   // 首次路由还原完成前不写 URL:否则加载期的默认频道选择会先把
   // 原始地址(如 /default/settings)覆写成 chat,刷新就回不去了
   if (!routeRestored || routeApplying || !currentProject) return;
@@ -423,6 +478,7 @@ function _secState(sec, listId, countId, count) {
 }
 
 function renderSidebar() {
+  updateDocumentTitle();   // 名字随总览轮询到位,标题一起刷新
   const scrollState = captureScrollPositions(["#side-scroll"]);
   prepareDocSidebarReveal();   // 新打开的文档:先展开其分区与目录,渲染后再滚进视野
   // 频道 -> 聊天
