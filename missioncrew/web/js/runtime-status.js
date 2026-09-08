@@ -56,16 +56,62 @@ function runtimeSessionCell(instance) {
   return key + native || `<span class="muted">—</span>`;
 }
 
+/* 前台 = 实例正在执行一个 turn(呼吸圆点「运行中」);后台 = 跨 turn 存活的后台命令
+   (Claude run_in_background / ACP 客户端终端,不阻塞对话,沙漏标记)。两者都来自
+   /api/runtime/status 的实例快照;session_key 形如 project:channel::role,据此把后台
+   命令归到频道与角色。 */
+const backgroundTitle = (count, channels = []) =>
+  `${count} 个后台命令仍在运行,不阻塞对话`
+  + (channels.length ? `(${channels.map(name => `#${name}`).join(" ")})` : "");
+
 function refreshRuntimeIndicators(data = runtimeStatusSnapshot) {
   if (!data) return;
   runtimeStatusSnapshot = data;
-  const activeRoles = new Set((data.instances || [])
+  const instances = data.instances || [];
+  const activeRoles = new Set(instances
     .filter(instance => ["starting", "running"].includes(instance.state)
       && instance.project_id && instance.role_id)
     .map(instance => `${instance.project_id}\u0000${instance.role_id}`));
+  const roleBackground = new Map();      // project\0role -> { count, channels }
+  const channelBackground = new Map();   // 频道 id -> count
+  let backgroundTotal = 0;
+  for (const instance of instances) {
+    const count = Number(instance.background_tasks || 0);
+    if (!count) continue;
+    backgroundTotal += count;
+    const channelId = String(instance.session_key || "").split("::")[0];
+    if (channelId)
+      channelBackground.set(channelId, (channelBackground.get(channelId) || 0) + count);
+    if (instance.project_id && instance.role_id) {
+      const key = `${instance.project_id}\u0000${instance.role_id}`;
+      const entry = roleBackground.get(key) || { count: 0, channels: new Set() };
+      entry.count += count;
+      if (channelId) entry.channels.add(channelId.replace(`${instance.project_id}:`, ""));
+      roleBackground.set(key, entry);
+    }
+  }
   document.querySelectorAll(".role-running-marker").forEach(marker => {
     marker.hidden = !activeRoles.has(
       `${marker.dataset.runtimeProject}\u0000${marker.dataset.runtimeRole}`);
+  });
+  document.querySelectorAll(".role-background-marker").forEach(marker => {
+    const entry = roleBackground.get(
+      `${marker.dataset.runtimeProject}\u0000${marker.dataset.runtimeRole}`);
+    marker.hidden = !entry;
+    if (entry) {
+      marker.textContent = `⏳ 后台 ${entry.count}`;
+      marker.title = backgroundTitle(entry.count, [...entry.channels]);
+    }
+  });
+  document.querySelectorAll(".channel-background-marker").forEach(marker => {
+    const count = channelBackground.get(marker.dataset.channelId) || 0;
+    marker.hidden = count === 0;
+    if (count) {
+      marker.title = backgroundTitle(count);
+      marker.setAttribute("aria-label", marker.title);
+      const label = marker.querySelector("b");
+      if (label) label.textContent = String(count);
+    }
   });
   const count = Number(data.summary?.running || 0);
   const badge = document.getElementById("runtime-running-count");
@@ -73,6 +119,12 @@ function refreshRuntimeIndicators(data = runtimeStatusSnapshot) {
     badge.textContent = String(count);
     badge.hidden = count === 0;
     badge.title = `${count} 个运行中的实例`;
+  }
+  const backgroundBadge = document.getElementById("runtime-background-count");
+  if (backgroundBadge) {
+    backgroundBadge.textContent = `⏳${backgroundTotal}`;
+    backgroundBadge.hidden = backgroundTotal === 0;
+    backgroundBadge.title = backgroundTitle(backgroundTotal);
   }
 }
 
@@ -82,6 +134,9 @@ function renderRuntimeStatusPayload(data) {
     ["已注册后端", summary.backends || 0, `${summary.connected_backends || 0} 个持有实例`],
     ["活动实例", summary.live_instances || 0, `${summary.tracked_instances || 0} 个受跟踪`],
     ["正在执行", summary.running || 0, "包含启动中的实例"],
+    ["后台命令", (data.instances || []).reduce(
+      (total, instance) => total + Number(instance.background_tasks || 0), 0),
+     "跨 turn 存活,不阻塞对话"],
     ["持久实例", summary.persistent || 0, `${summary.one_shot || 0} 个单次执行`],
   ];
   document.getElementById("runtime-status-cards").innerHTML = cards.map(card =>

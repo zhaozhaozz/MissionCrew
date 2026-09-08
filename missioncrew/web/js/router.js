@@ -571,7 +571,9 @@ function renderSidebar() {
        title="${esc(r.description || `选择 @${r.id}`)}">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}
        <span class="role-running-marker" data-runtime-project="${esc(currentProject || "")}"
-         data-runtime-role="${esc(r.id)}" hidden><i></i>运行中</span></button>`).join("");
+         data-runtime-role="${esc(r.id)}" hidden><i></i>运行中</span>
+       <span class="role-background-marker" data-runtime-project="${esc(currentProject || "")}"
+         data-runtime-role="${esc(r.id)}" hidden></span></button>`).join("");
   refreshRuntimeIndicators();
   renderChannelState();
   restoreScrollPositions(scrollState);

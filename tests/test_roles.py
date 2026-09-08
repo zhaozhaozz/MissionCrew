@@ -648,6 +648,16 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
     assert "runtime-usage-title-metrics" in js
     assert "refreshRuntimeIndicators" in js
     assert '["starting", "running"].includes(instance.state)' in js
+    # 后台命令(跨 turn 存活)另有沙漏标记,与前台「运行中」区分:侧栏频道、频道头部、
+    # 角色栏与运行状态导航都按 Runtime 实例快照的 background_tasks 点亮
+    channels = client.get("/assets/js/channels.js").text
+    assert 'id="runtime-background-count"' in html
+    assert ".role-background-marker" in js and ".channel-background-marker" in js
+    assert 'String(instance.session_key || "").split("::")[0]' in js
+    assert "个后台命令仍在运行,不阻塞对话" in js
+    assert 'class="role-background-marker"' in router
+    assert 'class="channel-background-marker"' in channels
+    assert 'class="channel-background-marker channel-head-marker"' in channels
     assert "function pollRuntimeStatus() {\n  renderRuntimeStatus();" in js
     assert "if (force) refreshes.push(renderRuntimeUsage(true));" in js
     assert "renderRuntimeUsage(force)" not in js

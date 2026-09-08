@@ -7,7 +7,10 @@ function channelSidebarItem(channel) {
   const runCount = channelRunningCount(channel);
   const runMarker = `<span class="channel-running-marker" data-channel-id="${esc(channel.id)}"
     title="${channelRunningTitle(runCount)}" role="img"
-    aria-label="${channelRunningTitle(runCount)}" ${runCount ? "" : "hidden"}><i></i></span>`;
+    aria-label="${channelRunningTitle(runCount)}" ${runCount ? "" : "hidden"}><i></i></span>`
+    // 后台命令(跨 turn 存活、不阻塞对话)另用沙漏标记,由 Runtime 状态轮询点亮
+    + `<span class="channel-background-marker" data-channel-id="${esc(channel.id)}"
+    role="img" hidden>⏳</span>`;
   const actions = managed ? "" : `<span class="channel-item-actions">
     <button class="channel-more" type="button" aria-label="频道操作" title="频道操作"
       onclick="toggleChannelActions(event,this)">•••</button>
@@ -131,6 +134,8 @@ function renderChannelState() {
         ${channelIsGeneral(channel) ? `<span class="badge">默认频道</span>` : ""}
         ${channelIsContent(channel) ? `<span class="badge">内容专属频道</span>` : ""}
         <span class="badge">${archived ? "已归档" : "活跃"}</span>
+        <span class="channel-background-marker channel-head-marker"
+          data-channel-id="${esc(channel.id)}" hidden>⏳ <b></b> 个后台命令</span>
         <button class="channel-head-toggle" type="button" aria-controls="channel-meta">▾</button>
       </div>
       <div class="channel-meta" id="channel-meta">
@@ -139,6 +144,7 @@ function renderChannelState() {
         <span><b>创建者</b>${esc(channel.created_by_role_id ? "@" + channel.created_by_role_id : "human/platform")}</span>
       </div>`;
     applyChannelHeadState();
+    refreshRuntimeIndicators();   // 头部标记刚重建,用最近一次 Runtime 快照点亮
   }
   const banner = document.getElementById("channel-archive-banner");
   banner.hidden = !archived;

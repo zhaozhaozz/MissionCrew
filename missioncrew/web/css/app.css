@@ -115,6 +115,10 @@
                            font-size: 11px; font-weight: 700; line-height: 18px;
                            text-align: center; }
   .runtime-running-count[hidden] { display: none; }
+  .runtime-background-count { margin-left: 4px; padding: 0 6px; border-radius: 999px;
+                              background: var(--warn-soft); color: var(--warn);
+                              font-size: 11px; font-weight: 700; line-height: 18px; }
+  .runtime-background-count[hidden] { display: none; }
   #side-bottom .side-nav { margin: 0; }
   #side-bottom .side-nav + .side-nav { margin-top: 3px; }
   #sidebar h2 { font-size: 11px; color: var(--muted); text-transform: uppercase;
@@ -165,6 +169,12 @@
   .channel-running-marker[hidden] { display: none; }
   .channel-running-marker i { width: 6px; height: 6px; border-radius: 50%;
                               background: var(--ok); animation: blink 1.2s infinite; }
+  /* 后台命令(跨 turn 存活、不阻塞对话)用 --warn 色沙漏、不闪烁,与前台运行区分 */
+  .channel-background-marker { flex: none; display: inline-flex; align-items: center; gap: 3px;
+                               color: var(--warn); font-size: 10.5px; line-height: 1; }
+  .channel-background-marker[hidden] { display: none; }
+  .channel-head-marker { padding: 0 8px; border-radius: 999px; background: var(--warn-soft);
+                         font-size: 11px; font-weight: 600; line-height: 18px; }
   .channel-item-actions { position: relative; flex: none; margin-left: auto; }
   .channel-more { width: 25px; padding: 0; border: 0; border-radius: 5px;
                   background: transparent; color: var(--muted); cursor: pointer; line-height: 20px; }
@@ -423,6 +433,10 @@
   .role-running-marker[hidden] { display: none; }
   .role-running-marker i { width: 6px; height: 6px; border-radius: 50%;
                            background: currentColor; animation: blink 1.2s infinite; }
+  .role-background-marker { display: inline-flex; align-items: center; gap: 3px; padding: 0 6px;
+                            border-radius: 999px; background: var(--warn-soft);
+                            color: var(--warn); font-size: 10.5px; font-weight: 600; }
+  .role-background-marker[hidden] { display: none; }
   #input-row { display: flex; gap: 10px; align-items: flex-end; }
   #input-wrap { position: relative; flex: 1; min-width: 0; }
   #input { box-sizing: border-box; width: 100%; min-height: 58px; max-height: 160px;
