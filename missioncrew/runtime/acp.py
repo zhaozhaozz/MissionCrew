@@ -23,6 +23,7 @@ import signal
 import subprocess
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -237,7 +238,12 @@ class _AcpClient:
                 msg = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            self._handle(msg)
+            try:
+                self._handle(msg)
+            except Exception:
+                # 单条畸形消息不能拖死读循环:读循环一死,本会话此后的每个
+                # session/prompt 响应都无人消费,运行会永远停在 running。
+                traceback.print_exc()
         for q in list(self._pending.values()):   # EOF:让等待方立刻失败
             q.put({"error": {"message": "ACP 进程退出"}})
 
@@ -264,7 +270,11 @@ class _AcpClient:
                 return
             update = params.get("update") or {}
             kind = update.get("sessionUpdate")
-            content = update.get("content") or {}
+            # 消息/思考块的 content 是 {type,text};tool_call 类更新的 content 按
+            # ACP 约定是内容块列表,不能当 dict 用
+            content = update.get("content")
+            if not isinstance(content, dict):
+                content = {}
             if not self._turn_active:
                 # turn 之外的自发更新:Runtime 的后台任务自动汇报。缓冲后
                 # 经唤醒管线交付,不能混入上一轮已结束的运行。
@@ -285,7 +295,8 @@ class _AcpClient:
                     self.emit("tool", f"{label} {status}".strip() + "\n")
 
     def _buffer_wake_update(self, kind: str, content: dict, update: dict) -> None:
-        text = str((content or {}).get("text") or "")
+        text = (str(content.get("text") or "")
+                if isinstance(content, dict) else "")
         with self._wake_lock:
             if kind == "agent_message_chunk" and text:
                 self._wake_chunks.append(text)

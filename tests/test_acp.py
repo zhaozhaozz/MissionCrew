@@ -1,4 +1,5 @@
 """ACP stdio 协议:客户端流程、权限自动决策、适配器路由。"""
+import queue
 import sys
 import threading
 import time
@@ -484,6 +485,58 @@ def test_acp_client_terminal_background_wake(tmp_path, monkeypatch):
     finally:
         acp.set_wake_handler(None)
         acp.close_sessions()
+
+
+def test_wake_buffer_accepts_tool_call_list_content(tmp_path):
+    """turn 之外的 tool_call 更新按 ACP 约定带 content 列表;唤醒缓冲不能把它当 dict
+    (线上曾因此让读循环崩溃,之后该会话所有响应无人消费、运行永远 running)。"""
+    client = acp._AcpClient(["cat"], str(tmp_path), {}, timeout=5)
+    client._write = lambda obj: None
+    try:
+        client.end_turn()
+        client._handle({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s1", "update": {
+                "sessionUpdate": "tool_call", "toolCallId": "call-1",
+                "title": "Check PR pipeline", "status": "in_progress",
+                "content": [{"type": "content",
+                             "content": {"type": "text", "text": "gitcode pr checks"}}],
+            }}})
+        client._handle({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s1", "update": {
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": "流水线仍在排队。"},
+            }}})
+        with client._wake_lock:
+            assert client._wake_events == [
+                ("tool", "Check PR pipeline in_progress\n"),
+                ("text", "流水线仍在排队。")]
+            assert client._wake_chunks == ["流水线仍在排队。"]
+        # turn 内同样形态的更新走工具生命周期路径,也不能抛
+        client.begin_turn(5, None)
+        client._handle({"jsonrpc": "2.0", "method": "session/update", "params": {
+            "sessionId": "s1", "update": {
+                "sessionUpdate": "tool_call_update", "toolCallId": "call-1",
+                "status": "completed", "content": [{"type": "content",
+                    "content": {"type": "text", "text": "ok"}}],
+            }}})
+    finally:
+        client.close()
+
+
+def test_read_loop_survives_malformed_update(tmp_path):
+    """读循环里单条消息处理抛异常只记录,不能结束线程:后续响应仍要交付给等待方。"""
+    client = acp._AcpClient(["cat"], str(tmp_path), {}, timeout=5)
+    try:
+        # cat 把写入 stdin 的行原样回显到 stdout,读循环据此消费
+        client._write({"jsonrpc": "2.0", "method": "session/update",
+                       "params": {"update": "not-an-object"}})
+        waiter = queue.Queue()
+        client._pending[4242] = waiter
+        client._write({"jsonrpc": "2.0", "id": 4242, "result": {"ok": True}})
+        msg = waiter.get(timeout=5)
+        assert msg["result"] == {"ok": True}
+    finally:
+        client.close()
 
 
 def test_idle_cleanup_spares_clients_with_live_terminals(tmp_path):
