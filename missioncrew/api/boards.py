@@ -31,7 +31,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         return board_sources.describe_sources(store, project_id)
 
     @app.get("/api/projects/{project_id}/boards/{board_id}/data")
-    def taskboard_data(project_id: str, board_id: str):
+    def taskboard_data(project_id: str, board_id: str, scope: str = "active"):
         """解析任务看板数据:数据源取数 + 服务端按筛选列分列。"""
         ctx.must_project(project_id)
         full_id = ctx.namespaced_id(project_id, board_id, "面板")
@@ -43,13 +43,14 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         try:
             return board_sources.resolve_board_data(
                 store, project_id, board.source, board.filters,
-                group_by=board.group_by)
+                group_by=board.group_by, scope=scope)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
 
     @app.get("/api/projects/{project_id}/builtin_board/data")
-    def builtin_board_data(project_id: str):
-        """内置任务看板:四个锁定状态列 + 项目自定义筛选列,同一渲染协议。"""
+    def builtin_board_data(project_id: str, scope: str = "active"):
+        """内置任务看板:与自定义任务看板同一渲染协议,只差数据源固定为 built-in、
+        四个状态筛选列锁定不可删,以及配置(自定义列/分列属性)存在项目对象上。"""
         project = ctx.must_project(project_id)
         pinned = board_sources.default_filters(
             board_sources.source_status_values(
@@ -58,12 +59,16 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         try:
             data = board_sources.resolve_board_data(
                 store, project_id, board_sources.BUILTIN_SOURCE_ID,
-                pinned + extras)
+                pinned + extras, group_by=project.task_board_group_by,
+                scope=scope)
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        for index, column in enumerate(data["columns"]):
-            column["locked"] = index < len(pinned)
-        data["filters"] = extras   # 前端只增删锁定列之后的自定义列
+        if not data["group_by"]:   # 分组模式下列是属性取值,没有锁定概念
+            for index, column in enumerate(data["columns"]):
+                column["locked"] = index < len(pinned)
+        # 筛选配置带 locked 标记回传:锁定的状态列不可删,自定义列可增删
+        data["filters"] = ([{**item, "locked": True} for item in pinned]
+                           + [{**item, "locked": False} for item in extras])
         return data
 
     def _resolve_widget_source(project_id: str, source: dict):
@@ -190,7 +195,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             except ValueError as exc:
                 raise HTTPException(400, str(exc))
         if body.group_by is not None:
-            board.group_by = body.group_by.strip()
+            try:
+                board.group_by = board_sources.validate_group_by(body.group_by)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
         # 新建看板未显式给筛选列时,把数据源状态取值物化为默认筛选列,
         # 用户后续可在看板上直接增删列
         if (board.kind == "taskboard" and existing is None

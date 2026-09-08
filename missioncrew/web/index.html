@@ -166,19 +166,8 @@
     </div>
 
     <div id="board-view">
-      <div class="task-board-toolbar">
-        <button class="action" onclick="openNewTask()">+ 新建任务</button>
-        <button class="ghost" onclick="openTaskBoardFilterAdder()">+ 筛选列</button>
-        <label>显示
-          <select id="task-filter" onchange="setTaskFilter(this.value)">
-            <option value="active">活跃 Task</option>
-            <option value="all">全部 Task</option>
-            <option value="archived">已归档 Task</option>
-          </select>
-        </label>
-        <span class="muted" id="task-filter-summary"></span>
-      </div>
-      <main class="board" id="board"></main>
+      <!-- 内置任务看板:与自定义任务看板共用 boards.js 的渲染器(工具条 + 列) -->
+      <div class="taskboard-host" id="board"></div>
     </div>
 
     <div id="custom-view" class="page">

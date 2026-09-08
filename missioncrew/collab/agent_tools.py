@@ -1230,7 +1230,11 @@ class AgentActionService:
         if "filters" in arguments:
             board.filters = board_sources.validate_filters(arguments["filters"])
         if "group_by" in arguments:
-            board.group_by = str(arguments.get("group_by") or "").strip()
+            try:
+                board.group_by = board_sources.validate_group_by(
+                    arguments.get("group_by"))
+            except ValueError as exc:
+                raise AgentToolError("invalid_arguments", str(exc))
         # 与 Web 端一致:新建看板未显式给筛选列时按数据源状态取值物化默认列
         if (board.kind == "taskboard" and created
                 and "filters" not in arguments):

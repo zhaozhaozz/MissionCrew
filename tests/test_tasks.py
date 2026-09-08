@@ -490,13 +490,16 @@ def test_task_board_exposes_activity_order_and_archive_filter(seeded):
         html = client.get("/").text
         ui = client.get("/assets/js/ui.js").text
         tasks = client.get("/assets/js/tasks.js").text
+        boards = client.get("/assets/js/boards.js").text
         css = client.get("/assets/css/app.css").text
 
-    assert 'id="task-filter"' in html and 'id="task-filter-summary"' in html
-    assert all(label in html for label in (
+    # 显示范围选择器在两块任务看板共用的工具条里,不再是内置看板独有的静态控件
+    assert 'id="task-filter"' not in html and 'id="board"' in html
+    assert 'class="tb-scope"' in boards and "setTaskFilter(this.value)" in boards
+    assert all(label in boards for label in (
         "活跃 Task", "全部 Task", "已归档 Task"))
     assert "taskActivity(right) - taskActivity(left)" in ui
-    assert "visibleProjTasks" in tasks and "setTaskFilter" in tasks
+    assert "function setTaskFilter" in tasks and "renderCustomBoards(true)" in tasks
     assert "function archiveTask" in tasks and "function restoreTask" in tasks
     assert "/archive" in tasks and "/restore" in tasks
-    assert ".task-board-toolbar" in css and ".card.task-archived" in css
+    assert ".tb-filter-bar" in css and ".taskboard-host" in css and ".card.task-archived" in css

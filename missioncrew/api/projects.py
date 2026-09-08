@@ -105,6 +105,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         else:
             data["task_board_filters"] = (
                 existing.task_board_filters if existing else [])
+        if body.task_board_group_by is not None:
+            try:
+                data["task_board_group_by"] = board_sources.validate_group_by(
+                    body.task_board_group_by)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+        else:
+            data["task_board_group_by"] = (
+                existing.task_board_group_by if existing else "")
         try:
             project = Project.from_dict(data)
         except (TypeError, ValueError) as exc:

@@ -26,7 +26,9 @@ missioncrew/
 ├── api/              FastAPI 路由(按资源分文件);context.py 持缓存与共享状态,
 │                     schemas.py 请求模型,spa.py 静态页兜底(必须最后注册)
 └── web/              无构建步骤的前端:index.html + js/(按页面分文件;run-events.js
-                      是聊天与配置聊天共用的运行卡片渲染,须先于两者加载;markdown.js
+                      是聊天与配置聊天共用的运行卡片渲染,须先于两者加载;boards.js 的
+                      任务看板渲染器同时服务内置任务看板与自定义任务看板,两者只差
+                      绑定(数据端点/配置保存),tasks.js 只留任务详情与配置持久化;markdown.js
                       是共用的 Markdown 渲染,diagrams.js 按需加载 Mermaid 渲染其中的
                       图表)+ css/ + vendor/(第三方浏览器库原样落库,不走 CDN)
 tests/                pytest;fake_acp_agent.py 是 ACP 协议假服务端

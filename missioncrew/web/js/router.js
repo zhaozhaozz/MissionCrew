@@ -256,9 +256,11 @@ function switchTab(tab) {
   const previousTab = currentTab;
   currentTab = tab;
   if (previousTab !== tab) configChatSelection = null;
-  // 任务列表不参与其他页面的轮询,进入看板时拉一次最新数据
-  if (tab === "board" && previousTab !== "board")
-    void refreshTasks().then(() => renderBoard());
+  // 看板自己取数;任务列表(直链详情等用)不参与其他页面的轮询,进入看板时拉一次
+  if (tab === "board" && previousTab !== "board") {
+    renderBoard();
+    void refreshTasks();
+  }
   document.getElementById("chat-view").style.display = tab === "chat" ? "flex" : "none";
   document.getElementById("board-view").style.display = tab === "board" ? "flex" : "none";
   document.getElementById("custom-view").style.display = tab === "custom" ? "block" : "none";

@@ -206,6 +206,8 @@ class ProjectInput(BaseModel):
     task_auto_rules: Optional[list[dict]] = None      # None = 保留现值
     # 内置任务看板锁定状态列之后的自定义筛选列;None = 保留现值
     task_board_filters: Optional[list[dict]] = None
+    # 内置任务看板的分列属性;None = 保留现值,空串 = 恢复筛选列
+    task_board_group_by: Optional[str] = None
 
 
 class ResourceAdd(BaseModel):

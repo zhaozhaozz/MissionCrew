@@ -7,10 +7,6 @@ const STATUS_META = {
   "已完成": { color: "var(--ok)", cls: "st-done" },
 };
 const STATUS_VALUES = Object.keys(STATUS_META);
-const BUILTIN_COLS = STATUS_VALUES.map(value => ({
-  title: value, color: STATUS_META[value].color,
-  query: `status: ${value}`, locked: true,
-}));
 
 /* 标签工具:与服务端 label_query 同一套归一化(首个冒号切分高级标签) */
 function splitLabel(text) {
@@ -76,90 +72,25 @@ function builtinProjTasks() {
     (task.source_id || "built-in") === "built-in");
 }
 
-function visibleProjTasks() {
-  return builtinProjTasks().filter(task =>
-    taskFilter === "all"
-      || (taskFilter === "archived" ? task.archived : !task.archived));
-}
-
-function renderTaskFilter() {
-  // 列表只含当前筛选范围,计数用服务端的全量口径;拉取前回退本地计算
-  const tasks = builtinProjTasks();
-  const counts = taskCounts || {
-    active: tasks.filter(task => !task.archived).length,
-    archived: tasks.filter(task => task.archived).length,
-  };
-  const select = document.getElementById("task-filter");
-  if (select) select.value = taskFilter;
-  const summary = document.getElementById("task-filter-summary");
-  if (summary) {
-    const shown = visibleProjTasks().length;
-    summary.textContent = `显示 ${shown} 个 · 活跃 ${counts.active} · 已归档 ${counts.archived}`;
-  }
-}
-
+// 显示范围(活跃/全部/已归档)是两块任务看板共用的视图状态
 function setTaskFilter(value) {
   if (!TASK_FILTERS.has(value)) return;
   taskFilter = value;
   localStorage.setItem("mc.taskFilter", value);
   renderBoard();
-  void refreshTasks().then(() => renderBoard());   // 列表按新筛选重拉
+  renderCustomBoards(true);
+  void refreshTasks();   // 任务列表(直链打开详情等用)按新范围重拉
 }
 
-function taskCardHtml(task, { showStatus = false } = {}) {
-  return `<div class="card ${task.archived ? "task-archived" : ""}"
-      data-task-id="${esc(task.id)}" onclick="openTask(this.dataset.taskId)">
-    <div class="title">${esc(task.title)}${showStatus
-      ? ` ${statusPillHtml(taskStatus(task))}` : ""}${task.archived
-      ? '<span class="badge task-archived-badge">已归档</span>' : ""}${task.url
-      ? ` <a class="badge" href="${esc(task.url)}" target="_blank" rel="noopener"
-           onclick="event.stopPropagation()" title="打开外部链接">↗</a>` : ""}</div>
-    ${task.summary ? `<div class="task-card-summary">${esc(task.summary)}</div>` : ""}
-    <div class="meta">更新 ${new Date(task.updated_at * 1000).toLocaleString()} ·
-      ${esc(task.id)} · ${task.channel_ids.map(id => esc(taskChannelLabel(id))).join(" · ")}</div>
-    <div class="meta">${taskDisplayLabels(task).map(label => `<span class="badge">${esc(label)}</span>`).join("")}</div>
-  </div>`;
+// widgets 面板里的 taskboard 组件直接读 overview 里的任务:补成看板卡片形态
+function taskAsBoardCard(task) {
+  return { ...task, task_id: task.id, status: taskStatus(task),
+           meta: [task.id, ...(task.channel_ids || []).map(taskChannelLabel)] };
 }
 
-function taskMatchesQuery(query, task) {
-  try { return matchLabelQuery(query, task.labels || []); }
-  catch (_) { return false; }
-}
-
+// 内置任务看板与自定义任务看板共用 boards.js 的渲染器,只差绑定(数据端点与配置保存)
 function renderBoard() {
-  // 看板横向滚动、每列内部纵向滚动:分别按列 key 保持重渲染前的滚动位置
-  const board = document.getElementById("board");
-  const outerScroll = captureScrollPositions(["#board"]);
-  const columnScroll = captureKeyedScrollPositions(board);
-  renderTaskFilter();
-  // 内置看板与自定义任务看板同构:四个锁定状态列 + 项目自定义筛选列,
-  // 每列一个标签表达式,⚡ 为该表达式配置自动处理规则
-  const columns = BUILTIN_COLS.concat(projTaskBoardFilters().map(item => ({
-    title: item.title, color: item.color || "var(--muted)", query: item.query,
-  })));
-  board.innerHTML = columns.map(col => {
-    const items = visibleProjTasks().filter(task => taskMatchesQuery(col.query, task));
-    const cards = items.map(task => taskCardHtml(task, { showStatus: !col.locked })).join("")
-      || `<div class="empty" style="padding:6px 4px">暂无 Task</div>`;
-    const rule = ruleForQuery(col.query);
-    const ruleState = rule ? (rule.enabled ? "rule-on" : "rule-off") : "";
-    const ruleTitle = rule
-      ? (rule.enabled ? "自动处理规则已启用,点击修改" : "自动处理规则已停用,点击修改")
-      : "为该列的标签表达式设置自动处理规则";
-    const removeBtn = col.locked ? "" : `
-      <button class="col-tool" title="移除该筛选列(不影响 Task)"
-        data-query="${esc(col.query)}"
-        onclick="removeTaskBoardFilter(this.dataset.query)">✕</button>`;
-    return `<section class="col ${col.locked ? "" : "col-label"}"><h2>
-      <span class="col-dot" style="background:${col.color}"></span>
-      ${esc(col.title)}<span class="col-count">${items.length}</span>
-      <button class="col-tool col-rule ${ruleState}" title="${esc(ruleTitle)}"
-        data-query="${esc(col.query)}"
-        onclick="openColumnRule(this.dataset.query)">⚡</button>${removeBtn}</h2>
-      <div class="col-list" data-scroll-key="col:${esc(col.query)}">${cards}</div></section>`;
-  }).join("");
-  restoreScrollPositions(outerScroll);
-  restoreKeyedScrollPositions(board, columnScroll);
+  renderTaskboard(builtinTaskboardBinding());
 }
 
 async function openTask(id, updateRoute = true) {
@@ -412,10 +343,11 @@ async function deleteTask(id) {
   toast("Task 已移入项目回收站", "success");
 }
 
-/* ---------------- 筛选列与自动处理规则 ----------------
+/* ---------------- 看板配置与自动处理规则 ----------------
    内置看板 = 四个锁定状态列 + 项目自定义筛选列(task_board_filters,每列
-   一个标签表达式);规则(task_auto_rules)按表达式配置,从列头的 ⚡ 图标
-   进入(自定义面板的 taskboard 组件同入口)。 */
+   一个标签表达式)+ 可选分列属性(task_board_group_by),增删列/分组的入口在
+   看板工具条(boards.js 共用渲染器);规则(task_auto_rules)按表达式配置,从
+   列头的 ⚡ 图标进入(自定义面板的 taskboard 组件同入口)。 */
 
 function projTaskRules() {
   return projObj()?.task_auto_rules || [];
@@ -450,56 +382,6 @@ async function persistTaskBoardConfig(patch) {
   });
   await loadOverview();
   renderBoard();
-}
-
-function openTaskBoardFilterAdder() {
-  if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
-  const candidates = [...new Set(projTasks()
-    .flatMap(task => task.labels || []).map(normalizeLabel))];
-  openFormDialog("添加筛选列", `
-    <p class="muted" style="margin-top:0">筛选列按标签表达式聚合 Task,
-      支持 & | ! 与括号、「属性: 值」高级标签与「属性: *」存在性匹配,
-      例如 <code>bug & !status: 已完成</code>。列头 ⚡ 图标可为该表达式
-      配置自动处理规则。</p>
-    <label>标签表达式</label>
-    <input type="text" id="tbf-query" list="tbf-label-options"
-      placeholder="输入表达式或从已有标签中选择">
-    <datalist id="tbf-label-options">${candidates.map(label =>
-      `<option value="${esc(label)}"></option>`).join("")}</datalist>
-    <label>列标题(可选,缺省用表达式)</label>
-    <input type="text" id="tbf-title" placeholder="例如:未完成的缺陷">`,
-    `<button class="action" onclick="addTaskBoardFilter()">添加</button>
-     <button class="ghost" onclick="fdlg.close()">取消</button>`);
-  setTimeout(() => document.getElementById("tbf-query")?.focus(), 60);
-}
-
-async function addTaskBoardFilter() {
-  const query = document.getElementById("tbf-query").value.trim();
-  if (!query) { uiAlert("表达式不能为空"); return; }
-  try { compileLabelQuery(query); }
-  catch (error) { uiAlert(`标签表达式不合法:${error.message}`); return; }
-  const exists = BUILTIN_COLS.concat(projTaskBoardFilters())
-    .some(item => item.query.toLowerCase() === query.toLowerCase());
-  if (exists) { uiAlert("该表达式的列已经存在"); return; }
-  const title = document.getElementById("tbf-title").value.trim();
-  await persistTaskBoardConfig({
-    task_board_filters: [...projTaskBoardFilters(),
-      { title: title || query, query, color: "" }],
-  });
-  fdlg.close();
-  toast(`已添加筛选列「${title || query}」`, "success");
-}
-
-async function removeTaskBoardFilter(query) {
-  if (ruleForQuery(query)) {
-    uiAlert("该列的表达式绑定了自动处理规则;请先在 ⚡ 设置中删除规则,再移除列。");
-    return;
-  }
-  await persistTaskBoardConfig({
-    task_board_filters: projTaskBoardFilters()
-      .filter(item => item.query.toLowerCase() !== query.toLowerCase()),
-  });
-  toast("已移除筛选列", "success");
 }
 
 function openColumnRule(query) {

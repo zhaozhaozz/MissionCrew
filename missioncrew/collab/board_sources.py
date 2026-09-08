@@ -23,6 +23,8 @@ from ..core.models import (BUILTIN_SOURCE_ID, BUILTIN_STATUS_VALUES,
 
 MAX_BOARD_FILTERS = 20
 MAX_SOURCE_STATUS_VALUES = 12
+# 看板显示范围:活跃 / 已归档 / 全部(counts 始终按全量口径统计)
+BOARD_SCOPES = ("active", "archived", "all")
 MAX_SOURCE_CARDS = 1000
 # 同步卡片允许的字段(status 是状态文本;旧脚本发状态列 key 也能映射)
 SOURCE_CARD_FIELDS = {"id", "title", "summary", "status", "labels",
@@ -94,6 +96,14 @@ def default_filters(status_values) -> list[dict]:
              "query": f"{STATUS_PROPERTY}: {c.get('value')}",
              "color": str(c.get("color") or "")}
             for c in status_values if str(c.get("value") or "").strip()]
+
+
+def validate_group_by(raw) -> str:
+    """分列属性名:去空白;含冒号或表达式运算符时抛 ValueError(空串 = 不分列)。"""
+    prop = str(raw or "").strip()
+    if ":" in prop or set(prop) & _OPERATOR_CHARS:
+        raise ValueError("分组属性名不能包含冒号或表达式运算符")
+    return prop
 
 
 def validate_filters(raw) -> list[dict]:
@@ -267,7 +277,7 @@ def _task_card(task: Task) -> dict:
         "id": task.id, "title": task.title, "summary": task.summary,
         "status": status_of(task.labels), "labels": list(task.labels),
         "updated_at": task.updated_at, "meta": list(task.meta),
-        "task_id": task.id,
+        "task_id": task.id, "archived": bool(task.archived),
     }
     if task.url:
         card["url"] = task.url
@@ -308,12 +318,15 @@ def _property_columns(tasks: list[Task], prop: str,
 
 def resolve_board_data(store, project_id: str, source_id: str,
                        filters: Optional[list] = None,
-                       group_by: str = "") -> dict:
+                       group_by: str = "", scope: str = "active") -> dict:
     """解析看板数据:按源取任务 -> 按筛选列分列,或按 group_by 属性取值分列。
 
+    scope 决定显示范围(活跃/已归档/全部),counts 始终按该源全量统计。
     卡片可命中多列(列是标签视角,不是互斥状态);表达式非法抛 ValueError。
     响应里的 filters 始终是筛选列配置,分组模式下前端据此增删范围列。
     """
+    if scope not in BOARD_SCOPES:
+        raise ValueError("scope 只能是 active/archived/all")
     source_id = normalize_source_id(source_id)
     if source_id == BUILTIN_SOURCE_ID:
         source_info = {"id": source_id, "name": "项目任务"}
@@ -328,8 +341,14 @@ def resolve_board_data(store, project_id: str, source_id: str,
             "updated_at": record.updated_at,
         }
         status_values = [dict(c) for c in record.status_values]
-    tasks = store.list_tasks(project_id, include_archived=False,
-                             source_id=source_id)
+    all_tasks = store.list_tasks(project_id, include_archived=True,
+                                 source_id=source_id)
+    counts = {"all": len(all_tasks),
+              "archived": sum(1 for task in all_tasks if task.archived)}
+    counts["active"] = counts["all"] - counts["archived"]
+    tasks = (all_tasks if scope == "all" else
+             [task for task in all_tasks
+              if task.archived == (scope == "archived")])
     if source_id == BUILTIN_SOURCE_ID:
         for task in tasks:
             if not task.meta:
@@ -365,4 +384,6 @@ def resolve_board_data(store, project_id: str, source_id: str,
             "columns": out_columns,
             "labels": sorted(labels),
             "filters": column_filters,
-            "group_by": group_by}
+            "group_by": group_by,
+            "scope": scope,
+            "counts": counts}

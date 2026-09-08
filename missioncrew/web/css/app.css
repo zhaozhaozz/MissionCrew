@@ -487,19 +487,9 @@
   /* ---- 看板:列横向滚动,列内卡片纵向滚动,整页锁定视口高度 ---- */
   #board-view { flex: 1; display: none; flex-direction: column;
                 min-width: 0; min-height: 0; overflow: hidden; }
-  .task-board-toolbar { flex: none; padding: 14px 22px 0; display: flex; gap: 10px;
-                        align-items: center; flex-wrap: wrap; }
-  .task-board-toolbar label { color: var(--muted); font-size: 12px; display: flex;
-                              align-items: center; gap: 6px; }
-  .task-board-toolbar select { background: var(--card); color: var(--text);
-                               border: 1px solid var(--line); border-radius: 8px;
-                               padding: 6px 9px; font: inherit; }
-  main.board { flex: 1; min-height: 0; display: grid; grid-auto-flow: column;
-               grid-auto-columns: 320px; gap: 14px; align-items: stretch;
-               padding: 16px 22px; overflow-x: auto;
-               overscroll-behavior-x: contain; }
-  main.board::-webkit-scrollbar { height: 10px; }
-  main.board::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--line); }
+  /* 两块任务看板同一宿主形态:工具条 + 横向排列的列;内置看板占满 #board-view */
+  .taskboard-host { display: flex; flex-direction: column; min-height: 0; }
+  #board-view > .taskboard-host { flex: 1; padding: 14px 22px 16px; }
   .col { display: flex; flex-direction: column; min-height: 0; min-width: 0;
          overflow: hidden; background: var(--bg-soft); border-radius: 14px;
          padding: 10px 10px 2px; }
@@ -536,8 +526,9 @@
   .widget .widget-type { color: var(--muted); font-size: 11px; float: right; }
   .board-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .custom-board-actions { margin-left: auto; display: flex; gap: 8px; }
-  /* taskboard 形态的面板:preview 切换成 筛选列工具条 + 列横向排布 */
-  .custom-grid.taskboard-mode { display: flex; flex-direction: column;
+  /* taskboard 形态的面板:preview 从组件网格切换成 筛选列工具条 + 列横向排布
+     (.custom-grid 的 grid 布局在后面声明,这里要以更高特异性盖掉) */
+  .custom-grid.taskboard-host { display: flex; flex-direction: column;
                                 margin-top: 16px; height: calc(100dvh - 152px); }
   .tb-filter-bar { flex: none; display: flex; flex-wrap: wrap; align-items: center;
                    gap: 8px; margin-bottom: 12px; }
@@ -549,9 +540,17 @@
   .tb-chip-x { border: none; background: none; cursor: pointer;
                color: var(--muted); font-size: 13px; padding: 0 2px; }
   .tb-chip-x:hover { color: var(--bad); }
+  .tb-chip-locked { padding-right: 10px; }
+  .tb-scope { margin-left: auto; display: flex; align-items: center; gap: 6px;
+              color: var(--muted); font-size: 12px; white-space: nowrap; }
+  .tb-scope select { background: var(--card); color: var(--text);
+                     border: 1px solid var(--line); border-radius: 8px;
+                     padding: 6px 9px; font: inherit; }
   .taskboard-grid { flex: 1; min-height: 0; display: grid; grid-auto-flow: column;
                     grid-auto-columns: 320px; gap: 14px; align-items: stretch;
                     overflow-x: auto; overscroll-behavior-x: contain; }
+  .taskboard-grid::-webkit-scrollbar { height: 10px; }
+  .taskboard-grid::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--line); }
   .new-board-kinds { display: grid; gap: 6px; margin: 4px 0 10px; }
   .new-board-kinds label { display: flex; align-items: baseline; gap: 8px;
                            font-weight: 500; }
@@ -1317,8 +1316,9 @@
   }
   @media (max-width: 760px) {
     /* 窄屏:一屏约一列,横向滑动切换并按列吸附 */
-    main.board { grid-auto-columns: minmax(84vw, 1fr); padding: 12px 14px;
-                 scroll-snap-type: x proximity; }
+    #board-view > .taskboard-host { padding: 12px 14px; }
+    .taskboard-grid { grid-auto-columns: minmax(84vw, 1fr);
+                      scroll-snap-type: x proximity; }
     .col { scroll-snap-align: start; }
   }
 

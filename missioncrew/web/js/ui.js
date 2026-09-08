@@ -183,11 +183,11 @@ function restoreKeyedScrollPositions(root, positions) {
   }
 }
 
-/* 看板滚轮:看板(内置 main.board 与自定义 .taskboard-grid 同构)横向排列,
+/* 看板滚轮:任务看板(内置与自定义共用 .taskboard-grid)横向排列,
    纵向滚轮落在列标题、列空白处或装得下的列上时转为横向滚动看板;只有指针
    落在纵向溢出的列里,才保留浏览器默认行为纵向滚动该列。两个看板都会整体
    重绘 DOM,所以在 document 上委托一次,不随渲染重复绑定。 */
-const BOARD_GRID_SELECTOR = "main.board, .taskboard-grid";
+const BOARD_GRID_SELECTOR = ".taskboard-grid";
 const WHEEL_LINE_PX = 40;   // deltaMode=1(Firefox 按行计)时每行折算的像素
 
 document.addEventListener("wheel", event => {

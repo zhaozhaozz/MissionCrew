@@ -1049,8 +1049,57 @@ def test_builtin_board_locks_status_columns_and_appends_custom_filters(seeded):
         ("已完成", True), ("缺陷", False)]
     assert [c["title"] for c in payload["columns"][0]["cards"]] == ["登录崩溃"]
     assert [c["title"] for c in payload["columns"][4]["cards"]] == ["登录崩溃"]
-    # filters 只回传自定义列,前端据此增删
-    assert [f["query"] for f in payload["filters"]] == ["bug"]
+    # filters 回传全部筛选配置并标记锁定:前端只允许增删锁定列之后的自定义列
+    assert [(f["query"], f["locked"]) for f in payload["filters"]] == [
+        ("status: 待处理", True), ("status: 处理中", True),
+        ("status: 已阻塞", True), ("status: 已完成", True), ("bug", False)]
+    assert payload["scope"] == "active" and payload["counts"] == {
+        "all": 1, "archived": 0, "active": 1}
+
+
+def test_builtin_board_shares_group_by_and_scope_with_custom_boards(seeded):
+    """内置任务看板与自定义任务看板同一协议:项目级 group_by 按取值分列,
+    scope 切换活跃/已归档/全部,卡片带 archived 标记。"""
+    client = _client(seeded)
+    a = client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "任务A", "labels": ["owner: 张三"]}).json()
+    client.post("/api/tasks", json={
+        "project_id": "webshop", "title": "任务B", "labels": ["owner: 李四"]})
+    client.post(f"/api/tasks/{a['id']}/archive")
+    saved = client.post("/api/projects", json={
+        "id": "webshop", "name": "网店", "task_board_group_by": "owner"})
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["task_board_group_by"] == "owner"
+    # 未传字段保留现值;非法属性名拒绝
+    assert client.post("/api/projects", json={
+        "id": "webshop", "name": "网店"}).json()["task_board_group_by"] == "owner"
+    assert client.post("/api/projects", json={
+        "id": "webshop", "name": "网店",
+        "task_board_group_by": "a & b"}).status_code == 400
+
+    url = "/api/projects/webshop/builtin_board/data"
+    payload = client.get(url).json()
+    assert payload["group_by"] == "owner"
+    # 分组模式:列是取值(归档的张三不在活跃范围),锁定的状态筛选列仍原样回传
+    assert [c["title"] for c in payload["columns"]] == ["李四", "未设置 owner"]
+    assert all("locked" not in c for c in payload["columns"])
+    assert [f["locked"] for f in payload["filters"]] == [True] * 4
+    assert payload["counts"] == {"all": 2, "archived": 1, "active": 1}
+
+    archived = client.get(url, params={"scope": "archived"}).json()
+    assert [c["title"] for c in archived["columns"]] == ["张三", "未设置 owner"]
+    assert archived["columns"][0]["cards"][0]["archived"] is True
+    everything = client.get(url, params={"scope": "all"}).json()
+    assert [c["title"] for c in everything["columns"]] == [
+        "张三", "李四", "未设置 owner"]
+    assert client.get(url, params={"scope": "nope"}).status_code == 400
+
+    # 清除分组后回到锁定状态列 + 自定义列
+    client.post("/api/projects", json={
+        "id": "webshop", "name": "网店", "task_board_group_by": ""})
+    payload = client.get(url).json()
+    assert [(c["title"], c["locked"]) for c in payload["columns"]] == [
+        ("待处理", True), ("处理中", True), ("已阻塞", True), ("已完成", True)]
 
 
 def test_taskboard_group_by_splits_columns_by_value(seeded):
@@ -1170,6 +1219,17 @@ def test_taskboard_filters_scope_grouped_columns(seeded, source_id):
     cleared = client.get(url).json()
     assert [c["title"] for c in cleared["columns"]] == ["功能"]
     assert [card["id"] for card in cleared["columns"][0]["cards"]] == ["feature"]
+    # 显示范围与内置看板同一参数:已归档 / 全部
+    archived = client.get(url, params={"scope": "archived"}).json()
+    assert [card["id"] for card in archived["columns"][0]["cards"]] == []
+    assert archived["counts"] == {"all": 5, "archived": 1, "active": 4}
+    client.post("/api/projects/webshop/boards", json={
+        "id": "combined", "filters": [{"title": "缺陷", "query": "bug"}]})
+    everything = client.get(url, params={"scope": "all"}).json()
+    assert {card["id"] for card in everything["columns"][0]["cards"]} == {
+        "bug-a", "bug-ab", "bug-none", "archived"}
+    assert client.post("/api/projects/webshop/boards", json={
+        "id": "combined", "group_by": "x:y"}).status_code == 400
 def test_non_orchestrator_actions_are_stripped_end_to_end(seeded):
     """非主控回复中的控制动作:端到端验证被剥离且不生效(mock 回显动作块)。"""
     chat = ChatEngine(seeded)
@@ -1518,10 +1578,10 @@ def test_background_refresh_preserves_scrollable_view_state(seeded):
     assert 'data-scroll-key="widget:' in boards
     assert "restoreKeyedScrollPositions(preview, scrollState)" in boards
     assert 'captureScrollPositions(["#side-scroll"])' in router
-    # 看板横向 + 每列纵向滚动分别保持
-    assert 'captureScrollPositions(["#board"])' in tasks
-    assert 'data-scroll-key="col:' in tasks
-    assert "restoreKeyedScrollPositions(board, columnScroll)" in tasks
+    # 看板横向 + 每列纵向滚动分别保持;内置与自定义任务看板共用同一渲染器
+    assert 'data-scroll-key="tb:grid"' in boards and 'data-scroll-key="tb:${esc(col.key)}"' in boards
+    assert "restoreKeyedScrollPositions(host, scrollState)" in boards
+    assert "renderTaskboard(builtinTaskboardBinding())" in tasks
 
 
 def test_switching_document_clears_previous_pane_before_loading(seeded):
