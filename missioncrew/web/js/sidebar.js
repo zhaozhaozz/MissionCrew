@@ -442,17 +442,26 @@ function agentToolGroupsMatch(left, right) {
     && left.dataset.runId === right.dataset.runId;
 }
 
+// 频道消息统一显示完整日期时间,翻看历史时不必回找日期分隔线
+function fmtMessageTime(date) {
+  return date.toLocaleString([], {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  });
+}
+
 function refreshAgentToolGroup(group) {
   const items = [...group.querySelectorAll(".agent-tool-item")];
   if (!items.length) return;
   const count = items.length;
   const first = new Date(Number(items[0].dataset.createdAt) * 1000);
   const last = new Date(Number(items[count - 1].dataset.createdAt) * 1000);
-  const format = date => date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  // 区间起点带完整日期;终点同一天只补时刻,跨天才再写一遍日期
+  const end = first.toDateString() === last.toDateString()
+    ? last.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : fmtMessageTime(last);
   group.querySelector(".agent-tool-group-role").textContent =
     `@${group.dataset.roleId} · ${count} 次${count > 1 ? "连续" : ""}调用`;
   group.querySelector("summary > .time").textContent = count > 1
-    ? `${format(first)}–${format(last)}` : format(first);
+    ? `${fmtMessageTime(first)}–${end}` : fmtMessageTime(first);
 }
 
 function appendAgentToolReceipt(message, pane, date) {
@@ -484,7 +493,7 @@ function appendAgentToolReceipt(message, pane, date) {
   item.dataset.createdAt = message.created_at;
   const content = meta.prefix && message.content.startsWith(meta.prefix)
     ? message.content.slice(meta.prefix.length) : message.content;
-  const time = date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const time = fmtMessageTime(date);
   item.innerHTML = `<div class="agent-tool-item-head">
       <code>${esc(meta.action)}</code><span class="time">${time}</span></div>
     <div class="body markdown-body">${fmtBody(content, true, message.mention_spans)}</div>`;
@@ -553,7 +562,7 @@ function appendMessagesToSurface(list, surface) {
       : m.author_type === "platform" ? "系统" : m.author;
     const initial = isAgent || isHuman ? (m.author[0] || "?").toUpperCase()
       : isAutomation ? "⚡" : "⚙";
-    const time = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const time = fmtMessageTime(d);
     const longReply = isAgent && m.content.length > MESSAGE_FOLD_AT;
     const renderMarkdown = isAgent || isAutomation;
     const attachments = Array.isArray(m.context?.attachments) ? m.context.attachments : [];
