@@ -309,8 +309,10 @@ class ChatEngine:
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
         # Claude 后台命令结束后 CLI 会自发唤醒模型汇报;平台把这类 turn
-        # 落成频道里的新运行,汇报按常规回路交回主控验收
-        runtime_manager.set_wake_handler(self._handle_runtime_wake)
+        # 落成频道里的新运行,汇报按常规回路交回主控验收。turn 开始时同步
+        # 落成运行并签发令牌,turn 结束后在执行池里收尾
+        runtime_manager.set_wake_handler(
+            self._handle_runtime_wake, begin=self._begin_runtime_wake)
 
     @staticmethod
     def _session_key(channel: Channel, role_id: str) -> str:
@@ -917,66 +919,233 @@ class ChatEngine:
         except RuntimeError:
             pass   # 引擎已关闭,丢弃迟到的唤醒
 
-    def _process_runtime_wake(self, payload: dict) -> None:
-        """把 Runtime 自唤醒 turn(后台命令结束后的自动汇报)落成新运行。
-
-        会话按 channel×role 复用,session_key 能唯一定位汇报应落入的频道
-        与角色;运行以一条平台消息为触发锚点,汇报走常规 Agent 回复回路
-        (非主控的结果自动交回主控)。"""
+    def _resolve_wake_session(self, payload: dict
+                              ) -> Optional[tuple[Channel, Role, Optional[Backend], str]]:
+        """会话按 channel×role 复用,session_key 能唯一定位汇报应落入的
+        频道与角色;会话不存在、频道已归档或角色停用时唤醒被静默丢弃。"""
         session_key = str(payload.get("session_key") or "")
         session = (self.store.get_chat_session(session_key)
                    if session_key else None)
         if not session:
-            return
+            return None
         channel = self.store.get_channel(str(session["channel"]))
         if channel is None or channel.archived:
-            return
-        role_id = str(session["role_id"])
-        role = self.store.get_role(channel.project_id or "", role_id)
+            return None
+        role = self.store.get_role(channel.project_id or "", str(session["role_id"]))
         if role is None or not role.enabled:
-            return
-        output = str(payload.get("output") or "").strip()
-        if not output:
-            return
+            return None
         backend_id = str(payload.get("backend_id")
                          or session["backend_id"] or "")
-        backend = self.store.get_backend(backend_id)
-        tasks = [task for task in payload.get("tasks") or []
-                 if isinstance(task, dict)]
+        return channel, role, self.store.get_backend(backend_id), backend_id
+
+    @staticmethod
+    def _wake_tasks(payload: dict) -> list[dict]:
+        return [task for task in payload.get("tasks") or []
+                if isinstance(task, dict)]
+
+    def _open_wake_run(self, channel: Channel, role: Role,
+                       backend: Optional[Backend], backend_id: str,
+                       tasks: list[dict]) -> Optional[tuple[int, int]]:
+        """以一条平台消息为触发锚点落成运行;频道正在停止时不再开新运行。"""
         described = "、".join(f"`{task['description']}`" for task in tasks
                              if task.get("description"))
-        trigger_text = (f"@{role_id} 的后台命令已结束"
+        trigger_text = (f"@{role.id} 的后台命令已结束"
                         + (f"：{described}" if described else "")
                         + "，以下是其自动汇报。")
         with self._run_state_lock:
             if channel.id in self._stopping_channels:
-                return
+                return None
             trigger_id = self.store.add_message(
                 channel.id, "platform", "platform", trigger_text, [])
             run_id = self.store.add_chat_run(
-                channel.id, role_id, trigger_id, trigger_id, 0)
+                channel.id, role.id, trigger_id, trigger_id, 0)
             self.store.update_chat_run(
                 run_id, "running", backend_id=backend_id,
                 model=(backend.model if backend else "") or "",
                 effort=role.effort or "")
         self._write_channel_history(channel)
+        return trigger_id, run_id
+
+    def _run_event_emitter(self, run_id: int, project, document_roots: list):
+        """运行过程事件的落库入口:运行结束后丢弃迟到事件,含文档路径的
+        文本改写成平台资源 URL。"""
+        markers = [str(root) for root in document_roots if str(root)]
+
+        def _emit(kind: str, text: str):
+            if not self.store.chat_run_is_active(run_id):
+                return None
+            may_contain_document_path = (
+                ".missioncrew" in text
+                or any(marker in text for marker in markers))
+            if (project and may_contain_document_path
+                    and kind in {"text", "stdout", "stderr", "tool", "tool_result"}):
+                text = normalize_document_resource_urls(
+                    text, project.id, document_roots)
+            return self.store.append_run_event(run_id, kind, text)
+        return _emit
+
+    def _begin_runtime_wake(self, payload: dict) -> Optional[dict]:
+        """Runtime 协议线程的同步回调:自唤醒 turn 一开始就落成运行、签发
+        绑定该运行的 Agent Tool 令牌,并返回实时事件接收器。
+
+        令牌在常规运行结束时随 deactivate_run_token 撤销删除,而唤醒 turn
+        在 CLI 进程里先于平台知晓就开始执行;不在这里补发,turn 内的
+        平台写操作(发布文档等)会因缺少令牌全部失败。"""
+        resolved = self._resolve_wake_session(payload)
+        if resolved is None:
+            return None
+        channel, role, backend, backend_id = resolved
+        opened = self._open_wake_run(
+            channel, role, backend, backend_id, self._wake_tasks(payload))
+        if opened is None:
+            return None
+        trigger_id, run_id = opened
         project = self.store.get_project(channel.project_id or "")
         document_roots = [library_for(channel.project_id or "").root]
+        try:
+            if project:
+                workspace_root = chat_workspace_dir(project.id, channel.id, role.id)
+                document_roots.append(workspace_root / "documents")
+                library_for(project.id).commit_changes(
+                    "platform", "Capture external document changes before chat run")
+                self.agent_tools.ensure_token_file(
+                    project, channel, role.id, workspace_root, run_id=run_id)
+        except Exception as exc:
+            with self._run_state_lock:
+                self.store.update_chat_run(
+                    run_id, "failed", backend_id=backend_id,
+                    error=f"唤醒运行准备失败: {exc}")
+            self.store.audit("platform", "chat_wake_begin_failed",
+                             detail=f"channel={channel.id} role={role.id} "
+                                    f"run={run_id} error={exc}")
+            return None
+        self.store.audit("platform", "chat_wake_begin",
+                         detail=f"channel={channel.id} role={role.id} "
+                                f"backend={backend_id} run={run_id}")
+        return {"run_id": run_id, "trigger_id": trigger_id,
+                "emit": self._run_event_emitter(run_id, project, document_roots)}
 
-        def _normalized(text: str) -> str:
-            if project and ".missioncrew" in text:
-                return normalize_document_resource_urls(
-                    text, project.id, document_roots)
-            return text
+    def _process_runtime_wake(self, payload: dict) -> None:
+        """把 Runtime 自唤醒 turn(后台命令结束后的自动汇报)落成/收尾运行。
 
+        带 run_id 的 payload 对应 _begin_runtime_wake 已落成的运行,事件已
+        实时写入,这里只收尾;否则(ACP 静默判定、begin 未能落成)以一条
+        平台消息为触发锚点新建运行并回放缓冲事件。汇报走常规 Agent 回复
+        回路(非主控的结果自动交回主控)。"""
+        run_id = int(payload.get("run_id") or 0)
+        if run_id > 0:
+            self._finish_wake_run(run_id, payload)
+            return
+        resolved = self._resolve_wake_session(payload)
+        if resolved is None:
+            return
+        channel, role, backend, backend_id = resolved
+        output = str(payload.get("output") or "").strip()
+        if not output:
+            return
+        tasks = self._wake_tasks(payload)
+        opened = self._open_wake_run(channel, role, backend, backend_id, tasks)
+        if opened is None:
+            return
+        trigger_id, run_id = opened
+        project = self.store.get_project(channel.project_id or "")
+        document_roots = [library_for(channel.project_id or "").root]
+        emit = self._run_event_emitter(run_id, project, document_roots)
         # 回放自唤醒 turn 缓冲的过程事件,运行卡片与常规运行一致
         for item in payload.get("events") or []:
             try:
                 kind, text = item
             except (TypeError, ValueError):
                 continue
-            self.store.append_run_event(run_id, str(kind), _normalized(str(text)))
+            emit(str(kind), str(text))
+        self._publish_wake_reply(channel, role, backend, backend_id, project,
+                                 run_id, trigger_id, output, tasks)
 
+    def _finish_wake_run(self, run_id: int, payload: dict) -> None:
+        """收尾 begin 阶段落成的唤醒运行:提交文档改动、发布汇报或记失败,
+        并撤销本轮令牌。"""
+        run = self.store.get_chat_run(run_id)
+        if run is None:
+            return
+        channel = self.store.get_channel(str(run["channel"]))
+        role_id = str(run["role_id"])
+        try:
+            if channel is None:
+                return
+            role = self.store.get_role(channel.project_id or "", role_id)
+            if role is None:
+                return
+            project = self.store.get_project(channel.project_id or "")
+            backend_id = str(run.get("backend_id") or payload.get("backend_id") or "")
+            backend = self.store.get_backend(backend_id)
+            trigger_id = int(run["trigger_message_id"])
+            tasks = self._wake_tasks(payload)
+            if project:
+                library = library_for(project.id)
+                revision = library.commit_changes(
+                    f"role:{role.id}", f"Documents updated from channel {channel.name}")
+                if revision:
+                    self.store.audit(f"role:{role.id}", "documents_committed",
+                                     detail=f"project={project.id} revision={revision[:10]}")
+                tasks_dir = chat_workspace_dir(project.id, channel.id, role.id) / "tasks"
+                if tasks_dir.is_dir():
+                    write_task_files(self.store, project.id, tasks_dir)
+            output = str(payload.get("output") or "").strip()
+            success = bool(payload.get("success", True))
+            if output and success:
+                self._publish_wake_reply(channel, role, backend, backend_id, project,
+                                         run_id, trigger_id, output, tasks)
+                return
+            # 与常规运行一致:进程退出不等于协作完成,失败或无输出都补一条
+            # 平台消息,并按本轮由谁发起决定交回对象
+            error = str(payload.get("error") or "").strip()
+            if not error:
+                error = ("Runtime 正常退出但未产生可回传输出" if success
+                         else "Runtime 异常退出但未产生可回传输出")
+            if project:
+                error = normalize_document_resource_urls(
+                    error, project.id, [library_for(project.id).root])
+            anchor, root, depth = self._wake_reply_anchor(
+                project, role.id, trigger_id, tasks)
+            with self._run_state_lock:
+                if not self.store.chat_run_is_active(run_id):
+                    return
+                try:
+                    self._post_failure(
+                        channel, role.id, anchor, root, depth - 1,
+                        f"@{role.id}(后端 {backend_id})后台命令汇报失败: {error}")
+                finally:
+                    self.store.update_chat_run(
+                        run_id, "failed", backend_id=backend_id, error=error)
+        finally:
+            if channel is not None and channel.project_id:
+                self.agent_tools.deactivate_run_token(
+                    channel.project_id, channel.id, role_id,
+                    chat_workspace_dir(channel.project_id, channel.id, role_id),
+                    run_id)
+
+    def _wake_reply_anchor(self, project, role_id: str, trigger_id: int,
+                           tasks: list[dict]) -> tuple[int, int, int]:
+        """唤醒汇报继承"启动后台任务的那轮"的派发语义:该轮由人类直接点名
+        时,汇报挂回原人类消息(post 会因此不再交回主控);否则按常规
+        Agent 回复回路交回主控验收。无主控项目一律挂回原触发消息,由
+        post 按派发者(角色显式点名)或人类直达决定是否交回。"""
+        origin_trigger = next(
+            (int(task.get("origin_trigger") or 0) for task in tasks
+             if task.get("origin_trigger")), 0)
+        origin = (self.store.get_message(origin_trigger)
+                  if origin_trigger else None)
+        if origin and ((project and not project.has_orchestrator)
+                       or self._is_direct_human_dispatch(origin_trigger, role_id)):
+            return (origin_trigger, int(origin.get("root_id") or origin_trigger),
+                    int(origin.get("depth") or 0) + 1)
+        return trigger_id, trigger_id, 1
+
+    def _publish_wake_reply(self, channel: Channel, role: Role,
+                            backend: Optional[Backend], backend_id: str,
+                            project, run_id: int, trigger_id: int,
+                            output: str, tasks: list[dict]) -> None:
+        document_roots = [library_for(channel.project_id or "").root]
         reply = output
         if project and project.controls_platform(role.id):
             reply = self._apply_orchestrator_actions(
@@ -987,34 +1156,20 @@ class ChatEngine:
         if project:
             reply = normalize_document_resource_urls(
                 reply, project.id, document_roots)
-        # 唤醒汇报继承"启动后台任务的那轮"的派发语义:该轮由人类直接点名
-        # 时,汇报挂回原人类消息(post 会因此不再交回主控);否则按常规
-        # Agent 回复回路交回主控验收。无主控项目一律挂回原触发消息,由
-        # post 按派发者(角色显式点名)或人类直达决定是否交回。
-        origin_trigger = next(
-            (int(task.get("origin_trigger") or 0) for task in tasks
-             if task.get("origin_trigger")), 0)
-        origin = (self.store.get_message(origin_trigger)
-                  if origin_trigger else None)
-        if origin and ((project and not project.has_orchestrator)
-                       or self._is_direct_human_dispatch(origin_trigger, role_id)):
-            reply_anchor = origin_trigger
-            reply_root = int(origin.get("root_id") or origin_trigger)
-            reply_depth = int(origin.get("depth") or 0) + 1
-        else:
-            reply_anchor, reply_root, reply_depth = trigger_id, trigger_id, 1
+        reply_anchor, reply_root, reply_depth = self._wake_reply_anchor(
+            project, role.id, trigger_id, tasks)
         with self._run_state_lock:
             if not self.store.chat_run_is_active(run_id):
                 return
             self.store.remove_duplicate_reply_output(run_id, reply)
-            self.post(channel.id, role_id, reply, author_type="agent",
+            self.post(channel.id, role.id, reply, author_type="agent",
                       reply_to=reply_anchor, root_id=reply_root,
                       depth=reply_depth, runtime_id=backend_id,
                       model=backend.model if backend else None,
                       effort=role.effort or None)
             self.store.update_chat_run(run_id, "done", backend_id=backend_id)
         self.store.audit("platform", "chat_wake",
-                         detail=f"channel={channel.id} role={role_id} "
+                         detail=f"channel={channel.id} role={role.id} "
                                 f"backend={backend_id} tasks={len(tasks)}")
 
     def _execute_inner(self, run_id: int, channel: Channel, role_id: str,
@@ -1071,22 +1226,8 @@ class ChatEngine:
         library = library_for(channel.project_id or "")
         document_roots = [
             library.root, cfg.env.get("MISSIONCREW_DOCUMENTS_DIR", "")]
-        document_markers = [str(root) for root in document_roots if str(root)]
-
-        def _emit(kind: str, text: str):
-            if not self.store.chat_run_is_active(run_id):
-                return None
-            may_contain_document_path = (
-                ".missioncrew" in text
-                or any(marker in text for marker in document_markers))
-            if (project and may_contain_document_path
-                    and kind in {"text", "stdout", "stderr", "tool", "tool_result"}):
-                text = normalize_document_resource_urls(
-                    text, project.id, document_roots)
-            return self.store.append_run_event(run_id, kind, text)
-
         # 运行过程(思考/工具/输出)实时落库,前端在聊天流中内联展示
-        cfg.emit = _emit
+        cfg.emit = self._run_event_emitter(run_id, project, document_roots)
         cfg.interact = lambda kind, payload: self._request_runtime_interaction(
             run_id, backend.id, kind, payload, cfg.timeout)
         cfg.cancelled = lambda: not self.store.chat_run_is_active(run_id)

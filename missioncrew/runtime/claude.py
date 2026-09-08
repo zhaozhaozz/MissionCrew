@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import threading
@@ -19,14 +20,22 @@ from .native import (OutputAssembler, RuntimeProtocolError, build_usage, emit_js
                      safe_emit, usage_section)
 from .usage import probe_claude_usage
 
+LOGGER = logging.getLogger(__name__)
+
 # 后台任务结束后 Claude CLI 会自发开启新 turn(无用户输入)汇报结果。
-# 平台层(ChatEngine)注册该回调,把这类"自唤醒 turn"落成频道里的新运行。
+# 平台层(ChatEngine)注册两段回调:turn 开始时同步调用 begin,平台立刻
+# 落成频道里的新运行并签发绑定该运行的 Agent Tool 令牌,返回运行 id 与
+# 实时事件接收器;turn 结束时把最终输出交给 handler 收尾。begin 缺席或
+# 返回 None 时退回旧路径:事件先缓冲,turn 结束后整体交给 handler 回放。
 _WAKE_HANDLER: Optional[Callable[[dict], None]] = None
+_WAKE_BEGIN_HANDLER: Optional[Callable[[dict], Optional[dict]]] = None
 
 
-def set_wake_handler(handler: Optional[Callable[[dict], None]]) -> None:
-    global _WAKE_HANDLER
+def set_wake_handler(handler: Optional[Callable[[dict], None]],
+                     begin: Optional[Callable[[dict], Optional[dict]]] = None) -> None:
+    global _WAKE_HANDLER, _WAKE_BEGIN_HANDLER
     _WAKE_HANDLER = handler
+    _WAKE_BEGIN_HANDLER = begin
 
 
 # ``result`` 消息的 usage 是 Anthropic API 字段(本轮累计;input_tokens 不含缓存
@@ -57,7 +66,8 @@ def _agent_usage(usage: object) -> dict:
 @dataclass
 class _TurnSink:
     """一个 turn 的输出汇聚点。运行 turn 落到 config.emit;自唤醒 turn
-    没有对应运行,事件先缓冲,turn 结束后整体交给 wake handler 回放。"""
+    先把事件缓冲在 events 里,平台为它落成运行后经 attach_run 切到实时
+    接收器(缓冲先按序补发),未能落成运行时 turn 结束整体交给 handler 回放。"""
     emit: Optional[Callable[[str, str], None]] = None
     assembler: OutputAssembler = field(default_factory=OutputAssembler)
     saw_partial_text: bool = False
@@ -65,6 +75,28 @@ class _TurnSink:
     events: list[tuple[str, str]] = field(default_factory=list)
     # 自唤醒 turn 对应的后台任务(CLI 一条 task_notification 起一个 turn)
     tasks: list[dict] = field(default_factory=list)
+    # 平台为自唤醒 turn 落成的运行;0 表示仍在缓冲(旧路径)
+    run_id: int = 0
+    live_emit: Optional[Callable[[str, str], None]] = None
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def buffer(self, kind: str, text: str) -> None:
+        """自唤醒 turn 的事件入口:落成运行前缓冲,之后直达运行事件流。
+        stderr 线程与 stdout 线程都会写入,切换必须在锁内完成。"""
+        with self.lock:
+            target = self.live_emit
+            if target is None:
+                self.events.append((kind, text))
+                return
+        safe_emit(target, kind, text)
+
+    def attach_run(self, run_id: int, emit: Callable[[str, str], None]) -> None:
+        with self.lock:
+            self.run_id = run_id
+            self.live_emit = emit
+            pending, self.events = self.events, []
+        for kind, text in pending:
+            safe_emit(emit, kind, text)
 
 
 _QUESTION_TOOLS = {
@@ -570,12 +602,63 @@ class _ClaudeSession:
                 task for task in self._pending_wakes
                 if task.get("turn") != self._turn_serial]
 
+    def _wake_payload(self, sink: _TurnSink, *, success: bool, output: str,
+                      error: str = "") -> dict:
+        with sink.lock:
+            events = list(sink.events)
+        return {
+            "runtime": "claude",
+            "backend_id": self.backend_id,
+            "session_key": self.session_key,
+            "workdir": self.workdir,
+            "project_id": self.last_project_id,
+            "role_id": self.last_role_id,
+            "success": success,
+            "output": output,
+            "error": error,
+            "events": events,
+            "tasks": list(sink.tasks),
+            "run_id": sink.run_id,
+        }
+
+    def _begin_wake_run(self, sink: _TurnSink) -> None:
+        """自唤醒 turn 开始:同步请平台落成运行。必须在 _turn_condition 外
+        调用——平台回调会写库并取自己的运行状态锁。"""
+        begin = _WAKE_BEGIN_HANDLER
+        if begin is None or not self.persistent:
+            return
+        try:
+            bound = begin({
+                "runtime": "claude",
+                "backend_id": self.backend_id,
+                "session_key": self.session_key,
+                "workdir": self.workdir,
+                "project_id": self.last_project_id,
+                "role_id": self.last_role_id,
+                "tasks": list(sink.tasks),
+            })
+        except Exception:
+            LOGGER.exception("Claude wake turn begin handler failed: %s",
+                             self.session_key)
+            return
+        run_id = int((bound or {}).get("run_id") or 0)
+        emit = (bound or {}).get("emit")
+        if run_id > 0 and callable(emit):
+            sink.attach_run(run_id, emit)
+
+    def _dispatch_wake_end(self, payload: dict) -> None:
+        handler = _WAKE_HANDLER
+        if handler is None:
+            return
+        # 平台回调可能发消息/落库,不能阻塞 stdout 读取线程
+        threading.Thread(target=handler, args=(payload,),
+                         daemon=True, name="claude-wake").start()
+
     def _finish_wake_turn(self, result: dict) -> None:
         payload = None
         with self._turn_condition:
             sink = self._wake_sink
             self._wake_sink = None
-            reasons = list(sink.tasks) if sink is not None else []
             if sink is not None:
                 if result.get("session_id"):
                     self.session_id = str(result["session_id"])
@@ -584,28 +667,16 @@ class _ClaudeSession:
                           or sink.assembler.text.strip())
                 success = (not bool(result.get("is_error"))
                            and str(result.get("subtype") or "success") == "success")
-                if _WAKE_HANDLER is not None and output and self.persistent:
-                    payload = {
-                        "runtime": "claude",
-                        "backend_id": self.backend_id,
-                        "session_key": self.session_key,
-                        "workdir": self.workdir,
-                        "project_id": self.last_project_id,
-                        "role_id": self.last_role_id,
-                        "success": success,
-                        "output": output,
-                        "events": list(sink.events),
-                        "tasks": reasons,
-                    }
+                # 已落成运行的 turn 无论有无输出都要交给平台收尾(关闭运行、
+                # 撤销令牌);旧路径没有运行,空输出无事可做
+                if (_WAKE_HANDLER is not None and self.persistent
+                        and (output or sink.run_id)):
+                    payload = self._wake_payload(
+                        sink, success=success, output=output,
+                        error=str(result.get("error") or ""))
             self._turn_condition.notify_all()
-        if sink is None:
-            return
-        handler = _WAKE_HANDLER
-        if handler is None or payload is None:
-            return
-        # 平台回调可能发消息/落库,不能阻塞 stdout 读取线程
-        threading.Thread(target=handler, args=(payload,),
-                         daemon=True, name="claude-wake").start()
+        if payload is not None:
+            self._dispatch_wake_end(payload)
 
     def _emit_native_agent(self, status: str, meta: dict, **extra) -> None:
         payload = {
@@ -720,17 +791,20 @@ class _ClaudeSession:
                 return self._wake_sink
             if self._active_config is not None:
                 return self._run_sink
-            if begin_wake and self.persistent:
-                sink = _TurnSink()
-                sink.emit = lambda kind, text: sink.events.append((kind, text))
-                # 一个唤醒 turn 只对应队首一条通知;同批的下一条由 CLI
-                # 紧接着再起一个 turn 来汇报
-                if self._pending_wakes:
-                    sink.tasks = [self._pending_wakes.pop(0)]
-                self._turn_serial += 1
-                self._wake_sink = sink
-                return sink
-            return None
+            if not (begin_wake and self.persistent):
+                return None
+            sink = _TurnSink()
+            sink.emit = sink.buffer
+            # 一个唤醒 turn 只对应队首一条通知;同批的下一条由 CLI
+            # 紧接着再起一个 turn 来汇报
+            if self._pending_wakes:
+                sink.tasks = [self._pending_wakes.pop(0)]
+            self._turn_serial += 1
+            self._wake_sink = sink
+        # 登记完 sink 再请平台落成运行:此时 run() 已被挡在 turn 之外,
+        # 而平台在 turn 的首个工具调用前就能把令牌写好
+        self._begin_wake_run(sink)
+        return sink
 
     def _handle_message(self, message: dict) -> None:
         message_type = message.get("type")
@@ -1057,11 +1131,17 @@ class _ClaudeSession:
     def close(self) -> None:
         process = self.process
         self.process = None
-        # 进程终止会连带杀掉其后台命令;未派发的自唤醒缓冲一并作废
+        # 进程终止会连带杀掉其后台命令;未派发的自唤醒缓冲一并作废,
+        # 已落成运行的自唤醒 turn 则交给平台按失败收尾
+        payload = None
         with self._turn_condition:
             self._background_tasks.clear()
-            self._wake_sink = None
+            sink, self._wake_sink = self._wake_sink, None
             self._pending_wakes = []
+            if sink is not None and sink.run_id:
+                payload = self._wake_payload(
+                    sink, success=False, output="",
+                    error="Claude session 已停止")
             if self._active_config and not self._result_ready.is_set():
                 self._result = {
                     "subtype": "error_during_execution", "is_error": True,
@@ -1069,6 +1149,8 @@ class _ClaudeSession:
                 }
                 self._result_ready.set()
             self._turn_condition.notify_all()
+        if payload is not None:
+            self._dispatch_wake_end(payload)
         if process and process.poll() is None:
             adapters._kill_process_group(process)
 

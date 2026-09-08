@@ -1470,3 +1470,106 @@ def test_missing_channel_workdir_falls_back_to_default_with_notice(chat, seeded,
     lead_cfg = chat._assemble(seeded.get_channel("general"), lead, backend, lead_msg)
     # 频道清单只列 id;目录缺失的标注由 channel.list 的 workdir_missing 给出
     assert "gone" in lead_cfg.common_prompt.split("## 现有频道")[1].split("## 现有面板")[0]
+
+
+def _wake_token_row(store, run_id):
+    rows = store._query("SELECT * FROM agent_tokens WHERE run_id=?", (run_id,))
+    return dict(rows[0]) if rows else None
+
+
+def test_runtime_wake_begin_issues_run_bound_token_before_turn_runs(chat, seeded):
+    """自唤醒 turn 开始:先落成运行并签发绑定该运行的 Agent Tool 令牌,
+    turn 内的平台写操作才有身份;收尾时发布汇报、撤销令牌、删除令牌文件。"""
+    from missioncrew.collab.workspace import chat_workspace_dir
+    seeded.put_chat_session("general::dev", "general", "dev", "mock-claude",
+                            "claude_code", "/tmp", "native-1", "v1")
+    bound = chat._begin_runtime_wake({
+        "runtime": "claude", "session_key": "general::dev",
+        "backend_id": "mock-claude",
+        "tasks": [{"task_id": "bg1", "description": "wait cases",
+                   "status": "completed"}],
+    })
+    assert bound and bound["run_id"] > 0
+    run_id = bound["run_id"]
+    run = seeded.get_chat_run(run_id)
+    assert run["status"] == "running"
+    trigger = seeded.get_message(run["trigger_message_id"])
+    assert trigger["author_type"] == "platform" and "`wait cases`" in trigger["content"]
+
+    token_file = chat_workspace_dir("webshop", "general", "dev") / ".agent-tool-token"
+    assert token_file.is_file()
+    row = _wake_token_row(seeded, run_id)
+    assert row and row["revoked_at"] is None
+    assert "document.publish" in json.loads(row["scopes"])
+    # 令牌能通过与 HTTP 入口同一套鉴权,且归属就是这轮唤醒运行
+    identity = chat.agent_tools.authenticate(token_file.read_text().strip())
+    assert identity.run_id == run_id and identity.role_id == "dev"
+
+    # turn 内事件经 begin 返回的接收器实时落库
+    bound["emit"]("tool", "Bash publish-file record.md\n")
+    bound["emit"]("text", "文档已发布。")
+    assert [e["kind"] for e in seeded.run_events(run_id)] == ["tool", "text"]
+
+    chat._process_runtime_wake({
+        "runtime": "claude", "session_key": "general::dev",
+        "backend_id": "mock-claude", "run_id": run_id,
+        "success": True, "output": "文档已发布。", "events": [],
+        "tasks": [{"task_id": "bg1", "description": "wait cases",
+                   "status": "completed"}],
+    })
+    chat.wait_idle()
+
+    assert seeded.get_chat_run(run_id)["status"] == "done"
+    msgs = seeded.list_messages("general")
+    reply = next(m for m in msgs if m["author"] == "dev"
+                 and m["author_type"] == "agent")
+    assert reply["reply_to"] == trigger["id"]
+    # 只有一个平台触发消息、一个运行:收尾不会再开一轮
+    assert [m["id"] for m in msgs if m["author_type"] == "platform"
+            and "后台命令已结束" in m["content"]] == [trigger["id"]]
+    assert [r["id"] for r in seeded.chat_runs_for_channel("general")
+            if r["role_id"] == "dev"] == [run_id]
+    # 与常规运行一致:运行结束即撤销令牌、删除稳定入口
+    assert _wake_token_row(seeded, run_id)["revoked_at"] is not None
+    assert not token_file.exists()
+
+
+def test_runtime_wake_finish_without_output_closes_run_as_failed(chat, seeded):
+    """已落成的唤醒运行没有输出或进程中途被关:记失败、补平台消息、撤销令牌,
+    不能悬在 running。"""
+    from missioncrew.collab.workspace import chat_workspace_dir
+    seeded.put_chat_session("general::dev", "general", "dev", "mock-claude",
+                            "claude_code", "/tmp", "native-1", "v1")
+    bound = chat._begin_runtime_wake({
+        "runtime": "claude", "session_key": "general::dev",
+        "backend_id": "mock-claude", "tasks": []})
+    run_id = bound["run_id"]
+    chat._process_runtime_wake({
+        "runtime": "claude", "session_key": "general::dev",
+        "backend_id": "mock-claude", "run_id": run_id,
+        "success": False, "output": "", "error": "Claude session 已停止",
+        "events": [], "tasks": []})
+    chat.wait_idle()
+
+    run = seeded.get_chat_run(run_id)
+    assert run["status"] == "failed" and "已停止" in run["error"]
+    assert any(m["author_type"] == "platform" and "后台命令汇报失败" in m["content"]
+               for m in seeded.list_messages("general"))
+    assert _wake_token_row(seeded, run_id)["revoked_at"] is not None
+    token_file = chat_workspace_dir("webshop", "general", "dev") / ".agent-tool-token"
+    assert not token_file.exists()
+
+
+def test_runtime_wake_begin_skipped_while_channel_stopping(chat, seeded):
+    """频道正在停止时不落成唤醒运行,provider 退回缓冲路径。"""
+    seeded.put_chat_session("general::dev", "general", "dev", "mock-claude",
+                            "claude_code", "/tmp", "native-1", "v1")
+    chat._stopping_channels.add("general")
+    try:
+        assert chat._begin_runtime_wake({
+            "session_key": "general::dev", "backend_id": "mock-claude",
+            "tasks": []}) is None
+    finally:
+        chat._stopping_channels.discard("general")
+    assert seeded.chat_runs_for_channel("general") == []
+    assert seeded.list_messages("general") == []

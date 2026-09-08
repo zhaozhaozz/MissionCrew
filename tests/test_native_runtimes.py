@@ -896,3 +896,120 @@ def test_empty_success_turn_keeps_summary_blank(tmp_path, adapter, provider_cls)
         assert result.summary == ""
     finally:
         provider.shutdown()
+
+
+def test_claude_wake_turn_begins_run_before_first_tool_call(tmp_path):
+    """自唤醒 turn 开始即同步调用 begin:平台落成运行并给出实时接收器,
+    之后的事件直达运行(缓冲先按序补发),收尾 payload 带 run_id。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    session.last_project_id = "webshop"
+    session.last_role_id = "dev2"
+    begun: list[dict] = []
+    live: list[tuple[str, str]] = []
+    woken: list[dict] = []
+
+    def _begin(payload):
+        begun.append(payload)
+        # begin 回调期间已到达的事件(init 状态行)必须在切换后补发
+        return {"run_id": 77, "emit": lambda kind, text: live.append((kind, text))}
+
+    claude_mod.set_wake_handler(woken.append, begin=_begin)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "task_started", "task_id": "bg1",
+            "task_type": "local_bash", "description": "wait cases"})
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "started"})
+        session._result_ready.clear()
+        session._handle_message({
+            "type": "system", "subtype": "task_notification", "task_id": "bg1",
+            "status": "completed", "summary": "exit 0"})
+        assert begun == []
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-2"})
+        # init 一到就落成运行,此时模型还没发出任何工具调用
+        assert len(begun) == 1
+        assert begun[0]["session_key"] == "general::dev2"
+        assert begun[0]["role_id"] == "dev2"
+        assert [task["task_id"] for task in begun[0]["tasks"]] == ["bg1"]
+        assert session._wake_sink is not None and session._wake_sink.run_id == 77
+        session._handle_message({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": "t1", "name": "Bash",
+             "input": {"command": "agent_tool publish-file"}}]}})
+        session._handle_message({"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "文档已发布。"}]}})
+        assert any(kind == "tool" and "publish-file" in text for kind, text in live)
+        assert any(kind == "text" for kind, text in live)
+        session._handle_message({
+            "type": "result", "subtype": "success", "is_error": False,
+            "result": "文档已发布。"})
+        payload = _wait_wakes(woken, 1)[0]
+        assert payload["run_id"] == 77
+        assert payload["success"] is True
+        assert payload["output"] == "文档已发布。"
+        # 事件已实时落到运行,收尾 payload 不再重复携带
+        assert payload["events"] == []
+        assert session._wake_sink is None
+    finally:
+        claude_mod.set_wake_handler(None)
+
+
+def test_claude_wake_turn_without_begin_binding_keeps_buffering(tmp_path):
+    """begin 未能落成运行(返回 None)时退回旧路径:事件缓冲,turn 结束整体交付。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    woken: list[dict] = []
+    claude_mod.set_wake_handler(woken.append, begin=lambda payload: None)
+    try:
+        _finish_wake_turn(session, "缓冲汇报")
+        payload = _wait_wakes(woken, 1)[0]
+        assert payload["run_id"] == 0
+        assert any(kind == "text" for kind, _ in payload["events"])
+    finally:
+        claude_mod.set_wake_handler(None)
+
+
+def test_claude_wake_turn_begin_failure_does_not_break_reader(tmp_path):
+    """begin 回调抛异常只记日志:turn 照常按旧路径缓冲交付,读取线程不中断。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    woken: list[dict] = []
+
+    def _boom(payload):
+        raise RuntimeError("db locked")
+
+    claude_mod.set_wake_handler(woken.append, begin=_boom)
+    try:
+        _finish_wake_turn(session, "仍然交付")
+        assert _wait_wakes(woken, 1)[0]["output"] == "仍然交付"
+    finally:
+        claude_mod.set_wake_handler(None)
+
+
+def test_claude_close_during_begun_wake_turn_reports_failure(tmp_path):
+    """已落成运行的唤醒 turn 中途关进程:交给平台按失败收尾,运行不会悬挂。"""
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    woken: list[dict] = []
+    claude_mod.set_wake_handler(
+        woken.append,
+        begin=lambda payload: {"run_id": 5, "emit": lambda k, t: None})
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "init", "session_id": "native-2"})
+        assert session._wake_sink is not None and session._wake_sink.run_id == 5
+        session.close()
+        payload = _wait_wakes(woken, 1)[0]
+        assert payload["run_id"] == 5
+        assert payload["success"] is False
+        assert payload["output"] == ""
+        assert "已停止" in payload["error"]
+        assert session._wake_sink is None
+    finally:
+        claude_mod.set_wake_handler(None)
