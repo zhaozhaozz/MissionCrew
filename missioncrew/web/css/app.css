@@ -1278,6 +1278,14 @@
   /* ---- Toast 通知:操作成功/失败的轻量反馈 ---- */
   #toasts { position: fixed; top: 14px; right: 14px; z-index: 999; display: flex;
             flex-direction: column; gap: 8px; pointer-events: none; }
+  /* 容器是 manual popover:showModal 弹窗位于顶层(top layer),普通 z-index 压不过其遮罩,
+     只有同样进入顶层且晚于弹窗 show 的元素才能盖在上面(ui.js 的 toast() 每次都重新 show)。
+     这里只覆盖 UA 给 [popover] 的默认盒样式,定位仍沿用上面的规则 */
+  @supports selector(:popover-open) {
+    #toasts { inset: 14px 14px auto auto; margin: 0; padding: 0; border: 0;
+              background: transparent; overflow: visible; }
+    #toasts:not(:popover-open) { display: none; }
+  }
   .toast { pointer-events: auto; min-width: 230px; max-width: 380px; cursor: pointer;
            background: var(--card); border: 1px solid var(--line);
            border-left: 3px solid var(--accent); border-radius: 10px;
@@ -1285,6 +1293,7 @@
            line-height: 1.5; white-space: pre-wrap; animation: toastIn .22s ease; }
   .toast.success { border-left-color: var(--ok); }
   .toast.error { border-left-color: var(--bad); }
+  .toast.shown { animation: none; }   /* 入场结束后固定,容器重新 show 时不再重播入场动画 */
   .toast.out { animation: toastOut .18s ease forwards; }
 
   /* ---- 移动端适配:侧栏改抽屉,角色栏单行横滚,其余布局收紧 ---- */

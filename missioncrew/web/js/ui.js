@@ -125,13 +125,32 @@ function toggleTheme() {
 
 /* ---- Toast 通知:操作结果的轻量反馈(错误仍由 api() 统一上报) ---- */
 function toast(msg, type = "info", ms = 3200) {
+  const box = document.getElementById("toasts");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   el.textContent = msg;
-  const dismiss = () => { el.classList.add("out"); setTimeout(() => el.remove(), 190); };
+  el.addEventListener("animationend", () => el.classList.add("shown"), { once: true });
+  const dismiss = () => {
+    el.classList.add("out");
+    setTimeout(() => { el.remove(); if (!box.children.length) lowerToasts(box); }, 190);
+  };
   el.onclick = dismiss;
-  document.getElementById("toasts").appendChild(el);
+  box.appendChild(el);
+  raiseToasts(box);
   setTimeout(dismiss, ms);
+}
+// 提示容器是 manual popover。showModal() 的弹窗在顶层(top layer),普通 z-index 压不过它,
+// 同层内后 show 的在上面:每次新增提示都重新 show 一次,保证盖过此刻已打开的弹窗及其模糊
+// 遮罩(表单校验失败的报错正是在弹窗仍开着时出现);没有提示时收起,不长期占着顶层。
+// 已知限制:模态弹窗打开期间,弹窗子树之外的节点都是 inert,提示只能看、点不掉,靠超时自动
+// 消失;弹窗关掉后恢复可点击。不支持 popover 的浏览器退回普通 fixed 定位
+function raiseToasts(box) {
+  if (typeof box.showPopover !== "function") return;
+  if (box.matches(":popover-open")) box.hidePopover();
+  box.showPopover();
+}
+function lowerToasts(box) {
+  if (typeof box.hidePopover === "function" && box.matches(":popover-open")) box.hidePopover();
 }
 
 // 后台刷新可能替换滚动容器本身；按选择器记录位置，重建后恢复到新节点。
