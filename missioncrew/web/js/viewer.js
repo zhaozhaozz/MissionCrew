@@ -87,6 +87,8 @@ function viewerSplitDiffHtml(ops) {
 /* config 回调（宿主适配层提供）：
    containerId / textareaId / editorClass / previewClass / surfaceClass — 元素与样式
    identity()             — 当前条目唯一标识（含项目、路径、版本），用于竞态防护与缓存
+   version()              — 可选；条目内容的版本标记（文件 mtime/大小、内容指纹等）。同一
+                            identity 下标记变化即视为内容已被别处改写，重新读取查看内容
    title() / metaLine()   — 头部标题（原始文本，组件负责转义）与元信息
    editKind()             — 编辑对象类型："markdown" | "text"
    loadView(revision)     — {kind: "markdown"|"html"|"text"|"image"|"binary", content?}
@@ -382,11 +384,15 @@ function createTextViewer(config) {
       return;
     }
     V.editIdentity = null;
-    let data = V.viewData?.identity === identity ? V.viewData : null;
+    // 同一条目也可能在别处被改写(Agent 写文档、其他标签页保存):宿主给出的版本标记
+    // 变化时不复用缓存正文;identity 未变,showLoading 会保留旧内容直到新内容就绪
+    const version = config.version?.() ?? null;
+    let data = V.viewData?.identity === identity && V.viewData.version === version
+      ? V.viewData : null;
     if (!data) {
       V.showLoading();
       try {
-        data = { ...(await config.loadView(V.viewingRevision)), identity };
+        data = { ...(await config.loadView(V.viewingRevision)), identity, version };
       } catch (error) {
         if (!stillCurrent()) return;
         container.innerHTML = `<div class="viewer-head"><b>${esc(config.title())}</b></div>

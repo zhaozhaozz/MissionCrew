@@ -2396,3 +2396,23 @@ def test_prompt_leads_with_workflow_and_marks_trigger_kind(seeded):
     assert "- @dev 开发 · 能力 代码执行 · 偏好 全栈 · 定位 " in roster
     assert "面板、看板数据源、自动化、停用的准则与 Skill:无" in roster   # 空段折叠成一行
     assert "## 现有面板" not in roster
+
+
+def test_document_viewer_reloads_body_when_file_version_changes(seeded):
+    """文档在别处被改写(Agent 写文档/其他标签页保存)后,总览轮询拉到新清单要重新读取正文。
+
+    viewer 的查看缓存原先只按 identity(项目/路径/版本)命中,文件 mtime 变了仍复用旧正文,
+    主区只更新了元信息行;现在宿主给出 version 标记,标记变化即视为缓存失效。
+    """
+    client = TestClient(create_app())
+    viewer = client.get("/assets/js/viewer.js").text
+    documents = client.get("/assets/js/documents.js").text
+    assert "const version = config.version?.() ?? null;" in viewer
+    assert "V.viewData?.identity === identity && V.viewData.version === version" in viewer
+    assert "...(await config.loadView(V.viewingRevision)), identity, version" in viewer
+    assert "return meta ? `${meta.modified_at}:${meta.size}` : null;" in documents
+    # 历史版本内容固定,不因清单变化重读
+    assert "if (docViewer.viewingRevision) return null;" in documents
+    # 准则查看器同一组件同一缺陷,以总览里的内容指纹作版本标记
+    configs = client.get("/assets/js/project-configs.js").text
+    assert "selectedGuideline()?.markdown_fingerprint ?? null" in configs

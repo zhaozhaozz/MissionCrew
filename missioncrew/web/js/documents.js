@@ -415,6 +415,13 @@ const docViewer = createTextViewer({
   previewClass: "",
   surfaceClass: "viewer-edit-surface",
   identity: () => JSON.stringify([currentProject, docSelected, docViewer.viewingRevision]),
+  // 文件清单里的修改时间+大小作版本标记:文档在别处被改写后,总览轮询拉到新清单
+  // 即重新读取正文,不再复用缓存;历史版本内容固定,不参与
+  version: () => {
+    if (docViewer.viewingRevision) return null;
+    const meta = docFilesMeta.find(f => f.path === docSelected);
+    return meta ? `${meta.modified_at}:${meta.size}` : null;
+  },
   title: () => docSelected || "",
   metaLine: () => {
     const meta = docFilesMeta.find(f => f.path === docSelected);

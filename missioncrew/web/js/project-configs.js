@@ -957,6 +957,9 @@ const guidelineViewer = createTextViewer({
   surfaceClass: "guideline-markdown-surface",
   identity: () => JSON.stringify(
     [currentProject, selectedGuidelineName, guidelineViewer.viewingRevision]),
+  // 总览里的内容指纹作版本标记:准则在别处被改写后按新指纹重新读取正文
+  version: () => guidelineViewer.viewingRevision
+    ? null : (selectedGuideline()?.markdown_fingerprint ?? null),
   title: () => selectedGuidelineName || "新建准则",
   metaLine: () => "",
   editKind: () => "markdown",
