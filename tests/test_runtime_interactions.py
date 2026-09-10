@@ -151,3 +151,20 @@ def test_chat_assets_include_runtime_interaction_controls(seeded):
     assert "sendRuntimeInteraction" in js
     assert "waiting_user" in js
     assert "permission_request" in js and "user_input_request" in js
+
+
+def test_live_output_box_shows_pending_questions(seeded):
+    """Agent 中途提问/请求权限时,待处理请求也显示在实时输出框里,不只藏在过程卡片中。"""
+    client = TestClient(create_app())
+    js = client.get("/assets/js/run-events.js").text
+    css = client.get("/assets/css/app.css").text
+    assert "function pendingInteractions(events)" in js
+    assert "function renderLiveInteraction(run, { event, payload })" in js
+    # 没有正文只有提问也要建框;表单只在请求集合变化时重建,轮询不清掉已填回答
+    assert "if (!text.trim() && !asks.length) { existing?.remove(); return; }" in js
+    assert 'class="live-text markdown-body"' in js and 'class="live-ask"' in js
+    assert "askEl.dataset.askKey !== askKey" in js
+    # 同一提问在过程卡片与实时框各有一份表单,单选/多选的 name 按渲染面命名空间
+    assert 'name="ri-${esc(scope)}-${esc(payload.request_id)}-${esc(qid)}"' in js
+    assert 'renderUserInputRequest(run, event, payload, "live")' in js
+    assert ".run-live-output .live-ask .re-interaction" in css and ".live-ask .re-k" in css

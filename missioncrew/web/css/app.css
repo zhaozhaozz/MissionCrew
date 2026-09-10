@@ -308,9 +308,13 @@
   .run-live-output .via::after { content: "●"; color: var(--accent); font-size: 8px;
                                  margin-left: 6px; animation: blink 1.2s infinite; }
   .run-live-output .rc-elapsed { font-variant-numeric: tabular-nums; }
+  /* 实时框里的待处理提问/权限请求:正文之后另起一块,沿用过程卡片的交互样式 */
+  .run-live-output .live-text:not([hidden]) + .live-ask:not(:empty) { margin-top: 10px; }
+  .run-live-output .live-ask .re-interaction + .re-interaction { margin-top: 8px; }
+  .run-live-output .live-ask .re-k { margin-bottom: 4px; }
   .re { margin-top: 8px; white-space: pre-wrap; word-break: break-word;
         line-height: 1.55; }
-  .re .re-k { display: inline-block; font-size: 10.5px; color: var(--muted);
+  .re .re-k, .live-ask .re-k { display: inline-block; font-size: 10.5px; color: var(--muted);
               border: 1px solid var(--line); border-radius: 4px; padding: 0 5px;
               margin-right: 7px; vertical-align: 1px; }
   .re-command, .re-input { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

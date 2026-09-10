@@ -96,14 +96,16 @@ function renderPermissionRequest(run, event, payload) {
     ${interactionDetails(payload)}${actions}`;
 }
 
-function renderUserInputRequest(run, event, payload) {
+/* scope 区分渲染面(card=过程卡片 / live=实时输出框):同一提问在两处各有一份表单,
+   单选/多选按 name 分组,不带命名空间会被浏览器当成同一组而互相清空 */
+function renderUserInputRequest(run, event, payload, scope = "card") {
   const pending = (payload.status || "pending") === "pending";
   const questions = (payload.questions || []).map((question, index) => {
     const qid = String(question.id ?? index);
     const inputType = question.isSecret ? "password" : "text";
     const optionType = question.multiSelect ? "checkbox" : "radio";
     const options = (question.options || []).map(option => `<label class="ri-option">
-      <input type="${optionType}" name="ri-${esc(payload.request_id)}-${esc(qid)}"
+      <input type="${optionType}" name="ri-${esc(scope)}-${esc(payload.request_id)}-${esc(qid)}"
         value="${esc(option.label || option)}"> <span>${esc(option.label || option)}</span>
       ${option.description ? `<small>${esc(option.description)}</small>` : ""}</label>`).join("");
     return `<div class="ri-question" data-question-id="${esc(qid)}">
@@ -120,6 +122,29 @@ function renderUserInputRequest(run, event, payload) {
     timeout: "等待超时，已取消", stopped: "频道运行已停止",
   }[status] || "回答已提交"}</div>`;
   return `${questions}${actions}`;
+}
+
+/* ---- 待处理交互 ----
+   提问/权限请求会把运行挂成 waiting_user,读者不一定展开过程卡片;实时输出框
+   把尚未处理的请求连同正文一起显示,在框内就能作答。 */
+const INTERACTION_KINDS = new Set(["user_input_request", "permission_request"]);
+function pendingInteractions(events) {
+  return events.filter(e => INTERACTION_KINDS.has(e.kind))
+    .map(e => ({ event: e, payload: parseStructuredRunEvent(e) }))
+    .filter(item => item.payload && (item.payload.status || "pending") === "pending");
+}
+
+function renderLiveInteraction(run, { event, payload }) {
+  const body = event.kind === "permission_request"
+    ? renderPermissionRequest(run, event, payload)
+    : renderUserInputRequest(run, event, payload, "live");
+  return `<div class="re-interaction" data-request-id="${esc(payload.request_id)}">` +
+    `<span class="re-k">${esc(RUN_EVENT_META[event.kind].label)}</span>${body}</div>`;
+}
+
+function liveStateLabel(asks) {
+  if (!asks.length) return "运行中";
+  return asks.some(a => a.event.kind === "user_input_request") ? "等待用户回答" : "等待用户决定";
 }
 
 /* ---- 用量事件 ----
@@ -297,7 +322,12 @@ function renderRunEvent(run, event, openEventId) {
 async function sendRuntimeInteraction(runId, requestId, decision, answers = {}) {
   const card = runCards.get(runId)
     || (typeof findConfigChatRunCard === "function" ? findConfigChatRunCard(runId) : null);
-  card?.el.querySelectorAll(".ri-actions button").forEach(button => button.disabled = true);
+  // 同一请求在过程卡片与实时输出框各有一份表单,按钮一起禁用/恢复
+  const buttons = () => [
+    ...(card?.el.querySelectorAll(".ri-actions button") || []),
+    ...document.querySelectorAll(`.run-live-output[data-run-id="${runId}"] .ri-actions button`),
+  ];
+  buttons().forEach(button => button.disabled = true);
   try {
     await api("POST", `/api/chat/runs/${runId}/interactions/${encodeURIComponent(requestId)}`,
       { decision, answers });
@@ -305,7 +335,7 @@ async function sendRuntimeInteraction(runId, requestId, decision, answers = {}) 
     await pollMessages();
     if (typeof pollConfigChat === "function") await pollConfigChat();
   } catch (error) {
-    card?.el.querySelectorAll(".ri-actions button").forEach(button => button.disabled = false);
+    buttons().forEach(button => button.disabled = false);
   }
 }
 
@@ -343,7 +373,9 @@ setInterval(tickRunElapsed, 1000);
 
 /* 运行期间的实时输出:把 text 过程事件聚合成一个跟随更新的输出框,
    一轮运行只有一个(消息之间是 Runtime 拼好的 Markdown 横线),不随
-   每次输出新建气泡;运行结束后移除,由正式发布的 Agent 消息接替展示。 */
+   每次输出新建气泡;运行结束后移除,由正式发布的 Agent 消息接替展示。
+   Agent 中途向用户提问(或等权限决定)时,待处理的请求也显示在这个框里,
+   没有正文时同样建框,读者不用展开过程卡片就能看到并作答。 */
 function syncRunLiveOutput(run, card, pane, events, liveOutput) {
   const existing = pane.querySelector(`.run-live-output[data-run-id="${run.id}"]`);
   // 以 card 上同步记录的最新状态为准:事件请求在途时运行可能已经结束,
@@ -355,7 +387,8 @@ function syncRunLiveOutput(run, card, pane, events, liveOutput) {
   const text = !live ? ""
     : liveOutput != null ? String(liveOutput)
     : events.filter(e => e.kind === "text").map(e => e.content).join("");
-  if (!text.trim()) { existing?.remove(); return; }
+  const asks = live ? pendingInteractions(events) : [];
+  if (!text.trim() && !asks.length) { existing?.remove(); return; }
   let bubble = existing;
   if (!bubble) {
     const color = roleColor[run.role_id] || "#888";
@@ -365,15 +398,25 @@ function syncRunLiveOutput(run, card, pane, events, liveOutput) {
     bubble.innerHTML = `<span class="avatar" style="background:${esc(color)}">${esc((run.role_id[0] || "?").toUpperCase())}</span>
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${esc(color)}">@${esc(run.role_id)}</span>
-          <span class="via">运行中 · 已用 <span class="rc-elapsed" data-since="${esc(run.created_at)}">${fmtElapsed(Date.now() / 1000 - run.created_at)}</span> · 过程输出实时更新</span></div>
-        <div class="body markdown-body"></div>
+          <span class="via"><span class="rc-live-state">运行中</span> · 已用 <span class="rc-elapsed" data-since="${esc(run.created_at)}">${fmtElapsed(Date.now() / 1000 - run.created_at)}</span> · 过程输出实时更新</span></div>
+        <div class="body markdown-body"><div class="live-text markdown-body"></div><div class="live-ask"></div></div>
       </div>`;
     // 多个 Agent 并行时各自的输出框以角色色左描边区分归属
     bubble.querySelector(".body").style.borderLeftColor = color;
     card.el.after(bubble);
   }
+  bubble.querySelector(".rc-live-state").textContent = liveStateLabel(asks);
   // 不限高、整体随消息流展开;贴底跟随由外层消息面板统一处理
-  bubble.querySelector(".body").innerHTML = fmtBody(text, true);
+  const textEl = bubble.querySelector(".live-text");
+  textEl.hidden = !text.trim();
+  textEl.innerHTML = text.trim() ? fmtBody(text, true) : "";
+  // 提问表单只在待处理请求集合变化时重建:轮询刷新不能清掉用户已选/已填的回答
+  const askEl = bubble.querySelector(".live-ask");
+  const askKey = asks.map(a => a.payload.request_id).join(",");
+  if (askEl.dataset.askKey !== askKey) {
+    askEl.dataset.askKey = askKey;
+    askEl.innerHTML = asks.map(a => renderLiveInteraction(run, a)).join("");
+  }
 }
 
 async function renderRunEvents(run, card, pane = document.getElementById("msgs")) {
