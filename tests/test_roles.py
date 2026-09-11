@@ -1,4 +1,9 @@
 """角色配置:固定 runtime/model、定位/能力/偏好与管理 API。"""
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -993,3 +998,68 @@ def test_set_role_runtime_action_no_longer_supported(seeded):
     assert "不支持的动作" in reply
     after = seeded.get_role("webshop", "dev")
     assert (after.runtime_id, after.model) == (before.runtime_id, before.model)
+
+
+# ---- 聊天角色栏的悬停卡片 ----
+
+WEB = Path(__file__).resolve().parents[1] / "missioncrew" / "web"
+
+
+def test_chat_role_bar_buttons_open_hover_card_instead_of_title():
+    html = (WEB / "index.html").read_text(encoding="utf-8")
+    router = (WEB / "js" / "router.js").read_text(encoding="utf-8")
+    card = (WEB / "js" / "role-card.js").read_text(encoding="utf-8")
+    css = (WEB / "css" / "app.css").read_text(encoding="utf-8")
+
+    assert 'src="/assets/js/role-card.js"' in html
+    bar = router[router.index('getElementById("role-bar").innerHTML'):]
+    bar = bar[:bar.index("refreshRuntimeIndicators()")]
+    assert 'data-role-card="${esc(r.id)}"' in bar
+    assert "title=" not in bar            # 原生提示会和卡片叠着出现
+    for function in ("roleCardHtml", "showRoleCard", "positionRoleCard", "hideRoleCard"):
+        assert f"function {function}" in card
+    assert "miniMarkdown(" in card        # 描述与文档预览同一渲染器
+    assert ".role-hover-card" in css
+
+
+def test_role_hover_card_renders_profile_with_markdown_description():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required to execute the browser role card renderer")
+    role = {
+        "id": "dev", "name": "开发 <b>", "color": "#3564d7", "enabled": True,
+        "runtime_id": "cc-1", "model": "opus", "effort": "high",
+        "capabilities": ["coding", "web_search"], "preference": "后端 & Python",
+        "usage_linkage_enabled": True,
+        "description": "## 定位\n\n负责 **实现**。\n\n- 先读 `AGENTS.md`\n- 再写代码",
+    }
+    script = r"""
+const fs = require("fs"), vm = require("vm");
+const [markdownJs, cardJs, roleJson] = process.argv.slice(1);
+const noop = () => {};
+const context = {
+  location: { origin: "http://localhost" },
+  document: { addEventListener: noop }, window: { addEventListener: noop },
+  esc: v => String(v ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]),
+  overview: { backends: [{ id: "cc-1", name: "Claude Code" }] },
+  projObj: () => ({ orchestrator_role_id: "dev" }),
+  traitMeta: { abilities: { coding: "代码执行", web_search: "联网检索" } },
+  roleDisabledReason: () => "",
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(markdownJs, "utf8"), context);
+vm.runInContext(fs.readFileSync(cardJs, "utf8"), context);
+process.stdout.write(vm.runInContext(`roleCardHtml(${roleJson})`, context));
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(WEB / "js" / "markdown.js"),
+         str(WEB / "js" / "role-card.js"), json.dumps(role)],
+        text=True, capture_output=True, check=True)
+    html = result.stdout
+    assert "<b>@dev</b>" in html and "开发 &lt;b&gt;" in html
+    assert "主控" in html and "用量联动" in html
+    assert "Claude Code / opus / effort high" in html      # runtime 显示名而非 id
+    assert html.count('<span class="pill">') == 2 + 1      # 两个能力 + 用量联动
+    assert "后端 &amp; Python" in html
+    assert ">定位</h2>" in html and "<strong>实现</strong>" in html
+    assert "<li>" in html and "<code>AGENTS.md</code>" in html

@@ -59,6 +59,7 @@
 })();
 
 loadOverview();
+ensureTraits().catch(() => {});   // 能力标签词表:聊天页的角色悬停卡片开页就要用
 pollRuntimeStatus();
 setInterval(pollMessages, 2000);
 setInterval(pollConfigChat, 2000);

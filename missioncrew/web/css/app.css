@@ -431,6 +431,36 @@
                      border-radius: 999px; padding: 3px 12px; font-size: 12.5px; cursor: pointer;
                      transition: all .15s; }
   #role-bar button:hover { border-color: var(--accent); color: var(--accent); }
+  /* 角色悬停卡片(role-card.js):挂在 body 下 fixed 定位,贴着角色栏按钮弹出。
+     头部 = 色点 + @id + 显示名 + 状态,中段 = 执行组合/能力/偏好,正文 = Markdown 描述可滚动 */
+  .role-hover-card { position: fixed; z-index: 60; display: flex; flex-direction: column;
+                     width: max-content; min-width: 260px;
+                     max-width: min(460px, calc(100vw - 24px)); max-height: min(70vh, 520px);
+                     background: var(--card); border: 1px solid var(--line-strong);
+                     border-radius: 12px; box-shadow: var(--shadow-lg); overflow: hidden;
+                     font-size: 13px; line-height: 1.55; animation: fadeUp .14s ease-out; }
+  .role-hover-card[hidden] { display: none; }
+  .role-hover-card-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px;
+                          padding: 11px 14px 9px; border-bottom: 1px solid var(--line); }
+  .role-hover-card-head b { font-size: 14px; color: var(--text); }
+  .role-hover-card-name { color: var(--text-2); }
+  .role-hover-card .pill { margin: 0; }
+  .role-hover-card-meta { display: grid; grid-template-columns: max-content minmax(0, 1fr);
+                          gap: 5px 12px; margin: 0; padding: 9px 14px; font-size: 12.5px;
+                          border-bottom: 1px solid var(--line); color: var(--text-2); }
+  .role-hover-card-meta dt { color: var(--muted); }
+  .role-hover-card-meta dd { margin: 0; overflow-wrap: anywhere; }
+  .role-hover-card-meta .pill { margin-right: 4px; }
+  .role-hover-card-desc { flex: 1; min-height: 0; overflow: auto; padding: 10px 14px 12px; }
+  .role-hover-card .markdown-body { font-size: 13px; line-height: 1.6; }
+  /* 卡片空间有限:标题按正文比例压缩,间距收紧 */
+  .role-hover-card .markdown-body h1, .role-hover-card .markdown-body h2,
+  .role-hover-card .markdown-body h3, .role-hover-card .markdown-body h4 { margin: .9em 0 .4em; }
+  .role-hover-card .markdown-body h1 { font-size: 1.25em; padding-bottom: .2em; }
+  .role-hover-card .markdown-body h2 { font-size: 1.15em; padding-bottom: .15em; }
+  .role-hover-card .markdown-body h3 { font-size: 1.08em; }
+  .role-hover-card .markdown-body h4 { font-size: 1em; }
+  .role-hover-card .markdown-body pre { padding: 9px 11px; margin: .7em 0; }
   .role-running-marker { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px;
                          border-radius: 999px; background: var(--accent-soft);
                          color: var(--accent); font-size: 10.5px; font-weight: 600; }

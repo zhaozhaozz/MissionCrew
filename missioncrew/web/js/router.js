@@ -567,8 +567,8 @@ function renderSidebar() {
          ${disabled ? `<span class="pill">${r.usage_auto_disabled ? "用量停用" : "停用"}</span>` : ""}</div>`;
     }).join("");
   document.getElementById("role-bar").innerHTML = activeProjRoles().map(r =>
-    `<button data-role-id="${esc(r.id)}" onclick="insertMention(this.dataset.roleId)"
-       title="${esc(r.description || `选择 @${r.id}`)}">
+    `<button data-role-id="${esc(r.id)}" data-role-card="${esc(r.id)}"
+       onclick="insertMention(this.dataset.roleId)">
        <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>@${esc(r.id)} ${esc(r.name)}
        <span class="role-running-marker" data-runtime-project="${esc(currentProject || "")}"
          data-runtime-role="${esc(r.id)}" hidden><i></i>运行中</span>
