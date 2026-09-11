@@ -160,7 +160,9 @@
   .side-item.selected { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
   .channel-item, .panel-item { position: relative; display: flex; align-items: center;
                                overflow: visible; gap: 5px; }
-  .channel-item.archived { opacity: .72; }
+  /* 归档频道压淡名称与状态:只淡化子节点,不给整条目设 opacity——那会让条目生成层叠上下文,
+     把「•••」弹出的操作菜单(z-index 40)困在条目内,被后面的频道条目盖住点不到 */
+  .channel-item.archived > :not(.channel-item-actions) { opacity: .72; }
   .channel-name, .panel-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .channel-state { flex: none; padding: 0 5px; border: 1px solid var(--line);
                    border-radius: 999px; color: var(--muted); font-size: 9.5px; font-weight: 500; }
