@@ -462,7 +462,8 @@
   .role-hover-card .markdown-body h2 { font-size: 1.15em; padding-bottom: .15em; }
   .role-hover-card .markdown-body h3 { font-size: 1.08em; }
   .role-hover-card .markdown-body h4 { font-size: 1em; }
-  .role-hover-card .markdown-body pre { padding: 9px 11px; margin: .7em 0; }
+  .role-hover-card .markdown-body pre { padding: 9px 11px; }
+  .role-hover-card .markdown-body .markdown-code { margin: .7em 0; }
   .role-running-marker { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px;
                          border-radius: 999px; background: var(--accent-soft);
                          color: var(--accent); font-size: 10.5px; font-weight: 600; }
@@ -1260,6 +1261,33 @@
   .markdown-body pre { overflow: auto; margin: .9em 0; padding: 13px 15px;
                        border: 1px solid var(--line); border-radius: 9px; background: var(--bg-soft); }
   .markdown-body pre code { padding: 0; background: transparent; white-space: pre; }
+  /* ---- 代码复制按钮 ----
+     按钮是空元素,图标用 mask 着色绘制、跟随文字色。围栏代码块的按钮常显在容器右上角(弱化,
+     悬停加深);行内代码的按钮默认隐藏,悬停时贴着代码右上方浮出,绝对定位不占行内空间。 */
+  .markdown-copy { --icon-copy: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='9' y='9' width='13' height='13' rx='2'/%3E%3Cpath d='M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1'/%3E%3C/svg%3E");
+                   --icon-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+                   position: absolute; z-index: 2; display: flex; align-items: center;
+                   justify-content: center; box-sizing: border-box; width: 24px; height: 24px;
+                   padding: 0; border: 1px solid var(--line); border-radius: 6px;
+                   background: var(--card); color: var(--muted); cursor: pointer; opacity: .6;
+                   box-shadow: var(--shadow-sm); user-select: none;
+                   transition: opacity .15s, color .15s; }
+  .markdown-copy::before { content: ""; width: 14px; height: 14px; background: currentColor;
+                           -webkit-mask: var(--icon-copy) center / contain no-repeat;
+                           mask: var(--icon-copy) center / contain no-repeat; }
+  .markdown-copy:hover, .markdown-copy:focus-visible { opacity: 1; color: var(--text); }
+  .markdown-copy.copied, .markdown-copy.copied:hover { opacity: 1; color: var(--ok);
+                                                       border-color: var(--ok); }
+  .markdown-copy.copied::before { -webkit-mask-image: var(--icon-check); mask-image: var(--icon-check); }
+  .markdown-code { position: relative; margin: .9em 0; }
+  .markdown-code > pre { margin: 0; }
+  .markdown-code > .markdown-copy, .markdown-diagram > .markdown-copy { top: 7px; right: 7px; }
+  .markdown-body code { position: relative; }
+  .markdown-body code > .markdown-copy { visibility: hidden; opacity: 1; width: 20px; height: 20px;
+                                         right: 0; bottom: 100%; }
+  .markdown-body code > .markdown-copy::before { width: 12px; height: 12px; }
+  .markdown-body code:hover > .markdown-copy, .markdown-body code > .markdown-copy:focus-visible,
+  .markdown-body code > .markdown-copy.copied { visibility: visible; }
   .markdown-body a { color: var(--accent); text-decoration: none; }
   .markdown-body a:hover { text-decoration: underline; }
   .markdown-body hr { border: 0; border-top: 1px solid var(--line); margin: 1.4em 0; }
@@ -1272,7 +1300,7 @@
   .markdown-body .markdown-frontmatter-value { display: block; padding: 0; background: transparent;
                                                 white-space: pre-wrap; overflow-wrap: anywhere; }
   /* Markdown 图表:容器先显示源码,diagrams.js 渲染成功后换成 SVG,失败时源码上方标注原因 */
-  .markdown-diagram { margin: .9em 0; }
+  .markdown-diagram { position: relative; margin: .9em 0; }
   .markdown-diagram > pre { margin: 0; }
   .markdown-diagram-canvas { overflow-x: auto; padding: 14px 12px; border: 1px solid var(--line);
                              border-radius: 9px; background: var(--card); text-align: center; }

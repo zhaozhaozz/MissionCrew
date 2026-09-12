@@ -1062,4 +1062,4 @@ process.stdout.write(vm.runInContext(`roleCardHtml(${roleJson})`, context));
     assert html.count('<span class="pill">') == 2 + 1      # 两个能力 + 用量联动
     assert "后端 &amp; Python" in html
     assert ">定位</h2>" in html and "<strong>实现</strong>" in html
-    assert "<li>" in html and "<code>AGENTS.md</code>" in html
+    assert "<li>" in html and "<code>AGENTS.md<button" in html

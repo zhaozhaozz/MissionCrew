@@ -87,6 +87,16 @@ function resolveMarkdownImageSource(target) {
   return markdownImageResolver?.(src) || null;
 }
 
+/* ---- 复制按钮 ----
+   围栏代码块与行内代码都带一个复制按钮。按钮是空元素,图标由 CSS 绘制,长文里成百个
+   行内代码也不会撑大 DOM;点击统一由文件末尾挂在 document 上的委托处理,聊天、文档、
+   任务、看板、角色卡等宿主只要经本组件渲染就自动生效,不需要各自挂钩子。 */
+function markdownCopyButton({ inline = false, title = "复制" } = {}) {
+  // 行内按钮只在悬停时浮现,不进 Tab 焦点序列,键盘用户不必在长文里逐个跳过
+  return `<button type="button" class="markdown-copy"${inline ? ' tabindex="-1"' : ""}` +
+    ` title="${title}"></button>`;
+}
+
 function markdownInline(source) {
   return markdownInlineWithTokens(source, []);
 }
@@ -95,7 +105,8 @@ function markdownInline(source) {
 function markdownInlineWithTokens(source, tokens) {
   const hold = html => `\uE000${tokens.push(html) - 1}\uE001`;
   let value = String(source ?? "");
-  value = value.replace(/`([^`\n]+)`/g, (_, code) => hold(`<code>${esc(code)}</code>`));
+  value = value.replace(/`([^`\n]+)`/g,
+    (_, code) => hold(`<code>${esc(code)}${markdownCopyButton({ inline: true })}</code>`));
   value = value.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (_, alt, target) => {
       const src = resolveMarkdownImageSource(target);
@@ -253,11 +264,14 @@ function miniMarkdown(text) {
         // 图表围栏输出待渲染容器并保留源码:diagrams.js 按需加载 Mermaid 渲染成 SVG,
         // 渲染库缺失或语法错误时读者仍能看到原文。
         output.push(`<div class="markdown-diagram" data-diagram="mermaid">` +
+          markdownCopyButton({ title: "复制源码" }) +
           `<pre class="markdown-diagram-source"><code class="language-mermaid">${source}</code></pre></div>`);
         continue;
       }
+      // 代码块套一层容器:复制按钮定位在容器上,pre 横向滚动时按钮不跟着滚走
       const language = fence[2] ? ` class="language-${esc(fence[2])}"` : "";
-      output.push(`<pre><code${language}>${source}</code></pre>`);
+      output.push(`<div class="markdown-code">${markdownCopyButton()}` +
+        `<pre><code${language}>${source}</code></pre></div>`);
       continue;
     }
 
@@ -361,4 +375,45 @@ function markdownPreviewHtml(markdown, { showFrontmatter = true, imageResolver =
   } finally {
     markdownImageResolver = previousResolver;
   }
+}
+
+/* ---- 复制按钮的点击委托 ----
+   行内按钮的父元素就是那个 code;块级按钮与 pre 同在 .markdown-code / .markdown-diagram
+   容器里。用捕获阶段监听:行内代码可能出现在链接文字里,要抢在链接自身的 onclick 之前
+   吃掉这次点击。渲染器也在无 DOM 的测试环境里执行,挂监听前先确认 document 存在。 */
+function markdownCopySource(button) {
+  const code = button.parentElement?.matches("code") ? button.parentElement
+    : button.closest(".markdown-code, .markdown-diagram")?.querySelector("pre > code");
+  if (!code) return "";
+  const clone = code.cloneNode(true);
+  clone.querySelectorAll(".markdown-copy").forEach(node => node.remove());
+  return clone.textContent;
+}
+
+const markdownCopyTimers = new WeakMap();   // 按钮 → 恢复图标的定时器
+
+async function handleMarkdownCopyClick(button) {
+  const copied = await copyTextToClipboard(markdownCopySource(button));
+  if (!copied) {
+    if (typeof toast === "function") toast("复制失败,请手动选中后复制", "error");
+    return;
+  }
+  const restore = button.dataset.copyTitle || (button.dataset.copyTitle = button.title);
+  button.classList.add("copied");
+  button.title = "已复制";
+  clearTimeout(markdownCopyTimers.get(button));
+  markdownCopyTimers.set(button, setTimeout(() => {
+    button.classList.remove("copied");
+    button.title = restore;
+  }, 1500));
+}
+
+if (typeof document !== "undefined") {
+  document.addEventListener("click", event => {
+    const button = event.target.closest?.(".markdown-copy");
+    if (!button) return;
+    event.preventDefault();
+    event.stopPropagation();
+    handleMarkdownCopyClick(button);
+  }, true);
 }

@@ -289,3 +289,27 @@ const GIT_ICON_SVG = `<svg class="git-icon" viewBox="0 0 16 16" aria-hidden="tru
 const repoIsGit = repo => repo?.kind === "git";
 const repoIcon = repo => repoIsGit(repo) ? GIT_ICON_SVG : "📁";
 const repoKindLabel = repo => repoIsGit(repo) ? "git 仓" : "本地目录";
+
+/* ---- 写入剪贴板 ----
+   navigator.clipboard 只在安全上下文可用;经局域网 IP 用 http 打开页面时它不存在,退回
+   "选中隐藏文本框 + execCommand('copy')"。两条路都要在用户点击带来的激活窗口内执行,
+   所以只能由点击事件处理直接调用。返回是否成功,调用方据此给反馈。 */
+async function copyTextToClipboard(text) {
+  const value = String(text ?? "");
+  if (navigator.clipboard?.writeText) {
+    try { await navigator.clipboard.writeText(value); return true; } catch (_) { /* 退回下面的兜底 */ }
+  }
+  const active = document.activeElement;
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.style.cssText = "position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none";
+  document.body.appendChild(area);
+  area.focus({ preventScroll: true });
+  area.select();
+  let copied = false;
+  try { copied = document.execCommand("copy"); } catch (_) { copied = false; }
+  area.remove();
+  if (active instanceof HTMLElement) active.focus({ preventScroll: true });
+  return copied;
+}
