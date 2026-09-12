@@ -789,9 +789,10 @@
   .runtime-live-label i, .runtime-state i { width: 7px; height: 7px; border-radius: 50%;
                                             background: currentColor; flex: none; }
   .runtime-live-label i { animation: blink 1.2s infinite; }
-  .runtime-status-cards { display: grid; grid-template-columns: repeat(4, minmax(130px, 1fr));
+  /* 概览卡片按可用宽度自动排列：宽屏一行放下全部 5 张，窄屏再折行，不留半行空位。 */
+  .runtime-status-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
                           gap: 12px; margin-bottom: 24px; }
-  .runtime-stat-card { display: grid; gap: 2px; padding: 13px 15px; border: 1px solid var(--line);
+  .runtime-stat-card { display: grid; gap: 2px; padding: 11px 14px; border: 1px solid var(--line);
                        border-radius: 10px; background: var(--card); box-shadow: var(--shadow-sm); }
   .runtime-stat-card > span, .runtime-stat-card small { color: var(--muted); }
   .runtime-stat-card strong { font-size: 24px; line-height: 1.25; }
@@ -916,7 +917,6 @@
                                     font-variant-numeric: tabular-nums; }
   @keyframes usageTipIn { from { opacity: 0; transform: translateY(3px); } }
   @media (max-width: 900px) {
-    .runtime-status-cards { grid-template-columns: repeat(2, minmax(130px, 1fr)); }
     .runtime-status-head { flex-direction: column; }
     .runtime-usage-grid { grid-template-columns: 1fr; }
     .runtime-section-head { flex-direction: column; }
