@@ -176,18 +176,32 @@ ACTION_DEFINITIONS = {
     },
     "channel.runs.list": {
         "description": (
-            "按需查询当前 Channel 中 queued/running/waiting_user 的角色运行；"
-            "状态不会预先写入聊天上下文"
+            "按需查询频道中 queued/running/waiting_user 的角色运行(默认当前 "
+            "Channel,可传 channel 查项目内其他频道);状态不会预先写入聊天上下文"
         ),
         "orchestrator_only": True,
         "automation_allowed": False,
-        "arguments": {},
+        "arguments": {"channel": "项目内频道短 id；不传为当前 Channel"},
     },
     "channel.run.stop": {
         "description": "停止当前 Channel 中指定的活动角色运行；应先查询取得 run_id",
         "orchestrator_only": True,
         "automation_allowed": False,
         "arguments": {"run_id": "channel.runs.list 返回的正整数 Run id"},
+    },
+    "channel.history": {
+        "description": (
+            "按需读取频道最近消息(默认当前 Channel,可传 channel 读项目内其他频道);"
+            "记录格式与 channel-history.json 相同,用于核对派发、进展与回报,"
+            "不要当作等待循环反复调用"
+        ),
+        "orchestrator_only": True,
+        "automation_allowed": False,
+        "arguments": {
+            "channel": "项目内频道短 id；不传为当前 Channel",
+            "limit": "返回最新几条,默认 20,最多 200",
+            "before_id": "只取 id 小于该值的更早消息,用于向前翻页",
+        },
     },
     "channel.list": {
         "description": (
@@ -325,8 +339,9 @@ ACTION_ARGUMENTS = {
     "document.rename": {"source", "target"},
     "document.delete": {"path"},
     "message.publish": {"channel", "content", "mentions"},
-    "channel.runs.list": set(),
+    "channel.runs.list": {"channel"},
     "channel.run.stop": {"run_id"},
+    "channel.history": {"channel", "limit", "before_id"},
     "channel.list": {"scope"},
     "channel.create": {"id", "name", "purpose", "workdir"},
     "dashboard.save": {"id", "name", "description", "layout", "mode",
@@ -355,7 +370,8 @@ ACTION_ARGUMENTS = {
 # 本身已经生成聊天消息；查询动作是只读操作，这些动作都不额外插入回执。
 CONVERSATION_RECEIPT_ACTIONS = (
     frozenset(ACTION_DEFINITIONS) - {
-        "message.publish", "channel.runs.list", "channel.run.stop", "recycle.list",
+        "message.publish", "channel.runs.list", "channel.run.stop",
+        "channel.history", "recycle.list",
     }
 )
 
@@ -364,10 +380,14 @@ class AgentActionService:
     """统一执行 Agent 可请求的 MissionCrew 平台动作。"""
 
     def __init__(self, store: Store, post_message: Callable[..., int],
-                 stop_run: Callable[..., dict]):
+                 stop_run: Callable[..., dict],
+                 history_records: Optional[Callable[..., list[dict]]] = None):
         self.store = store
         self._post_message = post_message
         self._stop_run = stop_run
+        # (channel, role_id, limit, before_id) -> 与 channel-history.json 同构的
+        # 消息记录;由聊天引擎提供,保证脱敏口径与工作区历史文件一致
+        self._history_records = history_records
 
     @staticmethod
     def _hash_token(token: str) -> str:
@@ -748,6 +768,7 @@ class AgentActionService:
             "message.publish": self._publish_message,
             "channel.runs.list": self._list_channel_runs,
             "channel.run.stop": self._stop_channel_run,
+            "channel.history": self._channel_history,
             "channel.list": self._list_channels,
             "channel.create": self._create_channel,
             "dashboard.save": self._save_dashboard,
@@ -772,12 +793,30 @@ class AgentActionService:
             raise AgentToolError(
                 "permission_denied", "该动作只允许当前 Channel 内的角色运行调用", 403)
 
+    def _project_channel(self, project: Project, raw_channel: str,
+                         fallback: str = "") -> Channel:
+        """按短 id 或全 id 找项目内频道;raw 为空时回退到 fallback(当前频道)。"""
+        raw_channel = str(raw_channel or "").strip() or fallback
+        if not raw_channel:
+            raise AgentToolError("invalid_arguments", "需要提供 channel")
+        channel_id = (raw_channel if raw_channel.startswith(f"{project.id}:")
+                      else f"{project.id}:{raw_channel}")
+        channel = self.store.get_channel(channel_id) or self.store.get_channel(raw_channel)
+        if channel is None or channel.project_id != project.id:
+            raise AgentToolError(
+                "channel_not_found", f"频道不存在或不属于本项目: {raw_channel}", 404)
+        return channel
+
     def _list_channel_runs(self, project: Project, identity: AgentIdentity,
-                           _arguments: dict, context: AgentRunContext) -> dict:
-        """只在显式调用时返回当前频道的活动 Run 快照。"""
+                           arguments: dict, context: AgentRunContext) -> dict:
+        """只在显式调用时返回频道的活动 Run 快照;默认当前频道,可指定项目内
+        其他频道以核对派发是否已开工。停止仍只对当前频道的运行开放。"""
         self._require_chat_identity(identity)
+        channel = self._project_channel(
+            project, arguments.get("channel", ""), identity.channel_id)
+        is_current_channel = channel.id == identity.channel_id
         runs = []
-        for row in self.store.active_chat_runs(identity.channel_id):
+        for row in self.store.active_chat_runs(channel.id):
             role = self.store.get_role(project.id, str(row["role_id"]))
             run_id = int(row["id"])
             runs.append({
@@ -790,12 +829,41 @@ class AgentActionService:
                 "effort": str(row.get("effort") or ""),
                 "created_at": float(row["created_at"]),
                 "is_current_run": run_id == context.run_id,
-                "stoppable": run_id != context.run_id,
+                "stoppable": is_current_channel and run_id != context.run_id,
             })
+        where = "当前 Channel" if is_current_channel else f"频道 #{channel.name}"
         return {
-            "summary": f"当前 Channel 有 {len(runs)} 个活动角色运行",
-            "channel_id": identity.channel_id,
+            "summary": f"{where}有 {len(runs)} 个活动角色运行",
+            "channel_id": channel.id,
+            "is_current_channel": is_current_channel,
             "runs": runs,
+        }
+
+    def _channel_history(self, project: Project, identity: AgentIdentity,
+                         arguments: dict, _context: AgentRunContext) -> dict:
+        """按需读取频道最近消息;默认当前频道,可指定项目内其他频道。"""
+        self._require_chat_identity(identity)
+        channel = self._project_channel(
+            project, arguments.get("channel", ""), identity.channel_id)
+        limit = arguments.get("limit", 20)
+        before_id = arguments.get("before_id", 0)
+        for name, value in (("limit", limit), ("before_id", before_id)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise AgentToolError("invalid_arguments", f"{name} 必须是非负整数")
+        limit = min(limit or 20, 200)
+        if self._history_records is None:
+            raise AgentToolError("unsupported_action", "当前部署不支持读取频道历史", 501)
+        records = self._history_records(channel, identity.role_id, limit, before_id)
+        url = channel_resource_url(project.id, channel.id)
+        return {
+            "summary": (f"频道 [#{channel.name}]({url}) 最近 {len(records)} 条消息"
+                        + (f"(id < {before_id})" if before_id else "")),
+            "channel_id": channel.id,
+            "channel_name": channel.name,
+            "is_current_channel": channel.id == identity.channel_id,
+            "message_count": self.store.count_messages(channel.id),
+            "resource_url": url,
+            "messages": records,
         }
 
     def _stop_channel_run(self, project: Project, identity: AgentIdentity,
@@ -1057,12 +1125,7 @@ class AgentActionService:
         if not raw_channel or not isinstance(content, str) or not content.strip():
             raise AgentToolError(
                 "invalid_arguments", "message.publish 需要 channel 和非空 content")
-        channel_id = (raw_channel if raw_channel.startswith(f"{project.id}:")
-                      else f"{project.id}:{raw_channel}")
-        channel = self.store.get_channel(channel_id) or self.store.get_channel(raw_channel)
-        if channel is None or channel.project_id != project.id:
-            raise AgentToolError(
-                "channel_not_found", f"频道不存在或不属于本项目: {raw_channel}", 404)
+        channel = self._project_channel(project, raw_channel)
         mentions = arguments.get("mentions", [])
         if (not isinstance(mentions, list)
                 or not all(isinstance(item, str) for item in mentions)):

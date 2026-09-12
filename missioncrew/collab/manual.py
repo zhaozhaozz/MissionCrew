@@ -117,6 +117,9 @@ _MANUAL = """\
   完成或失败后,平台自动启动新的主控 turn 并交回完整结果,届时再验收、继续调度或汇总。
 - 活动 Run 状态不会自动写入上下文;人类询问运行情况或要求停止角色时,用 `channel.runs.list`
   取当前 Channel 的一次性快照,用返回的 `run_id` 调 `channel.run.stop`;不要把按需查询变成等待循环。
+- 跨频道核对:`channel.runs.list` 与 `channel.history` 都可传 `channel`(项目内频道短 id)查看
+  其他频道的活动运行与最近消息(`limit` 默认 20、最多 200,`before_id` 向前翻页),用于在续接被
+  中断的工作时确认某频道是否已派发、执行角色进展到哪一步;`channel.run.stop` 仍只能停当前频道的运行。
 - 人类在同一条触发消息中选择多个角色时,平台只启动主控;触发消息 JSON 的 `mentions` 和
   `mention_spans` 保留完整名单,由主控决定并行、顺序或调整人选,再分别派发。
 - 回答人类、汇总结论或说明当前状态时直接写最终回复,平台会发布到触发消息所在的 Channel;
@@ -127,6 +130,9 @@ _MANUAL = """\
 - `channel.list`(仅主控,scope=active 默认 / archived / all):返回 id、name、purpose、
   workdir(及是否已不存在)、archived、last_message_at、active_run_count、resource_url。
   频道清单不预先写入上下文,引用其他频道、派发到其他频道或新建频道前先查。
+- `channel.history`(仅主控,channel 默认当前频道 / limit / before_id):返回该频道最新消息记录,
+  格式与工作区 `channel-history.json` 相同(含 agent_tool 回执、agent_stop 等平台消息),
+  `message_count` 是频道消息总数。要看某频道最近发生了什么就查它,不要去猜。
 - `channel.create` 的 workdir 只能是项目代码仓路径或其子目录;不填时若项目只配了一个代码仓
   则自动使用它。新频道创建后是空的,用 `message.publish` 把任务简报发进去并在 `mentions` 里
   显式点名执行者开工。
@@ -220,6 +226,7 @@ _PEER_REPLACEMENTS = (
     ("(仅主控)", ""),
     ("(删除仅主控)", ""),
     ("(仅主控,scope=", "(scope="),
+    ("(仅主控,channel 默认", "(channel 默认"),
     ("动作的说明、参数与是否仅主控可用。", "动作的说明与参数(本项目无主控,所有动作对每个角色开放)。"),
     ("## 7. 消息与派发(主控)", "## 7. 消息与派发"),
     ("交由主控或人类调整", "交由派发者或人类调整"),

@@ -423,6 +423,10 @@ class _PiSession:
                     return RunResult(False, "执行已停止")
                 self._sync_turn_settings(config)
                 self.client.send({"type": "prompt", "message": prompt})
+                if self.persistent and self.session_file:
+                    # prompt 已交给 pi 就先落库会话文件:turn 中途被人工停止时
+                    # 下一轮仍能 --session 续接,不必等轮末再持久化。
+                    adapters._save_session(config, self.session_file)
                 if not self._turn_done.wait(config.timeout):
                     try:
                         self.client.send({"type": "abort"})

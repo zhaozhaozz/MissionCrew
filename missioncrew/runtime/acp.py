@@ -838,7 +838,10 @@ def _new_or_load_session(client: _AcpClient, workdir: str,
 
 
 def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
-                 model: str, effort: str = "") -> str:
+                 model: str, effort: str = "",
+                 before_prompt: Optional[Callable[[], None]] = None) -> str:
+    """发一轮 prompt 并等待 turn 结束;before_prompt 在 session/prompt 真正
+    发出前调用(模型/档位已对齐),供调用方在这一刻持久化会话 id。"""
     if model:
         client.request("session/set_model", {"sessionId": session_id,
                                               "modelId": model})
@@ -857,6 +860,8 @@ def _prompt_turn(client: _AcpClient, session_id: str, prompt: str,
             client.emit("status", f"ACP Runtime 未声明推理力度配置项(thought_level)，"
                                   f"effort={effort} 未生效。\n")
     client.emit("input", prompt)
+    if before_prompt is not None:
+        before_prompt()
     client.request("session/prompt", {
         "sessionId": session_id,
         "prompt": [{"type": "text", "text": prompt}],
@@ -1016,8 +1021,20 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
             label = (mode_labels or {}).get(actual_mode)
             if label:
                 live.client.emit("status", f"公共上下文:{label}\n")
+
+            def _persist_open_session() -> None:
+                # prompt 一经交给 Runtime 就落库会话 id(轮内刷新,不动
+                # 注入计数):首轮会话在 turn 中途被人工停止时,下一轮仍能按
+                # 这个 id session/load 续接已发生的工作,而不是从头新建会话。
+                if not save_session:
+                    return
+                try:
+                    save_session(live.session_id, context_version)
+                except Exception:
+                    live.client.emit("status", "Runtime 会话已建立,但持久化会话 id 失败。\n")
+
             reply = _prompt_turn(live.client, live.session_id, actual_prompt,
-                                 model, effort)
+                                 model, effort, before_prompt=_persist_open_session)
             live.last_used = time.time()
             if save_session:
                 try:

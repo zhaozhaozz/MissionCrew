@@ -368,6 +368,45 @@ def test_runtime_manager_stops_acp_live_session(tmp_path, monkeypatch):
         acp.close_sessions()
 
 
+def test_acp_persists_session_id_once_prompt_is_sent(tmp_path):
+    """首轮会话在 turn 中途被人工停止:会话 id 在 session/prompt 发出时就已
+    落库,下一轮以 session/load 续接,而不是等轮末才持久化导致新建会话。"""
+    saved = {}
+    outcome = {}
+    events = []
+
+    def _turn():
+        outcome["result"] = _adapter("kimi", "slow").run(
+            _chat_cfg(tmp_path, saved,
+                      lambda kind, text: events.append((kind, text))))
+
+    worker = threading.Thread(target=_turn)
+    try:
+        worker.start()
+        deadline = time.time() + 5
+        while "id" not in saved and time.time() < deadline:
+            time.sleep(0.02)
+        assert saved.get("id") == "s-test" and saved.get("context") == "v1"
+        assert worker.is_alive() and "turn_mode" not in saved
+        assert acp.stop_runtime_sessions("kimi", "channel::role") == 1
+        worker.join(timeout=10)
+        assert not outcome["result"].success
+        assert saved["id"] == "s-test"
+
+        second_events = []
+        second = _adapter("kimi").run(
+            _chat_cfg(tmp_path, saved,
+                      lambda kind, text: second_events.append((kind, text))))
+        assert second.success
+        assert "轮次=1;new=0;load=1" in second.output
+        assert ("input", adapters.LEAN_TURN_TEMPLATE.format(context_version="v1")
+                + "当前任务") in second_events
+        assert saved["turn_mode"] == "lean"
+    finally:
+        worker.join(timeout=10)
+        acp.close_sessions()
+
+
 def test_acp_loads_persisted_session_after_process_restart(tmp_path):
     saved = {}
     try:

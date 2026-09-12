@@ -89,7 +89,7 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 
 ### 逐 Runtime 会话复用矩阵
 
-聊天会话在一个上下文周期内以 `channel::role` 为键，但每个 Runtime 的原生接口不同。聊天区的频道停止按钮会原子地把该频道全部 `queued`、`running` 和 `waiting_user` 运行改为 `stopped`，先取消待处理交互，再对活动 run 与频道已保存 session 对应的 Runtime 统一调用 `stop`，终止原生进程及其后台子进程。停止不删除 `chat_sessions` 中已持久化的原生 session/thread ID，所以下一轮会新建 Runtime 进程并尝试恢复原生上下文。即使数据库已无活动 run，停止 API 仍会清理频道保存 session 对应的孤儿进程。运行线程在启动前、输出事件、失败发布、主控动作和最终回复边界都会检查终态，停止后的迟到结果不能重新打开运行或触发后续 Agent。已经落盘的部分修改保留，不做隐式回滚。
+聊天会话在一个上下文周期内以 `channel::role` 为键，但每个 Runtime 的原生接口不同。聊天区的频道停止按钮会原子地把该频道全部 `queued`、`running` 和 `waiting_user` 运行改为 `stopped`，先取消待处理交互，再对活动 run 与频道已保存 session 对应的 Runtime 统一调用 `stop`，终止原生进程及其后台子进程。停止不删除 `chat_sessions` 中已持久化的原生 session/thread ID，所以下一轮会新建 Runtime 进程并尝试恢复原生上下文。原生 ID 在 prompt 交给 Runtime 的那一刻就已落库（Claude 在 `system/init`、Codex 在 `thread/start`、ACP 在 `session/prompt` 发出前、pi 在发送 `prompt` 后），而不是等 turn 结束：因此首轮会话在 turn 中途被人工停止时，下一轮仍以同一原生 ID 续接已发生的工作（增量回合），不会因为轮末才持久化而退化成新建会话。即使数据库已无活动 run，停止 API 仍会清理频道保存 session 对应的孤儿进程。运行线程在启动前、输出事件、失败发布、主控动作和最终回复边界都会检查终态，停止后的迟到结果不能重新打开运行或触发后续 Agent。已经落盘的部分修改保留，不做隐式回滚。
 
 用户点击「清除上下文」后，平台先确认频道没有运行中的 Agent，再停止该频道各角色的持久实例、删除 `chat_sessions`，写入可见的 `context_boundary` 分隔消息，并把后续 key 切换为 `channel::role::context-<marker-id>`；因此固定 session id 或稳定目录型 CLI 也不会重新连接清除前的上下文。最近对话只选择分隔消息之后的记录，旧消息和完整历史文件仍保留供人类查看或 Agent 按需读取。下表中的“后续轮次”都只发送最新 MissionCrew 公共上下文和当前触发消息，不再重复回放最近对话；只有新建会话、原会话无法恢复或没有可靠原生接口时，才发送包含最近对话 JSON 的恢复输入。
 

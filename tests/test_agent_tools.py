@@ -554,6 +554,121 @@ def test_orchestrator_queries_and_stops_only_current_channel_runs(
                for message in stop_messages)
 
 
+def test_channel_runs_list_can_peek_other_channel_but_stop_stays_local(
+        seeded, monkeypatch):
+    """主控跨频道派发后被停止再唤起时,要能看目标频道是否已有活动运行;
+    但停止仍只对当前频道开放,跨频道查到的运行 stoppable 恒为 False。"""
+    chat = ChatEngine(seeded)
+    _config, lead_run, lead_token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(lead_token)
+    seeded.put_channel(Channel(
+        id="private", name="其他频道", project_id="webshop"))
+    private_trigger = seeded.add_message(
+        "private", "lead", "agent", "@expert 开工", ["expert"])
+    private_run = seeded.add_chat_run(
+        "private", "expert", private_trigger, private_trigger, 0)
+    seeded.update_chat_run(private_run, "running", backend_id="exp-1")
+    monkeypatch.setattr(runtime_manager, "stop",
+                        lambda backend, session_key="": 1)
+
+    current = chat.agent_tools.execute(
+        identity, "channel.runs.list", {}, lead_run, "runs-current")
+    assert current["channel_id"] == "general"
+    assert current["is_current_channel"] is True
+    assert [run["run_id"] for run in current["runs"]] == [lead_run]
+
+    other = chat.agent_tools.execute(
+        identity, "channel.runs.list", {"channel": "private"}, lead_run,
+        "runs-other")
+    assert other["channel_id"] == "private"
+    assert other["is_current_channel"] is False
+    assert "#其他频道" in other["summary"]
+    assert [(run["run_id"], run["role_id"], run["stoppable"])
+            for run in other["runs"]] == [(private_run, "expert", False)]
+
+    with pytest.raises(AgentToolError) as missing:
+        chat.agent_tools.execute(
+            identity, "channel.runs.list", {"channel": "nowhere"}, lead_run,
+            "runs-missing")
+    assert missing.value.code == "channel_not_found"
+    with pytest.raises(AgentToolError) as cross:
+        chat.agent_tools.execute(
+            identity, "channel.run.stop", {"run_id": private_run}, lead_run,
+            "stop-cross-channel")
+    assert cross.value.code == "run_not_found"
+    assert seeded.get_chat_run(private_run)["status"] == "running"
+    # 只读查询不留工具回执
+    assert not [m for m in seeded.list_messages("general")
+                if m["kind"] == "agent_tool"]
+
+
+def test_channel_history_reads_current_and_other_channels(seeded):
+    """channel.history 按需读取频道最近消息:默认当前频道,可指定其他频道、
+    限制条数与向前翻页;记录格式与 channel-history.json 一致;执行角色无权。"""
+    chat = ChatEngine(seeded)
+    _config, lead_run, lead_token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(lead_token)
+    assert "channel.history" in chat.agent_tools.capabilities(identity)["actions"]
+    seeded.put_channel(Channel(
+        id="private", name="其他频道", project_id="webshop"))
+    first = seeded.add_message(
+        "private", "lead", "agent", "@dev 部署 Jenkins", ["dev"])
+    seeded.add_message("private", "platform", "platform",
+                       "@dev 使用 MissionCrew Tool · `task.brief`：已追加",
+                       [], kind="agent_tool")
+    last = seeded.add_message(
+        "private", "dev", "agent", "部署完成,向 @lead 汇报", ["lead"])
+
+    current = chat.agent_tools.execute(
+        identity, "channel.history", {}, lead_run, "history-current")
+    assert current["channel_id"] == "general"
+    assert current["is_current_channel"] is True
+    assert current["messages"][-1]["content"] == "@lead 执行"
+
+    other = chat.agent_tools.execute(
+        identity, "channel.history", {"channel": "private"}, lead_run,
+        "history-other")
+    assert other["channel_name"] == "其他频道"
+    assert other["is_current_channel"] is False
+    assert other["message_count"] == 3
+    assert other["resource_url"] == "/resources/webshop/channels/private"
+    assert [m["id"] for m in other["messages"]] == [first, first + 1, last]
+    assert other["messages"][1]["kind"] == "agent_tool"
+    tail = other["messages"][-1]
+    assert tail["author"] == {"id": "dev", "type": "agent"}
+    assert tail["mentions"] == ["lead"]
+    assert tail["thread"]["root_id"] == last
+
+    limited = chat.agent_tools.execute(
+        identity, "channel.history", {"channel": "private", "limit": 1},
+        lead_run, "history-limit")
+    assert [m["id"] for m in limited["messages"]] == [last]
+    paged = chat.agent_tools.execute(
+        identity, "channel.history",
+        {"channel": "private", "limit": 1, "before_id": last},
+        lead_run, "history-page")
+    assert [m["id"] for m in paged["messages"]] == [first + 1]
+    assert f"id < {last}" in paged["summary"]
+
+    for bad in ({"limit": -1}, {"limit": True}, {"before_id": "x"},
+                {"channel": "nowhere"}):
+        with pytest.raises(AgentToolError) as caught:
+            chat.agent_tools.execute(
+                identity, "channel.history", bad, lead_run, "history-bad")
+        assert caught.value.code in {"invalid_arguments", "channel_not_found"}
+    # 只读查询不留工具回执
+    assert not [m for m in seeded.list_messages("general")
+                if m["kind"] == "agent_tool"]
+
+    _dev, dev_run, dev_token = _run_config(seeded, chat, "dev")
+    dev_identity = chat.agent_tools.authenticate(dev_token)
+    assert "channel.history" not in chat.agent_tools.capabilities(dev_identity)["actions"]
+    with pytest.raises(AgentToolError) as denied:
+        chat.agent_tools.execute(
+            dev_identity, "channel.history", {}, dev_run, "history-denied")
+    assert denied.value.code == "permission_denied"
+
+
 def test_non_orchestrator_cannot_query_or_stop_channel_runs(seeded):
     chat = ChatEngine(seeded)
     _config, dev_run, dev_token = _run_config(seeded, chat, "dev")

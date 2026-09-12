@@ -236,6 +236,7 @@ CONTROL_RULES_TEMPLATE = """\
 - 配置页协作消息会给出当前页面、当前条目、未保存草稿和用户选中的内容:只提问或讨论时直接回答,不要改配置;明确要求创建或修改时,必须用对应动作实际落库。
 按需查询:
 - 活动 Run 状态不会自动写入你的上下文;只有人类询问运行情况或要求停止角色时,才调用 `channel.runs.list` 取一次性快照,并用返回的 `run_id` 调用 `channel.run.stop`。
+- 其他频道的情况不在上下文里:核对某频道是否已派发、进展如何,用 `channel.runs.list` / `channel.history` 传 `channel` 一次性查看,不要据此轮询等待。
 - 频道清单不在上下文里,用 `channel.list` 查;`channel.create` 的 workdir 只能是项目代码仓路径或其子目录,新频道创建后是空的,用 `message.publish` 把任务简报发进去并在 `mentions` 里点名执行者。
 - 面板、看板数据源、准则与 Skill 的保存格式、文档发布与重命名、自动化脚本、回收站的规则见手册对应章节,操作前先读。
 协作链预算:本项目单条协作链最多 {max_runs} 次 Agent 执行,`message.publish` 返回值的 `chain_budget` 里有已用次数;这只是防止失控循环的总次数兜底,不限制调度层级,请在预算内自主拆解、分派、验收并推进任务。
@@ -304,7 +305,9 @@ class ChatEngine:
         self._stopping_channels: set[str] = set()
         self._interaction_lock = threading.Lock()
         self._interactions: dict[str, _PendingInteraction] = {}
-        self.agent_tools = AgentActionService(store, self.post, self.stop_run)
+        self.agent_tools = AgentActionService(
+            store, self.post, self.stop_run,
+            history_records=self.channel_history_records)
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
@@ -1668,6 +1671,18 @@ class ChatEngine:
                 session_key),
             agent_action=agent_action,
         )
+
+    def channel_history_records(self, channel: Channel, role_id: str,
+                                limit: int, before_id: int = 0) -> list[dict]:
+        """按角色视图返回频道最新 limit 条消息记录(id 升序),供 Agent Tool
+        `channel.history` 使用;脱敏规则与工作区 channel-history.json 一致。"""
+        project_id = channel.project_id or ""
+        project = self.store.get_project(project_id) if project_id else None
+        role = self.store.get_role(project_id, role_id) if project else None
+        known_roles = {r.id for r in self.store.list_roles(project_id)} if project else set()
+        return [self._message_record(m, role, project, known_roles)
+                for m in self.store.recent_messages(
+                    channel.id, limit, 0, before_id)]
 
     @staticmethod
     def _decoded_mentions(message: dict) -> list[str]:

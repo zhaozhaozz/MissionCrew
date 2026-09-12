@@ -1179,6 +1179,11 @@ class Store:
         return [dict(r) for r in self._query(
             "SELECT * FROM messages WHERE channel=? ORDER BY id", (channel,))]
 
+    def count_messages(self, channel: str) -> int:
+        rows = self._query(
+            "SELECT COUNT(*) AS n FROM messages WHERE channel=?", (channel,))
+        return int(rows[0]["n"]) if rows else 0
+
     def recent_messages(self, channel: str, limit: int = 20,
                         after_id: int = 0, before_id: int = 0) -> list[dict]:
         """取窗口内最新的 limit 条并按 id 升序返回;before_id>0 时只取更早
