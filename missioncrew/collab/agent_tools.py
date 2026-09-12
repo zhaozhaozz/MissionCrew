@@ -366,8 +366,9 @@ ACTION_ARGUMENTS = {
     "recycle.purge": {"id"},
 }
 
-# 成功的写操作要在发起调用的会话中留下可见回执。message.publish 和停止动作
-# 本身已经生成聊天消息；查询动作是只读操作，这些动作都不额外插入回执。
+# 成功的写操作要在发起调用的会话中留下可见回执。停止动作本身已经生成聊天
+# 消息;查询动作是只读操作,这些动作都不额外插入回执。message.publish 单独
+# 处理:发到当前频道时消息本身就是痕迹,发到其他频道时才在源频道留回执。
 CONVERSATION_RECEIPT_ACTIONS = (
     frozenset(ACTION_DEFINITIONS) - {
         "message.publish", "channel.runs.list", "channel.run.stop",
@@ -691,7 +692,20 @@ class AgentActionService:
             self, identity: AgentIdentity, action: str, result: dict,
             context: AgentRunContext) -> None:
         """把成功的 Agent 写操作作为平台消息展示，不让回执影响动作结果。"""
-        if action not in CONVERSATION_RECEIPT_ACTIONS:
+        receipt_context: dict = {
+            "action": action,
+            "role_id": identity.role_id,
+            "run_id": context.run_id,
+        }
+        if action == "message.publish":
+            # 跨频道派发的消息只存在于目标频道;主控被停止后再唤起时,源频道
+            # 历史里若没有这条回执就会误判"尚未派发"而重复派工。
+            target = str(result.get("channel_id") or "")
+            if not context.channel_id or target == context.channel_id:
+                return
+            receipt_context["channel"] = target
+            receipt_context["message_id"] = int(result.get("message_id") or 0)
+        elif action not in CONVERSATION_RECEIPT_ACTIONS:
             return
         summary = str(result.get("summary") or f"已完成 {action}")
         content = (
@@ -701,13 +715,8 @@ class AgentActionService:
             self._post_message(
                 context.channel_id, "platform", content, author_type="platform",
                 root_id=context.root_id, depth=context.depth + 1,
-                mention_spans=[], context={
-                    "agent_tool": {
-                        "action": action,
-                        "role_id": identity.role_id,
-                        "run_id": context.run_id,
-                    },
-                }, kind="agent_tool",
+                mention_spans=[], context={"agent_tool": receipt_context},
+                kind="agent_tool",
             )
         except Exception:
             # 资源写入已经成功，回执异常不能把成功动作伪装成失败并诱导 Agent
@@ -1177,7 +1186,8 @@ class AgentActionService:
         url = channel_resource_url(project.id, channel.id)
         result = {
             "summary": f"已在 [#{channel.name}]({url}) 发布消息",
-            "message_id": message_id, "resource_url": url,
+            "message_id": message_id, "channel_id": channel.id,
+            "resource_url": url,
         }
         if context.root_id:
             # 主控看不到预算余量;随返回值告知,避免临近上限时盲目派发
@@ -1193,6 +1203,8 @@ class AgentActionService:
             dropped = [r for r in unique_mentions if r not in started]
             result["dispatched"] = [r for r in unique_mentions if r in started]
             if result["dispatched"]:
+                result["summary"] += (
+                    "，已派发 " + "、".join(f"@{r}" for r in result["dispatched"]))
                 result["handoff"] = "end_turn"
                 result["resume"] = (
                     "不要向仍在执行的角色追问中间状态；MissionCrew 会在已派发角色"

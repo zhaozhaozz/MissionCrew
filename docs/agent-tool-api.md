@@ -83,9 +83,9 @@ CLI 共四个子命令：`actions`、`call <action> --arguments '<JSON>'`、`pub
 
 当前 Channel 的活动 Run 状态不会直接注入主控上下文。人类询问当前运行情况或要求停止角色时，主控可按需调用只读动作 `channel.runs.list`，取得 `queued`、`running`、`waiting_user` 的一次性快照；每项包含 `run_id`、角色、执行组合、是否为当前主控 Run 以及是否可停止。随后可用 `channel.run.stop` 和选定的 `run_id` 停止同一 Channel 内的目标。服务端拒绝跨 Channel、已结束和当前主控自停请求；停止排队 Run 只取消队列项，不终止同角色的其他 Runtime。查询不产生会话回执，停止动作自身会生成 `agent_stop` 平台消息，因此也不重复生成工具回执。主控不应把按需查询用于等待循环。
 
-`channel.runs.list` 与只读动作 `channel.history` 都接受可选的 `channel`（项目内频道短 id，默认当前 Channel），用于跨频道核对：主控在 #general 把任务派到专用频道后被停止、再次被唤起时，`message.publish` 发出的消息只存在于目标频道，主控自己频道的历史里没有派发痕迹，此时用 `channel.runs.list` 看目标频道是否有活动运行、用 `channel.history` 读目标频道最近消息，就能判断是否已派发、执行到哪一步，避免重复开工。`channel.history` 返回 `limit`（默认 20，最多 200）条最新记录，`before_id` 向前翻页，记录格式与工作区 `channel-history.json` 一致（含 `agent_tool` 回执与 `agent_stop` 等平台消息），并附频道消息总数 `message_count`。跨频道查询到的运行 `stoppable` 恒为 false，`channel.run.stop` 仍只接受当前 Channel 的 `run_id`。
+`channel.runs.list` 与只读动作 `channel.history` 都接受可选的 `channel`（项目内频道短 id，默认当前 Channel），用于跨频道核对：主控在 #general 把任务派到专用频道后被停止、再次被唤起时，`message.publish` 发出的消息只存在于目标频道，源频道只有一条派发回执，此时用 `channel.runs.list` 看目标频道是否有活动运行、用 `channel.history` 读目标频道最近消息，就能判断执行到哪一步，避免重复开工。`channel.history` 返回 `limit`（默认 20，最多 200）条最新记录，`before_id` 向前翻页，记录格式与工作区 `channel-history.json` 一致（含 `agent_tool` 回执与 `agent_stop` 等平台消息），并附频道消息总数 `message_count`。跨频道查询到的运行 `stoppable` 恒为 false，`channel.run.stop` 仍只接受当前 Channel 的 `run_id`。
 
-成功执行写操作后，平台会在发起调用的 Channel 会话中追加一条 `agent_tool` 类型的平台回执，显示调用角色、动作名和动作摘要。失败调用和 `recycle.list` 等只读调用不生成回执；`message.publish` 已经直接产生可见消息，因此不会再重复插入一条工具回执。
+成功执行写操作后，平台会在发起调用的 Channel 会话中追加一条 `agent_tool` 类型的平台回执，显示调用角色、动作名和动作摘要。失败调用和 `recycle.list` 等只读调用不生成回执。`message.publish` 发到当前 Channel 时消息本身就是痕迹，不再插入回执；发到其他 Channel 时在发起调用的 Channel 插入回执，内容带目标频道链接与已派发名单（与工具返回的 `summary` 相同），`context.agent_tool` 额外记录目标 `channel` 与 `message_id`，这样主控被停止后再唤起也能从自己频道的历史看出已经派发。
 
 ### 自动化脚本身份（`kind=automation`）
 

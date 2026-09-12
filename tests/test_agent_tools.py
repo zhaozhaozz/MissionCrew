@@ -444,6 +444,49 @@ def test_orchestrator_message_tool_uses_explicit_mentions_and_chain_context(seed
     assert "not_dispatched" not in result
 
 
+def test_cross_channel_publish_leaves_receipt_in_source_channel(seeded):
+    """跨频道派发的消息只存在于目标频道:源频道要留一条带目标链接与派发名单的
+    回执,主控被停止后再唤起才能看出已派发;同频道发布仍不留回执。"""
+    chat = ChatEngine(seeded, max_workers=2)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(token)
+    seeded.put_channel(Channel(
+        id="private", name="其他频道", project_id="webshop"))
+    before = len(seeded.list_messages("general"))
+
+    same = chat.agent_tools.execute(
+        identity, "message.publish", {"channel": "general", "content": "同频道说明"},
+        run_id, "publish-same-channel")
+    assert same["channel_id"] == "general"
+    assert [m["id"] for m in seeded.list_messages("general")[before:]] == [
+        same["message_id"]]
+
+    cross = chat.agent_tools.execute(
+        identity, "message.publish", {
+            "channel": "private", "content": "去部署", "mentions": ["dev"],
+        }, run_id, "publish-cross-channel")
+    chat.wait_idle()
+    assert cross["channel_id"] == "private" and cross["dispatched"] == ["dev"]
+    assert cross["summary"] == (
+        "已在 [#其他频道](/resources/webshop/channels/private) 发布消息，已派发 @dev")
+    assert seeded.get_message(cross["message_id"])["channel"] == "private"
+
+    receipts = [m for m in seeded.list_messages("general")[before:]
+                if m["kind"] == "agent_tool"]
+    assert len(receipts) == 1
+    receipt = receipts[0]
+    assert receipt["author_type"] == "platform"
+    assert receipt["content"] == (
+        "@lead 使用 MissionCrew Tool · `message.publish`：" + cross["summary"])
+    assert receipt["root_id"] == seeded.get_chat_run(run_id)["root_id"]
+    context = receipt["context"]
+    context = json.loads(context) if isinstance(context, str) else context
+    assert context["agent_tool"] == {
+        "action": "message.publish", "role_id": "lead", "run_id": run_id,
+        "channel": "private", "message_id": cross["message_id"],
+    }
+
+
 def test_orchestrator_queries_and_stops_only_current_channel_runs(
         seeded, monkeypatch):
     chat = ChatEngine(seeded)
