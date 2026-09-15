@@ -101,22 +101,36 @@ function markdownInline(source) {
   return markdownInlineWithTokens(source, []);
 }
 
+/* CommonMark 反斜杠转义:反斜杠后面的 ASCII 标点按字面输出,且不再参与链接、强调等
+   标记匹配(Agent 常把 Issue 标题里的 [Bug] 写成 \[Bug\] 放进链接文字)。代码段与转义
+   在同一次从左到右的扫描里识别:代码段内的反斜杠原样保留,\` 则是字面反引号而不开启
+   代码段。被转义的字符先编成只含码位数字的占位符,链接目标与图片 alt 取值时还原成
+   原字符,正文最后统一还原并做 HTML 转义。 */
+const MARKDOWN_CODE_OR_ESCAPE = /`([^`\n]+)`|\\([!-/:-@\[-`{-~])/g;
+const MARKDOWN_ESCAPED_CHAR = /\uE002(\d+)\uE003/g;
+
+function markdownUnescape(value) {
+  return String(value).replace(MARKDOWN_ESCAPED_CHAR, (_, code) => String.fromCharCode(Number(code)));
+}
+
 // 链接标题可以包含代码等行内标记；递归解析时必须复用占位符表。
 function markdownInlineWithTokens(source, tokens) {
   const hold = html => `\uE000${tokens.push(html) - 1}\uE001`;
   let value = String(source ?? "");
-  value = value.replace(/`([^`\n]+)`/g,
-    (_, code) => hold(`<code>${esc(code)}${markdownCopyButton({ inline: true })}</code>`));
+  value = value.replace(MARKDOWN_CODE_OR_ESCAPE, (_, code, char) => code !== undefined
+    ? hold(`<code>${esc(code)}${markdownCopyButton({ inline: true })}</code>`)
+    : `\uE002${char.charCodeAt(0)}\uE003`);
   value = value.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (_, alt, target) => {
-      const src = resolveMarkdownImageSource(target);
+      const src = resolveMarkdownImageSource(markdownUnescape(target));
       if (!src) return alt;   // 无法安全解析：按普通文本处理（后续统一转义）
-      return hold(`<img class="markdown-image" src="${esc(src)}" alt="${esc(alt)}" loading="lazy">`);
+      return hold(`<img class="markdown-image" src="${esc(src)}" ` +
+        `alt="${esc(markdownUnescape(alt))}" loading="lazy">`);
     });
   value = value.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (_, label, target) => {
       const safeLabel = markdownInlineWithTokens(label, tokens);
-      const href = target.trim();
+      const href = markdownUnescape(target).trim();
       const resource = missionCrewResourceReference(href);
       if (resource)
         return hold(`<a href="${esc(resource.url)}" data-resource-link="${esc(resource.url)}" ` +
@@ -133,7 +147,8 @@ function markdownInlineWithTokens(source, tokens) {
     .replace(/__([^_]+)__/g, "<strong>$1</strong>")
     .replace(/~~([^~]+)~~/g, "<del>$1</del>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-    .replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>");
+    .replace(/(^|[^_])_([^_\n]+)_/g, "$1<em>$2</em>")
+    .replace(MARKDOWN_ESCAPED_CHAR, (_, code) => esc(String.fromCharCode(Number(code))));
   return html.replace(/\uE000(\d+)\uE001/g, (_, index) => tokens[Number(index)]);
 }
 

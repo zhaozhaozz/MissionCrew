@@ -152,6 +152,36 @@ def test_code_blocks_and_inline_code_carry_copy_buttons():
     assert ".markdown-code { position: relative" in css
 
 
+def test_backslash_escapes_render_literal_punctuation_without_breaking_links():
+    """CommonMark 反斜杠转义:标点按字面输出且不再参与标记匹配。Agent 常把 Issue 标题
+    里的 [Bug] 写成 \\[Bug\\] 放进链接文字,整条链接不能因此退化成纯文本。"""
+    html = render_markdown(
+        "已提 Issue:[#85 \\[Bug\\]: 卡片对用户没有价值](https://example.com/issues/85)(已打标签)\n\n"
+        "\\*不是强调\\* 与 \\_也不是\\_,反斜杠本身 \\\\,尖括号 \\<b\\>,"
+        "代码里的 `\\[` 原样保留,\\`不是代码\\`,非标点 C:\\Users 不变\n",
+    )
+
+    assert ('<a href="https://example.com/issues/85" target="_blank" rel="noopener noreferrer">'
+            "#85 [Bug]: 卡片对用户没有价值</a>(已打标签)") in html
+    assert "*不是强调* 与 _也不是_,反斜杠本身 \\,尖括号 &lt;b&gt;," in html
+    assert f"<code>\\[{INLINE_COPY}</code>" in html
+    assert "`不是代码`" in html and html.count("<code>") == 1
+    assert "C:\\Users 不变" in html
+    assert "<em>" not in html and "<strong>" not in html
+
+
+def test_backslash_escapes_inside_link_target_and_image_alt_are_restored():
+    """链接目标里的 \\( \\) 与图片 alt 里的转义都还原成原字符,不能把占位符写进属性。"""
+    html = render_markdown(
+        "[维基](https://example.com/wiki/Foo_\\(bar\\)) 与 "
+        "![图 \\[1\\]](https://example.com/a.png)\n",
+    )
+
+    assert '<a href="https://example.com/wiki/Foo_(bar)" target="_blank"' in html
+    assert 'alt="图 [1]"' in html
+    assert "\uE002" not in html and "\uE003" not in html
+
+
 def test_diagram_renderer_and_vendored_mermaid_are_served():
     """图表渲染库随仓库落库、按需加载,页面不依赖外网 CDN。"""
     client = TestClient(create_app())
