@@ -285,6 +285,16 @@ def parse_antigravity_usage(backend: Backend, payload: dict) -> RuntimeUsageSnap
 
 
 def probe_antigravity_usage(backend: Backend, timeout: int = 15) -> RuntimeUsageSnapshot:
+    """agy 每次都要先启动语言服务器、静默登录并拉取实验配置,正常也要 4~9 秒才
+    执行到 /usage;上游一次网络抖动就会让这一轮超时或报错。这类瞬时失败换新
+    进程重试一次(本机实测重跑即成功),登录失效不重试。"""
+    snapshot = _probe_antigravity_usage_once(backend, timeout)
+    if snapshot.status == "unavailable":
+        snapshot = _probe_antigravity_usage_once(backend, timeout)
+    return snapshot
+
+
+def _probe_antigravity_usage_once(backend: Backend, timeout: int) -> RuntimeUsageSnapshot:
     # /usage 由 CLI 本身处理,不启动推理或 conversation;不能使用 Runtime
     # 执行模板,其中的 --disable-slash-commands 会把它当作普通模型提示词。
     try:

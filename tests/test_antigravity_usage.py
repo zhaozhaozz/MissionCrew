@@ -3,6 +3,7 @@ import copy
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
@@ -39,22 +40,32 @@ def backend(binary=""):
                    binary_path=binary)
 
 
-def fake_cli(tmp_path, stdout, *, stderr="", exit_code=0, sleep=0):
+def fake_cli(tmp_path, stdout, *, stderr="", exit_code=0, sleep=0, first=None):
+    """first=(stdout, exit_code, sleep) 只作用于首次启动,模拟瞬时失败后重试成功。"""
     path = tmp_path / "agy"
     path.write_text(f"#!{sys.executable}\n" + f'''
 import os, sys, time
 from pathlib import Path
 assert sys.argv[1:] == ["-p", "/usage", "--output-format", "json"]
 assert "CLAUDECODE" not in os.environ
-with open({str(tmp_path / 'launches')!r}, "a") as f:
+launches = Path({str(tmp_path / 'launches')!r})
+count = len(launches.read_text().splitlines()) if launches.exists() else 0
+with launches.open("a") as f:
     f.write(str(os.getpid()) + "\\n")
-time.sleep({sleep!r})
-print({stdout!r})
+stdout, exit_code, sleep = {stdout!r}, {exit_code!r}, {sleep!r}
+if count == 0 and {first!r} is not None:
+    stdout, exit_code, sleep = {first!r}
+time.sleep(sleep)
+print(stdout)
 print({stderr!r}, file=sys.stderr)
-raise SystemExit({exit_code!r})
+raise SystemExit(exit_code)
 ''')
     path.chmod(0o755)
     return backend(str(path))
+
+
+def launches(tmp_path):
+    return [int(pid) for pid in (tmp_path / "launches").read_text().split()]
 
 
 def test_parser_converts_remaining_fractions_and_keeps_pools_separate(payload):
@@ -142,10 +153,41 @@ def test_probe_failure_messages_do_not_expose_upstream_data(tmp_path, stdout, st
 def test_probe_timeout_reaps_process_and_missing_binary_is_unavailable(tmp_path):
     runtime = fake_cli(tmp_path, "", sleep=30)
     assert probe_antigravity_usage(runtime, timeout=0.2).status == "unavailable"
-    pid = int((tmp_path / "launches").read_text().strip())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    pids = launches(tmp_path)
+    assert len(pids) == 2  # 超时算瞬时失败,重试一次后放弃;两次进程都被回收
+    for pid in pids:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
     assert probe_antigravity_usage(backend(str(tmp_path / "absent"))).status == "unavailable"
+
+
+@pytest.mark.parametrize("first", [
+    ('{"status":"ERROR","error":"upstream hiccup"}', 1, 0),  # 首轮报错
+    ("", 0, 30),  # 首轮卡住直到超时被杀
+])
+def test_transient_failure_is_retried_with_a_fresh_process(tmp_path, payload, first):
+    runtime = fake_cli(tmp_path, json.dumps(payload), first=first)
+    assert probe_antigravity_usage(runtime, timeout=1).status == "ok"
+    assert len(launches(tmp_path)) == 2
+
+
+def test_login_failure_is_not_retried(tmp_path):
+    runtime = fake_cli(tmp_path, "", stderr="Please sign in", exit_code=1)
+    assert probe_antigravity_usage(runtime).status == "auth_required"
+    assert len(launches(tmp_path)) == 1
+
+
+def test_concurrent_requests_share_one_probe(tmp_path, payload):
+    runtime = fake_cli(tmp_path, json.dumps(payload), sleep=0.6)
+    manager = RuntimeManager()
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        results = list(pool.map(
+            lambda _: manager.account_usage([runtime], refresh=True), range(3)))
+    assert [item["usage"][0]["status"] for item in results] == ["ok"] * 3
+    assert len(launches(tmp_path)) == 1
+    # 探测结束后的刷新才会重新拉起进程
+    manager.account_usage([runtime], refresh=True)
+    assert len(launches(tmp_path)) == 2
 
 
 @pytest.mark.parametrize("exhausted,blocked", [
