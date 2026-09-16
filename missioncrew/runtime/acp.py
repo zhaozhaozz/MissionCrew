@@ -189,6 +189,8 @@ class _AcpClient:
         self.emit = _safe_emit                # 运行过程实时上报
         self._next_id = 0
         self._pending: dict[int, queue.Queue] = {}
+        # ACP session/load 在应答前回放历史,这些通知不属于当前运行。
+        self._load_request_id: Optional[int] = None
         self._write_lock = threading.Lock()
         self._detached_lock = threading.Lock()
         self._tool_inputs: dict[str, dict] = {}
@@ -256,6 +258,10 @@ class _AcpClient:
 
     def _handle(self, msg: dict) -> None:
         if "id" in msg and ("result" in msg or "error" in msg):
+            if msg["id"] == self._load_request_id:
+                # 在读线程按线上的消息顺序结束隔离,不能等请求线程被唤醒,
+                # 否则紧随 load 应答的真实通知也可能被丢弃。
+                self._load_request_id = None
             q = self._pending.pop(msg["id"], None)
             if q:
                 q.put(msg)
@@ -267,6 +273,10 @@ class _AcpClient:
             # Grok 在恢复时会标记历史通知。即使 provider 忽略了 noReplay，
             # 历史事件也不能进入当前 Run 的输出和工具生命周期。
             if isinstance(meta, dict) and meta.get("isReplay") is True:
+                return
+            if self._load_request_id is not None:
+                # Kimi 等工具的标准回放没有 isReplay 标记;在进入正文、
+                # 工具生命周期或后台唤醒管线之前统一过滤。
                 return
             update = params.get("update") or {}
             kind = update.get("sessionUpdate")
@@ -552,26 +562,31 @@ class _AcpClient:
         rid = self._next_id
         q: queue.Queue = queue.Queue()
         self._pending[rid] = q
+        if method == "session/load":
+            self._load_request_id = rid
         try:
-            self._write({"jsonrpc": "2.0", "id": rid,
-                         "method": method, "params": params})
-        except (OSError, ValueError) as exc:
+            try:
+                self._write({"jsonrpc": "2.0", "id": rid,
+                             "method": method, "params": params})
+            except (OSError, ValueError) as exc:
+                raise AcpError(f"{method} 写入失败: {exc}") from exc
+            remaining = (self.deadline - time.time()
+                         if self.deadline is not None else None)
+            if remaining is not None and remaining <= 0:
+                raise AcpError(f"{method} 超时")
+            try:
+                msg = q.get(timeout=remaining)
+            except queue.Empty:
+                raise AcpError(f"{method} 超时")
+            if "error" in msg:
+                detail = msg["error"].get("message", msg["error"]) if isinstance(msg["error"], dict) else msg["error"]
+                raise AcpError(f"{method} 失败: {detail}")
+            return msg.get("result") or {}
+        finally:
             self._pending.pop(rid, None)
-            raise AcpError(f"{method} 写入失败: {exc}") from exc
-        remaining = (self.deadline - time.time()
-                     if self.deadline is not None else None)
-        if remaining is not None and remaining <= 0:
-            self._pending.pop(rid, None)
-            raise AcpError(f"{method} 超时")
-        try:
-            msg = q.get(timeout=remaining)
-        except queue.Empty:
-            self._pending.pop(rid, None)
-            raise AcpError(f"{method} 超时")
-        if "error" in msg:
-            detail = msg["error"].get("message", msg["error"]) if isinstance(msg["error"], dict) else msg["error"]
-            raise AcpError(f"{method} 失败: {detail}")
-        return msg.get("result") or {}
+            # 写入失败、超时和 EOF 没有正常响应,也必须释放回放隔离。
+            if self._load_request_id == rid:
+                self._load_request_id = None
 
     def close(self) -> None:
         # 客户端终端随客户端关闭而终止(与服务重启杀后台命令的口径一致)

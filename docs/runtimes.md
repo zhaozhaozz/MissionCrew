@@ -187,6 +187,7 @@ initialize → session/new|session/load → [session/set_model] → session/prom
 ```
 
 - 回复文本来自 `session/update` 通知中的 `agent_message_chunk`,拼接为最终输出;
+- `session/load` 应答前的通知属于历史回放（Kimi 不一定带 `isReplay` 标记），只用于 Runtime 恢复上下文，不写进当前运行的正文、思考、工具或后台唤醒事件；收到 load 成功/失败应答后按协议消息顺序恢复实时通知，写入失败/超时也解除隔离。显式 `isReplay` 通知始终过滤；
 - Agent 反向发来的 `session/request_permission` 必须应答,否则 Agent 阻塞到内部超时、任务假死。平台无头运行,自动从 Agent 提供的选项里挑安全项:单次允许 > 会话允许 > 单次拒绝;都没有时返回协议错误(不能回 cancelled,那会取消整轮);
 - 其余未知的 agent→client 请求返回空结果,避免阻塞;
 - 整轮共享一个截止时间,进程 EOF 时让所有等待方立刻失败,不悬挂。

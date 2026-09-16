@@ -5,6 +5,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from missioncrew.runtime import adapters
 from missioncrew.runtime import acp
 from missioncrew.runtime import runtime_manager
@@ -440,6 +442,92 @@ def test_grok_load_disables_historical_replay(tmp_path):
                    for _kind, text in events)
     finally:
         acp.close_sessions()
+
+
+@pytest.mark.parametrize("shape, recovered", [("load_replay", True),
+                                            ("load_replay_error", False)])
+@pytest.mark.parametrize("idle", [False, True])
+def test_acp_load_replay_does_not_enter_output_tools_or_wake(tmp_path, shape, recovered, idle):
+    events = []
+    client = acp._AcpClient([sys.executable, FAKE, shape], str(tmp_path), {}, 5,
+                            emit=lambda kind, text: events.append((kind, text)))
+    try:
+        if idle:
+            client.end_turn()
+        sid, loaded = acp._new_or_load_session(
+            client, str(tmp_path), "persisted", acp._initialize(client))
+        assert loaded is recovered
+        assert client.chunks == []
+        assert client.pending_detached_tasks() == {}
+        assert client._wake_events == [] and client._wake_chunks == []
+        assert not any(kind in ("text", "thinking", "tool") for kind, _ in events)
+        client.begin_turn(5, lambda kind, text: events.append((kind, text)))
+        output = acp._prompt_turn(client, sid, "fresh prompt", "")
+        assert "ACP 收到任务" in output
+        assert ("input", "fresh prompt") in events
+        assert any(kind == "text" and "ACP 收到任务" in text for kind, text in events)
+        assert "历史" not in output
+    finally:
+        client.close()
+
+
+def test_kimi_restored_run_emits_only_current_turn(tmp_path):
+    saved = {"id": "persisted", "context": "v1"}
+    events = []
+    try:
+        result = _adapter("kimi", "load_replay").run(
+            _chat_cfg(tmp_path, saved, lambda kind, text: events.append((kind, text))))
+        assert result.success
+        assert "load=1" in result.output
+        assert not any("历史" in text for _, text in events)
+        input_index = next(i for i, (kind, _) in enumerate(events) if kind == "input")
+        assert not any(kind in ("text", "thinking", "tool")
+                       for kind, _ in events[:input_index])
+    finally:
+        acp.close_sessions()
+
+
+def test_acp_load_response_ends_replay_before_next_notification(tmp_path, monkeypatch):
+    client = acp._AcpClient(["cat"], str(tmp_path), {}, 5)
+
+    def text_update(text):
+        client._handle({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": text}}}})
+
+    def respond(msg):
+        text_update("history")
+        client._handle({"id": msg["id"], "result": {}})
+        # 请求线程尚未从 _write 返回,但 load 应答后的通知已属于实时流。
+        text_update("live")
+
+    monkeypatch.setattr(client, "_write", respond)
+    try:
+        client.request("session/load", {"sessionId": "persisted"})
+        assert client.chunks == ["live"]
+    finally:
+        client.close()
+
+
+@pytest.mark.parametrize("failure", ["write", "timeout", "expired"])
+def test_acp_failed_load_releases_replay_filter(tmp_path, monkeypatch, failure):
+    client = acp._AcpClient(["cat"], str(tmp_path), {}, 5)
+
+    def write(msg):
+        if failure == "write":
+            raise OSError("broken pipe")
+
+    monkeypatch.setattr(client, "_write", write)
+    client.deadline = time.time() + (0.01 if failure == "timeout" else -1)
+    try:
+        with pytest.raises(acp.AcpError):
+            client.request("session/load", {"sessionId": "persisted"})
+        client._handle({"method": "session/update", "params": {"update": {
+            "sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": "live"}}}})
+        assert client.chunks == ["live"] and client._pending == {}
+    finally:
+        client.close()
 
 
 def test_acp_without_load_capability_starts_recovery_session(tmp_path):

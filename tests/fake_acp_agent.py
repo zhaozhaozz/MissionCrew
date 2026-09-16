@@ -129,6 +129,24 @@ def main():
                 (msg["params"].get("_meta") or {}).get("noReplay"))
             if shape == "replay" and not load_no_replay:
                 chunk("不应进入当前回合的历史", {"isReplay": True})
+            if shape in ("load_replay", "load_replay_error"):
+                # Kimi 的标准 load 回放没有 isReplay 标记,包含文本、思考和工具。
+                chunk("不应进入当前回合的历史")
+                for update in (
+                    {"sessionUpdate": "agent_thought_chunk",
+                     "content": {"type": "text", "text": "历史思考"}},
+                    {"sessionUpdate": "tool_call", "toolCallId": "old-tool",
+                     "title": "历史后台命令", "status": "in_progress",
+                     "rawInput": {"run_in_background": True}},
+                    {"sessionUpdate": "tool_call_update", "toolCallId": "old-tool",
+                     "status": "completed", "rawOutput": "task_id: old-task\nstatus: running"},
+                ):
+                    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+                        "sessionId": msg["params"]["sessionId"], "update": update}})
+                if shape == "load_replay_error":
+                    send({"jsonrpc": "2.0", "id": mid, "error": {
+                        "code": -32603, "message": "load failed after partial replay"}})
+                    continue
             # 与真实 kimi 一致:load 应答同样带 configOptions(含档位选项)
             send({"jsonrpc": "2.0", "id": mid,
                   "result": {**_session_new_result(shape, model, thinking),
