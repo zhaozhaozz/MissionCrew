@@ -22,8 +22,9 @@ SPEC = CliSpec(
     # 清单由通用 ACP 探测在模型目录同一次会话里逐模型读回;这里只放 K3 的
     # 静态兜底,模型留空(CLI 默认模型)时使用
     efforts=("low", "high", "max"),
-    # kimi 的 PyPI 同名包与其独立安装版版本序列对不上(疑似不同产品),
-    # 因此只提供自更新按钮,不做最新版比对
-    update={"self_update": ["kimi", "upgrade"]},
+    # 当前 Kimi Code 的原生版与 npm 版共用版本序列;旧 Python kimi-cli 不作版本源。
+    # 服务端没有交互 stdin,原生自更新必须跳过确认提示。
+    update={"npm": "@moonshot-ai/kimi-code",
+            "self_update": ["kimi", "upgrade", "--yes"]},
     account_usage_probe=account_usage_probe,
 )

@@ -217,7 +217,7 @@ function updateCell(t) {
     return hint.installed
       ? `<span class="muted">已是最新 (${esc(hint.latest)})</span>`
       : `<span class="muted" title="已装版本未知,无法比对">最新版 ${esc(hint.latest)}</span>`;
-  if (t.updatable)   // 没有可靠的最新版来源(如 kimi/trae),仍提供手动更新
+  if (t.updatable)   // 没有可靠的最新版来源(如 trae),仍提供手动更新
     return btn("更新");
   return `<span class="muted" title="安装方式未知或由宿主程序托管">不支持自动更新</span>`;
 }

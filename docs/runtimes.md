@@ -286,7 +286,8 @@ grok/copilot 的 effort 进的是 ACP serve 命令，改档位会改变 `acp.py`
 
 - **npm 托管优先**:二进制 realpath 落在 `node_modules/` 下才认定为 npm 托管,此时检查(查询 npm registry `latest`)与更新(`npm install -g <pkg>@latest`)走同一渠道,避免自更新器把新版本装到别处、npm 里的旧副本继续占着 PATH;
 - **非 npm 安装**用工具自带的更新子命令(`claude update`、`opencode upgrade` 等),自更新器了解自己的安装方式;
-- copilot 常由 VS Code 扩展托管,非 npm 安装时不提供更新;kimi 的 PyPI 同名包与独立安装版版本序列对不上,kimi/trae 只提供自更新按钮、不做最新版比对。
+- kimi 的当前 Kimi Code 原生版与 npm 版均从 `@moonshot-ai/kimi-code` 查询最新版,不使用旧 Python `kimi-cli` 的 PyPI 版本;原生安装执行 `kimi upgrade --yes`,跳过服务端无交互 stdin 时的确认提示,npm 安装仍按上面的 npm 托管规则更新。
+- copilot 常由 VS Code 扩展托管,非 npm 安装时不提供更新;trae 只提供自更新按钮、不做最新版比对。
 
 约束:更新命令是固定白名单,不拼接用户输入;同一 runtime 的更新持锁互斥(并发请求 409);更新期间该 runtime 不派发聊天执行,避免 Agent 跑在半更新的二进制上;版本比较只认语义版本数字段。
 

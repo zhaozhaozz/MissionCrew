@@ -1,5 +1,9 @@
 """运行时更新:版本比较、更新方式解析、执行与 API。"""
+import io
+import json
+import subprocess
 import sys
+import urllib.request
 
 import pytest
 from fastapi.testclient import TestClient
@@ -64,7 +68,39 @@ def test_update_plan_unknown_adapter_not_updatable():
 
 def test_fetch_latest_only_for_known_npm_sources():
     assert adapters.fetch_latest_version("mock") == ""
-    assert adapters.fetch_latest_version("kimi") == ""   # PyPI 同名包不可信,不查
+    assert adapters.fetch_latest_version("trae") == ""
+
+
+def test_fetch_latest_kimi_uses_current_npm_package(monkeypatch):
+    def urlopen(url, timeout):
+        assert url == "https://registry.npmjs.org/%40moonshot-ai%2Fkimi-code/latest"
+        assert timeout == 8
+        return io.BytesIO(json.dumps({"version": "0.43.2"}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    assert adapters.fetch_latest_version("kimi") == "0.43.2"
+
+
+def test_kimi_npm_install_updates_same_package(tmp_path):
+    binary = tmp_path / "node_modules" / "@moonshot-ai" / "kimi-code" / "dist" / "main.mjs"
+    binary.parent.mkdir(parents=True)
+    binary.touch()
+    backend = Backend(id="kimi", name="kimi", adapter="kimi", binary_path=str(binary))
+    assert adapters.update_plan(backend) == (
+        "npm", ["npm", "install", "-g", "@moonshot-ai/kimi-code@latest"])
+
+
+def test_kimi_native_update_runs_without_confirmation(monkeypatch):
+    backend = Backend(id="kimi", name="kimi", adapter="kimi",
+                      binary_path="/home/u/.kimi-code/bin/kimi")
+
+    def run(cmd, **kwargs):
+        assert cmd == ["kimi", "upgrade", "--yes"]
+        assert kwargs["stdin"] == subprocess.DEVNULL
+        return subprocess.CompletedProcess(cmd, 0, stdout="Updated Kimi", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    assert adapters.run_update(backend) == (True, "Updated Kimi")
 
 
 # ---- 执行更新 ----
@@ -112,16 +148,35 @@ def test_check_updates_api(client, seeded, monkeypatch):
     assert "eco-1" not in by_id
 
 
-def test_update_api_refreshes_version(client, seeded, monkeypatch):
-    seeded.put_backend(Backend(id="codex", name="codex", adapter="codex",
-                               binary_path="/usr/bin/codex", version="0.144.4"))
+@pytest.mark.parametrize("latest, available", [("0.43.2", True), ("0.43.1", False), ("", False)])
+def test_kimi_check_updates_api(client, seeded, monkeypatch, latest, available):
+    seeded.put_backend(Backend(id="kimi", name="kimi", adapter="kimi",
+                               binary_path="/home/u/.kimi-code/bin/kimi", version="0.43.1"))
+
+    def urlopen(url, timeout):
+        if not latest:
+            raise OSError("offline")
+        return io.BytesIO(json.dumps({"version": latest}).encode())
+
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
+    response = client.post("/api/backends/check_updates")
+    assert response.status_code == 200
+    row = next(row for row in response.json() if row["id"] == "kimi")
+    assert row == {"id": "kimi", "installed": "0.43.1", "latest": latest,
+                   "update_available": available, "updatable": True}
+
+
+@pytest.mark.parametrize("adapter", ["codex", "kimi"])
+def test_update_api_refreshes_version(client, seeded, monkeypatch, adapter):
+    seeded.put_backend(Backend(id=adapter, name=adapter, adapter=adapter,
+                               binary_path=f"/usr/bin/{adapter}", version="0.144.4"))
     monkeypatch.setattr(adapters, "run_update", lambda b, timeout=600: (True, "done"))
     monkeypatch.setattr("missioncrew.runtime.manager.shutil.which",
-                        lambda name: "/usr/bin/codex")
+                        lambda name: f"/usr/bin/{adapter}")
     monkeypatch.setattr(adapters, "_cli_version", lambda binary: "0.144.5")
-    r = client.post("/api/backends/codex/update").json()
+    r = client.post(f"/api/backends/{adapter}/update").json()
     assert r["ok"] and r["old_version"] == "0.144.4" and r["version"] == "0.144.5"
-    assert seeded.get_backend("codex").version == "0.144.5"   # 已入库
+    assert seeded.get_backend(adapter).version == "0.144.5"   # 已入库
 
 
 def test_update_api_unknown_backend_404(client):
