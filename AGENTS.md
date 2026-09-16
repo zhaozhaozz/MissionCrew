@@ -21,7 +21,7 @@ missioncrew/
 │   ├── antigravity.py Antigravity 原生 provider(headless stream-json;逐轮续接 conversation)
 │   ├── adapters.py   通用执行器 CliAdapter/AcpAdapter + 注册表汇总与分发
 │   ├── acp.py        ACP stdio 协议客户端(JSON-RPC,长驻会话池)
-│   ├── usage.py      账户限额探测实现(grok/kimi/claude)
+│   ├── usage.py      账户限额探测实现(grok/kimi/claude/antigravity)
 │   └── clis/         按工具的声明模块(一个工具一个文件):CliSpec 描述
 │                     检测、命令模板、能力、模型、effort、升级渠道与行为钩子
 ├── api/              FastAPI 路由(按资源分文件);context.py 持缓存与共享状态,

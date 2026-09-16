@@ -22,6 +22,7 @@ const RUNTIME_USAGE_STATUS_LABELS = {
 const RUNTIME_USAGE_SOURCE_LABELS = {
   codex_app_server: "Codex app-server",
   claude_usage_command: "Claude /usage",
+  antigravity_usage_command: "Antigravity /usage",
   kimi_usage_api: "Kimi usage API",
   grok_billing_api: "Grok billing API",
 };

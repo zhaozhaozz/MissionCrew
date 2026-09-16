@@ -1,4 +1,4 @@
-"""Claude、Kimi 与 Grok 的账户限额探测和统一解析。
+"""Claude、Kimi、Grok 与 Antigravity 的账户限额探测和统一解析。
 
 所有凭据只在本进程内用于本机 CLI 已登录账户的限额请求；过期 Kimi OAuth
 凭据会按 CLI 的锁和原子写约定刷新。API 只返回规范化的百分比、重置时间与
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -235,6 +236,90 @@ def probe_claude_usage(
             backend, "unavailable", "claude_usage_command",
             message="Claude Code 用量命令执行失败")
     return parse_claude_usage(backend, text)
+
+
+def parse_antigravity_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
+    """只解析 /usage 的 command.data,不把会话 token usage 当成账户限额。"""
+    command = payload.get("command")
+    command = command if isinstance(command, dict) else {}
+    data = command.get("data")
+    data = data if isinstance(data, dict) else {}
+    groups = data.get("groups")
+    windows: list[RuntimeUsageWindow] = []
+    seen: set[str] = set()
+    if (payload.get("status") == "SUCCESS" and command.get("name") == "usage"
+            and isinstance(groups, list)):
+        for group in groups:
+            if not isinstance(group, dict) or not isinstance(group.get("buckets"), list):
+                continue
+            name = group.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            for bucket in group["buckets"]:
+                if not isinstance(bucket, dict):
+                    continue
+                key = bucket.get("id")
+                remaining = bucket.get("remaining_fraction")
+                if (not isinstance(key, str) or not key or key in seen
+                        or isinstance(remaining, bool)
+                        or not isinstance(remaining, (int, float))
+                        or not math.isfinite(remaining) or not 0 <= remaining <= 1):
+                    continue
+                used = round((1 - remaining) * 100, 2)
+                # 仍有余额时不能因显示舍入变成 100%,误触发角色自动停用。
+                if remaining > 0:
+                    used = min(used, 99.99)
+                weekly = bucket.get("window") == "weekly"
+                reset = _timestamp(bucket.get("reset_time"))
+                if reset is not None and not math.isfinite(reset):
+                    reset = None
+                windows.append(RuntimeUsageWindow(
+                    key=key, label=name.strip() + (" · 本周" if weekly else ""),
+                    used_percent=used, resets_at=reset,
+                    duration_minutes=10080 if weekly else None))
+                seen.add(key)
+    return _snapshot(
+        backend, "ok" if windows else "unavailable", "antigravity_usage_command",
+        windows=windows,
+        message="" if windows else "Antigravity 未返回可识别的 /usage 限额")
+
+
+def probe_antigravity_usage(backend: Backend, timeout: int = 15) -> RuntimeUsageSnapshot:
+    # /usage 由 CLI 本身处理,不启动推理或 conversation;不能使用 Runtime
+    # 执行模板,其中的 --disable-slash-commands 会把它当作普通模型提示词。
+    try:
+        with subprocess.Popen(
+                [backend.binary_path or "agy", "-p", "/usage", "--output-format", "json"],
+                cwd=str(Path.home()), env=host_isolated_environ(),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                encoding="utf-8", errors="replace", start_new_session=True) as proc:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                from .adapters import _kill_process_group
+                _kill_process_group(proc)
+                proc.communicate()
+                return _snapshot(
+                    backend, "unavailable", "antigravity_usage_command",
+                    message="Antigravity 用量命令超时")
+    except OSError:
+        return _snapshot(
+            backend, "unavailable", "antigravity_usage_command",
+            message="Antigravity 用量命令暂时不可用")
+    try:
+        payload = json.loads(stdout)
+    except ValueError:
+        payload = {}
+    payload = payload if isinstance(payload, dict) else {}
+    if proc.returncode or payload.get("status") != "SUCCESS":
+        auth_required = bool(re.search(
+            r"authentication required|not authenticated|not logged in|\blogin\b|\bsign in\b",
+            stdout + "\n" + stderr, re.IGNORECASE))
+        return _snapshot(
+            backend, "auth_required" if auth_required else "unavailable",
+            "antigravity_usage_command",
+            message="Antigravity 尚未登录" if auth_required else "Antigravity 用量命令执行失败")
+    return parse_antigravity_usage(backend, payload)
 
 
 def _window_label(duration: int | None, unit: str, fallback: str) -> tuple[str, int | None]:

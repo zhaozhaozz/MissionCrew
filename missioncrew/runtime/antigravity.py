@@ -10,9 +10,10 @@ from pathlib import Path
 
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
-from .base import RuntimeCapabilities, RuntimeExecutionInfo, RuntimeProvider
+from .base import RuntimeCapabilities, RuntimeExecutionInfo, RuntimeProvider, RuntimeUsageSnapshot
 from .clis.antigravity import discover_models
 from .native import OutputAssembler, build_usage, emit_json, safe_emit, usage_section
+from .usage import probe_antigravity_usage
 
 _USAGE_FIELDS = {
     "input": "input_tokens", "output": "output_tokens",
@@ -93,7 +94,11 @@ class _Turn:
 class AntigravityRuntimeProvider(RuntimeProvider):
     def capabilities(self, backend: Backend) -> RuntimeCapabilities:
         return RuntimeCapabilities(session_reuse=True, structured_events=True,
-                                   permission_control=False, user_interaction=False)
+                                   permission_control=False, user_interaction=False,
+                                   account_usage=True)
+
+    def account_usage(self, backend: Backend, timeout: int = 15) -> RuntimeUsageSnapshot:
+        return probe_antigravity_usage(backend, timeout)
 
     def effort_catalog(self) -> dict[str, list[str]]:
         return {"antigravity": ["low", "medium", "high"]}

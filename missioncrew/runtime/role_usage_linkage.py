@@ -55,11 +55,17 @@ class RoleUsageLinkage:
 
     @classmethod
     def _blocking_windows(cls, snapshot: dict, role, now: float) -> list[dict]:
-        """Fable 使用独立周限额；Claude 的会话窗口仍约束所有模型。"""
+        """按模型选择独立额度池；未知模型不猜测所属的 Antigravity 池。"""
         is_claude = str(snapshot.get("adapter") or "") == "claude_code"
+        is_antigravity = snapshot.get("adapter") == "antigravity"
+        model = str(role.model or "").lower()
+        agy_pool = ("gemini-weekly" if model.startswith("gemini-") else
+                    "3p-weekly" if model.startswith(("claude-", "gpt-")) else "")
         role_is_fable = cls._is_fable(role.model)
         result = []
         for window in snapshot.get("windows") or []:
+            if is_antigravity and (not agy_pool or window.get("key") != agy_pool):
+                continue
             try:
                 used = float(window.get("used_percent", 0))
                 resets_at = float(window.get("resets_at") or 0)
