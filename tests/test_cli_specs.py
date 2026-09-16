@@ -53,7 +53,7 @@ def test_model_discovery_dispatches_to_spec_hooks():
     from missioncrew.core.models import Backend
 
     assert {a for a, s in BY_ADAPTER.items() if s.discover_models} == {
-        "claude_code", "codex", "grok_build", "opencode", "mock"}
+        "claude_code", "codex", "grok_build", "opencode", "antigravity", "mock"}
     for spec in BY_ADAPTER.values():
         if spec.acp_serve and spec.adapter != "grok_build":
             assert spec.discover_models is None, spec.adapter

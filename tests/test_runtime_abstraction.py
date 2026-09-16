@@ -100,7 +100,7 @@ def test_effort_support_is_declared_per_provider():
     # manager 合并后对外形状不变(adapter -> 档位)
     catalog = manager.effort_catalog()
     assert set(catalog) == {"claude_code", "codex", "pi", "grok_build",
-                            "copilot", "kimi", "mock"}
+                            "copilot", "kimi", "antigravity", "mock"}
 
     # effort_options 经 provider_for 路由;未声明档位的 provider 默认不支持
     class _NoEffortProvider(_RecordingProvider):

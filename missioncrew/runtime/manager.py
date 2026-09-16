@@ -100,10 +100,12 @@ class RuntimeManager:
         from .claude import ClaudeRuntimeProvider
         from .codex import CodexRuntimeProvider
         from .pi import PiRuntimeProvider
+        from .antigravity import AntigravityRuntimeProvider
         self._providers.update({
             "claude_code": ClaudeRuntimeProvider(self._builtin),
             "codex": CodexRuntimeProvider(self._builtin),
             "pi": PiRuntimeProvider(self._builtin),
+            "antigravity": AntigravityRuntimeProvider(),
         })
 
     def bind_usage_store(self, store) -> None:

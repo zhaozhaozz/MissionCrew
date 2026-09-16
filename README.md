@@ -95,7 +95,7 @@ scripts/serve.sh stop       # 停止
 
 「重新检测」按下表逐个探测本机 PATH（pi 例外，见下文），一个工具一条注册记录；角色固定绑定某个 runtime 与模型。接入方式分三类：
 
-- **原生协议**：claude、codex、pi 各有专用 provider，直接对接工具自身的结构化协议，会话恢复、权限应答、推理力度都在协议内完成；
+- **原生协议**：claude、codex、pi、Antigravity 各有专用 provider，对接结构化事件、会话恢复与推理力度；工具提供双向协议时支持交互审批；
 - **ACP stdio**：CLI 作为长驻 JSON-RPC 服务挂在 stdio 上，平台自动应答其权限请求；
 - **打印模式**：通过内置命令模板传递 prompt，用各工具的 session/resume 参数恢复会话。
 
@@ -103,6 +103,7 @@ scripts/serve.sh stop       # 停止
 |---|---|---|
 | `claude` (Claude Code) | `claude_code` | 原生双向 stream-json；自带 haiku / sonnet / opus / fable 别名清单 |
 | `codex` (OpenAI Codex) | `codex` | 原生 app-server；模型清单从当前账号动态读取 |
+| `agy` (Google Antigravity CLI) | `antigravity` | 原生 headless stream-json；会话续接、模型发现与 low / medium / high 推理力度 |
 | `pi` | `pi` | 原生 RPC（平台 vendored 安装）；承接自定义 API 模型 |
 | `grok` (Grok Build) | `grok_build` | ACP stdio |
 | `copilot` (GitHub Copilot CLI) | `copilot` | ACP stdio |
@@ -113,6 +114,8 @@ scripts/serve.sh stop       # 停止
 | `opencode` | `opencode` | 打印模式 |
 | `cursor-agent` (Cursor) | `cursor` | 打印模式 |
 | `codebuddy` | `codebuddy` | 打印模式 |
+
+Antigravity 需先安装[官方 CLI](https://antigravity.google/docs/cli/getting-started/)，运行一次 `agy` 完成登录，再点「重新检测」并为角色选择 `antigravity`。无头执行支持自动批准，不支持交互审批、强制只读或禁止网络；这些策略会在启动前明确报错。
 
 协议流程、检测与升级机制、模型清单来源、新工具接入步骤见 [docs/runtimes.md](docs/runtimes.md)。
 

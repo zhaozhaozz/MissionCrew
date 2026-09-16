@@ -78,7 +78,7 @@ Conventions:
 
 *Re-detect* probes `PATH` for each tool in the table below (except pi, see below) and keeps one registry record per tool; roles are bound to a fixed runtime and model. Three integration styles:
 
-- **Native protocol**: claude, codex and pi each have a dedicated provider that speaks the tool's own structured protocol; session resume, permission replies and reasoning effort are all handled inside the protocol.
+- **Native protocol**: claude, codex, pi and Antigravity each have a dedicated provider for structured events, session resume and reasoning effort. Interactive permissions are available when the tool supports a bidirectional protocol.
 - **ACP over stdio**: the CLI runs as a long-lived JSON-RPC server on stdio and the platform answers its permission requests automatically.
 - **Print mode**: the prompt is passed through a built-in command template and sessions are resumed with each tool's session/resume flags.
 
@@ -86,6 +86,7 @@ Conventions:
 |---|---|---|
 | `claude` (Claude Code) | `claude_code` | Native bidirectional stream-json; built-in haiku / sonnet / opus / fable aliases |
 | `codex` (OpenAI Codex) | `codex` | Native app-server; model list read from the current account |
+| `agy` (Google Antigravity CLI) | `antigravity` | Native headless stream-json; conversation resume, model discovery and low / medium / high effort |
 | `pi` | `pi` | Native RPC (vendored install); executes custom API models |
 | `grok` (Grok Build) | `grok_build` | ACP stdio |
 | `copilot` (GitHub Copilot CLI) | `copilot` | ACP stdio |
@@ -96,6 +97,8 @@ Conventions:
 | `opencode` | `opencode` | Print mode |
 | `cursor-agent` (Cursor) | `cursor` | Print mode |
 | `codebuddy` | `codebuddy` | Print mode |
+
+For Antigravity, install the [official CLI](https://antigravity.google/docs/cli/getting-started/), sign in by running `agy` once, then click **Re-detect** and bind a role to `antigravity`. Headless execution supports automatic approval; interactive approval, enforced read-only access and network denial are unavailable.
 
 Protocol flows, detection and upgrade mechanics, where model lists come from, and how to add a new tool are described in [docs/runtimes.md](docs/runtimes.md).
 

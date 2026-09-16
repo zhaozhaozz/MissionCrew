@@ -6,7 +6,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 ## 支持的工具矩阵
 
-检测表 `KNOWN_CLIS` 定义了支持的 12 个本地 CLI(另有 `mock` 适配器用于测试/演示):
+检测表 `KNOWN_CLIS` 定义了支持的 13 个本地 CLI(另有 `mock` 适配器用于测试/演示):
 
 | 二进制 | adapter | 接入方式 | 升级方式 |
 |---|---|---|---|
@@ -17,6 +17,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 | `copilot` | `copilot` | ACP stdio | npm(`@github/copilot`) |
 | `cursor-agent` | `cursor` | 打印模式 CLI | `cursor-agent update` |
 | `codebuddy` | `codebuddy` | 打印模式 CLI | npm(`@tencent-ai/codebuddy-code`) |
+| `agy` | `antigravity` | 原生 headless stream-json | `agy update`(不做最新版比对) |
 | `pi` | `pi` | 原生 RPC(vendored) | npm(`@mariozechner/pi-coding-agent`,仅写平台 vendor 目录) |
 | `kimi` | `kimi` | ACP stdio | `kimi upgrade`(不做最新版比对) |
 | `kiro-cli` | `kiro` | ACP stdio | 不支持自动更新 |
@@ -102,6 +103,7 @@ Codex 使用公开的 app-server 账户接口，是四者中最稳定的结构�
 | GitHub Copilot / `copilot` | 启动 `copilot --acp` serve 进程并调用 `session/new` | 服务存活时长驻复用；重启后 `session/load` 恢复(会回放历史,协议层在 load 后才 begin_turn,回放不进本轮回复) | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Cursor / `cursor` | 使用 `--output-format json` 启动，并从 JSON 结果捕获 session/chat id | 新进程使用 `--resume <id>` | Runtime 返回 ID；每轮一个 CLI 进程。未捕获 ID 时下一轮回退恢复输入 |
 | CodeBuddy / `codebuddy` | MissionCrew 生成 UUID，通过 `--session-id <id>` 启动 | 新进程使用 `--resume <id>` | 固定 ID；每轮一个 CLI 进程 |
+| Antigravity / `antigravity` | `agy -p` 输出 `init.conversation_id` 时保存原生 ID | 每轮新进程用 `--conversation <id>` 续接；恢复后沿用公共上下文增量注入 | 一轮一个进程；缺失会话或返回 ID 不匹配时本轮失败并清除旧 ID，下一次重试才新建 |
 | Pi / `pi` | 启动 `pi --mode rpc` 长驻进程，首轮回合后从 `get_state` 保存会话文件路径 | 服务存活时同一进程直接发下一条 `prompt`；进程或服务重启后以 `--session <file>` 恢复 | SQLite 保存会话 JSONL 绝对路径(位于 `MC_HOME/pi/sessions/`);一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Kimi / `kimi` | 启动 ACP serve 进程并调用 `session/new` | 服务存活时直接在同一进程、同一 `sessionId` 调用 `session/prompt`(模型与 effort 每轮经 `session/set_model`/`session/set_config_option` 在会话内对齐,改档位不重启进程)；MissionCrew 重启后仅在 Runtime 声明 `loadSession` 时调用 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
 | Kiro / `kiro` | 同 Kimi：ACP `session/new` | 同 Kimi：长驻复用；重启后能力门控 `session/load` | ACP 返回 ID；一个 `channel::role` 对应一个长驻进程，空闲 30 分钟回收 |
@@ -128,6 +130,16 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 默认 Codex provider 不再执行 `codex exec`，而是为每个 `channel::role` 启动官方 `codex app-server`，使用省略 `jsonrpc` 字段的 JSONL 双向协议。连接先完成 `initialize/initialized`，再调用 `thread/start|thread/resume` 和 `turn/start`；agent message delta、reasoning delta、command、file change、plan、usage 和 turn completion 通知分别映射到聊天过程事件。
 
 每轮结构化传入 `cwd`、`model`、`effort`、`runtimeWorkspaceRoots`、`approvalPolicy` 和 `sandboxPolicy`。`workspaceWrite` 的 `writableRoots` 来自统一 `RuntimePolicy.writable_paths`；网络默认放行（Agent Tool 的回环 API 与 git 操作都依赖网络，禁网只会把每次访问变成沙箱失败加审批升级重试），仅 `RuntimePermissions.network=deny` 时关闭。统一策略在 manager `_prepare` 阶段对 `workspace-write` 模式追加系统临时目录（`/tmp` 等，救隐式使用它们的工具链）和 Runtime 工具自有目录（`CliSpec.private_dirs` 声明的配置/Skill/记忆位置，如 `~/.codex`、`~/.claude`）进入可写根；`read-only` 与 `full-access` 不改写。工具自有目录同时经 `runtime_manager.private_dirs` 进入聊天上下文的授权目录清单。模型目录直接调用 app-server `model/list`，失败时才退回旧的 CLI 发现路径。
+
+### Antigravity headless stream-json
+
+使用官方 `agy` CLI，先交互登录一次。`runtime/antigravity.py` 负责每轮启动、解析 `init` / `step_update` / `result` 与进程组清理；声明模块只负责检测、`agy models` 与 `agy update`。模型、effort 与额外授权目录分别使用 `--model`、`--effort`、重复的 `--add-dir` 传入。工具事件与回复直接进入统一事件流；`result.usage` 是会话累计量，映射到 `usage/v1.total`，本轮 `turn` 从各完成步骤的 usage 汇总。
+
+`approval=auto` 使用 `--dangerously-skip-permissions`，`workspace-write` 同时启用 CLI 原生 `--sandbox`，额外目录加入 workspace；`full-access` 显式关闭 sandbox。实际边界仍取决于 Antigravity 的本机权限配置。CLI 无逐工具审批响应协议，`--mode plan` 仅添加规划指令，不保证只读，因此 `prompt` / `deny` 审批、`read-only` 文件系统和 `network=deny` 在启动前报错，不降级执行；能力声明不提供交互审批或用户输入。
+
+成功必须同时满足进程退出码为 0、`result.status=SUCCESS`、回复非空且无拒绝操作。缺失终态、错误状态、`denied_actions` 或 stderr 的 print timeout 提示都会失败，即使 CLI 把部分输出标记为成功。`--print-timeout 0s` 会立即返回而非禁用超时；平台无截止时间时传接近 Go duration 上限的值，并由停止操作管理进程，显式超时则传本轮截止时长。停止会清理整个进程组，保留已在 init 保存的 conversation ID；不保留轮后后台进程。
+
+协议说明见 [Antigravity headless 文档](https://antigravity.google/docs/cli/headless/)；本地已验证 CLI 1.2.4。
 
 ### pi RPC 与裸 API 接入
 
@@ -233,6 +245,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 1. **工具自带清单**(`Backend.models`):只有模型名的有序列表,`""` 表示 CLI 默认、排在最前。检测时按 `KNOWN_MODELS` 刷新,pi 改从平台 `models.json` 读取并在 `PUT /api/model-providers` 后同步刷新;两者都**不可编辑**——`POST /api/backends` 不接受 `models` 字段。平台不跟踪单个模型的档位与成本,配额一律按工具级 `cost_per_run` 扣减。
 2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟):
    - codex:默认通过 `codex app-server` 的 `model/list` 分页读取当前账号可用目录；协议启动失败时退回 `codex debug models --bundled`；
+   - antigravity:`agy models` 返回制表符分隔的模型 slug 与显示名，平台只保留 slug；执行使用 `--model`，空值沿用 CLI 默认；
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);
    - ACP 工具:一次性会话,从 `session/new` 响应解析模型目录——kimi 形态是 `configOptions` 中 `category=model` 的 select 选项;trae 形态是 `models.availableModels`(`{modelId,...}` 列表,含 `currentModelId`,与 Multica 的解析对齐),同时兼容 `available_models`/`available` 与裸数组。Grok 不读取本地凭据的过期时间；首次探测为空或只返回已知的单模型兜底 `grok-4.5` 时,独立重启 CLI 再探测一次,第二次结果无论是否仍为 4.5 都直接采用,不会无限重试;
    - claude:CLI 无枚举命令(`claude` 无 `models` 子命令,`--model` 传错值也不枚举),返回静态目录 `CLAUDE_MODEL_CATALOG`——只列 `--model` 接受的具体型号,按系列与新旧排列;稳定别名在工具自带清单里,不重复出现在这一组;
@@ -254,13 +267,14 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 
 ## Effort(推理力度)
 
-部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到各 provider 声明的静态兜底档位。静态声明随 provider 走(`RuntimeProvider.effort_catalog()`):claude/codex/pi 在各自 provider 类里声明,内置 CLI/ACP 执行器负责的 adapter(grok、copilot、kimi、mock)集中在 `adapters.EFFORT_SUPPORT`;`RuntimeManager.effort_catalog()` 把所有声明合并成 `/api/traits` 用的全量目录,注册自定义 provider 即接管对应 adapter 的档位:
+部分工具支持按次指定推理力度。档位有两个来源:工具自报的**按模型**档位优先,拿不到时回退到各 provider 声明的静态兜底档位。静态声明随 provider 走(`RuntimeProvider.effort_catalog()`):claude/codex/pi/antigravity 在各自 provider 类里声明,内置 CLI/ACP 执行器负责的 adapter(grok、copilot、kimi、mock)集中在 `adapters.EFFORT_SUPPORT`;`RuntimeManager.effort_catalog()` 把所有声明合并成 `/api/traits` 用的全量目录,注册自定义 provider 即接管对应 adapter 的档位:
 
 - claude:原生 `--effort` 标志,档位 low/medium/high/xhigh/max;
 - codex:原生 `turn/start.effort`,档位 minimal/low/medium/high/xhigh/max/ultra(具体模型未必支持全部档位,越界时 app-server 自行报错并照常回流到频道);
 - grok:ACP serve 命令上的 `grok agent --reasoning-effort`,静态兜底档位 low/medium/high/xhigh,实际档位按模型动态发现(见下);
 - copilot:ACP serve 命令上的 `--effort`,档位 none/minimal/low/medium/high/xhigh/max(模型目录不自报按模型档位,不支持的模型由 copilot 自行忽略);
 - kimi:没有命令行档位,走 ACP 标准的会话配置项——`session/new`/`session/load` 应答的 `configOptions` 里 category=`thought_level` 的 `thinking` 选项,每轮 prompt 前经 `session/set_config_option` 在存活会话内切换,改档位不重启长驻进程;静态兜底档位 low/high/max(K3),实际档位按模型动态发现(K2.7 系列只有 on/high,见下);越界档位 kimi 报错(`-32602 Unknown thinking value`)并作为本轮失败回流到频道;
+- antigravity:原生 `--effort`，档位 low/medium/high；
 - pi:映射为 thinking level(`--thinking`/`set_thinking_level`),档位 off/minimal/low/medium/high/xhigh;
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。

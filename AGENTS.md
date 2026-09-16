@@ -18,6 +18,7 @@ missioncrew/
 │   ├── claude.py     Claude 原生 provider(stream-json 双向协议)
 │   ├── codex.py      Codex 原生 provider(app-server thread/turn)
 │   ├── pi.py         pi 原生 provider(RPC;自定义 API 模型的执行后端)
+│   ├── antigravity.py Antigravity 原生 provider(headless stream-json;逐轮续接 conversation)
 │   ├── adapters.py   通用执行器 CliAdapter/AcpAdapter + 注册表汇总与分发
 │   ├── acp.py        ACP stdio 协议客户端(JSON-RPC,长驻会话池)
 │   ├── usage.py      账户限额探测实现(grok/kimi/claude)
@@ -39,7 +40,7 @@ docs/runtimes.md      Runtime 层的详细设计文档(会话恢复/权限/effor
 
 - 业务层(api/collab/core)不得直接 import `runtime.adapters` 或原生执行器,只经 `runtime_manager`;见 `test_application_layers_do_not_import_raw_runtime_executors`。
 - 工具相关知识进 `runtime/clis/<tool>.py`:静态事实写 `CliSpec` 字段,工具特有行为写可选钩子(`session_args`、`apply_permissions`、`prepare_env`、`parse_model_efforts`、`locate_binary`、`update_plan`、`account_usage_probe` 等);`adapters.py` 只做汇总与分发,新增工具 = 加声明模块 + 追加进 `clis.SPECS`,不动执行器。
-- claude/codex/pi 走各自原生 provider 类,执行与 effort 档位声明都在 provider 里;`clis/` 里对应文件只负责检测、回退模板与升级渠道。
+- claude/codex/pi/antigravity 走各自原生 provider 类,执行与 effort 档位声明都在 provider 里;`clis/` 里对应文件只负责检测、模型发现、回退模板与升级渠道。
 - 钩子体内如需 adapters 工具函数,用函数内延迟导入,避免 clis↔adapters 环形依赖。
 - 过程事件 `usage` 由各 provider 在源头用自己的字段表映射成 `native.build_usage` 的 `usage/v1`(turn/total 区段 + context_window/cost_usd/tool_uses/duration_ms,raw 保留上报);前端只按这一结构排版,不得出现工具私有字段名(有测试钉住),新增 Runtime 只改 provider。
 - 数据目录(`MISSIONCREW_HOME`,默认 `~/.missioncrew`)必须可整体搬迁:平台生成的目录链接一律经 `relative_link_target` 写相对路径;声明了 `locate_binary` 的工具视为平台托管安装(如 vendored pi),启动时按当前数据目录重新定位 `binary_path`,不要把数据目录内的绝对路径写进库或文件。

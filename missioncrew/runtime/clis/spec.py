@@ -3,7 +3,7 @@
 每个工具一个模块,声明检测方式、命令模板、能力、模型与升级渠道;adapters 层
 把全部声明汇总成检测/执行用的注册表(DEFAULT_COMMANDS、ACP_SERVE_COMMANDS、
 KNOWN_CLIS 等)。执行行为本身是统一的(CliAdapter/AcpAdapter + acp 协议层),
-这里只放"这个工具长什么样"的静态事实;有原生 provider 的工具(claude/codex/pi)
+这里只放"这个工具长什么样"的静态事实;有原生 provider 的工具(如 claude/codex/pi)
 执行走各自 provider 类,这里只负责检测与回退模板。
 """
 from __future__ import annotations
