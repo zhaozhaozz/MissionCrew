@@ -255,6 +255,7 @@ def parse_antigravity_usage(backend: Backend, payload: dict) -> RuntimeUsageSnap
             name = group.get("name")
             if not isinstance(name, str) or not name.strip():
                 continue
+            group_windows: list[RuntimeUsageWindow] = []
             for bucket in group["buckets"]:
                 if not isinstance(bucket, dict):
                     continue
@@ -269,15 +270,24 @@ def parse_antigravity_usage(backend: Backend, payload: dict) -> RuntimeUsageSnap
                 # 仍有余额时不能因显示舍入变成 100%,误触发角色自动停用。
                 if remaining > 0:
                     used = min(used, 99.99)
-                weekly = bucket.get("window") == "weekly"
+                period = bucket.get("window")
+                if period == "5h":
+                    period_label, duration = "5 小时", 300
+                elif period == "weekly":
+                    period_label, duration = "本周", 10080
+                else:
+                    period_label, duration = "", None
                 reset = _timestamp(bucket.get("reset_time"))
                 if reset is not None and not math.isfinite(reset):
                     reset = None
-                windows.append(RuntimeUsageWindow(
-                    key=key, label=name.strip() + (" · 本周" if weekly else ""),
+                group_windows.append(RuntimeUsageWindow(
+                    key=key, label=name.strip() + (f" · {period_label}" if period_label else ""),
                     used_percent=used, resets_at=reset,
-                    duration_minutes=10080 if weekly else None))
+                    duration_minutes=duration))
                 seen.add(key)
+            # 每个模型组内先显示短周期,不依赖 CLI 返回的桶顺序。
+            windows.extend(sorted(group_windows, key=lambda window: (
+                window.duration_minutes is None, window.duration_minutes or 0)))
     return _snapshot(
         backend, "ok" if windows else "unavailable", "antigravity_usage_command",
         windows=windows,

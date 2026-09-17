@@ -83,6 +83,28 @@ def test_parser_converts_remaining_fractions_and_keeps_pools_separate(payload):
     assert "fixture-only-secret" not in json.dumps(result)
 
 
+def add_five_hour_buckets(payload):
+    for group in payload["command"]["data"]["groups"]:
+        bucket = copy.deepcopy(group["buckets"][0])
+        bucket.update(id=bucket["id"].replace("weekly", "5h"), window="5h",
+                      remaining_fraction=0.75, reset_time="2026-09-17T06:59:55Z")
+        group["buckets"].append(bucket)
+
+
+def test_five_hour_limits_are_labeled_and_precede_weekly_limits_per_group(payload):
+    add_five_hour_buckets(payload)
+    windows = parse_antigravity_usage(backend(), payload).windows
+    assert [(w.key, w.label, w.duration_minutes) for w in windows] == [
+        ("gemini-5h", "Gemini Models · 5 小时", 300),
+        ("gemini-weekly", "Gemini Models · 本周", 10080),
+        ("3p-5h", "Claude and GPT models · 5 小时", 300),
+        ("3p-weekly", "Claude and GPT models · 本周", 10080),
+    ]
+    assert windows[0].used_percent == 25
+    assert windows[0].resets_at == datetime(
+        2026, 9, 17, 6, 59, 55, tzinfo=timezone.utc).timestamp()
+
+
 @pytest.mark.parametrize("remaining", [None, True, "0.5", -0.1, 1.1, float("nan"), float("inf")])
 def test_invalid_fraction_is_not_interpreted_as_zero_usage(payload, remaining):
     payload["command"]["data"]["groups"] = payload["command"]["data"]["groups"][:1]
@@ -192,8 +214,10 @@ def test_concurrent_requests_share_one_probe(tmp_path, payload):
 
 @pytest.mark.parametrize("exhausted,blocked", [
     ("gemini-weekly", {"gemini"}), ("3p-weekly", {"claude", "gpt"}),
+    ("gemini-5h", {"gemini"}), ("3p-5h", {"claude", "gpt"}),
 ])
 def test_quota_linkage_only_stops_roles_in_exhausted_pool(store, payload, exhausted, blocked):
+    add_five_hour_buckets(payload)
     models = {"gemini": "gemini-3.8-flash-high", "claude": "claude-sonnet-4-6",
               "gpt": "gpt-oss-120b-medium", "default": "", "custom": "custom/model"}
     for name, model in models.items():

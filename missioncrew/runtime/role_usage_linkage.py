@@ -59,12 +59,12 @@ class RoleUsageLinkage:
         is_claude = str(snapshot.get("adapter") or "") == "claude_code"
         is_antigravity = snapshot.get("adapter") == "antigravity"
         model = str(role.model or "").lower()
-        agy_pool = ("gemini-weekly" if model.startswith("gemini-") else
-                    "3p-weekly" if model.startswith(("claude-", "gpt-")) else "")
+        agy_windows = (("gemini-5h", "gemini-weekly") if model.startswith("gemini-") else
+                       ("3p-5h", "3p-weekly") if model.startswith(("claude-", "gpt-")) else ())
         role_is_fable = cls._is_fable(role.model)
         result = []
         for window in snapshot.get("windows") or []:
-            if is_antigravity and (not agy_pool or window.get("key") != agy_pool):
+            if is_antigravity and window.get("key") not in agy_windows:
                 continue
             try:
                 used = float(window.get("used_percent", 0))
