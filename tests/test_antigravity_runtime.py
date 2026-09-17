@@ -35,6 +35,11 @@ if scenario == "mismatch":
     sid = "replacement-conversation"
 def emit(event, payload, **extra):
     print(json.dumps({"event": event, event: payload, **extra}), flush=True)
+if scenario == "error":
+    # 真实 CLI 的本轮失败形态:stderr 的 error: 行、无 conversation、空 response、退出码 1
+    print("error: invalid model", file=sys.stderr)
+    emit("result", {"conversation_id": "", "status": "ERROR", "response": "", "error": "invalid model", "duration_seconds": 0, "num_turns": 0})
+    raise SystemExit(1)
 emit("init", {"cwd": os.getcwd()}, conversation_id=sid)
 if scenario == "wait":
     time.sleep(30)
@@ -52,8 +57,9 @@ if scenario == "tool_error":
 emit("step_update", {"step_index": 2, "step_type": "agent_response", "state": "ACTIVE", "text_delta": "answer "})
 emit("step_update", {"step_index": 2, "step_type": "agent_response", "state": "DONE", "text_delta": "complete", "usage": {"input_tokens": 10, "output_tokens": 2, "thinking_tokens": 1, "cache_read_tokens": 5, "total_tokens": 12}})
 result = {"conversation_id": sid, "status": "SUCCESS", "response": "answer complete", "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120}, "duration_seconds": 0.25}
-if scenario == "error":
-    result.update(status="ERROR", error="invalid model")
+if scenario == "stale_error":
+    # 续接会话时 result 原样带回上一轮失败的状态与文案,本轮其实已正常完成
+    result.update(status="ERROR", error="Individual quota reached. Resets in 160h38m0s.", num_turns=3)
 if scenario == "denied":
     result["denied_actions"] = [{"tool": "run_command"}]
 if scenario == "empty":
@@ -138,6 +144,17 @@ def test_failures_never_publish_partial_success(runtime, scenario, detail):
     config.env["SCENARIO"] = scenario
     result = provider.start(config)
     assert not result.success and detail in result.summary and detail in result.output
+
+
+def test_resumed_turn_ignores_stale_conversation_error(runtime):
+    """agy 续接会话会把上一轮失败的 result.status/error 原样带回;本轮成败只看本轮信号。"""
+    provider, config, saved, events = runtime
+    saved.update(id="old-conversation", context="v1")
+    config.env["SCENARIO"] = "stale_error"
+    result = provider.start(config)
+    assert result.success and result.output == "answer complete"
+    assert "quota" not in result.output and saved["id"] == "old-conversation"
+    assert not any(kind == "stderr" for kind, _ in events)
 
 
 @pytest.mark.parametrize("scenario", ["missing", "mismatch"])

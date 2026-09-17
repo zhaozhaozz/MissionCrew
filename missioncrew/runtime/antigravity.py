@@ -233,10 +233,15 @@ class AntigravityRuntimeProvider(RuntimeProvider):
         output = result.get("response")
         output = output.strip() if isinstance(output, str) else turn.output.text.strip()
         failure = failure or turn.error
+        # result.status/error 是会话存储状态:续接的会话会原样带回上一轮失败留下
+        # 的 ERROR 与文案,本轮成功也不清除(agy 1.2.4 实测)。本轮成败只看 CLI 的
+        # 本轮信号:stderr 的 error: 行、退出码、有无 result 与 response。
+        turn_error = next((line[len("error:"):].strip() for line in errors
+                           if line.startswith("error:")), "")
         if not failure and any("print timeout" in line.lower() for line in errors):
             failure = "Antigravity print timeout;本轮仅返回部分输出。"
-        if not failure and (proc.returncode != 0 or result.get("status") != "SUCCESS"):
-            failure = str(result.get("error") or "\n".join(errors) or
+        if not failure and (turn_error or proc.returncode != 0 or turn.result is None):
+            failure = str(result.get("error") or turn_error or "\n".join(errors) or
                           f"Antigravity 未成功完成(status={result.get('status', 'missing result')}, exit={proc.returncode})")
         if not failure and result.get("denied_actions"):
             failure = "Antigravity 有工具操作被拒绝: " + json.dumps(result["denied_actions"], ensure_ascii=False)

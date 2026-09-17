@@ -134,7 +134,7 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 
 ### Antigravity headless stream-json
 
-使用官方 `agy` CLI，先交互登录一次。`runtime/antigravity.py` 负责每轮启动、解析 `init` / `step_update` / `result` 与进程组清理；声明模块只负责检测、`agy models` 与 `agy update`。模型、effort 与额外授权目录分别使用 `--model`、`--effort`、重复的 `--add-dir` 传入。工具事件与回复直接进入统一事件流；`result.usage` 是会话累计量，映射到 `usage/v1.total`，本轮 `turn` 从各完成步骤的 usage 汇总。
+使用官方 `agy` CLI，先交互登录一次。`runtime/antigravity.py` 负责每轮启动、解析 `init` / `step_update` / `result` 与进程组清理；声明模块只负责检测、`agy models` 与 `agy update`。模型、effort 与额外授权目录分别使用 `--model`、`--effort`、重复的 `--add-dir` 传入。工具事件与回复直接进入统一事件流；`result.usage` 是会话累计量，映射到 `usage/v1.total`，本轮 `turn` 从各完成步骤的 usage 汇总。`result.status` / `result.error` 同样取自会话存储状态而非本轮：续接的会话会原样带回上一轮失败留下的 `ERROR` 与错误文案，本轮成功也不清除（agy 1.2.4 实测，曾把一次限额报错重复贴到之后每一轮并吞掉正常回复）。因此本轮成败只看 CLI 的本轮信号——stderr 的 `error:` 行、非零退出码、缺少 `result` 或空 `response`，判定失败时才采用 `result.error` 作为原因。
 
 `approval=auto` 使用 `--dangerously-skip-permissions`，`workspace-write` 同时启用 CLI 原生 `--sandbox`，额外目录加入 workspace；`full-access` 显式关闭 sandbox。实际边界仍取决于 Antigravity 的本机权限配置。CLI 无逐工具审批响应协议，`--mode plan` 仅添加规划指令，不保证只读，因此 `prompt` / `deny` 审批、`read-only` 文件系统和 `network=deny` 在启动前报错，不降级执行；能力声明不提供交互审批或用户输入。
 
