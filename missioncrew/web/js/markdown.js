@@ -120,6 +120,9 @@ function markdownInlineWithTokens(source, tokens) {
   value = value.replace(MARKDOWN_CODE_OR_ESCAPE, (_, code, char) => code !== undefined
     ? hold(`<code>${esc(code)}${markdownCopyButton({ inline: true })}</code>`)
     : `\uE002${char.charCodeAt(0)}\uE003`);
+  // 表格单元格写不了多行,GFM 惯例用 <br> 分行:只放行这一个标签(在代码段与反斜杠转义
+  // 之后识别,`<br>` 与 \<br> 仍按字面输出),其余 HTML 照旧整体转义成文本。
+  value = value.replace(/<br\s*\/?>/gi, () => hold("<br>"));
   value = value.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g,
     (_, alt, target) => {
       const src = resolveMarkdownImageSource(markdownUnescape(target));

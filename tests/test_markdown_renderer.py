@@ -74,6 +74,21 @@ def test_table_pipe_inside_inline_code_does_not_split_cell():
     assert f"<td>git tree / Bazel <code>Directory{INLINE_COPY}</code></td>" in html
 
 
+def test_table_cell_br_tag_renders_line_break_and_other_html_stays_text():
+    html = render_markdown(
+        "| 步骤 | 说明 |\n"
+        "|---|---|\n"
+        "| 1 | 先安装<br>再启动<br/>最后验证<BR />完成 |\n"
+        "| 2 | 代码里的 `<br>` 与转义 \\<br> 保持字面，<b>加粗</b> 不放行 |\n",
+    )
+
+    assert "<td>先安装<br>再启动<br>最后验证<br>完成</td>" in html
+    assert f"<code>&lt;br&gt;{INLINE_COPY}</code>" in html
+    assert "转义 &lt;br&gt; 保持字面" in html
+    assert "&lt;b&gt;加粗&lt;/b&gt; 不放行" in html
+    assert html.count("<br>") == 3
+
+
 def test_nested_list_does_not_restart_ordered_numbering():
     html = render_markdown(
         "1. 第一步\n"
