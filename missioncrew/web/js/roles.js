@@ -9,7 +9,7 @@ const ROLE_FILE_FORMAT = "missioncrew.roles";
 const ROLE_FILE_VERSION = 1;
 const ROLE_FILE_FIELDS = [
   "id", "name", "description", "runtime_id", "model", "effort",
-  "usage_linkage_enabled", "capabilities", "preference", "color",
+  "usage_linkage_enabled", "manual_only", "capabilities", "preference", "color",
 ];
 let roleTransferState = null;
 
@@ -22,7 +22,7 @@ function roleTransferSource(scope) {
 function roleFileItem(role) {
   return Object.fromEntries(ROLE_FILE_FIELDS.map(field => {
     const fallback = field === "capabilities" ? []
-      : field === "usage_linkage_enabled" ? false : "";
+      : (field === "usage_linkage_enabled" || field === "manual_only") ? false : "";
     return [field, role[field] ?? fallback];
   }));
 }
@@ -224,6 +224,7 @@ function renderRoleTable() {
           <b>@${esc(r.id)}</b> ${esc(r.name)}
           ${isOrchestrator ? `<span class="pill">主控</span>` : ""}
           ${r.usage_linkage_enabled ? `<span class="pill">用量联动</span>` : ""}
+          ${r.manual_only ? `<span class="pill" title="只有人类能 @ 它,其他 Agent 看不到">仅人工</span>` : ""}
           ${enabled ? "" : `<span class="pill" title="${esc(disabledReason)}">${r.usage_auto_disabled ? "用量停用" : "停用"}</span>`}</td>
       <td class="muted">${esc(r.preference || "—")}</td>
       <td>${abilityPills(r) || "—"}</td>
@@ -317,7 +318,7 @@ function editRole(id, templateId = "") {
   const r = projRoles().find(x => x.id === id) || template || {
     id: "", name: "", description: "", capabilities: [], preference: "",
     runtime_id: "", model: "", effort: "", color: "#3564d7", enabled: true,
-    usage_linkage_enabled: false };
+    usage_linkage_enabled: false, manual_only: false };
   const abilityChips = Object.entries(traitMeta.abilities).map(([k, label]) =>
     `<span class="chip ${(r.capabilities || []).includes(k) ? "on" : ""}" data-cap="${k}"
        onclick="this.classList.toggle('on')">${esc(label)}</span>`).join("");
@@ -359,6 +360,7 @@ function editRole(id, templateId = "") {
         <select id="rf-effort"></select></div>
     </div>
     ${roleUsageLinkageField(r)}
+    ${roleManualOnlyField(r)}
     <label>角色定位/人格(给角色本人与主控看:写清"是谁、怎么工作"的专长画像;平台原样装配、不改写,任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(r.description)}</textarea>
     <label>角色偏好(给主控选人看:何时该选它的领域/风格短标签,顿号分隔,如"前端"、"只审不改";名册中与能力并列展示)</label>
@@ -469,6 +471,7 @@ async function saveRole() {
     model: document.getElementById("rf-model").value,
     effort: document.getElementById("rf-effort").value,
     usage_linkage_enabled: document.getElementById("rf-usage-linkage").classList.contains("on"),
+    manual_only: document.getElementById("rf-manual-only").classList.contains("on"),
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
   if (!runtime_id) { uiAlert("请为角色选择 runtime(定义时固定执行组合)"); return; }

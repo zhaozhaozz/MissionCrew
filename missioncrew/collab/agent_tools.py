@@ -1144,7 +1144,9 @@ class AgentActionService:
             if not identity.is_automation and role_id == identity.role_id:
                 raise AgentToolError("invalid_arguments", "不能调度自己")
             target_role = self.store.get_role(project.id, role_id)
-            if target_role is None or not target_role.enabled:
+            # 仅人工点名的角色对 Agent 不存在;自动化脚本是人类配置的,按人类规则放行
+            if (target_role is None or not target_role.enabled
+                    or (target_role.manual_only and not identity.is_automation)):
                 raise AgentToolError("role_not_found", f"角色不存在: {role_id}", 404)
             if role_id not in unique_mentions:
                 unique_mentions.append(role_id)

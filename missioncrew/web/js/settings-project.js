@@ -9,7 +9,7 @@ function peerModeProject(project = projObj()) {
 
 function projectOrchestratorOptions(project, selectedId = project.orchestrator_role_id) {
   return `<option value="" ${selectedId ? "" : "selected"}>无主控 — 所有角色权限相同,@ 多个角色时各自启动</option>` +
-    activeProjRoles().map(role =>
+    activeProjRoles().filter(role => !role.manual_only || role.id === selectedId).map(role =>
     `<option value="${esc(role.id)}" ${role.id === selectedId ? "selected" : ""}>` +
     `@${esc(role.id)} — ${esc(role.name)} · ` +
     `${esc(role.runtime_id)}/${esc(role.model || "CLI 默认")}</option>`

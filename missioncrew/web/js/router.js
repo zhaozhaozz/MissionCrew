@@ -564,6 +564,7 @@ function renderSidebar() {
          <span class="role-dot" style="background:${esc(r.color || "#888")}"></span>
          <span>@${esc(r.id)}</span><small>${esc(r.name)}</small>
          ${r.id === orch ? `<span class="pill" style="color:var(--warn);border-color:var(--warn)">主控</span>` : ""}
+         ${r.manual_only ? `<span class="pill">仅人工</span>` : ""}
          ${disabled ? `<span class="pill">${r.usage_auto_disabled ? "用量停用" : "停用"}</span>` : ""}</div>`;
     }).join("");
   document.getElementById("role-bar").innerHTML = activeProjRoles().map(r =>

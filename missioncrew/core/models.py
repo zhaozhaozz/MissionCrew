@@ -663,6 +663,8 @@ class Role:
     project_id: str = ""          # 所属项目:角色按项目隔离,不跨项目共享
     enabled: bool = True          # 临时停用只阻止新派发,不删除配置、历史或会话
     usage_linkage_enabled: bool = False  # 是否按绑定 Runtime 的账户限额自动启停
+    manual_only: bool = False     # 仅人工点名:只有人类(含自动化脚本)能 @;Agent 名册不列、
+                                  # 不能派发给它,历史里对其他 Agent 匿名;它自己也不参与角色间派发
     name: str = ""                # 显示名
     description: str = ""         # 人格与领域上下文(自由文本,不锁定)
     runtime_id: str = ""             # 固定 runtime(后端注册表 id)

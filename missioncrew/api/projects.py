@@ -38,15 +38,21 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                             else new_roles[0].id)
         else:
             orchestrator = body.orchestrator_role_id.strip()
+        orchestrator_role = None
         if orchestrator and existing:
             orchestrator_role = store.get_role(body.id, orchestrator)
             if orchestrator_role is None:
                 raise HTTPException(400, f"主控角色不属于当前项目: @{orchestrator}")
             if not orchestrator_role.enabled:
                 raise HTTPException(400, f"主控角色已停用，请先启用: @{orchestrator}")
-        if (orchestrator and is_new
-                and orchestrator not in {role.id for role in new_roles}):
-            raise HTTPException(400, f"主控角色不属于全局角色模板: @{orchestrator}")
+        if orchestrator and is_new:
+            orchestrator_role = next(
+                (role for role in new_roles if role.id == orchestrator), None)
+            if orchestrator_role is None:
+                raise HTTPException(400, f"主控角色不属于全局角色模板: @{orchestrator}")
+        if orchestrator_role is not None and orchestrator_role.manual_only:
+            raise HTTPException(
+                400, f"仅人工点名的角色不能作为主控: @{orchestrator}")
         data["orchestrator_role_id"] = orchestrator
         data["max_chain_runs"] = (body.max_chain_runs if body.max_chain_runs is not None
                                   else (existing.max_chain_runs if existing

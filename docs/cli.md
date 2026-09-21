@@ -33,7 +33,7 @@ MissionCrew 的日常操作在 Web 页面完成，频道、Task、文档、准�
 | 命令 | 说明 |
 |---|---|
 | `mc role list [-p 项目]` | 列出角色及其启停状态、runtime/模型/effort、偏好与能力。 |
-| `mc role add --file <yaml> [-p 项目]` | 从 YAML 导入/更新角色（单个或列表），`-p` 会覆盖 YAML 中的 `project_id`。校验口径与 Web 基本一致：项目必须存在，runtime 必须已注册，effort 必须是该模型支持的档位，不能停用当前主控。模型校验比 Web 更严格：runtime 注册了自带模型清单时模型必须在清单内（清单不含 CLI 默认项时留空也会被拒绝），不接受 Web 里实时探测到的型号；另外 CLI 不检查 runtime 是否已停用。示例见 `examples/roles.yaml`。 |
+| `mc role add --file <yaml> [-p 项目]` | 从 YAML 导入/更新角色（单个或列表），`-p` 会覆盖 YAML 中的 `project_id`。校验口径与 Web 基本一致：项目必须存在，runtime 必须已注册，effort 必须是该模型支持的档位，不能停用当前主控，也不能把当前主控设为仅人工点名（`manual_only`）。模型校验比 Web 更严格：runtime 注册了自带模型清单时模型必须在清单内（清单不含 CLI 默认项时留空也会被拒绝），不接受 Web 里实时探测到的型号；另外 CLI 不检查 runtime 是否已停用。示例见 `examples/roles.yaml`。 |
 
 ## 频道与聊天
 

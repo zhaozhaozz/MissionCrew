@@ -1573,3 +1573,54 @@ def test_runtime_wake_begin_skipped_while_channel_stopping(chat, seeded):
         chat._stopping_channels.discard("general")
     assert seeded.chat_runs_for_channel("general") == []
     assert seeded.list_messages("general") == []
+
+
+def test_manual_only_role_is_invisible_to_agents_but_human_can_dispatch(chat, seeded):
+    """仅人工点名的角色:名册里没有、主控不能派发、历史里匿名;人类点名照常执行。"""
+    expert = seeded.get_role("webshop", "expert")
+    expert.manual_only = True
+    seeded.put_role(expert)
+    ask = "@expert 和 @dev 分头评估"
+    seeded.add_message("general", "human", "human", ask, ["expert", "dev"],
+                       mention_spans=[
+                           {"role_id": "expert", "start": 0, "end": 7},
+                           {"role_id": "dev", "start": 10, "end": 14}])
+    seeded.add_message("general", "expert", "agent", "方案可行", [])
+    msg_id = seeded.add_message(
+        "general", "human", "human", "@lead 按上面的评估推进", ["lead"],
+        mention_spans=[{"role_id": "lead", "start": 0, "end": 5}])
+
+    cfg = chat._assemble(seeded.get_channel("general"),
+                         seeded.get_role("webshop", "lead"),
+                         seeded.get_backend("std-1"), msg_id)
+    assert "- @expert " not in cfg.common_prompt      # 名册不列
+    assert "- @dev " in cfg.common_prompt
+    history = _prompt_json_section(cfg.prompt, "最近对话(JSON,按消息边界格式化)")
+    assert history[0]["content"] == "[其他执行角色] 和 @dev 分头评估"
+    assert history[0]["mentions"] == ["其他执行角色", "dev"]
+    # 主控视图保留其余提及范围,并按替换造成的长度差平移
+    assert history[0]["mention_spans"] == [{"role_id": "dev", "start": 11, "end": 15}]
+    assert history[1]["author"] == {"id": "执行角色", "type": "agent"}
+    assert "expert" not in json.dumps(history, ensure_ascii=False)
+    trigger = _prompt_json_section(
+        cfg.prompt, "触发消息(JSON,你的任务简报由发起者撰写)")
+    assert trigger["mention_spans"] == [{"role_id": "lead", "start": 0, "end": 5}]
+
+    # 主控经 message.publish 点名它:视同不存在
+    with pytest.raises(ValueError, match="提及范围无效"):
+        chat.post("general", "lead", "@expert 再看看", author_type="agent",
+                  mention_spans=[{"role_id": "expert", "start": 0, "end": 7}])
+    assert seeded._query("SELECT * FROM chat_runs") == []
+
+    # 人类点名照常执行,它自己拿到的是仅人工点名的流程,结果留在频道
+    chat.post("general", "human", "@expert 再看一次",
+              mention_spans=[{"role_id": "expert", "start": 0, "end": 7}])
+    chat.wait_idle()
+    assert [row["role_id"] for row in
+            seeded._query("SELECT role_id FROM chat_runs")] == ["expert"]
+    reply = [m for m in _log(seeded) if m["author_type"] == "agent"][-1]
+    assert reply["author"] == "expert" and json.loads(reply["mentions"]) == []
+    own = chat._assemble(seeded.get_channel("general"), expert,
+                         seeded.get_backend("std-1"), msg_id)
+    assert "你是仅人工点名的角色" in own.prompt
+    assert "## 角色名册" not in own.common_prompt

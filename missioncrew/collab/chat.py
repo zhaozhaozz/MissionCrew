@@ -53,6 +53,7 @@ from ..core.store import Store
 
 MENTION_RE = re.compile(r"@([\w-]+)")
 EXPLICIT_MENTION_RE = re.compile(r"@\[([\w-]+)\]")
+ANY_MENTION_RE = re.compile(r"@\[([\w-]+)\]|@([\w-]+)")   # 脱敏时两种写法一并处理
 HISTORY_WINDOW = 20    # 装配进 Prompt 的最近消息条数
 ACTION_RE = re.compile(r"<missioncrew-action>(.*?)</missioncrew-action>", re.S)
 
@@ -117,14 +118,21 @@ CHAT_COMMON_BODY = """\
 """
 
 # 执行角色与主控各自的一轮流程:先读的先给,规则都挂在步骤上
-EXECUTOR_WORKFLOW = """\
+_EXECUTOR_STEPS = """\
 1. 读任务:任务只来自最下方「触发消息」里的任务简报,角色定位不是任务;简报信息不足就在回复中提出,不要臆测扩大范围。
 2. 补背景:需要时再看,不要预加载。频道历史在「工作区一览」的 `channel-history.json`;准则和 Skill 先看「项目资料」里的 description,相关再读全文;项目文档在 `{documents_dir}`。
 3. 干活:在工作目录读写代码、运行命令;只能碰「必须遵守」里列出的可读写目录;临时文件优先放当前业务仓已有的任务目录(如项目约定的 `.tmp/`、`.e2e/`),没有项目约定时使用 `{temp_dir}`,并在任务完成后清理。
 4. 写回平台:发布文档、创建或更新 Task、追加状态简报,一律用下方 Agent Tool;不要直接改 `documents/`、`tasks/` 里的文件。
-5. 回复:你的最终回复会被完整、原样发布到聊天频道,人类可以看到;用中文,先说结论,再简述做了什么;不要贴大段日志;引用平台资源用 `/resources/...` 链接,不要输出内部路径。
+5. 回复:你的最终回复会被完整、原样发布到聊天频道,人类可以看到;用中文,先说结论,再简述做了什么;不要贴大段日志;引用平台资源用 `/resources/...` 链接,不要输出内部路径。"""
+
+EXECUTOR_WORKFLOW = _EXECUTOR_STEPS + """
 - 你不是项目主控,看不到其他执行角色名册,也不能调度其他角色;消息正文里写任何 @ 都只是普通文字。
 - 只提交本次任务的完整结果。若本轮由项目主控派发,平台会把结果自动交回主控;若由人类直接点名,结果只发布到频道,不会自动触发主控,主控在后续被人类唤起时仍可读取完整记录。"""
+
+# 仅人工点名的角色:不进 Agent 协作图,有无主控都按执行角色干活,结果只留给人类
+MANUAL_ONLY_WORKFLOW = _EXECUTOR_STEPS + """
+- 你是仅人工点名的角色:只有人类会点名你,其他角色看不到你;你也看不到角色名册、不能调度其他角色,消息正文里写任何 @ 都只是普通文字。
+- 只提交本次任务的完整结果:结果只发布到频道供人类查看,不会自动触发其他角色。"""
 
 ORCHESTRATOR_WORKFLOW = """\
 1. 读需求:人类的请求或执行角色的回报就是本轮输入,类型见「本轮触发」一行;人类同时点了多个角色时平台只启动你,完整名单在触发消息 JSON 的 `mentions` 和 `mention_spans` 里,由你决定并行、顺序或调整人选后分别派发。
@@ -405,10 +413,12 @@ class ChatEngine:
         # 什么,都只把完整结果交回主控,避免横向看见或调用名册;无主控时
         # 由角色显式派发的结果交回派发者,人类直接点名的留在频道。
         if author_type == "agent":
-            can_dispatch = peer_mode or author == orchestrator
+            can_dispatch = ((peer_mode or author == orchestrator)
+                            and not self._manual_only_role(project, role))
             if can_dispatch and mention_spans:
                 mentions, legal_spans = self._validate_mention_spans(
-                    content, mention_spans, channel.project_id or "")
+                    content, mention_spans, channel.project_id or "",
+                    by_agent=True)
                 if author in mentions:
                     mentions = [item for item in mentions if item != author]
                     legal_spans = [span for span in legal_spans
@@ -805,8 +815,13 @@ class ChatEngine:
         return "".join(parts), targets, spans
 
     def _validate_mention_spans(self, content: str, requested: list[dict],
-                                project_id: str) -> tuple[list[str], list[dict]]:
-        """验证 UI 选择器给出的 Unicode code-point 范围，不从正文猜目标。"""
+                                project_id: str, by_agent: bool = False
+                                ) -> tuple[list[str], list[dict]]:
+        """验证 UI 选择器给出的 Unicode code-point 范围，不从正文猜目标。
+
+        ``by_agent`` 是 Agent 经 message.publish 派发:仅人工点名的角色对它
+        视同不存在(agent_tools 已先拦一道,这里是引擎入口的兜底)。
+        """
         known = {role.id: role for role in self.store.list_roles(project_id)}
         normalized: list[dict] = []
         for item in requested:
@@ -816,6 +831,7 @@ class ChatEngine:
             start, end = item.get("start"), item.get("end")
             role = known.get(role_id) if isinstance(role_id, str) else None
             if (not isinstance(role_id, str) or role is None or not role.enabled
+                    or (by_agent and role.manual_only)
                     or type(start) is not int or type(end) is not int
                     or start < 0 or end <= start or end > len(content)
                     or content[start:end] != f"@{role_id}"):
@@ -1488,14 +1504,16 @@ class ChatEngine:
                     "可用动作:" + ", ".join(allowed_actions)
                 )
                 allowed_dirs = project_allowed_dirs(project, library, workspace.root)
-                if project.controls_platform(role.id):
+                if (project.controls_platform(role.id)
+                        and not self._manual_only_role(project, role)):
                     orchestrator_section = self._orchestrator_section(project)
 
         # 有主控时只有主控是"控制方";无主控时每个角色都是
         is_orchestrator = bool(project and project.controls_platform(role.id))
         orchestrator_id = project.orchestrator_role_id if project else ""
         peer_mode = bool(project and not orchestrator_id)
-        known_roles = {r.id for r in self.store.list_roles(channel.project_id or "")}
+        manual_only = self._manual_only_role(project, role)
+        known_roles = {r.id: r for r in self.store.list_roles(channel.project_id or "")}
 
         history_records = []
         trigger_message = self.store.get_message(msg_id)
@@ -1523,11 +1541,14 @@ class ChatEngine:
                 allowed_dirs.append(str(shared_dir))
 
         # 只有主控拿到项目角色名册;执行角色只接收当前任务简报,不知道也
-        # 不能横向调度其他执行角色。
+        # 不能横向调度其他执行角色。仅人工点名的角色在无主控项目里同样只执行。
         short_channel_id = (channel.id.removeprefix(f"{channel.project_id}:")
                             if channel.project_id else channel.id)
         roster_section, roster_snapshot = "", {}
-        if peer_mode:
+        if manual_only:
+            workflow_section = MANUAL_ONLY_WORKFLOW.format(
+                documents_dir=documents_dir, temp_dir=temp_dir)
+        elif peer_mode:
             roster_section, roster_snapshot = self._roster_snapshot(
                 project, role, _role_line)
             workflow_section = PEER_WORKFLOW.format(
@@ -1679,7 +1700,8 @@ class ChatEngine:
         project_id = channel.project_id or ""
         project = self.store.get_project(project_id) if project_id else None
         role = self.store.get_role(project_id, role_id) if project else None
-        known_roles = {r.id for r in self.store.list_roles(project_id)} if project else set()
+        known_roles = ({r.id: r for r in self.store.list_roles(project_id)}
+                       if project else {})
         return [self._message_record(m, role, project, known_roles)
                 for m in self.store.recent_messages(
                     channel.id, limit, 0, before_id)]
@@ -1703,9 +1725,56 @@ class ChatEngine:
         return [dict(item) for item in spans if isinstance(item, dict)] \
             if isinstance(spans, list) else []
 
+    @staticmethod
+    def _manual_only_role(project, role: Optional[Role]) -> bool:
+        """角色是否在 Agent 协作图之外(仅人工点名)。
+
+        API/CLI 已保证主控不会设为仅人工点名;旧数据若不一致,主控仍按主控
+        处理,避免项目失去派发方。
+        """
+        if role is None or not role.manual_only:
+            return False
+        return not (project and project.has_orchestrator
+                    and role.id == project.orchestrator_role_id)
+
+    @staticmethod
+    def _redact_mentions(content: str, mention_spans: list[dict],
+                         redacted: set[str], keep_spans: bool
+                         ) -> tuple[str, list[dict]]:
+        """把 redacted 角色的 @role / @[role](旧派发语法作为字面文本同样会
+        泄漏角色名)替换成匿名占位。keep_spans 时剔除匿名角色的范围并按替换
+        造成的长度差平移其余范围,否则整体丢弃。"""
+        edits: list[tuple[int, int]] = []   # (原文结束位置, 长度差)
+
+        def _sub(match: re.Match) -> str:
+            role_id = match.group(1) or match.group(2)
+            if role_id not in redacted:
+                return match.group(0)
+            replacement = "[其他执行角色]"
+            edits.append((match.end(), len(replacement) - len(match.group(0))))
+            return replacement
+
+        content = ANY_MENTION_RE.sub(_sub, content)
+        if not keep_spans:
+            return content, []
+        kept = []
+        for span in mention_spans:
+            start, end = span.get("start"), span.get("end")
+            if (span.get("role_id") in redacted
+                    or type(start) is not int or type(end) is not int):
+                continue
+            shift = sum(delta for edit_end, delta in edits if edit_end <= start)
+            kept.append({**span, "start": start + shift, "end": end + shift})
+        return content, kept
+
     def _message_record(self, message: dict, role: Optional[Role] = None,
-                        project=None, known_roles: Optional[set[str]] = None) -> dict:
-        """把数据库消息转换为边界明确的 JSON 记录，并按执行角色脱敏。"""
+                        project=None,
+                        known_roles: Optional[dict[str, Role]] = None) -> dict:
+        """把数据库消息转换为边界明确的 JSON 记录，并按执行角色脱敏。
+
+        ``role`` 是读取视图的 Agent(None 即人类/平台的原始视图);``known_roles``
+        是项目角色 id -> Role,调用方批量转换时传入以免逐条查库。
+        """
         author = str(message.get("author", ""))
         author_type = str(message.get("author_type", ""))
         content = str(message.get("content", ""))
@@ -1734,33 +1803,30 @@ class ChatEngine:
                     span["end"] = len(normalize_document_resource_urls(
                         original_content[:end], project.id, [document_root]))
         orchestrator_id = project.orchestrator_role_id if project else ""
-        known_roles = (known_roles if known_roles is not None else
-                       ({r.id for r in self.store.list_roles(project.id)}
-                        if project else set()))
+        if known_roles is None:
+            known_roles = ({r.id: r for r in self.store.list_roles(project.id)}
+                           if project else {})
         full_view = (role is None or not project or not orchestrator_id
                      or role.id == orchestrator_id)
-        redact_author = (not full_view and author_type == "agent"
-                         and author not in {role.id, orchestrator_id})
-
+        # 仅人工点名的角色名册里没有,历史里对其他 Agent 也不能露出 id;
+        # 执行角色视图在此之上再把其余执行角色一并匿名。
+        hidden = ({rid for rid, r in known_roles.items()
+                   if rid != role.id and self._manual_only_role(project, r)}
+                  if role is not None and project else set())
+        redacted = set(hidden)
         if not full_view:
-            def _visible_mention(match: re.Match) -> str:
-                role_id = match.group(1)
-                if (role_id in {role.id, orchestrator_id}
-                        or role_id not in known_roles):
-                    return match.group(0)
-                return "[其他执行角色]"
+            redacted |= set(known_roles) - {role.id, orchestrator_id}
+        redact_author = author_type == "agent" and (
+            author in hidden
+            or (not full_view and author not in {role.id, orchestrator_id}))
 
-            # @[role] 旧语法不再触发执行,但作为字面文本仍可能泄漏角色名,
-            # 与普通 @role 同样脱敏。
-            content = EXPLICIT_MENTION_RE.sub(_visible_mention, content)
-            content = MENTION_RE.sub(_visible_mention, content)
-            # 脱敏替换会改变字符偏移；执行角色不需要渲染主控界面的提及样式。
-            mention_spans = []
-            mentions = [
-                item if item in {role.id, orchestrator_id} or item not in known_roles
-                else "其他执行角色"
-                for item in mentions
-            ]
+        if redacted or not full_view:
+            # 执行角色不需要渲染主控界面的提及样式,范围直接丢弃;主控/同权
+            # 视图靠范围判断本轮是派发还是回报,只剔除匿名角色并平移其余偏移。
+            content, mention_spans = self._redact_mentions(
+                content, mention_spans, redacted, keep_spans=full_view)
+            mentions = ["其他执行角色" if item in redacted else item
+                        for item in mentions]
 
         record = {
             "id": int(message.get("id", 0)),
@@ -1824,6 +1890,13 @@ class ChatEngine:
         visible_path = (chat_workspace_dir(project.id, channel.id, role.id)
                         / "channel-history.json"
                         if role and project else canonical)
+        known_roles: dict[str, Role] = {}
+
+        def hidden_peers(viewer: Role) -> bool:
+            """主控/同权角色的视图本可直接用原始记录,但项目里有别的仅人工
+            点名角色时同样要脱敏。"""
+            return any(rid != viewer.id and self._manual_only_role(project, r)
+                       for rid, r in known_roles.items())
 
         with self._history_lock:
             messages = self.store.all_messages(channel.id)
@@ -1847,23 +1920,24 @@ class ChatEngine:
                 self._message_record(m, project=project) for m in messages]
             self._atomic_write_json(canonical, _payload(canonical_records))
             if visible_path != canonical:
-                known_roles = {r.id for r in self.store.list_roles(project.id)}
+                known_roles = {r.id: r for r in self.store.list_roles(project.id)}
                 visible_records = (
                     [self._message_record(m, role, project, known_roles)
                      for m in messages]
-                    if scoped else canonical_records)
+                    if scoped or hidden_peers(role) else canonical_records)
                 self._atomic_write_json(visible_path, _payload(visible_records))
             elif project:
                 # 新消息落库时刷新已经建立的角色视图；尚未执行过的角色不提前
                 # 创建 workspace，等首次装配时再生成。
-                known_roles = {r.id for r in self.store.list_roles(project.id)}
-                for target_role in self.store.list_roles(project.id):
+                known_roles = {r.id: r for r in self.store.list_roles(project.id)}
+                for target_role in known_roles.values():
                     target = (chat_workspace_dir(
                         project.id, channel.id, target_role.id)
                               / "channel-history.json")
                     if not target.parent.is_dir():
                         continue
-                    target_scoped = not project.controls_platform(target_role.id)
+                    target_scoped = (not project.controls_platform(target_role.id)
+                                     or hidden_peers(target_role))
                     records = (
                         [self._message_record(m, target_role, project, known_roles)
                          for m in messages]
@@ -1894,7 +1968,7 @@ class ChatEngine:
             entries[f"{kind}:{ident}"] = line
 
         for r in self.store.list_roles(project.id):
-            if r.id != role.id and r.enabled:
+            if r.id != role.id and r.enabled and not self._manual_only_role(project, r):
                 _add("role", r.id, tag(r))
         for r in project.repos:
             _add("repo", r.id or r.name,

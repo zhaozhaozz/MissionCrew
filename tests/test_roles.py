@@ -771,7 +771,7 @@ def test_project_role_form_can_import_global_template(client):
     assert "activeProjRoles().filter" in sidebar
     assert "const activeProjRoles" in ui
     assert "roleUsageLinkageField" in ui
-    assert 'id="rf-usage-linkage"' in ui
+    assert "rf-usage-linkage" in ui
     assert "usage_linkage_enabled" in js
     settings_runtime = client.get("/assets/js/settings-runtime.js").text
     assert "roleUsageLinkageField(role)" in settings_runtime
@@ -1067,3 +1067,46 @@ process.stdout.write(vm.runInContext(`roleCardHtml(${roleJson})`, context));
     assert "后端 &amp; Python" in html
     assert ">定位</h2>" in html and "<strong>实现</strong>" in html
     assert "<li>" in html and "<code>AGENTS.md<button" in html
+
+
+def test_manual_only_role_round_trips_and_cannot_be_orchestrator(client, seeded):
+    """仅人工点名是角色自身的开关:项目角色与全局模板都能保存;主控不能开启。"""
+    body = seeded.get_role("webshop", "expert").to_dict()
+    body["manual_only"] = True
+    assert client.post("/api/roles", json=body).status_code == 200
+    assert seeded.get_role("webshop", "expert").manual_only is True
+    overview_role = next(
+        role for role in client.get("/api/projects/webshop/overview")
+        .json()["roles"] if role["id"] == "expert")
+    assert overview_role["manual_only"] is True
+
+    lead = seeded.get_role("webshop", "lead").to_dict()
+    lead["manual_only"] = True
+    rejected = client.post("/api/roles", json=lead)
+    assert rejected.status_code == 409
+    assert "不能设为仅人工点名" in rejected.json()["detail"]
+    assert seeded.get_role("webshop", "lead").manual_only is False
+    imported = client.post("/api/roles/import", json={
+        "project_id": "webshop", "roles": [lead], "overwrite_ids": ["lead"],
+    })
+    assert imported.status_code == 409
+    assert seeded.get_role("webshop", "lead").manual_only is False
+
+    project = seeded.get_project("webshop").to_dict()
+    project["orchestrator_role_id"] = "expert"
+    selected = client.post("/api/projects", json=project)
+    assert selected.status_code == 400
+    assert "仅人工点名的角色不能作为主控" in selected.json()["detail"]
+    assert seeded.get_project("webshop").orchestrator_role_id == "lead"
+
+    template = client.get("/api/role-templates").json()[1]
+    template["manual_only"] = True
+    assert client.post("/api/role-templates", json=template).status_code == 200
+    assert seeded.get_role_template(template["id"]).manual_only is True
+
+    ui = client.get("/assets/js/ui.js").text
+    assert "roleManualOnlyField" in ui and "rf-manual-only" in ui
+    for name in ("roles.js", "settings-runtime.js", "role-card.js", "router.js"):
+        assert "manual_only" in client.get(f"/assets/js/{name}").text, name
+    assert ("!role.manual_only || role.id === selectedId"
+            in client.get("/assets/js/settings-project.js").text)

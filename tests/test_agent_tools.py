@@ -954,3 +954,25 @@ def test_message_publish_reports_chain_budget(seeded):
     budget = result["chain_budget"]
     assert budget["limit"] == seeded.get_project("webshop").max_chain_runs
     assert budget["used"] >= 1
+
+
+def test_message_tool_treats_manual_only_role_as_missing(seeded):
+    """仅人工点名的角色对 Agent 不存在:message.publish 点名它与不存在的角色同一口径。"""
+    chat = ChatEngine(seeded)
+    _config, run_id, token = _run_config(seeded, chat, "lead")
+    identity = chat.agent_tools.authenticate(token)
+    role = seeded.get_role("webshop", "dev")
+    role.manual_only = True
+    seeded.put_role(role)
+    before = len(seeded.list_messages("general"))
+
+    with pytest.raises(AgentToolError) as excinfo:
+        chat.agent_tools.execute(
+            identity, "message.publish", {
+                "channel": "general", "content": "请执行。", "mentions": ["dev"],
+            }, run_id, "dispatch-manual-only")
+    assert excinfo.value.code == "role_not_found"
+    assert "仅人工" not in excinfo.value.message
+    assert len(seeded.list_messages("general")) == before
+    assert not any(row["role_id"] == "dev" for row in
+                   seeded._query("SELECT role_id FROM chat_runs"))

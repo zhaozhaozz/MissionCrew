@@ -41,6 +41,7 @@ function roleCardHtml(role) {
       ${role.name ? `<span class="role-hover-card-name">${esc(role.name)}</span>` : ""}
       ${isOrchestrator ? `<span class="pill" style="color:var(--warn);border-color:var(--warn)">主控</span>` : ""}
       ${role.usage_linkage_enabled ? `<span class="pill">用量联动</span>` : ""}
+      ${role.manual_only ? `<span class="pill" title="只有人类能 @ 它,其他 Agent 看不到">仅人工</span>` : ""}
       ${disabled ? `<span class="pill" title="${esc(roleDisabledReason(role))}">${
           role.usage_auto_disabled ? "用量停用" : "停用"}</span>` : ""}
     </div>

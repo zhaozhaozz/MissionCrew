@@ -47,6 +47,12 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                     400, f"模型 {body.model or '(CLI 默认)'} 的 effort "
                          f"必须是 {'/'.join(allowed)} 之一")
 
+    def reject_manual_only_orchestrator(project, body: RoleTemplateInput) -> None:
+        """主控是执行角色回报的默认去向,不能设为仅人工点名。"""
+        if body.manual_only and project.orchestrator_role_id == body.id:
+            raise HTTPException(
+                409, f"主控角色 @{body.id} 不能设为仅人工点名；请先为项目选择其他主控")
+
     def validate_import_roles(
             roles: list[RoleTemplateInput], existing_ids: set[str],
             overwrite_ids: list[str]) -> set[str]:
@@ -76,6 +82,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         project = store.get_project(body.project_id)
         if project is None:
             raise HTTPException(400, f"项目不存在: {body.project_id}")
+        reject_manual_only_orchestrator(project, body)
         data = body.model_dump()
         existing = store.get_role(body.project_id, body.id)
         # 临时启停只允许走独立端点；编辑名称、模型等字段时保留实时状态，
@@ -125,6 +132,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         current = {role.id: role for role in store.list_roles(project.id)}
         overwritten = validate_import_roles(
             body.roles, set(current), body.overwrite_ids)
+        for item in body.roles:
+            reject_manual_only_orchestrator(project, item)
         next_order = 10 + max((role.sort_order for role in current.values()), default=0)
         imported: list[str] = []
         for item in body.roles:

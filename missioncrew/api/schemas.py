@@ -103,6 +103,7 @@ class RoleTemplateInput(BaseModel):
     model: str = ""            # 空 = CLI 默认模型
     effort: str = ""           # 推理力度,仅支持的 runtime 可设;空 = CLI 默认
     usage_linkage_enabled: bool = False  # 该角色是否跟随账户限额自动启停
+    manual_only: bool = False            # 仅人工点名:Agent 看不到、不能派发给它
     name: str = ""
     description: str = ""
     capabilities: list[str] = []   # 固定能力选项(ROLE_ABILITIES)

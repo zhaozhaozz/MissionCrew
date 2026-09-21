@@ -243,3 +243,39 @@ def test_task_dispatch_and_manual_in_peer_mode(peer):
     sent, _ = dispatch_task(peer, chat, task, target_role_ids=["dev"])
     chat.wait_idle()
     assert sent and _runs(peer) == ["dev"]
+
+
+def test_manual_only_role_stays_outside_peer_dispatch(chat, peer, monkeypatch):
+    """无主控项目里仅人工点名的角色:别人的名册里没有它,它自己也只执行不派发。"""
+    expert = peer.get_role("webshop", "expert")
+    expert.manual_only = True
+    peer.put_role(expert)
+    prompts = {}
+
+    def _start(config):
+        prompts[config.role_id] = config.prompt
+        return RunResult(True, "done", output=f"{config.role_id} 完成。")
+
+    monkeypatch.setattr(runtime_manager, "start", _start)
+    content = "@dev 和 @expert 分别评估。"
+    chat.post("general", "human", content,
+              mention_spans=[_span(content, "dev"), _span(content, "expert")])
+    chat.wait_idle()
+
+    assert sorted(_runs(peer)) == ["dev", "expert"]
+    assert "角色名册" in prompts["dev"] and "@expert" not in prompts["dev"]
+    assert "[其他执行角色]" in prompts["dev"]
+    assert "本项目没有主控" not in prompts["expert"]
+    assert "## 角色名册" not in prompts["expert"]
+    assert "你是仅人工点名的角色" in prompts["expert"]
+
+    # 它经 message.publish 点名别人不派发;别人点名它视同不存在
+    body = "@dev 帮我看看"
+    chat.post("general", "expert", body, author_type="agent",
+              mention_spans=[_span(body, "dev")])
+    chat.wait_idle()
+    assert sorted(_runs(peer)) == ["dev", "expert"]
+    assert json.loads(_msgs(peer)[-1]["mentions"]) == []
+    with pytest.raises(ValueError, match="提及范围无效"):
+        chat.post("general", "dev", "@expert 看看", author_type="agent",
+                  mention_spans=[_span("@expert 看看", "expert")])
