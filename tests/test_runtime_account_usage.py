@@ -1,6 +1,9 @@
 """Runtime 账户限额的统一模型、解析与缓存。"""
 from __future__ import annotations
 
+import json
+import sys
+import threading
 from datetime import datetime, timezone
 
 from missioncrew.core.models import Backend, ExecutionConfig, RunResult
@@ -9,7 +12,7 @@ from missioncrew.runtime import (RuntimeCapabilities, RuntimeManager,
                                  RuntimeUsageWindow)
 from missioncrew.runtime.codex import parse_codex_usage
 from missioncrew.runtime.usage import (parse_claude_usage, parse_grok_usage,
-                                       parse_kimi_usage)
+                                       parse_kimi_usage, probe_claude_usage)
 
 
 def _backend(adapter: str) -> Backend:
@@ -197,7 +200,7 @@ def test_manager_requests_one_usage_refresh_after_execution(tmp_path):
     manager.register("usage-test", provider)
     backend = _backend("usage-test")
     refreshes = []
-    manager.set_usage_refresh_handler(lambda: refreshes.append("done"))
+    manager.set_usage_refresh_handler(lambda backend_id: refreshes.append(backend_id))
 
     result = manager.start(ExecutionConfig(
         task_id="chat:1", stage_name="chat", backend=backend,
@@ -205,4 +208,45 @@ def test_manager_requests_one_usage_refresh_after_execution(tmp_path):
     ))
 
     assert result.success is True
-    assert refreshes == ["done"]
+    assert refreshes == ["usage-test"]
+
+
+class _BarrierProvider(_UsageProvider):
+    """所有后端必须同时在探测中才放行;探测池并发不足会让 Barrier 超时。"""
+
+    def __init__(self, parties: int):
+        super().__init__()
+        self.barrier = threading.Barrier(parties, timeout=3)
+
+    def account_usage(
+            self, backend: Backend, timeout: int = 15) -> RuntimeUsageSnapshot:
+        self.barrier.wait()
+        return super().account_usage(backend, timeout)
+
+
+def test_manager_probes_every_backend_at_once():
+    backends = [Backend(id=f"b{i}", name=f"B{i}", adapter="usage-test")
+                for i in range(6)]
+    manager = RuntimeManager()
+    manager.register("usage-test", _BarrierProvider(len(backends)))
+
+    result = manager.account_usage(backends)
+
+    assert result["summary"] == {"supported": 6, "available": 6, "unavailable": 0}
+
+
+def test_claude_probe_skips_global_mcp_servers(tmp_path):
+    script = tmp_path / "claude"
+    script.write_text(
+        f"#!{sys.executable}\nimport json, sys\n"
+        f"open({str(tmp_path / 'argv')!r}, 'w').write(json.dumps(sys.argv[1:]))\n"
+        "print(json.dumps({'result': 'Current session: 40% used'}))\n")
+    script.chmod(0o755)
+
+    snapshot = probe_claude_usage(_backend("claude_code"), [str(script)])
+
+    argv = json.loads((tmp_path / "argv").read_text())
+    assert argv[:4] == ["-p", "/usage", "--output-format", "json"]
+    assert "--strict-mcp-config" in argv
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert snapshot.status == "ok" and snapshot.windows[0].used_percent == 40

@@ -226,6 +226,6 @@ def test_quota_linkage_only_stops_roles_in_exhausted_pool(store, payload, exhaus
     for group in payload["command"]["data"]["groups"]:
         for bucket in group["buckets"]:
             bucket["remaining_fraction"] = 0 if bucket["id"] == exhausted else 1
-    linkage = RoleUsageLinkage(store, lambda refresh=True: {})
+    linkage = RoleUsageLinkage(store, lambda refresh=True, backend_ids=None: {})
     linkage.reconcile({"usage": [parse_antigravity_usage(backend(), payload).to_dict()]}, now=100)
     assert {name for name in models if not store.get_role("p", name).enabled} == blocked

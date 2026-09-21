@@ -449,14 +449,33 @@ async function renderRuntimeHistory(force = false) {
 
 async function renderRuntimeUsage(force = false) {
   if (!force && Date.now() - runtimeUsageLoadedAt < 3000) return;
-  const query = force ? "?refresh=true" : "";
-  const response = await fetch(`/api/runtime/usage${query}`, { cache: "no-store" });
-  if (!response.ok) return;
-  renderRuntimeUsagePayload(await response.json());
-  runtimeUsageLoadedAt = Date.now();
+  const updated = document.getElementById("runtime-usage-updated");
+  const cards = document.getElementById("runtime-usage-cards");
+  // 强制刷新要重新拉起各 Runtime CLI,通常要数秒:先给出反馈,旧卡片保持可读。
+  if (force) {
+    updated.textContent = "正在重新读取账户限额…";
+    cards.classList.add("is-refreshing");
+  }
+  try {
+    const query = force ? "?refresh=true" : "";
+    const response = await fetch(`/api/runtime/usage${query}`, { cache: "no-store" });
+    if (!response.ok) {
+      if (force) updated.textContent = "读取账户限额失败";
+      return;
+    }
+    renderRuntimeUsagePayload(await response.json());
+    runtimeUsageLoadedAt = Date.now();
+  } catch (error) {
+    if (force) updated.textContent = "读取账户限额失败";
+    throw error;
+  } finally {
+    cards.classList.remove("is-refreshing");
+  }
 }
 
-async function renderRuntimeStatus(force = false) {
+// force:进入页面或点击"立即刷新",立即重绘状态并拉取历史;refreshUsage:只有
+// 手动刷新才为 true——账户限额探测要拉起各 Runtime CLI,进入页面复用服务端缓存。
+async function renderRuntimeStatus(force = false, refreshUsage = false) {
   if (runtimeStatusLoading) return;
   runtimeStatusLoading = true;
   try {
@@ -468,7 +487,7 @@ async function renderRuntimeStatus(force = false) {
       renderRuntimeStatusPayload(data);
       const refreshes = [renderRuntimeHistory(force)];
       // 账户限额只在进入页面或手动刷新时读取，不跟随 10 秒状态轮询。
-      if (force) refreshes.push(renderRuntimeUsage(true));
+      if (force) refreshes.push(renderRuntimeUsage(refreshUsage));
       await Promise.all(refreshes);
     }
   } catch (_) {

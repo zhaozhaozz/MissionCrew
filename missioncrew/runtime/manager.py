@@ -138,15 +138,16 @@ class RuntimeManager:
         claude.set_wake_handler(handler, begin=begin)
 
     def set_usage_refresh_handler(self, handler) -> None:
-        """注册一次性用量刷新通知；每次 Runtime 执行结束后触发。"""
+        """注册一次性用量刷新通知；每次 Runtime 执行结束后以刚结束的 Backend id
+        调用,联动层据此只重探这一个 Runtime,不必拉起全部 CLI。"""
         self._usage_refresh_handler = handler
 
-    def _notify_usage_refresh(self) -> None:
+    def _notify_usage_refresh(self, backend_id: str) -> None:
         handler = self._usage_refresh_handler
         if handler is None:
             return
         try:
-            handler()
+            handler(backend_id)
         except Exception:
             pass
 
@@ -224,7 +225,7 @@ class RuntimeManager:
                         interrupted=prepared.cancellation_requested())
                 except Exception:
                     pass
-            self._notify_usage_refresh()
+            self._notify_usage_refresh(prepared.backend.id)
             raise
         if usage_id:
             try:
@@ -233,7 +234,7 @@ class RuntimeManager:
                     interrupted=prepared.cancellation_requested())
             except Exception:
                 pass
-        self._notify_usage_refresh()
+        self._notify_usage_refresh(prepared.backend.id)
         return result
 
     def stop(self, backend: Backend, session_key: str = "") -> int:
@@ -439,7 +440,9 @@ class RuntimeManager:
             if self.capabilities(backend).account_usage
         ]
         if supported:
-            with ThreadPoolExecutor(max_workers=min(4, len(supported))) as executor:
+            # 每个后端一个线程:CLI 类探测各要拉起一个进程、耗时数秒,总耗时等于
+            # 最慢的一个;限制并发只会让排在后面的慢探测再等一轮。
+            with ThreadPoolExecutor(max_workers=len(supported)) as executor:
                 snapshots = list(executor.map(
                     lambda backend: self._read_account_usage(
                         backend, refresh, timeout),

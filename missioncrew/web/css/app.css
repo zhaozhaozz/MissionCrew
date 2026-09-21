@@ -816,7 +816,8 @@
   .runtime-section-head p { margin: 0; max-width: 820px; }
   .runtime-section-head > span { flex: none; padding-top: 2px; }
   .runtime-usage-grid { display: grid; grid-template-columns: repeat(2, minmax(280px, 1fr));
-                        gap: 14px; }
+                        gap: 14px; transition: opacity .2s; }
+  .runtime-usage-grid.is-refreshing { opacity: .55; }
   .runtime-usage-loading { grid-column: 1 / -1; padding: 34px 18px; text-align: center;
                            color: var(--muted); border: 1px dashed var(--line-strong);
                            border-radius: 12px; background: var(--bg-soft); }

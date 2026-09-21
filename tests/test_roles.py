@@ -664,7 +664,11 @@ def test_system_runtime_status_page_and_api_cover_all_instance_modes(
     assert 'class="channel-background-marker"' in channels
     assert 'class="channel-background-marker channel-head-marker"' in channels
     assert "function pollRuntimeStatus() {\n  renderRuntimeStatus();" in js
-    assert "if (force) refreshes.push(renderRuntimeUsage(true));" in js
+    # 进入页面复用服务端缓存;只有"立即刷新"按钮才强制重探各 Runtime,并给出反馈。
+    assert "if (force) refreshes.push(renderRuntimeUsage(refreshUsage));" in js
+    assert 'if (tab === "runtime-status") renderRuntimeStatus(true);' in router
+    assert 'onclick="renderRuntimeStatus(true, true)">立即刷新' in html
+    assert "正在重新读取账户限额…" in js
     assert "renderRuntimeUsage(force)" not in js
     assert 'data-runtime-role="${esc(r.id)}"' in router
     assert "Claude stream-json" in js and "Codex app-server" in js

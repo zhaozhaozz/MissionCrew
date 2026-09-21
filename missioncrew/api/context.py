@@ -98,8 +98,10 @@ class ApiContext:
         ctx.automation_scheduler = AutomationScheduler(store, ctx.automations)
         ctx.role_usage_linkage = RoleUsageLinkage(
             store,
-            lambda refresh=True: runtime_manager.account_usage(
-                store.list_backends(), refresh=refresh),
+            lambda refresh=True, backend_ids=None: runtime_manager.account_usage(
+                [backend for backend in store.list_backends()
+                 if backend_ids is None or backend.id in backend_ids],
+                refresh=refresh),
         )
         return ctx
 

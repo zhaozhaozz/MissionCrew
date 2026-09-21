@@ -215,9 +215,13 @@ def parse_claude_usage(
 def probe_claude_usage(
         backend: Backend, command: list[str],
         timeout: int = 15) -> RuntimeUsageSnapshot:
+    # /usage 只查账户限额,用不到工具;不显式给空 MCP 配置时 Claude Code 会先按
+    # $HOME 下的全局配置拉起全部 MCP 服务,探测时间翻倍(本机 4.5s → 2.5s)。
+    # --bare 更快,但会让 /usage 不再被识别为内置命令,不能用。
     try:
         result = subprocess.run(
-            [*command, "-p", "/usage", "--output-format", "json"],
+            [*command, "-p", "/usage", "--output-format", "json",
+             "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}'],
             cwd=str(Path.home()), env=host_isolated_environ(),
             stdin=subprocess.DEVNULL,
             capture_output=True, text=True, timeout=timeout, check=False,

@@ -296,7 +296,7 @@
         </div>
         <div class="runtime-status-actions">
           <span class="muted" id="runtime-status-updated">尚未载入</span>
-          <button class="ghost compact" onclick="renderRuntimeStatus(true)">立即刷新</button>
+          <button class="ghost compact" onclick="renderRuntimeStatus(true, true)">立即刷新</button>
         </div>
       </div>
       <div class="runtime-status-cards" id="runtime-status-cards"></div>
@@ -304,7 +304,7 @@
         <div class="runtime-section-head">
           <div>
             <h2>账户用量 <span class="count" id="runtime-usage-count"></span></h2>
-            <p class="muted">任务完成、进入本页或点击“立即刷新”时读取账户限额；进度条表示额度用量，下方三角表示周期时间进度。</p>
+            <p class="muted">进入本页复用最近一次读取结果，点击“立即刷新”重新探测各 Runtime，任务完成后只重探该任务所用的 Runtime；进度条表示额度用量，下方三角表示周期时间进度。</p>
           </div>
           <span class="muted" id="runtime-usage-updated">尚未读取</span>
         </div>

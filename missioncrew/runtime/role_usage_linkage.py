@@ -18,6 +18,10 @@ class RoleUsageLinkage:
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._refresh_requested = threading.Event()
+        # 待刷新的 Backend 集合;None 表示全量。runtime 线程写、后台线程读,
+        # 不与 _guard 共用锁,避免执行结束回调被正在进行的 reconcile 阻塞。
+        self._pending_guard = threading.Lock()
+        self._pending_backends: set[str] | None = set()
         self._thread: threading.Thread | None = None
 
     def state(self) -> dict:
@@ -124,8 +128,12 @@ class RoleUsageLinkage:
             and float(block["disabled_until"]) <= current_time
         )
 
-    def reconcile(self, usage: dict | None = None, now: float | None = None) -> dict:
-        """应用一次限额快照；可由后台计时器或 API 刷新共同调用。"""
+    def reconcile(self, usage: dict | None = None, now: float | None = None,
+                  backend_ids: set[str] | None = None) -> dict:
+        """应用一次限额快照；可由后台计时器或 API 刷新共同调用。
+
+        ``usage`` 为空时自行强制探测;``backend_ids`` 限定只探测这些 Backend,
+        快照里没有的 Backend 保持现有停用/恢复状态不动。"""
         with self._guard:
             current_time = time.time() if now is None else now
             blocks = {
@@ -153,7 +161,7 @@ class RoleUsageLinkage:
                 return self.state()
             if usage is None:
                 try:
-                    usage = self.usage_loader(refresh=True)
+                    usage = self.usage_loader(refresh=True, backend_ids=backend_ids)
                 except Exception:
                     usage = {"usage": []}
             snapshots = {
@@ -200,12 +208,26 @@ class RoleUsageLinkage:
             return None
         return max(0.2, min(deadlines) - time.time())
 
-    def request_refresh(self) -> None:
-        """Runtime 执行结束时唤醒一次刷新；连续完成事件会被合并。"""
-        if not any(role.usage_linkage_enabled for role in self.store.list_roles()):
+    def request_refresh(self, backend_id: str = "") -> None:
+        """Runtime 执行结束时唤醒一次刷新；连续完成事件会被合并。
+
+        只有联动角色正在使用的 Backend 才值得重探;``backend_id`` 留空表示全量。"""
+        linked = [role for role in self.store.list_roles() if role.usage_linkage_enabled]
+        if not linked or (backend_id and all(
+                role.runtime_id != backend_id for role in linked)):
             return
+        with self._pending_guard:
+            if not backend_id:
+                self._pending_backends = None
+            elif self._pending_backends is not None:
+                self._pending_backends.add(backend_id)
         self._refresh_requested.set()
         self._wake.set()
+
+    def _take_pending(self) -> set[str] | None:
+        with self._pending_guard:
+            pending, self._pending_backends = self._pending_backends, set()
+        return pending
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -214,7 +236,7 @@ class RoleUsageLinkage:
                 self._restore_due()
                 if self._refresh_requested.is_set():
                     self._refresh_requested.clear()
-                    self.reconcile()
+                    self.reconcile(backend_ids=self._take_pending())
             except Exception:
                 # 后台联动不能影响主服务；下次任务完成或页面刷新时重试。
                 pass

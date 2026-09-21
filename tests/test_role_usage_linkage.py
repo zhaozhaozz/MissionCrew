@@ -37,7 +37,7 @@ def test_fable_weekly_limit_only_controls_fable_roles(store):
         enabled=False, usage_linkage_enabled=True))
     store.put_role(Role(
         id="third-party", project_id="p", runtime_id="claude", model="sonnet"))
-    linkage = RoleUsageLinkage(store, lambda refresh=True: {"usage": []})
+    linkage = RoleUsageLinkage(store, lambda refresh=True, backend_ids=None: {"usage": []})
 
     linkage.reconcile(_usage(
         _window("weekly", 100), _window("current-week-fable", 20)), now=100)
@@ -65,7 +65,7 @@ def test_claude_session_limit_controls_fable_and_other_models(store):
         store.put_role(Role(
             id=role_id, project_id="p", runtime_id="claude", model=model,
             usage_linkage_enabled=True))
-    linkage = RoleUsageLinkage(store, lambda refresh=True: {"usage": []})
+    linkage = RoleUsageLinkage(store, lambda refresh=True, backend_ids=None: {"usage": []})
 
     linkage.reconcile(_usage(
         _window("session", 100, 150), _window("weekly", 20)), now=100)
@@ -81,7 +81,7 @@ def test_role_switch_off_restores_only_that_automatically_disabled_role(store):
     store.put_role(Role(
         id="manual", project_id="p", runtime_id="claude", model="sonnet",
         enabled=False, usage_linkage_enabled=True))
-    linkage = RoleUsageLinkage(store, lambda refresh=True: _usage(
+    linkage = RoleUsageLinkage(store, lambda refresh=True, backend_ids=None: _usage(
         _window("weekly", 100)))
     linkage.reconcile(now=100)
 
@@ -101,7 +101,7 @@ def test_reset_timer_restores_role_without_periodic_usage_polling(store):
         usage_linkage_enabled=True))
     calls = []
     linkage = RoleUsageLinkage(
-        store, lambda refresh=True: calls.append(refresh) or {"usage": []})
+        store, lambda refresh=True, backend_ids=None: calls.append(refresh) or {"usage": []})
     store.auto_disable_role_for_usage(
         "p", "timed", "claude", ["weekly"], time.time() + 0.08)
 
@@ -140,7 +140,7 @@ def test_changing_linked_role_binding_clears_old_usage_block(store):
     changed = Role.from_dict(previous.to_dict())
     changed.model = "third-party-model"
     store.put_role(changed)
-    linkage = RoleUsageLinkage(store, lambda refresh=True: {"usage": []})
+    linkage = RoleUsageLinkage(store, lambda refresh=True, backend_ids=None: {"usage": []})
 
     linkage.role_updated(changed, previous=previous)
 
@@ -153,10 +153,53 @@ def test_no_linked_role_skips_background_usage_probe(store):
         id="third-party", project_id="p", runtime_id="claude", model="sonnet"))
     calls = []
     linkage = RoleUsageLinkage(
-        store, lambda refresh=True: calls.append(refresh) or _usage())
+        store, lambda refresh=True, backend_ids=None: calls.append(refresh) or _usage())
 
     state = linkage.reconcile()
     linkage.request_refresh()
 
     assert state["linked_role_count"] == 0
     assert calls == []
+
+
+
+def test_execution_end_only_reprobes_that_backend(store):
+    store.put_role(Role(
+        id="dev", project_id="p", runtime_id="codex", model="gpt",
+        usage_linkage_enabled=True))
+    calls = []
+    linkage = RoleUsageLinkage(
+        store, lambda refresh=True, backend_ids=None:
+            calls.append(backend_ids) or {"usage": []})
+
+    linkage.start()
+    try:
+        linkage.request_refresh("kimi")  # 没有联动角色用 kimi:不探测
+        linkage.request_refresh("codex")
+        deadline = time.time() + 1.5
+        while not calls and time.time() < deadline:
+            time.sleep(0.02)
+    finally:
+        linkage.stop()
+
+    assert calls == [{"codex"}]
+
+
+def test_pending_refresh_merges_backends_and_full_refresh_wins(store):
+    store.put_role(Role(
+        id="dev", project_id="p", runtime_id="codex", model="gpt",
+        usage_linkage_enabled=True))
+    store.put_role(Role(
+        id="expert", project_id="p", runtime_id="claude", model="opus",
+        usage_linkage_enabled=True))
+    linkage = RoleUsageLinkage(
+        store, lambda refresh=True, backend_ids=None: {"usage": []})
+
+    linkage.request_refresh("codex")
+    linkage.request_refresh("claude")
+    assert linkage._take_pending() == {"codex", "claude"}
+    linkage.request_refresh("codex")
+    linkage.request_refresh("")
+    linkage.request_refresh("claude")
+    assert linkage._take_pending() is None
+    assert linkage._take_pending() == set()
