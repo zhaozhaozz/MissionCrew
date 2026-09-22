@@ -814,6 +814,53 @@ def test_backend_models_endpoint_merges_own_list_and_runtime(client, seeded, mon
     assert client.get("/api/backends/ghost/models").status_code == 404
 
 
+def test_backend_models_cache_refresh_and_update_invalidation(client, seeded, monkeypatch):
+    """目录缓存 10 分钟;?refresh=true 立即重探,工具更新后缓存作废。
+
+    工具的模型目录会在 CLI 没升级时变化(grok 联网续期时从 xAI 刷新自己的
+    models_cache.json),所以角色编辑器需要一条不等缓存过期的重探入口。"""
+    from missioncrew.runtime import adapters
+    seeded.put_backend(Backend(id="kimi", name="kimi", adapter="kimi",
+                               binary_path="/usr/bin/kimi", version="0.43.1"))
+    live = {"models": ["k2"]}
+    probes = []
+
+    def fake_catalog(b, timeout=25):
+        probes.append(b.id)
+        return list(live["models"]), {}
+
+    monkeypatch.setattr(adapters, "list_runtime_model_catalog", fake_catalog)
+    assert client.get("/api/backends/kimi/models").json()["discovered"] == ["k2"]
+    live["models"] = ["k3", "k2"]                              # 厂商放出新模型
+    assert client.get("/api/backends/kimi/models").json()["discovered"] == ["k2"]   # 缓存内复用
+    refreshed = client.get("/api/backends/kimi/models?refresh=true").json()
+    assert refreshed["discovered"] == ["k3", "k2"]
+    assert probes == ["kimi", "kimi"]
+
+    # 工具更新后作废缓存:下一次普通查询就重探,不必等 10 分钟
+    live["models"] = ["k4", "k3", "k2"]
+    monkeypatch.setattr(adapters, "run_update", lambda b, timeout=600: (True, "done"))
+    monkeypatch.setattr("missioncrew.runtime.manager.shutil.which",
+                        lambda name: "/usr/bin/kimi")
+    monkeypatch.setattr(adapters, "_cli_version", lambda binary: "0.43.2")
+    assert client.post("/api/backends/kimi/update").json()["version"] == "0.43.2"
+    assert client.get("/api/backends/kimi/models").json()["discovered"] == ["k4", "k3", "k2"]
+    assert probes == ["kimi"] * 3
+
+
+def test_role_editors_offer_model_catalog_refresh(client):
+    """模型清单在页面内只复用 10 分钟,项目角色与全局模板两个编辑器都有强制重探入口。"""
+    roles = client.get("/assets/js/roles.js").text
+    settings_runtime = client.get("/assets/js/settings-runtime.js").text
+    css = client.get("/assets/css/app.css").text
+    assert "const MODEL_CATALOG_TTL_MS = 10 * 60 * 1000" in roles
+    assert 'onclick="refreshModelOptions(true)"' in roles
+    assert '"?refresh=true"' in roles
+    assert "${modelCatalogLabel()}" in roles
+    assert "${modelCatalogLabel()}" in settings_runtime
+    assert ".form .label-with-action { display: flex; align-items: baseline" in css
+
+
 def test_claude_splits_aliases_and_versioned_ids():
     """claude 无枚举命令:别名进工具自带清单,带版本号的型号才归 runtime 目录。"""
     from missioncrew.runtime import adapters

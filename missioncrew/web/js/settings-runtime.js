@@ -107,7 +107,7 @@ function editGlobalRoleTemplate(id) {
     <div class="row">
       <div><label>Runtime(复制到新项目后固定)</label>
         <select id="rf-backend" onchange="window._editingRoleModel=null;window._editingRoleEffort=null;refreshModelOptions();refreshEffortOptions()">${backendOptions}</select></div>
-      <div><label>模型(清单来自 runtime)</label><select id="rf-model"></select></div>
+      <div>${modelCatalogLabel()}<select id="rf-model" onchange="refreshEffortOptions()"></select></div>
       <div><label>Effort(推理力度)</label><select id="rf-effort"></select></div>
     </div>
     ${roleUsageLinkageField(role)}

@@ -354,7 +354,7 @@ function editRole(id, templateId = "") {
     <div class="row">
       <div><label>Runtime(定义角色时固定,必选)</label>
         <select id="rf-backend" onchange="window._editingRoleModel=null;window._editingRoleEffort=null;refreshModelOptions();refreshEffortOptions()">${backendOpts}</select></div>
-      <div><label>模型(清单来自 runtime)</label>
+      <div>${modelCatalogLabel()}
         <select id="rf-model" onchange="refreshEffortOptions()"></select></div>
       <div><label>Effort(推理力度,仅部分 runtime 支持)</label>
         <select id="rf-effort"></select></div>
@@ -381,31 +381,61 @@ function importGlobalRoleTemplate(templateId) {
 }
 
 // 每个角色必须先选 runtime;模型下拉先列工具自带清单((CLI 默认) + 稳定别名),
-// 再把 runtime 目录里剩下的带版本号型号归入「来自 runtime」,服务端缓存 10 分钟。
-const modelCatalogCache = {};   // backend id -> {configured, discovered}
+// 再把 runtime 目录里剩下的带版本号型号归入「来自 runtime」。目录由服务端向
+// 工具本体探测并缓存 10 分钟;页面内也只复用 10 分钟,单页长期不刷新时工具新上
+// 的模型仍会在下次打开编辑器时出现。等不及缓存过期(工具刚更新、厂商刚放出新
+// 模型)时,下拉旁的 ↻ 走 ?refresh=true 让服务端立即重探。
+const MODEL_CATALOG_TTL_MS = 10 * 60 * 1000;
+const modelCatalogCache = {};   // backend id -> {at, configured, discovered, efforts}
+const modelCatalogRefreshing = new Set();   // 正在强制重探的 backend id
 
-async function refreshModelOptions() {
+// 模型下拉的标签行:按钮放在 label 外面,否则点标签文字也会触发重探
+function modelCatalogLabel() {
+  return `<div class="label-with-action"><label>模型(清单来自 runtime)</label>` +
+    `<button type="button" class="icon-btn" onclick="refreshModelOptions(true)" ` +
+    `title="重新向 runtime 拉取模型清单(工具刚更新或新模型不在列表里时点这里)">↻</button></div>`;
+}
+
+function cachedModelCatalog(bid) {
+  const entry = modelCatalogCache[bid];
+  if (entry && Date.now() - entry.at <= MODEL_CATALOG_TTL_MS) return entry;
+  delete modelCatalogCache[bid];
+  return null;
+}
+
+async function refreshModelOptions(force = false) {
   const bid = document.getElementById("rf-backend").value;
   const sel = document.getElementById("rf-model");
-  const cur = window._editingRoleModel;
   if (!bid) {
     sel.innerHTML = `<option value="">先选择 runtime</option>`;
     sel.disabled = true;
     return;
   }
   sel.disabled = false;
-  let catalog = modelCatalogCache[bid];
+  let catalog = force ? null : cachedModelCatalog(bid);
   if (!catalog) {
-    sel.innerHTML = `<option value="">加载模型清单…</option>`;
+    if (force) {
+      if (modelCatalogRefreshing.has(bid)) return;   // 已在重探中,不重复起进程
+      modelCatalogRefreshing.add(bid);
+      // 下拉已经渲染过真实选项时,记住用户当前选的模型,重探后保持选中;
+      // 还停在占位项时不记(记了会把角色已存的模型冲成空值)
+      if (sel.dataset.loaded) window._editingRoleModel = sel.value;
+    }
+    delete sel.dataset.loaded;
+    sel.innerHTML = `<option value="">${force ? "重新向 runtime 拉取模型清单…" : "加载模型清单…"}</option>`;
     try {
-      catalog = await api("GET", `/api/backends/${encodeURIComponent(bid)}/models`);
-      modelCatalogCache[bid] = catalog;
+      catalog = await api("GET", `/api/backends/${encodeURIComponent(bid)}/models` +
+        (force ? "?refresh=true" : ""));
+      modelCatalogCache[bid] = { at: Date.now(), ...catalog };
     } catch (e) {   // 查询失败:退回工具自带清单
       const b = overview.backends.find(x => x.id === bid);
       catalog = { configured: b?.models || [], discovered: [] };
+    } finally {
+      modelCatalogRefreshing.delete(bid);
     }
     if (document.getElementById("rf-backend")?.value !== bid) return;  // 期间已切换
   }
+  const cur = window._editingRoleModel;
   // configured 是模型名数组;旧版接口返回过 {name,tier,cost},一并兼容
   const configured = (catalog.configured || []).map(
     m => String(typeof m === "string" ? m : (m?.name ?? "")));
@@ -423,6 +453,7 @@ async function refreshModelOptions() {
   if (cur && !configuredNames.has(cur) && !extra.includes(cur))
     opts += `<option value="${esc(cur)}" selected>${esc(cur)}(当前值)</option>`;
   sel.innerHTML = opts;
+  sel.dataset.loaded = "1";
   refreshEffortOptions();   // 档位可能按模型不同,模型清单到位后重算一次
 }
 

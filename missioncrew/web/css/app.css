@@ -756,6 +756,9 @@
   .form textarea { resize: vertical; }
   .form .row { display: flex; gap: 12px; }
   .form .row > div { flex: 1; }
+  /* 标签旁带一个小动作按钮(如模型清单的重探):按基线对齐,不改标签自身的上下边距 */
+  .form .label-with-action { display: flex; align-items: baseline; gap: 4px; }
+  .form .label-with-action .icon-btn { font-size: 14px; padding: 0 5px; }
   .chips { display: flex; flex-wrap: wrap; gap: 6px; }
   /* 角色标识色:取色器与预设色板同排,高度对齐同行的文本输入框 */
   .color-field { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }

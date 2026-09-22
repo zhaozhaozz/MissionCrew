@@ -251,6 +251,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             fresh = runtime_manager.refresh_installation(fresh)
             if fresh.binary_path:
                 store.put_backend(fresh)
+            # 新版本可能带来新模型:作废该工具的目录缓存,角色编辑器下次打开即重探
+            ctx.forget_model_catalog(backend_id)
             store.audit("human", "backend_update", detail=(
                 f"backend={backend_id} ok={ok} {old_version} -> {fresh.version}"))
             return {"ok": ok, "old_version": old_version, "version": fresh.version,
@@ -269,6 +271,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 store.put_backend(b)
                 added.append(b.id)
             else:  # 刷新检测信息与工具自带模型清单,保留用户的启停/配额调整
+                if (existing.binary_path, existing.version) != (b.binary_path, b.version):
+                    ctx.forget_model_catalog(b.id)   # 换了二进制或版本,旧目录作废
                 existing.binary_path, existing.version = b.binary_path, b.version
                 existing.models = b.models
                 store.put_backend(existing)

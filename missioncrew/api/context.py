@@ -117,6 +117,11 @@ class ApiContext:
             self.model_catalog_cache[backend.id] = (time.time(), models, efforts)
         return models, efforts
 
+    def forget_model_catalog(self, backend_id: str) -> None:
+        """工具更新或重新检测到二进制/版本变化后丢弃目录缓存,下次查询重探。"""
+        with self.model_catalog_guard:
+            self.model_catalog_cache.pop(backend_id, None)
+
     def discovered_models(self, backend, refresh: bool = False) -> list[str]:
         return self.discovered_catalog(backend, refresh=refresh)[0]
 

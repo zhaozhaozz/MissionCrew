@@ -244,7 +244,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 角色编辑器的模型下拉合并两个来源:
 
 1. **工具自带清单**(`Backend.models`):只有模型名的有序列表,`""` 表示 CLI 默认、排在最前。检测时按 `KNOWN_MODELS` 刷新,pi 改从平台 `models.json` 读取并在 `PUT /api/model-providers` 后同步刷新;两者都**不可编辑**——`POST /api/backends` 不接受 `models` 字段。平台不跟踪单个模型的档位与成本,配额一律按工具级 `cost_per_run` 扣减。
-2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟):
+2. **runtime 动态发现**(`list_runtime_models`,服务端缓存 10 分钟,页面内同样只复用 10 分钟;角色编辑器模型下拉旁的 ↻ 经 `GET /api/backends/{id}/models?refresh=true` 强制重探,工具更新或重新检测到二进制/版本变化时服务端缓存作废——工具自己的模型目录也可能在 CLI 没升级时变化,例如 grok 会在联网续期时从 xAI 刷新 `~/.grok/models_cache.json`,新模型只有重探后才进下拉):
    - codex:默认通过 `codex app-server` 的 `model/list` 分页读取当前账号可用目录；协议启动失败时退回 `codex debug models --bundled`；
    - antigravity:`agy models` 返回制表符分隔的模型 slug 与显示名，平台只保留 slug；执行使用 `--model`，空值沿用 CLI 默认；
    - opencode:`opencode models`(行式 `provider/model` 目录,过滤日志噪声行);
