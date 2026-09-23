@@ -760,6 +760,48 @@ def test_claude_background_task_records_origin_trigger(tmp_path):
     assert session._pending_wakes[0]["origin_trigger"] == 42
 
 
+def test_claude_streaming_wake_inherits_running_task_origin(tmp_path):
+    """Monitor 这类流式后台任务每条事件都唤醒模型但不发 task_notification:
+    唤醒继承仍在运行的后台任务的发起消息,唤醒 turn 里再启动的任务也沿用它,
+    人类直接点名启动的监控汇报因此不会被当成普通回复交回主控。"""
+    from types import SimpleNamespace
+
+    from missioncrew.runtime import claude as claude_mod
+    session = claude_mod._ClaudeSession(
+        ["claude"], "b-claude", "general::dev2", str(tmp_path), persistent=True)
+    session._active_config = SimpleNamespace(emit=None, trigger_message_id=42)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "task_started", "task_id": "mon1",
+            "task_type": "local_bash", "description": "CI job results"})
+    finally:
+        session._active_config = None
+    # 监控输出一条事件:空闲唤醒,没有排队通知
+    session._handle_message({
+        "type": "system", "subtype": "init", "session_id": "native-m"})
+    assert session._wake_sink.tasks == [{"origin_trigger": 42}]
+    # 唤醒 turn 里又起了一个后台命令,它结束后的唤醒同样归到 42
+    session._handle_message({
+        "type": "system", "subtype": "task_started", "task_id": "bg2",
+        "task_type": "local_bash", "description": "check upload"})
+    assert session._background_tasks["bg2"]["origin_trigger"] == 42
+    session._handle_message({
+        "type": "result", "subtype": "success", "is_error": False,
+        "result": "ok"})
+
+    # 仍在运行的任务来自不同发起消息:无从判断,不猜
+    session._active_config = SimpleNamespace(emit=None, trigger_message_id=77)
+    try:
+        session._handle_message({
+            "type": "system", "subtype": "task_started", "task_id": "bg3",
+            "task_type": "local_bash", "description": "other"})
+    finally:
+        session._active_config = None
+    session._handle_message({
+        "type": "system", "subtype": "init", "session_id": "native-m"})
+    assert session._wake_sink.tasks == []
+
+
 def test_claude_resume_replay_does_not_end_turn(tmp_path):
     """--resume 启动回放的 stopped 通知与空 init/result 不结束本轮;
     真正的 result 到达后正常收口,过程流里能看到两条说明。"""

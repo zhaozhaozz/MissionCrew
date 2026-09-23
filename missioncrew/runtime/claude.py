@@ -63,6 +63,12 @@ def _agent_usage(usage: object) -> dict:
                        tool_uses=usage.get("tool_uses"), duration_ms=usage.get("duration_ms"))
 
 
+def _tasks_origin(tasks: list[dict]) -> int:
+    """唤醒任务列表里记下的发起消息 id;没有则 0。"""
+    return next((int(task.get("origin_trigger") or 0) for task in tasks
+                 if task.get("origin_trigger")), 0)
+
+
 @dataclass
 class _TurnSink:
     """一个 turn 的输出汇聚点。运行 turn 落到 config.emit;自唤醒 turn
@@ -551,14 +557,19 @@ class _ClaudeSession:
         if not task_id or task_id in self._background_tasks:
             return
         config = self._active_config
+        # 记录发起 turn 的触发消息:唤醒汇报按它继承派发语义
+        # (人类直接点名的结果不自动交回主控)。自唤醒 turn 里启动的
+        # 任务没有运行配置,沿用该唤醒 turn 继承到的发起消息。
+        origin = int(getattr(config, "trigger_message_id", 0) or 0)
+        wake = self._wake_sink
+        if not origin and wake is not None:
+            origin = _tasks_origin(wake.tasks)
         meta = {
             "task_id": task_id,
             "task_type": str(message.get("task_type") or "local_bash"),
             "description": str(message.get("description") or "后台命令"),
             "started_at": time.time(),
-            # 记录发起 turn 的触发消息:唤醒汇报按它继承派发语义
-            # (人类直接点名的结果不自动交回主控)
-            "origin_trigger": int(getattr(config, "trigger_message_id", 0) or 0),
+            "origin_trigger": origin,
         }
         self._background_tasks[task_id] = meta
         emit_json(self._emit(), "backend_agent", {
@@ -799,6 +810,16 @@ class _ClaudeSession:
             # 紧接着再起一个 turn 来汇报
             if self._pending_wakes:
                 sink.tasks = [self._pending_wakes.pop(0)]
+            else:
+                # Monitor 等流式后台任务每条事件都唤醒模型,却要到整体结束
+                # 才发 task_notification。这类唤醒没有排队通知,只能从仍在
+                # 运行的后台任务继承发起消息;发起消息不唯一时无从判断,
+                # 保持空(按常规回路交回主控)。
+                origins = {int(task.get("origin_trigger") or 0)
+                           for task in self._background_tasks.values()}
+                origins.discard(0)
+                if len(origins) == 1:
+                    sink.tasks = [{"origin_trigger": origins.pop()}]
             self._turn_serial += 1
             self._wake_sink = sink
         # 登记完 sink 再请平台落成运行:此时 run() 已被挡在 turn 之外,
