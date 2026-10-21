@@ -338,8 +338,8 @@ An orchestrator's turn:
   `MISSIONCREW_TRIGGER` and the webhook event from `MISSIONCREW_WEBHOOK_EVENT_FILE`, and filters
   the events it cares about itself.
 - Scripts are not in your workspace: `automation.list` lists them, and with `id` returns the full
-  script and its recent runs (status, exit code, the tail of stdout/stderr), so read it before
-  changing or fixing a script. `automation.run` starts a manual run in the background (scripts
+  script and its recent runs (status, exit code, the tail of stdout/stderr; `before_id` pages
+  back through all kept runs), so read it before changing or fixing a script. `automation.run` starts a manual run in the background (scripts
   cannot call it themselves); check the result later with `automation.list` instead of waiting
   in a loop.
 - Before writing a script, read `platform-docs/automation.md`: it covers the environment

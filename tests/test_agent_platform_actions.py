@@ -256,6 +256,25 @@ def test_automation_list_and_run_from_agent(seeded):
     assert missing.value.code == "not_found"
 
 
+def test_automation_list_pages_back_through_kept_runs(seeded):
+    chat = ChatEngine(seeded, max_workers=2)
+    save_automation(seeded, "webshop", id="hook", name="钩子", script="exit 0", cron="")
+    ids = [seeded.start_automation_run("webshop:hook", "webshop", "webhook", f"push #{n}")
+           for n in range(25)]
+    identity, run_id = _identity(seeded, chat)
+
+    first = _call(chat, identity, run_id, "automation.list", {"id": "hook", "runs": 20})
+    assert first["run_count"] == 25
+    assert [run["id"] for run in first["runs"]] == ids[:4:-1]
+    older = _call(chat, identity, run_id, "automation.list",
+                  {"id": "hook", "runs": 20, "before_id": first["runs"][-1]["id"]})
+    assert [run["id"] for run in older["runs"]] == ids[4::-1]
+    assert older["runs"][-1]["trigger_detail"] == "push #0"
+    with pytest.raises(AgentToolError) as bad:
+        _call(chat, identity, run_id, "automation.list", {"id": "hook", "before_id": -1})
+    assert bad.value.code == "invalid_arguments"
+
+
 def test_automation_run_is_not_allowed_in_script_allowlist(seeded):
     with pytest.raises(ValueError):
         save_automation(seeded, "webshop", id="loop", script="echo",

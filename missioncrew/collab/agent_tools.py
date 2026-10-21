@@ -497,11 +497,14 @@ ACTION_DEFINITIONS = {
     "automation.list": {
         "description": ("On demand, list project automation scripts (schedule, enabled, actions "
                         "allowlist, last run); pass id to get the full script and its recent "
-                        "runs with the tail of their output, e.g. to fix a failing script"),
+                        "runs with the tail of their output, e.g. to fix a failing script; "
+                        "page back with before_id through all kept runs (run_count)"),
         "orchestrator_only": True,
         "arguments": {
             "id": "optional short script id",
             "runs": "with id: how many recent runs to return; default 5, at most 20",
+            "before_id": ("with id: only return earlier runs with id below this value, "
+                          "for paging back"),
         },
     },
     "automation.run": {
@@ -600,7 +603,7 @@ ACTION_ARGUMENTS = {
         "timeout_seconds",
     },
     "automation.delete": {"id"},
-    "automation.list": {"id", "runs"},
+    "automation.list": {"id", "runs", "before_id"},
     "automation.run": {"id"},
     "recycle.list": set(),
     "recycle.restore": {"id"},
@@ -1954,8 +1957,11 @@ class AgentActionService:
             limit = arguments.get("runs", 5)
             if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 20:
                 raise AgentToolError("invalid_arguments", "runs 必须是 1..20 的整数")
+            before_id = arguments.get("before_id", 0)
+            if not isinstance(before_id, int) or isinstance(before_id, bool) or before_id < 0:
+                raise AgentToolError("invalid_arguments", "before_id 必须是非负整数")
             runs = []
-            for row in self.store.list_automation_runs(automation.id, limit):
+            for row in self.store.list_automation_runs(automation.id, limit, before_id):
                 run = {key: row.get(key) for key in (
                     "id", "trigger", "trigger_detail", "status", "exit_code", "error",
                     "started_at", "finished_at")}
@@ -1964,8 +1970,10 @@ class AgentActionService:
                     run[stream] = text[-AUTOMATION_OUTPUT_TAIL:]
                     run[f"{stream}_truncated"] = len(text) > AUTOMATION_OUTPUT_TAIL
                 runs.append(run)
-            return {"summary": f"自动化脚本 {automation.name} 的配置与最近 {len(runs)} 次运行",
+            return {"summary": (f"自动化脚本 {automation.name} 的配置与最近 {len(runs)} 次运行"
+                                + (f"(id < {before_id})" if before_id else "")),
                     "automation": {**summary_row(automation), "script": automation.script},
+                    "run_count": self.store.count_automation_runs(automation.id),
                     "runs": runs}
         rows = [summary_row(item) for item in self.store.list_automations(project.id)]
         return {"summary": f"项目 {project.id} 共 {len(rows)} 个自动化脚本",
