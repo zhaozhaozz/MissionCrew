@@ -28,8 +28,8 @@ from .webhooks import new_webhook_secret
 
 # 单次运行 stdout/stderr 各自的持久化上限;超出部分保留尾部(更接近失败现场)
 AUTOMATION_OUTPUT_LIMIT = 20000
-# 每个脚本保留的运行记录条数(webhook 可能频繁触发)
-AUTOMATION_RUNS_KEEP = 200
+# 运行记录按时间保留(每个脚本最近一条除外),不限条数
+AUTOMATION_RUNS_RETENTION_SECONDS = 7 * 24 * 3600
 # 脚本运行期间到达的 webhook 事件在内存里排队的上限;服务重启时丢弃
 WEBHOOK_QUEUE_LIMIT = 20
 # webhook 事件文件名,位于脚本工作目录,运行结束即删除
@@ -171,6 +171,11 @@ class AutomationService:
         with self._guard:
             return set(self._running)
 
+    def prune_runs(self) -> None:
+        """清掉超出保留期的运行记录;每次运行结束和每小时的系统任务都会调用。"""
+        self.store.prune_automation_runs(
+            time.time() - AUTOMATION_RUNS_RETENTION_SECONDS)
+
     def trigger(self, automation: Automation, trigger: str = "manual") -> int:
         """启动一次后台运行并返回运行记录 id;同一脚本不并发。"""
         with self._guard:
@@ -235,7 +240,7 @@ class AutomationService:
                 run_id, status, exit_code=exit_code,
                 stdout=_clip_output(stdout), stderr=_clip_output(stderr),
                 error=error)
-            self.store.prune_automation_runs(automation.id, AUTOMATION_RUNS_KEEP)
+            self.prune_runs()
             self.store.audit(
                 "platform", "automation_run_finished",
                 detail=(f"project={automation.project_id} "

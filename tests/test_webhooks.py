@@ -19,7 +19,8 @@ from starlette.testclient import TestClient as StarletteClient
 from missioncrew.api import create_app
 from missioncrew.api import webhooks as webhook_api
 from missioncrew.collab import automations as automation_mod
-from missioncrew.collab.automations import AutomationService, save_automation
+from missioncrew.collab.automations import (AUTOMATION_RUNS_RETENTION_SECONDS,
+                                           AutomationService, save_automation)
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.webhooks import (WebhookRejected, new_webhook_secret,
                                          verify_webhook, webhook_event)
@@ -292,11 +293,18 @@ def test_manual_and_cron_runs_see_their_trigger(seeded):
     assert manual["stdout"].strip() == "manual event_file=none"
 
 
-def test_run_records_are_pruned(seeded):
-    automation, _ = save_automation(seeded, "webshop", id="noisy", script="true")
-    ids = [seeded.start_automation_run(automation.id, "webshop", "webhook") for _ in range(5)]
-    seeded.prune_automation_runs(automation.id, 3)
-    assert [run["id"] for run in seeded.list_automation_runs(automation.id)] == ids[:1:-1]
+def test_run_records_are_pruned_by_age(seeded):
+    noisy, _ = save_automation(seeded, "webshop", id="noisy", script="true")
+    rare, _ = save_automation(seeded, "webshop", id="rare", script="true")
+    ids = [seeded.start_automation_run(noisy.id, "webshop", "webhook") for _ in range(5)]
+    rare_id = seeded.start_automation_run(rare.id, "webshop", "cron")
+    old = time.time() - AUTOMATION_RUNS_RETENTION_SECONDS - 60
+    seeded._execute("UPDATE automation_runs SET started_at=? WHERE id IN (?,?,?)",
+                    (old, ids[0], ids[1], rare_id))
+    AutomationService(seeded, None).prune_runs()
+    assert [run["id"] for run in seeded.list_automation_runs(noisy.id)] == ids[:1:-1]
+    # 过了保留期但仍是该脚本最近一条,保留
+    assert [run["id"] for run in seeded.list_automation_runs(rare.id)] == [rare_id]
 
 
 # ---- 密钥只给人看 ----

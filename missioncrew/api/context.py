@@ -102,6 +102,9 @@ class ApiContext:
         ctx.automations = AutomationService(store, ctx.chat.agent_tools)
         ctx.chat.agent_tools.bind_automation_trigger(ctx.automations.trigger)
         ctx.automation_scheduler = AutomationScheduler(store, ctx.automations)
+        # 长时间没再运行的脚本也要按期清理运行记录
+        ctx.automation_scheduler.register_system_job(
+            "automation-runs-prune", "0 * * * *", ctx.automations.prune_runs)
         ctx.role_usage_linkage = RoleUsageLinkage(
             store,
             lambda refresh=True, backend_ids=None: runtime_manager.account_usage(

@@ -12,7 +12,7 @@
 - **创建**：Web 侧栏「自动化」的 ＋，或让主控在聊天里用 `automation.save` 建；主控改脚本前用 `automation.list`（带 `id`）读取当前全文，改完可用 `automation.run` 立即试跑。字段：`id`、`name`、`description`、`script`（带 shebang 时按可执行文件运行，否则交给 bash）、`cron`（五段 crontab，空 = 不定时）、`enabled`（只管定时触发）、`webhook`（是否接受 webhook 投递，可与 cron 同时开启，见下文「Webhook 触发」）、`actions`、`timeout_seconds`。手动触发始终可用。
 - **调度**：所有 cron 触发都走统一定时入口；同一脚本同时只运行一次，上一次还没跑完时定时与手动触发直接跳过，webhook 投递排队；停机期间错过的定时触发不补跑。
 - **权限**：脚本身份的可用动作以自身 `actions` 白名单为事实源，默认 `task.create`、`task.update`、`task.brief`、`message.publish`、`document.publish`、`dashboard.save`、`board_source.save`；审计 actor 记为 `automation:<项目>:<脚本>`。
-- **运行记录**：自动化详情页可查看每次运行的触发方式（定时 / Webhook / 手动，webhook 另记来源、事件名与投递 id）、退出码与 stdout/stderr。退出码非零记为失败。每个脚本只保留最近 200 条运行记录。主控用 `automation.list` 带 `id` 读取最近几次运行（输出只回传末尾），需要更早的记录时用 `before_id` 向前翻页，据此排查失败的脚本。
+- **运行记录**：自动化详情页可查看每次运行的触发方式（定时 / Webhook / 手动，webhook 另记来源、事件名与投递 id）、退出码与 stdout/stderr。退出码非零记为失败。运行记录保留 7 天，不限条数；每个脚本最近一次的记录始终保留。主控用 `automation.list` 带 `id` 读取最近几次运行（输出只回传末尾），需要更早的记录时用 `before_id` 向前翻页，据此排查失败的脚本。
 
 ### 运行环境
 

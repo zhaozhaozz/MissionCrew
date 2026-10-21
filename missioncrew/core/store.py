@@ -1118,13 +1118,13 @@ class Store:
             (automation_id, project_id, trigger, trigger_detail, time.time()),
         )
 
-    def prune_automation_runs(self, automation_id: str, keep: int) -> None:
-        """只保留该脚本最近 keep 条运行记录(webhook 频繁触发时运行表不会无限增长)。"""
+    def prune_automation_runs(self, cutoff: float) -> None:
+        """删除 cutoff 之前开始的运行记录;每个脚本最近一条始终保留,
+        低频脚本过了保留期也能看到上一次的结果。"""
         self._execute(
-            "DELETE FROM automation_runs WHERE automation_id=? AND id NOT IN "
-            "(SELECT id FROM automation_runs WHERE automation_id=? "
-            "ORDER BY id DESC LIMIT ?)",
-            (automation_id, automation_id, keep),
+            "DELETE FROM automation_runs WHERE started_at<? AND id NOT IN "
+            "(SELECT MAX(id) FROM automation_runs GROUP BY automation_id)",
+            (cutoff,),
         )
 
     def finish_automation_run(self, run_id: int, status: str,
