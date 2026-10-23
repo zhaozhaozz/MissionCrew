@@ -4,7 +4,7 @@ MissionCrew 把聊天角色对平台状态的修改收敛到一个 Runtime 无�
 
 这套边界适用于所有聊天 Runtime。Claude、Codex、ACP 和打印模式 CLI 都通过同一组环境变量、角色令牌和动作契约调用 MissionCrew，Runtime provider 不需要导入 Store、FastAPI 或各资源的内部实现。
 
-对人类而言，这意味着频道、Task、文档、准则、Skill、面板与自动化脚本都可以由主控在对话中自动创建、查看和维护（包括修改与归档频道、归档 Task、读取面板/数据源/脚本的当前配置、试跑脚本）——人类在聊天里提需求，主控调用下文的动作完成并把资源链接贴回频道；普通角色也能创建和更新 Task、发布文档。Web 页面与 CLI 只是查看与人工干预的入口，不是这些资源唯一的录入方式。
+对人类而言，这意味着频道、Task、文档、准则、Skill、面板与自动化脚本都可以由主控在对话中自动创建、查看和维护（包括修改与归档频道、归档 Task、读取面板/数据源/脚本的当前配置、试跑脚本）——人类在聊天里提需求，主控调用下文的动作完成并把资源链接贴回频道；普通角色也能创建和更新 Task、发布文档、创建频道，并发消息提及主控。Web 页面与 CLI 只是查看与人工干预的入口，不是这些资源唯一的录入方式。
 
 ## 调用链
 
@@ -66,9 +66,10 @@ CLI 共四个子命令：`actions`、`call <action> --arguments '<JSON>'`（参�
 | `document.rename` | 允许 | 允许 |
 | `document.history` | 允许 | 允许 |
 | `document.delete` | 禁止 | 允许 |
-| `message.publish` | 禁止 | 允许 |
+| `message.publish` | 允许（`mentions` 只能是主控） | 允许 |
 | `channel.runs.list` / `channel.run.stop` / `channel.history` | 禁止 | 允许 |
-| `channel.create` / `channel.update` / `channel.archive` / `channel.restore` | 禁止 | 允许 |
+| `channel.create` | 允许 | 允许 |
+| `channel.update` / `channel.archive` / `channel.restore` | 禁止 | 允许 |
 | `dashboard.list` / `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
 | `board_source.list` / `board_source.save` / `board_source.delete` | 禁止 | 允许 |
 | `guideline.list` / `guideline.history` / `guideline.save` / `guideline.delete` | 禁止 | 允许 |
@@ -76,11 +77,11 @@ CLI 共四个子命令：`actions`、`call <action> --arguments '<JSON>'`（参�
 | `automation.list` / `automation.save` / `automation.run` / `automation.delete` | 禁止 | 允许 |
 | `recycle.list` / `recycle.restore` / `recycle.purge` | 禁止 | 允许 |
 
-项目未选择主控（无主控模式）时没有「普通角色」一列：每个角色都按「项目主控」列授权，但角色之间不能派发——`message.publish` 只能发消息，带非空 `mentions` 时返回 `permission_denied`（`actions` 列出的该动作说明也不含 `mentions` 参数）；角色只由人类点名启动，结果只留在频道。派发权限由 `Project.can_dispatch` 判定，只有主控为真。
+项目未选择主控（无主控模式）时没有「普通角色」一列：每个角色都按「项目主控」列授权，但角色之间不能派发——`message.publish` 只能发消息，带非空 `mentions` 时返回 `permission_denied`（`actions` 列出的该动作说明也不含 `mentions` 参数）；角色只由人类点名启动，结果只留在频道。派发权限由 `Project.can_dispatch`（能否派发任意角色，只有主控为真）与 `Project.can_mention`（能否提及某个角色）判定。
 
 `guideline.save` 与 Web 准则编辑器共用准则 Git 版本库。`skill.save` 同样把当前完整 Skill 目录提交到项目 Skill 版本库，因此已有 `scripts/`、`references/`、`assets/` 等辅助文件会与更新后的 `SKILL.md` 一起构成版本；两个动作成功后都返回 `revision`，并记录当前角色。准则重命名会继续原文件的历史链。删除属于主控权限：文档、准则、Skill 和面板都会进入项目统一回收站，文档、准则与 Skill 删除同时形成新 Git 提交，历史不会被抹除。`recycle.restore` 在原标识已被占用时返回 `already_exists` 并保留回收项；`recycle.purge` 是不可撤销的永久删除，只应在用户明确要求时调用。工具响应不会暴露回收目录的本地路径。
 
-`message.publish` 的 `mentions` 是独立的角色 ID 数组，也是**唯一**的派发通道：只有数组中的合法角色会被调度，开启「仅人工点名」的角色对 Agent 视同不存在（返回 `role_not_found`，自动化脚本身份不受此限）；正文里出现的 `@reviewer`、`@[reviewer]` 等文本一律只是普通内容。主控的 Runtime 最终回复会由平台自动发布到当前 Channel；普通答复、结论和状态汇总不应再通过空 `mentions` 的 `message.publish` 重复发布。派工仍使用 `message.publish` 并显式传入目标 `mentions`。普通角色既没有该动作的 scope，也看不到其他执行角色的名册。至少一个角色实际启动时，结果还会返回 `handoff: "end_turn"` 和后续恢复说明；主控应立即在 Runtime 最终回复中简短说明已派发并结束当前 turn，不再为这条说明调用一次 `message.publish`；同时不用 `sleep` 或轮询频道、工作树、运行状态来等待，也不应向执行中的同一角色再次派发“报告中间状态”之类的消息。同一频道同一角色的持久会话不能在执行中插入第二个 turn，这类请求只会排在原任务后面，不能提供实时进度。角色完成或失败后，平台会自动启动新的主控 turn 并交回完整结果。协作链预算导致无人启动时，`dispatched` 为空且不会返回该 handoff。
+`message.publish` 的 `mentions` 是独立的角色 ID 数组，也是**唯一**的派发通道：只有数组中的合法角色会被调度，开启「仅人工点名」的角色对 Agent 视同不存在（返回 `role_not_found`，自动化脚本身份不受此限）；正文里出现的 `@reviewer`、`@[reviewer]` 等文本一律只是普通内容。主控的 Runtime 最终回复会由平台自动发布到当前 Channel；普通答复、结论和状态汇总不应再通过空 `mentions` 的 `message.publish` 重复发布。派工仍使用 `message.publish` 并显式传入目标 `mentions`。普通角色也能调用该动作，但 `mentions` 只能是主控（提及其他角色返回 `permission_denied`，`actions` 列出的说明会写明主控 id），用于把主控请进另一个频道（例如自己刚用 `channel.create` 建的频道）或在被人类直接点名时把后续工作交给主控；主控在那个频道处理，回复不会交回发起的普通角色，结果也不返回 `handoff`。主控这一轮的「本轮触发」会标明这是执行角色的显式请求而不是结果回报。普通角色不带 `mentions` 发出的消息只发布、不触发任何角色；它们仍看不到其他执行角色的名册。仅人工点名的角色不进 Agent 协作图，带 `mentions` 一律返回 `permission_denied`。至少一个角色实际启动时，结果还会返回 `handoff: "end_turn"` 和后续恢复说明；主控应立即在 Runtime 最终回复中简短说明已派发并结束当前 turn，不再为这条说明调用一次 `message.publish`；同时不用 `sleep` 或轮询频道、工作树、运行状态来等待，也不应向执行中的同一角色再次派发“报告中间状态”之类的消息。同一频道同一角色的持久会话不能在执行中插入第二个 turn，这类请求只会排在原任务后面，不能提供实时进度。角色完成或失败后，平台会自动启动新的主控 turn 并交回完整结果。协作链预算导致无人启动时，`dispatched` 为空且不会返回该 handoff。
 
 当前 Channel 的活动 Run 状态不会直接注入主控上下文。人类询问当前运行情况或要求停止角色时，主控可按需调用只读动作 `channel.runs.list`，取得 `queued`、`running`、`waiting_user` 的一次性快照；每项包含 `run_id`、角色、执行组合、是否为当前主控 Run 以及是否可停止。随后可用 `channel.run.stop` 和选定的 `run_id` 停止同一 Channel 内的目标。服务端拒绝跨 Channel、已结束和当前主控自停请求；停止排队 Run 只取消队列项，不终止同角色的其他 Runtime。查询不产生会话回执，停止动作自身会生成 `agent_stop` 平台消息，因此也不重复生成工具回执。主控不应把按需查询用于等待循环。
 

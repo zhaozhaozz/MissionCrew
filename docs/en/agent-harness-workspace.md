@@ -111,7 +111,7 @@ Project-level deletions are all written to `projects/<project>/recycle-bin/`, bu
 
 ### `channel-history.json`
 
-The history file in a chat workspace is structured JSON that the agent reads proactively when the recent conversation excerpt is not enough. The orchestrator role can see full role information; executors read a separate redacted view, in which other executors are anonymized and their runtime, model, and effort are not exposed. Only the orchestrator can dispatch other roles.
+The history file in a chat workspace is structured JSON that the agent reads proactively when the recent conversation excerpt is not enough. The orchestrator role can see full role information; executors read a separate redacted view, in which other executors are anonymized and their runtime, model, and effort are not exposed. Only the orchestrator can dispatch other roles; through `message.publish`, executors can mention only the orchestrator.
 
 ### `runtime/`
 

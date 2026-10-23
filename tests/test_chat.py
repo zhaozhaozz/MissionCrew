@@ -531,15 +531,19 @@ def test_mock_orchestrator_dispatches_via_agent_action(chat, seeded):
     assert runs[-1] == "lead"
 
 
-def test_mock_worker_dispatch_attempt_is_denied(chat, seeded):
-    """非主控经 agent_action 尝试 message.publish 会被权限拒绝,不产生派发。"""
+def test_mock_worker_can_mention_only_orchestrator(chat, seeded):
+    """非主控经 agent_action 调 message.publish 提及主控会启动它(提及其他角色的
+    拒绝见 test_agent_platform_actions)。"""
     chat.post("general", "human", "@[dev] 检查,做完请 @lead 汇报。")
     chat.wait_idle()
-    dev_msg = next(m for m in _log(seeded) if m["author"] == "dev")
-    assert "调度 @lead 未执行" in dev_msg["content"]
+    request, reply = [m for m in _log(seeded) if m["author"] == "dev"]
+    assert json.loads(request["mention_spans"]) == [
+        {"role_id": "lead", "start": 0, "end": 5}]
+    assert "已通过 message.publish 调度 @lead" in reply["content"]
     runs = [r["role_id"] for r in seeded._query(
         "SELECT role_id FROM chat_runs ORDER BY id")]
-    assert runs == ["dev"]     # 人类直派:无 auto-return,也没有越权派发
+    # 人类直派的结果不交回主控;主控只因 dev 的显式提及启动一次
+    assert runs == ["dev", "lead"]
 
 
 def test_agent_publish_rejected_when_origin_run_inactive(chat, seeded):
@@ -574,7 +578,7 @@ def test_stale_bracket_syntax_gets_platform_hint(chat, seeded):
 
 
 def test_worker_structured_spans_cannot_dispatch(chat, seeded):
-    """结构化范围只对主控生效;执行角色带范围发消息也只会回传主控。"""
+    """执行角色指向其他角色的结构化范围不派发,该消息仍按常规回传主控。"""
     root = seeded.add_message("general", "human", "human", "开始", [])
     chat.post("general", "dev", "@reviewer\n\n请复核。", author_type="agent",
               reply_to=root, root_id=root, depth=1,

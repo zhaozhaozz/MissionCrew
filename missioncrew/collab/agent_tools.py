@@ -245,7 +245,8 @@ ACTION_DEFINITIONS = {
             "started) is non-empty; chain_budget gives the runs used and the limit of this "
             "collaboration chain"
         ),
-        "orchestrator_only": True,
+        # 执行角色也能发消息,但 mentions 只能是主控(capabilities 换成受限说明)
+        "orchestrator_only": False,
         "arguments": {
             "channel": "short channel id within the project",
             "content": "message body; any @ in it never dispatches",
@@ -295,7 +296,7 @@ ACTION_DEFINITIONS = {
     },
     "channel.create": {
         "description": "Create a project channel (check with channel.list first that the id is free)",
-        "orchestrator_only": True,
+        "orchestrator_only": False,
         "arguments": {"id": "short channel id",
                       "name": "name; 'group/topic' files it under a collapsible sidebar group",
                       "purpose": "purpose",
@@ -536,19 +537,56 @@ AUTOMATION_ACTIONS = frozenset(
     name for name, definition in ACTION_DEFINITIONS.items()
     if definition.get("automation_allowed", True))
 
-# 无主控项目里角色能发消息但不能派发:列出动作时用这份说明替换 message.publish,
-# 不给出 mentions 参数(服务端在 _publish_message 里同样拒绝)
-PEER_MESSAGE_PUBLISH = {
-    "description": (
-        "Post a message to a project channel, only for posting to other channels (such as a "
-        "brief in a new channel); this project has no orchestrator, so roles cannot dispatch "
-        "each other and only humans start roles; your final reply is already published to the "
-        "trigger channel by the platform, so do not use this to copy the answer"
-    ),
-    "arguments": {
-        "channel": "short channel id within the project",
-        "content": "message body; any @ in it is plain text and never starts a role",
-    },
+def _message_publish_without_mentions(reason: str) -> dict:
+    """不能提及任何角色时列出的 message.publish 说明:不给出 mentions 参数
+    (服务端在 _publish_message 里同样拒绝)。"""
+    return {
+        "description": (
+            "Post a message to a project channel, only for posting to other channels (such as a "
+            f"brief in a new channel); {reason}; your final reply is already published to the "
+            "trigger channel by the platform, so do not use this to copy the answer"
+        ),
+        "arguments": {
+            "channel": "short channel id within the project",
+            "content": "message body; any @ in it is plain text and never starts a role",
+        },
+    }
+
+
+# 无主控项目里角色能发消息但不能派发
+PEER_MESSAGE_PUBLISH = _message_publish_without_mentions(
+    "this project has no orchestrator, so roles cannot dispatch each other and only humans "
+    "start roles")
+# 仅人工点名的角色不进 Agent 协作图,有主控时也不能提及主控
+MANUAL_ONLY_MESSAGE_PUBLISH = _message_publish_without_mentions(
+    "you are a human-mention-only role, so you cannot start other roles")
+
+
+def _executor_message_publish(orchestrator_id: str) -> dict:
+    """有主控项目的执行角色:mentions 只能是主控,主控的回复不回到发起方。"""
+    return {
+        "description": (
+            "Post a message to a project channel, for posting to other channels (such as a "
+            "brief in a channel you just created) or bringing in the orchestrator; your final "
+            "reply is already published to the trigger channel by the platform (and handed back "
+            "to the orchestrator when it dispatched you), so do not use this to copy the answer. "
+            f"mentions may only name the orchestrator @{orchestrator_id}, which then handles "
+            "the message in that channel; its replies stay there and are not returned to you"
+        ),
+        "arguments": {
+            "channel": "short channel id within the project",
+            "content": "message body; any @ in it never starts a role",
+            "mentions": (f"optional array whose only allowed id is \"{orchestrator_id}\"; omit "
+                         "it to post without starting anyone"),
+        },
+    }
+
+
+# 有主控项目的执行角色没有 channel.list,去掉"先查重"的指引
+EXECUTOR_CHANNEL_CREATE = {
+    "description": ("Create a project channel; an id that is already in use returns "
+                    "already_exists"),
+    "arguments": ACTION_DEFINITIONS["channel.create"]["arguments"],
 }
 
 ACTION_ARGUMENTS = {
@@ -809,9 +847,12 @@ class AgentActionService:
                    if key not in {"orchestrator_only", "automation_allowed"}}
             for name in allowed
         }
-        if ("message.publish" in actions and not identity.is_automation
-                and not project.can_dispatch(identity.role_id)):
-            actions["message.publish"] = PEER_MESSAGE_PUBLISH
+        if not identity.is_automation and not project.can_dispatch(identity.role_id):
+            if "message.publish" in actions:
+                actions["message.publish"] = self._restricted_message_publish(
+                    project, identity.role_id)
+            if "channel.create" in actions and not project.controls_platform(identity.role_id):
+                actions["channel.create"] = EXECUTOR_CHANNEL_CREATE
         return {
             "project_id": identity.project_id,
             "channel_id": identity.channel_id,
@@ -1452,6 +1493,43 @@ class AgentActionService:
             "resource_url": document_resource_url(project.id, path),
         }
 
+    def _is_manual_only(self, project: Project, role_id: str) -> bool:
+        role = self.store.get_role(project.id, role_id)
+        return bool(role and role.manual_only)
+
+    def _restricted_message_publish(self, project: Project, role_id: str) -> dict:
+        """不能任意派发的角色看到的 message.publish 说明,与 _ensure_can_mention 同口径。"""
+        if not project.has_orchestrator:
+            return PEER_MESSAGE_PUBLISH
+        if self._is_manual_only(project, role_id):
+            return MANUAL_ONLY_MESSAGE_PUBLISH
+        return _executor_message_publish(project.orchestrator_role_id)
+
+    def _ensure_can_mention(self, project: Project, role_id: str,
+                            mentions: list[str]) -> None:
+        """主控可提及任意角色;有主控时执行角色只能提及主控;无主控时、以及仅人工
+        点名的角色不能启动任何角色。"""
+        if project.can_dispatch(role_id):
+            return
+        if not project.has_orchestrator:
+            raise AgentToolError(
+                "permission_denied",
+                "本项目没有主控,角色之间不能派发;需要其他角色时请在最终回复里说明,"
+                "由人类点名", 403)
+        if self._is_manual_only(project, role_id):
+            raise AgentToolError(
+                "permission_denied",
+                "仅人工点名的角色不能启动其他角色;需要协作时请在最终回复里说明,"
+                "由人类点名", 403)
+        denied = [target for target in mentions
+                  if not project.can_mention(role_id, target)]
+        if denied:
+            raise AgentToolError(
+                "permission_denied",
+                f"mentions 只能是主控 @{project.orchestrator_role_id};需要 "
+                + "、".join(f"@{target}" for target in dict.fromkeys(denied))
+                + " 参与时请在消息里写明,由主控派发", 403)
+
     def _publish_message(self, project: Project, identity: AgentIdentity,
                          arguments: dict, context: AgentRunContext) -> dict:
         raw_channel = str(arguments.get("channel", "")).strip()
@@ -1464,13 +1542,8 @@ class AgentActionService:
         if (not isinstance(mentions, list)
                 or not all(isinstance(item, str) for item in mentions)):
             raise AgentToolError("invalid_arguments", "mentions 必须是角色 id 数组")
-        if (mentions and not identity.is_automation
-                and not project.can_dispatch(identity.role_id)):
-            # 无主控项目的角色有主控级管理权限,但不能派发:只有人类点名启动角色
-            raise AgentToolError(
-                "permission_denied",
-                "本项目没有主控,角色之间不能派发;需要其他角色时请在最终回复里说明,"
-                "由人类点名", 403)
+        if mentions and not identity.is_automation:
+            self._ensure_can_mention(project, identity.role_id, mentions)
         unique_mentions: list[str] = []
         for role_id in mentions:
             if not identity.is_automation and role_id == identity.role_id:
@@ -1539,13 +1612,20 @@ class AgentActionService:
             if result["dispatched"]:
                 result["summary"] += (
                     "，已派发 " + "、".join(f"@{r}" for r in result["dispatched"]))
-                result["handoff"] = "end_turn"
                 # resume 是给调用方 Agent 的提示,与 Prompt 一样用英文;summary 会展示给人类
-                result["resume"] = (
-                    "Do not ask still-running roles for interim status; MissionCrew automatically "
-                    "starts a new turn for you with the results once the dispatched roles finish "
-                    "or fail"
-                )
+                if identity.is_automation or project.can_dispatch(identity.role_id):
+                    result["handoff"] = "end_turn"
+                    result["resume"] = (
+                        "Do not ask still-running roles for interim status; MissionCrew "
+                        "automatically starts a new turn for you with the results once the "
+                        "dispatched roles finish or fail"
+                    )
+                else:
+                    # 执行角色只能提及主控,主控的回复不会交回发起方
+                    result["resume"] = (
+                        "The orchestrator handles this message in that channel and its replies "
+                        "are not returned to you; do not wait for it, finish your own task"
+                    )
             if dropped:
                 result["not_dispatched"] = dropped
                 result["summary"] += (

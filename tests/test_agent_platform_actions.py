@@ -137,6 +137,60 @@ def test_channel_management_is_orchestrator_only(seeded):
     assert denied.value.code == "permission_denied"
 
 
+def test_executor_creates_channel_and_can_mention_only_orchestrator(seeded):
+    """有主控时执行角色能建频道、发消息,mentions 只能是主控且主控回复不交回发起方。"""
+    chat = ChatEngine(seeded)
+    identity, run_id = _identity(seeded, chat, "dev")
+    created = _call(chat, identity, run_id, "channel.create",
+                    {"id": "spike", "name": "spike", "purpose": "原型"})
+    assert created["channel"]["created_by_role_id"] == "dev"
+    with pytest.raises(AgentToolError) as taken:
+        _call(chat, identity, run_id, "channel.create", {"id": "spike"})
+    assert taken.value.code == "already_exists"
+
+    # 不带 mentions 只发布,不触发任何角色(含主控)
+    _call(chat, identity, run_id, "message.publish",
+          {"channel": "spike", "content": "背景说明"})
+    assert seeded._query("SELECT * FROM chat_runs WHERE channel='webshop:spike'") == []
+
+    with pytest.raises(AgentToolError) as denied:
+        _call(chat, identity, run_id, "message.publish",
+              {"channel": "spike", "content": "请复核", "mentions": ["lead", "reviewer"]})
+    assert denied.value.code == "permission_denied" and "@reviewer" in denied.value.message
+
+    result = _call(chat, identity, run_id, "message.publish",
+                   {"channel": "spike", "content": "请在这里拆解原型任务", "mentions": ["lead"]})
+    assert result["dispatched"] == ["lead"]
+    assert "handoff" not in result and "not returned to you" in result["resume"]
+    # 主控据「本轮触发」区分执行角色的显式请求与结果回报
+    lead_turn = chat._assemble(
+        seeded.get_channel("webshop:spike"), seeded.get_role("webshop", "lead"),
+        seeded.get_backend("std-1"), result["message_id"]).turn_prompt
+    assert "request from executor @dev" in lead_turn
+    runs = seeded._query(
+        "SELECT role_id FROM chat_runs WHERE channel='webshop:spike'")
+    assert [r["role_id"] for r in runs] == ["lead"]
+    chat.wait_idle()
+    # 主控在新频道处理完只留在那里,不会再启动 dev
+    assert [r["role_id"] for r in seeded._query(
+        "SELECT role_id FROM chat_runs WHERE channel='webshop:spike'")] == ["lead"]
+
+
+def test_manual_only_executor_cannot_mention_orchestrator(seeded):
+    """仅人工点名的角色不进 Agent 协作图:能发消息,但不能带 mentions。"""
+    role = seeded.get_role("webshop", "scribe")
+    role.manual_only = True
+    seeded.put_role(role)
+    chat = ChatEngine(seeded)
+    identity, run_id = _identity(seeded, chat, "scribe")
+    listed = chat.agent_tools.capabilities(identity)["actions"]["message.publish"]
+    assert "mentions" not in listed["arguments"]
+    with pytest.raises(AgentToolError) as denied:
+        _call(chat, identity, run_id, "message.publish",
+              {"channel": "general", "content": "请处理", "mentions": ["lead"]})
+    assert denied.value.code == "permission_denied"
+
+
 def test_task_archive_and_restore(seeded):
     task = create_task(seeded, "webshop", title="收尾的任务")
     chat = ChatEngine(seeded)

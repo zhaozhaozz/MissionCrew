@@ -654,7 +654,7 @@ class MockAdapter:
         emit("thinking", f"[mock] 理解触发消息({len(trigger)} 字符),对照角色定位准备回复。\n")
         emit("tool", "workspace.inspect .\n")
         # 遵循触发消息中的协作指令:"请 @x ..." -> 执行显式命令派发 @x。
-        # 平台照常校验权限(非主控会被拒)与协作链预算,和真实 Runtime 一致。
+        # 平台照常校验权限(非主控只能提及主控)与协作链预算,和真实 Runtime 一致。
         asked = [m for m in re.findall(r"请\s*@([\w-]+)", trigger) if m != me]
         combo = cfg.backend.tier + (f"/effort={cfg.effort}" if cfg.effort else "")
         reply = (f"收到。我已在工作区完成相关处理(模拟执行,by {cfg.backend.id}/"

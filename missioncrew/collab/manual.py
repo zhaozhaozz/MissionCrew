@@ -208,6 +208,14 @@ An orchestrator's turn:
   anything else you need to include into it. Use `message.publish` only when necessary, i.e. to
   dispatch or to post to another channel; do not call `message.publish` with empty `mentions` to
   post the same answer again, or the channel shows two copies of the result.
+- Executors (every role except the orchestrator) may also call `message.publish` and
+  `channel.create`, but their `mentions` may only name the orchestrator; any other role returns
+  `permission_denied`. Use it to bring the orchestrator into another channel (such as one you
+  just created, with a brief stating what to do there) or, when a human mentioned you directly,
+  to hand it follow-up work. The orchestrator handles that message in its channel and its
+  replies are not returned to you, so do not wait for it. When the orchestrator dispatched your
+  turn, your final reply already goes back to it; do not also mention it in the current channel.
+  Human-mention-only roles cannot pass `mentions` at all.
 
 ## 8. Channels (channel.*)
 
@@ -220,6 +228,7 @@ An orchestrator's turn:
   `channel-history.json` (including platform messages such as agent_tool receipts and
   agent_stop); `message_count` is the channel's total message count. Check it to see what happened
   in a channel recently instead of guessing.
+- `channel.create` is open to every role; an id that is already in use returns `already_exists`.
 - The workdir of `channel.create` must be a project repository path or a subdirectory of one; if
   omitted and the project has exactly one repository, that repository is used. A new channel
   starts empty: post the task brief into it with `message.publish` and name the executor

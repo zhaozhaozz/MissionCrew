@@ -57,7 +57,10 @@ def test_runtime_context_injects_scoped_tool_without_exposing_token(seeded):
     assert "do not call `message.publish` again for that note" in lead.common_prompt
     assert "document.publish" in dev.common_prompt
     assert "document.rename" in dev.common_prompt
-    assert "message.publish" not in dev.common_prompt
+    # 执行角色能发消息、建频道,但 mentions 只能是主控
+    assert "message.publish" in dev.common_prompt
+    assert "channel.create" in dev.common_prompt
+    assert "Its `mentions` accepts only the orchestrator `lead`" in dev.common_prompt
     assert "channel.runs.list" not in dev.common_prompt
     assert "channel.run.stop" not in dev.common_prompt
     assert "returns a non-empty `dispatched`" not in dev.common_prompt
@@ -137,9 +140,14 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
 
     capabilities = client.get("/api/agent/v1/actions", headers=headers)
     assert capabilities.status_code == 200
-    assert set(capabilities.json()["result"]["actions"]) == {
+    listed = capabilities.json()["result"]["actions"]
+    assert set(listed) == {
         "document.publish", "document.rename", "document.history",
-        "task.brief", "task.create", "task.update"}
+        "task.brief", "task.create", "task.update", "message.publish", "channel.create"}
+    # 执行角色看到的说明写明 mentions 只能是主控;建频道不再提 channel.list
+    assert "@lead" in listed["message.publish"]["description"]
+    assert '"lead"' in listed["message.publish"]["arguments"]["mentions"]
+    assert "channel.list" not in listed["channel.create"]["description"]
 
     published = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "document.publish",
@@ -230,10 +238,11 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     forbidden = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "message.publish", "run_id": dev_run,
         "request_id": "message-1",
-        "arguments": {"channel": "general", "content": "越权消息", "mentions": []},
+        "arguments": {"channel": "general", "content": "越权派发", "mentions": ["reviewer"]},
     })
     assert forbidden.status_code == 403
     assert forbidden.json()["error"]["code"] == "permission_denied"
+    assert "@lead" in forbidden.json()["error"]["message"]
 
     unauthenticated = client.get("/api/agent/v1/actions")
     assert unauthenticated.status_code == 401

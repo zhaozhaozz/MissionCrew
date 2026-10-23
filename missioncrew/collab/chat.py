@@ -131,6 +131,7 @@ _EXECUTOR_STEPS = """\
 
 EXECUTOR_WORKFLOW = _EXECUTOR_STEPS + """
 - You are not the project orchestrator: you cannot see the roster of other executor roles and cannot dispatch to other roles; any @ in your message text is plain text.
+- You may create a channel with `channel.create` and post to another channel with `message.publish`. Its `mentions` accepts only the orchestrator `{orchestrator_id}`: use it to bring the orchestrator into another channel (such as one you just created) or, when a human mentioned you directly, to hand it follow-up work; the orchestrator's replies stay in that channel and are not returned to you.
 - Submit only the complete result of this task. If the orchestrator dispatched this turn, the platform hands your result back to it automatically; if a human mentioned you directly, the result is only published to the channel and does not trigger the orchestrator, which can still read the full record when a human calls on it later."""
 
 # 仅人工点名的角色:不进 Agent 协作图,有无主控都按执行角色干活,结果只留给人类
@@ -311,7 +312,11 @@ def _trigger_kind(record: dict, orchestrator_id: str,
     if kind == "human":
         text = "human message"
     elif kind == "agent":
-        if is_orchestrator:
+        if is_orchestrator and record.get("mention_spans"):
+            # 执行角色经 message.publish 显式提及主控,是新请求而非结果回报
+            text = (f"request from executor @{author_id}, who mentioned you explicitly; "
+                    "handle it like a new request")
+        elif is_orchestrator:
             text = f"report from executor @{author_id}; review it"
         elif author_id == orchestrator_id:
             text = f"task dispatched by orchestrator @{author_id}"
@@ -442,26 +447,30 @@ class ChatEngine:
                 if author_type == "agent" else None)
 
         legal_spans: list[dict] = []
-        # 只有主控能派发:Agent 派发只认 message.publish 显式命令传入的结构化
-        # 范围;正文里的任何 @（含 @[role] 旧语法）都是普通文字。有主控时执行
-        # 角色无论写什么,都只把完整结果交回主控,避免横向看见或调用名册;无主控
+        # Agent 派发只认 message.publish 显式命令传入的结构化范围;正文里的任何 @
+        # （含 @[role] 旧语法）都是普通文字。主控可派发任意角色;有主控时执行角色
+        # 只能提及主控,最终回复把完整结果交回主控,避免横向看见或调用名册;无主控
         # 时角色不能互相派发,回复只留在频道。
         can_dispatch = (author_type == "agent" and bool(project)
                         and project.can_dispatch(author))
         if author_type == "agent":
-            if can_dispatch and mention_spans:
+            mentions = []
+            if mention_spans and project and not self._manual_only_role(project, role):
                 mentions, legal_spans = self._validate_mention_spans(
                     content, mention_spans, channel.project_id or "",
                     by_agent=True)
-                if author in mentions:
-                    mentions = [item for item in mentions if item != author]
-                    legal_spans = [span for span in legal_spans
-                                   if span["role_id"] != author]
-            elif (author != orchestrator and orchestrator_available
-                  and not self._is_direct_human_dispatch(reply_to, author)):
+                # 剔除自己与无权提及的目标(agent_tools 已先拒绝,这里是引擎兜底)
+                allowed = {item for item in mentions
+                           if item != author and project.can_mention(author, item)}
+                mentions = [item for item in mentions if item in allowed]
+                legal_spans = [span for span in legal_spans
+                               if span["role_id"] in allowed]
+            if (not mentions and origin_run_id is None and author != orchestrator
+                    and orchestrator_available
+                    and not self._is_direct_human_dispatch(reply_to, author)):
+                # 执行角色的最终回复(含唤醒汇报)交回主控;运行中经 message.publish
+                # 发出、不带 mentions 的消息(origin_run_id 非空)只发布不触发
                 mentions = [orchestrator]
-            else:
-                mentions = []
             if role:
                 runtime_id = role.runtime_id if runtime_id is None else runtime_id
                 model = role.model if model is None else model
@@ -1573,7 +1582,8 @@ class ChatEngine:
             workflow_section = ORCHESTRATOR_WORKFLOW.format(channel_id=short_channel_id)
         else:
             workflow_section = EXECUTOR_WORKFLOW.format(
-                documents_dir=documents_dir, temp_dir=temp_dir)
+                documents_dir=documents_dir, temp_dir=temp_dir,
+                orchestrator_id=orchestrator_id)
         body_fields = dict(
             role_id=role.id, role_name=role.name, role_desc=role.description,
             role_capabilities=", ".join(role.capabilities) or "none specified",

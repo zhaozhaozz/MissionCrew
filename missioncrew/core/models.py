@@ -561,9 +561,16 @@ class Project:
         return not self.orchestrator_role_id or role_id == self.orchestrator_role_id
 
     def can_dispatch(self, role_id: str) -> bool:
-        """角色能否派发其他角色:只有主控。无主控时角色虽有主控级管理权限,
+        """角色能否派发任意其他角色:只有主控。无主控时角色虽有主控级管理权限,
         也不能互相派发,工作只由人类点名启动。"""
         return self.has_orchestrator and role_id == self.orchestrator_role_id
+
+    def can_mention(self, role_id: str, target_id: str) -> bool:
+        """角色能否经 message.publish 的 mentions 启动 target:主控可提及任意角色,
+        有主控时其他角色只能提及主控,无主控时角色之间不能互相提及。仅人工点名的
+        角色不进协作图,由调用方另行拦截。"""
+        return self.can_dispatch(role_id) or (
+            self.has_orchestrator and target_id == self.orchestrator_role_id)
 
 
 @dataclass
