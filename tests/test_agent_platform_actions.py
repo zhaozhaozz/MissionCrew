@@ -176,6 +176,62 @@ def test_executor_creates_channel_and_can_mention_only_orchestrator(seeded):
         "SELECT role_id FROM chat_runs WHERE channel='webshop:spike'")] == ["lead"]
 
 
+@pytest.mark.parametrize("origin_author, spike_runs", [
+    ("human", ["dev"]),            # 人类直接点名:新会话的结果只留在新频道
+    ("lead", ["dev", "lead"]),     # 主控派发:新会话的结果交回主控
+])
+def test_role_can_mention_itself_only_in_another_channel(
+        seeded, origin_author, spike_runs):
+    """角色能在其他频道提及自己另起会话,结果沿用发起那一轮的交回规则。"""
+    chat = ChatEngine(seeded)
+    channel = seeded.get_channel("general")
+    trigger = seeded.add_message(
+        "general", origin_author, "human" if origin_author == "human" else "agent",
+        "@dev 去新频道做原型", ["dev"])
+    run_id = seeded.add_chat_run("general", "dev", trigger, trigger, 1)
+    seeded.update_chat_run(run_id, "running", backend_id="std-1")
+    config = chat._assemble(channel, seeded.get_role("webshop", "dev"),
+                            seeded.get_backend("std-1"), trigger, run_id=run_id)
+    identity = chat.agent_tools.authenticate(
+        Path(config.env["MISSIONCREW_AGENT_TOKEN_FILE"]).read_text().strip())
+
+    with pytest.raises(AgentToolError) as same_channel:
+        _call(chat, identity, run_id, "message.publish",
+              {"channel": "general", "content": "自己接着做", "mentions": ["dev"]})
+    assert same_channel.value.code == "invalid_arguments"
+
+    _call(chat, identity, run_id, "channel.create", {"id": "spike", "name": "spike"})
+    result = _call(chat, identity, run_id, "message.publish",
+                   {"channel": "spike", "content": "在这里实现原型", "mentions": ["dev"]})
+    assert result["dispatched"] == ["dev"]
+    assert "handoff" not in result and "separate session" in result["resume"]
+    brief = seeded.get_message(result["message_id"])
+    assert json.loads(brief["context"])["self_dispatch_origin"] == trigger
+    dev_turn = chat._assemble(
+        seeded.get_channel("webshop:spike"), seeded.get_role("webshop", "dev"),
+        seeded.get_backend("std-1"), result["message_id"]).turn_prompt
+    assert "brief you posted for yourself from another channel" in dev_turn
+
+    chat.wait_idle()
+    assert [r["role_id"] for r in seeded._query(
+        "SELECT role_id FROM chat_runs WHERE channel='webshop:spike' ORDER BY id")] == spike_runs
+
+
+def test_orchestrator_can_start_itself_in_another_channel(seeded):
+    chat = ChatEngine(seeded)
+    identity, run_id = _identity(seeded, chat, "lead")
+    with pytest.raises(AgentToolError) as same_channel:
+        _call(chat, identity, run_id, "message.publish",
+              {"channel": "general", "content": "自己接着做", "mentions": ["lead"]})
+    assert same_channel.value.code == "invalid_arguments"
+    _call(chat, identity, run_id, "channel.create", {"id": "plan", "name": "plan"})
+    result = _call(chat, identity, run_id, "message.publish",
+                   {"channel": "plan", "content": "在这里统筹", "mentions": ["lead"]})
+    # 只启动了自己:新会话的结果不回到本轮,不要求结束当前 turn
+    assert result["dispatched"] == ["lead"] and "handoff" not in result
+    chat.wait_idle()
+
+
 def test_manual_only_executor_cannot_mention_orchestrator(seeded):
     """仅人工点名的角色不进 Agent 协作图:能发消息,但不能带 mentions。"""
     role = seeded.get_role("webshop", "scribe")

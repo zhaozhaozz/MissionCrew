@@ -182,7 +182,9 @@ An orchestrator's turn:
   actually started and `chain_budget` shows the runs used and the limit of this collaboration
   chain. Any @roleID or @[roleID] in a message body you send (including your final reply) is plain
   text and never triggers execution. Do not pass mentions unless you need collaboration; do not
-  dispatch to yourself or invent roles.
+  dispatch to yourself in the current channel or invent roles. Mentioning yourself with another
+  `channel` starts a separate session of you in that channel; its result is not returned to the
+  turn that started it.
 - Each role's runtime/model is fixed when the project defines the role; you cannot and need not
   change it. Scheduling means choosing from the role roster by profile, capabilities and
   preferences.
@@ -209,8 +211,11 @@ An orchestrator's turn:
   dispatch or to post to another channel; do not call `message.publish` with empty `mentions` to
   post the same answer again, or the channel shows two copies of the result.
 - Executors (every role except the orchestrator) may also call `message.publish` and
-  `channel.create`, but their `mentions` may only name the orchestrator; any other role returns
-  `permission_denied`. Use it to bring the orchestrator into another channel (such as one you
+  `channel.create`, but their `mentions` may only name the orchestrator, or themselves when
+  `channel` is another channel; any other role returns `permission_denied`. Mentioning yourself
+  in another channel starts a separate session of you there (for example to work in a channel you
+  just created with its own workdir); its result is routed like the turn that started it (back to
+  the orchestrator, or only to the channel if a human mentioned you directly). Use it to bring the orchestrator into another channel (such as one you
   just created, with a brief stating what to do there) or, when a human mentioned you directly,
   to hand it follow-up work. The orchestrator handles that message in its channel and its
   replies are not returned to you, so do not wait for it. When the orchestrator dispatched your

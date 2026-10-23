@@ -571,13 +571,15 @@ def _executor_message_publish(orchestrator_id: str) -> dict:
             "reply is already published to the trigger channel by the platform (and handed back "
             "to the orchestrator when it dispatched you), so do not use this to copy the answer. "
             f"mentions may only name the orchestrator @{orchestrator_id}, which then handles "
-            "the message in that channel; its replies stay there and are not returned to you"
+            "the message in that channel (its replies stay there and are not returned to you), "
+            "or your own id when channel is not the current one, which starts you there in a "
+            "separate session (for example to work in a channel you just created)"
         ),
         "arguments": {
             "channel": "short channel id within the project",
             "content": "message body; any @ in it never starts a role",
-            "mentions": (f"optional array whose only allowed id is \"{orchestrator_id}\"; omit "
-                         "it to post without starting anyone"),
+            "mentions": (f"optional array; allowed ids are \"{orchestrator_id}\" and, for "
+                         "another channel, your own id; omit it to post without starting anyone"),
         },
     }
 
@@ -1506,9 +1508,13 @@ class AgentActionService:
         return _executor_message_publish(project.orchestrator_role_id)
 
     def _ensure_can_mention(self, project: Project, role_id: str,
-                            mentions: list[str]) -> None:
-        """主控可提及任意角色;有主控时执行角色只能提及主控;无主控时、以及仅人工
-        点名的角色不能启动任何角色。"""
+                            mentions: list[str], cross_channel: bool) -> None:
+        """主控可提及任意角色;有主控时执行角色只能提及主控;发到其他频道时角色还
+        可以提及自己。无主控时、以及仅人工点名的角色不能启动任何角色。"""
+        if role_id in mentions and not cross_channel and project.has_orchestrator:
+            raise AgentToolError(
+                "invalid_arguments",
+                "不能在当前频道调度自己;要在另一个频道另起会话,请把 channel 设为那个频道")
         if project.can_dispatch(role_id):
             return
         if not project.has_orchestrator:
@@ -1522,11 +1528,11 @@ class AgentActionService:
                 "仅人工点名的角色不能启动其他角色;需要协作时请在最终回复里说明,"
                 "由人类点名", 403)
         denied = [target for target in mentions
-                  if not project.can_mention(role_id, target)]
+                  if not project.can_mention(role_id, target, cross_channel)]
         if denied:
             raise AgentToolError(
                 "permission_denied",
-                f"mentions 只能是主控 @{project.orchestrator_role_id};需要 "
+                f"mentions 只能是主控 @{project.orchestrator_role_id},或在其他频道提及自己;需要 "
                 + "、".join(f"@{target}" for target in dict.fromkeys(denied))
                 + " 参与时请在消息里写明,由主控派发", 403)
 
@@ -1543,11 +1549,10 @@ class AgentActionService:
                 or not all(isinstance(item, str) for item in mentions)):
             raise AgentToolError("invalid_arguments", "mentions 必须是角色 id 数组")
         if mentions and not identity.is_automation:
-            self._ensure_can_mention(project, identity.role_id, mentions)
+            self._ensure_can_mention(project, identity.role_id, mentions,
+                                     cross_channel=channel.id != identity.channel_id)
         unique_mentions: list[str] = []
         for role_id in mentions:
-            if not identity.is_automation and role_id == identity.role_id:
-                raise AgentToolError("invalid_arguments", "不能调度自己")
             target_role = self.store.get_role(project.id, role_id)
             # 仅人工点名的角色对 Agent 不存在;自动化脚本是人类配置的,按人类规则放行
             if (target_role is None or not target_role.enabled
@@ -1613,7 +1618,9 @@ class AgentActionService:
                 result["summary"] += (
                     "，已派发 " + "、".join(f"@{r}" for r in result["dispatched"]))
                 # resume 是给调用方 Agent 的提示,与 Prompt 一样用英文;summary 会展示给人类
-                if identity.is_automation or project.can_dispatch(identity.role_id):
+                others = [r for r in result["dispatched"] if r != identity.role_id]
+                if identity.is_automation or (
+                        project.can_dispatch(identity.role_id) and others):
                     result["handoff"] = "end_turn"
                     result["resume"] = (
                         "Do not ask still-running roles for interim status; MissionCrew "
@@ -1621,11 +1628,15 @@ class AgentActionService:
                         "dispatched roles finish or fail"
                     )
                 else:
-                    # 执行角色只能提及主控,主控的回复不会交回发起方
-                    result["resume"] = (
-                        "The orchestrator handles this message in that channel and its replies "
-                        "are not returned to you; do not wait for it, finish your own task"
-                    )
+                    # 执行角色提及主控、任何角色在其他频道启动自己:结果都不交回本轮
+                    notes = []
+                    if identity.role_id in result["dispatched"]:
+                        notes.append("You were started in that channel as a separate session; "
+                                     "its result is not returned to this turn.")
+                    if others:
+                        notes.append("The orchestrator handles this message in that channel "
+                                     "and its replies are not returned to you.")
+                    result["resume"] = " ".join(notes) + " Do not wait for it; finish your own task."
             if dropped:
                 result["not_dispatched"] = dropped
                 result["summary"] += (
