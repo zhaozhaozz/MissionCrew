@@ -1725,6 +1725,25 @@
 .task-dispatch-input:empty::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; }
 .task-dispatch-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .task-dispatch-picker { top: calc(100% + 7px); bottom: auto; }
+/* Task 详情底部的「交给角色处理」:固定在弹窗最下面,正文单独滚动;选择器向上展开 */
+#dlg[open] { display: flex; flex-direction: column; max-height: calc(100dvh - 40px); }
+#dlg > .dlg-body { flex: 1 1 auto; min-height: 0; max-height: none; }
+#dlg-actions:has(+ .task-dispatch-panel:not([hidden])) { border-radius: 0; }
+.task-dispatch-panel { flex: none; padding: 10px 20px 14px; border-top: 1px solid var(--line); }
+.task-dispatch-head { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  margin-bottom: 8px; font-size: 12px; }
+.task-dispatch-head strong { font-size: 13px; }
+.task-dispatch-head .muted { flex: 1 1 200px; min-width: 0; }
+.task-dispatch-target { display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  color: var(--muted); }
+.task-dispatch-target select { min-width: 0; max-width: 100%; padding: 3px 6px; font: inherit;
+  color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 7px; }
+.task-dispatch-compose { display: flex; gap: 9px; align-items: flex-end; }
+.task-dispatch-compose .composer-wrap { flex: 1; min-width: 0; }
+.task-dispatch-compose .task-dispatch-input { min-height: 44px; max-height: 140px; padding: 9px 12px; }
+.task-dispatch-compose .task-dispatch-picker { top: auto; bottom: calc(100% + 7px); }
+.task-dispatch-compose .send { height: 44px; flex: none; }
+.task-dispatch-compose .send:disabled { opacity: .45; cursor: not-allowed; }
 
 /* ---- 自动化脚本(侧栏 + 独立详情页) ---- */
 .automation-side-item { display: flex; align-items: center; gap: 7px; padding-left: 20px; }

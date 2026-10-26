@@ -70,6 +70,8 @@ function closeTaskDialog(updateRoute = true) {
 }
 
 dlg.addEventListener("close", () => {
+  // 详情底部的派发输入框随弹窗失效,提及选择器交还聊天主输入框
+  activateComposer("input", "mention-picker");
   if (!currentTaskId) return;
   currentTaskId = null;
   currentTaskDetail = null;
@@ -149,10 +151,8 @@ async function openTask(id, updateRoute = true) {
     `<button class="ghost" onclick="archiveTask('${task.id}')">归档</button>`,
     `<button class="danger" onclick="deleteTask('${task.id}')">删除</button>`,
   ];
-  if (!task.archived && taskStatus(task) !== "已完成")
-    actions.push(
-      `<button class="action" onclick="processTask('${task.id}')">交给角色处理</button>`);
   document.getElementById("dlg-actions").innerHTML = actions.join("");
+  renderTaskDispatchPanel(task);
   if (!dlg.open) dlg.showModal();
   if (updateRoute) syncUrl();
 }
@@ -308,40 +308,47 @@ function taskDispatchChannelOptions(task) {
       bound.includes(channel.id) ? " · 已绑定" : ""}</option>`).join("");
 }
 
-function processTask(id) {
-  const task = currentTaskDetail?.task;
-  if (!task || task.id !== id) return;
-  closeTaskDialog(false);
-  const peer = peerModeProject();
-  openFormDialog(`交给角色处理 · ${task.id}`, `
-    <p class="muted" style="margin-top:0">只在所选的一个 Channel 中发送这条 Task,选未绑定的 Channel 会同时绑定它。
-      ${peer ? "本项目没有主控:输入 @ 从列表选择处理角色(必填),多个角色各自启动。"
-             : "可补充处理要求;输入 @ 从列表选择角色可指定处理人:单个角色直接执行" +
-               "(不经主控),多个角色由主控协调。不 @ 任何角色则交给项目主控。"}</p>
-    <label>接收 Channel</label>
-    <select id="task-dispatch-channel">${taskDispatchChannelOptions(task)}</select>
-    <label>处理要求</label>
-    <div class="composer-wrap task-dispatch-wrap">
-      <div id="task-dispatch-input" class="task-dispatch-input" contenteditable="true"
-        role="textbox" aria-multiline="true" aria-label="处理要求"
-        data-placeholder="补充要求或 @指定角色…(可留空;Enter 发送,Shift+Enter 换行)"></div>
-      <div id="task-dispatch-picker" class="task-dispatch-picker" role="listbox" hidden></div>
-    </div>`,
-    `<button class="action" onclick="submitProcessTask('${id}')">发送</button>
-     <button class="ghost" onclick="cancelProcessTask('${id}')">取消</button>`);
-  bindComposerEvents("task-dispatch-input", "task-dispatch-picker",
-    () => submitProcessTask(id));
-  setTimeout(() => document.getElementById("task-dispatch-input")?.focus(), 60);
-}
-
-function cancelProcessTask(id) {
+// 「交给角色处理」直接放在详情弹窗底部(频道选择 + 输入框),不另开弹窗;
+// 已归档或已完成的 Task 不显示
+function renderTaskDispatchPanel(task) {
+  const panel = document.getElementById("dlg-dispatch");
+  // 输入框每次随详情重建,先把提及选择器交还主输入框,丢掉指向旧节点的选区
   activateComposer("input", "mention-picker");
-  fdlg.close();
-  openTask(id);
+  if (task.archived || taskStatus(task) === "已完成") {
+    panel.hidden = true;
+    panel.replaceChildren();
+    return;
+  }
+  const peer = peerModeProject();
+  panel.innerHTML = `
+    <div class="task-dispatch-head">
+      <strong>交给角色处理</strong>
+      <span class="muted">${peer ? "本项目没有主控：@ 选择处理角色（必填），多个角色各自启动"
+        : "不 @ 角色时交给主控；@ 单个角色直接执行，@ 多个由主控协调"}</span>
+      <label class="task-dispatch-target">发到
+        <select id="task-dispatch-channel"
+          title="只在这一个 Channel 中发送；选未绑定的 Channel 会同时绑定它">${taskDispatchChannelOptions(task)}</select>
+      </label>
+    </div>
+    <div class="task-dispatch-compose">
+      <div class="composer-wrap">
+        <div id="task-dispatch-input" class="task-dispatch-input" contenteditable="true"
+          role="textbox" aria-multiline="true" aria-label="处理要求"
+          data-placeholder="${peer ? "输入 @ 选择处理角色，可补充处理要求…"
+            : "补充处理要求，或输入 @ 指定角色…（可留空）"}（Enter 发送，Shift+Enter 换行）"></div>
+        <div id="task-dispatch-picker" class="task-dispatch-picker" role="listbox" hidden></div>
+      </div>
+      <button class="send" id="task-dispatch-send" onclick="submitProcessTask('${task.id}')">发送</button>
+    </div>`;
+  panel.hidden = false;
+  bindComposerEvents("task-dispatch-input", "task-dispatch-picker",
+    () => submitProcessTask(task.id));
 }
 
 async function submitProcessTask(id) {
   const box = document.getElementById("task-dispatch-input");
+  const button = document.getElementById("task-dispatch-send");
+  if (!box || button.disabled) return;   // 请求未返回时再按 Enter 不重复派发
   const { content, mentions } = composerPayload(box);
   if (peerModeProject() && !mentions.length) {
     uiAlert("本项目没有主控，请 @ 指定处理角色。");
@@ -349,11 +356,16 @@ async function submitProcessTask(id) {
   }
   const channel_id = document.getElementById("task-dispatch-channel").value;
   if (!channel_id) { uiAlert("请先选择接收 Channel"); return; }
-  await api("POST", `/api/tasks/${id}/process`, { message: content, mentions, channel_id });
-  activateComposer("input", "mention-picker");
-  fdlg.close();
+  button.disabled = true;
+  try {
+    await api("POST", `/api/tasks/${id}/process`, { message: content, mentions, channel_id });
+  } finally {
+    button.disabled = false;
+  }
+  box.replaceChildren();
   await loadOverview();
-  await openTask(id, false);
+  // 派发后刷新详情(可能新增了频道绑定);期间用户已关掉弹窗就不再弹出
+  if (currentTaskId === id) await openTask(id, false);
   const where = `#${projChannels().find(channel => channel.id === channel_id)?.name || channel_id}`;
   const named = [...new Set(mentions.map(item => `@${item.role_id}`))];
   toast(named.length ? `Task 已在 ${where} 派发给 ${named.join("、")}`

@@ -812,6 +812,94 @@ def test_status_pill_color_comes_from_task_source():
     assert data["fallbackOptions"] == ["待处理", "处理中", "已阻塞", "已完成"]
 
 
+# 「交给角色处理」在详情弹窗底部就地渲染与派发:装载真实 tasks.js,输入框/提及/接口用桩替换
+_TASK_DISPATCH_SCRIPT = r"""
+const fs = require("fs");
+const vm = require("vm");
+const element = () => ({ hidden: true, innerHTML: "", disabled: false, value: "",
+  replaceChildren() { this.innerHTML = ""; this.cleared = true; } });
+const nodes = { "dlg-dispatch": element() };
+const calls = { api: [], bound: [], opened: [], toasts: [] };
+const context = {
+  document: { getElementById: id => nodes[id] || null },
+  localStorage: { getItem: () => null, setItem() {} },
+  dlg: { addEventListener() {} },
+  esc: value => String(value ?? "").replace(/[&<>"]/g,
+    char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[char]),
+  projBoardSources: () => [],
+  projChannels: () => [{ id: "general", name: "general" },
+                       { id: "webshop:delivery", name: "delivery" }],
+  channelIsGeneral: channel => channel.id === "general",
+  peerModeProject: () => false,
+  activateComposer() {},
+  bindComposerEvents: (box, picker) => calls.bound.push([box, picker]),
+  composerPayload: () => ({ content: "@dev 请看", mentions: [{ role_id: "dev", start: 0, end: 4 }] }),
+  api: async (method, url, body) => {
+    calls.api.push({ method, url, body, sendDisabled: nodes["task-dispatch-send"].disabled });
+  },
+  loadOverview: async () => {},
+  toast: text => calls.toasts.push(text),
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync(process.argv[1] + "/tasks.js", "utf8"), context);
+context.openTask = async (id, route) => calls.opened.push([id, route]);
+const task = (labels, extra = {}) =>
+  ({ id: "t1", archived: false, labels, channel_ids: ["webshop:delivery"], ...extra });
+(async () => {
+  const panel = nodes["dlg-dispatch"];
+  const results = {};
+  context.renderTaskDispatchPanel(task(["status: 待处理"]));
+  results.open = { hidden: panel.hidden, html: panel.innerHTML };
+  // 渲染出的输入框、频道选择与发送按钮换成可观察的桩节点
+  Object.assign(nodes, { "task-dispatch-input": element(), "task-dispatch-send": element(),
+                         "task-dispatch-channel": { value: "general" } });
+  vm.runInContext("currentTaskId = 't1'", context);
+  await Promise.all([context.submitProcessTask("t1"), context.submitProcessTask("t1")]);
+  results.inputCleared = !!nodes["task-dispatch-input"].cleared;
+  results.sendDisabledAfter = nodes["task-dispatch-send"].disabled;
+  vm.runInContext("currentTaskId = null", context);
+  await context.submitProcessTask("t1");
+  for (const [key, labels, extra] of [["done", ["status: 已完成"], {}],
+                                      ["archived", ["status: 待处理"], { archived: true }]]) {
+    context.renderTaskDispatchPanel(task(labels, extra));
+    results[key] = { hidden: panel.hidden, html: panel.innerHTML };
+  }
+  process.stdout.write(JSON.stringify({ ...results, calls }));
+})();
+"""
+
+
+def test_task_detail_dispatches_from_inline_panel_without_extra_dialog():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required to execute the browser renderers")
+    result = subprocess.run(
+        [node, "-e", _TASK_DISPATCH_SCRIPT, str(WEB_JS)],
+        text=True, capture_output=True, check=True)
+    data = json.loads(result.stdout)
+    calls = data["calls"]
+
+    # 未完成的 Task 在详情底部直接给出频道选择与输入框,默认选首个绑定频道
+    assert not data["open"]["hidden"]
+    html = data["open"]["html"]
+    assert 'id="task-dispatch-channel"' in html and 'id="task-dispatch-input"' in html
+    assert "selected>#delivery · 已绑定</option>" in html
+    assert calls["bound"] == [["task-dispatch-input", "task-dispatch-picker"]]
+    # 发送按钮在请求期间禁用:连按两次只派发一次,完成后清空输入、刷新详情;
+    # 两条请求分别来自连按的那一对和弹窗关闭后的又一次发送
+    expected = {"method": "POST", "url": "/api/tasks/t1/process", "sendDisabled": True,
+                "body": {"message": "@dev 请看", "channel_id": "general",
+                         "mentions": [{"role_id": "dev", "start": 0, "end": 4}]}}
+    assert calls["api"] == [expected, expected]
+    assert data["inputCleared"] and not data["sendDisabledAfter"]
+    # 第二条派发发生在弹窗关闭后:不再重新弹出详情
+    assert calls["opened"] == [["t1", False]]
+    assert calls["toasts"][0] == "Task 已在 #general 派发给 @dev"
+    # 已完成、已归档的 Task 不显示派发区
+    for key in ("done", "archived"):
+        assert data[key] == {"hidden": True, "html": ""}
+
+
 def test_task_board_exposes_activity_order_and_archive_filter(seeded):
     with TestClient(create_app()) as client:
         html = client.get("/").text
