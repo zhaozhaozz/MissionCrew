@@ -262,8 +262,10 @@ def _refresh_session(cfg: ExecutionConfig) -> None:
 
 
 def _session_missing(text: str) -> bool:
+    # Claude CLI 实测措辞:"No conversation found with session ID: <id>"
     return bool(re.search(
-        r"(?:(?:session|conversation|thread).{0,40}"
+        r"(?:\bno (?:session|conversation|thread) found|"
+        r"(?:session|conversation|thread).{0,40}"
         r"(?:not found|不存在|invalid|unknown)|"
         r"(?:not found|不存在|invalid|unknown).{0,40}"
         r"(?:session|conversation|thread))",

@@ -248,11 +248,13 @@ def run_claude() -> None:
                 send(init)   # 真实 CLI 每个查询都发一次 init
             prompt = str((message.get("message") or {}).get("content") or "")
             if missing_session:
-                print("Conversation not found for session", file=sys.stderr,
-                      flush=True)
+                # 真实 CLI(实测 2.1.310)把报错放在 errors 列表并回显失效的
+                # session_id;它同时写 stderr,但那条线程与 stdout 竞态,这里
+                # 不写 stderr,钉住只靠 result 本身也能识别会话丢失
                 send({"type": "result", "subtype": "error_during_execution",
-                      "is_error": True,
-                      "error": "Conversation not found for session"})
+                      "is_error": True, "session_id": session_id,
+                      "errors": ["No conversation found with session ID: "
+                                 f"{session_id}"]})
             elif "ASK_WRITE" in prompt:
                 pending = ("permission", turn_number)
                 send({"type": "control_request", "request_id": f"p-{turn_number}",

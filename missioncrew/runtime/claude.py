@@ -54,6 +54,14 @@ def _result_usage(result: dict) -> dict:
                        duration_ms=result.get("duration_ms"))
 
 
+def _result_error(result: dict) -> str:
+    """失败 ``result`` 的错误文本:CLI 写在 ``errors`` 列表里(实测 2.1.310,如
+    会话不存在),平台合成的结果写 ``error``。"""
+    errors = result.get("errors")
+    parts = [str(item) for item in errors] if isinstance(errors, list) else []
+    return "\n".join([str(result.get("error") or ""), *parts]).strip()
+
+
 def _agent_usage(usage: object) -> dict:
     """后台 Agent(task_progress/task_notification)的 usage:累计 total_tokens 与
     tool_uses/duration_ms。"""
@@ -450,8 +458,9 @@ class _ClaudeSession:
                     adapters._save_session(
                         config, self.session_id, injection_mode,
                         adapters._turn_bytes(prompt, output))
+                # stderr 由独立线程读取,可能晚于 result 到达,不能只靠它
                 failure_detail = "\n".join((
-                    output, str(result.get("error") or ""),
+                    output, _result_error(result),
                     "".join(self._stderr_tail),
                 ))
                 if (not success and self._resume_attempt
@@ -467,9 +476,9 @@ class _ClaudeSession:
                 # 守卫处理,不能把 result subtype 字面值("success")当回复发布
                 summary = output[-300:]
                 if not summary:
-                    summary = str(result.get("error") or (
+                    summary = _result_error(result)[-300:] or (
                         "" if success else
-                        result.get("subtype") or "Claude 执行失败"))
+                        str(result.get("subtype") or "Claude 执行失败"))
                 return RunResult(success, summary, output=output)
             except Exception as exc:
                 return RunResult(False, str(exc)[-300:])
@@ -684,7 +693,7 @@ class _ClaudeSession:
                         and (output or sink.run_id)):
                     payload = self._wake_payload(
                         sink, success=success, output=output,
-                        error=str(result.get("error") or ""))
+                        error=_result_error(result))
             self._turn_condition.notify_all()
         if payload is not None:
             self._dispatch_wake_end(payload)
