@@ -22,6 +22,7 @@ const RUNTIME_USAGE_STATUS_LABELS = {
 const RUNTIME_USAGE_SOURCE_LABELS = {
   codex_app_server: "Codex app-server",
   claude_usage_command: "Claude /usage",
+  claude_stream_rate_limit: "Claude 运行事件 rate_limit_event",
   antigravity_usage_command: "Antigravity /usage",
   kimi_usage_api: "Kimi usage API",
   grok_billing_api: "Grok billing API",
@@ -262,6 +263,10 @@ function runtimeUsageCard(item, generatedAt) {
   const windows = item.windows || [];
   const source = RUNTIME_USAGE_SOURCE_LABELS[item.source] || item.source || "Runtime";
   const planLabel = runtimeUsagePlan(item.plan);
+  // 被动采集的快照(Claude 运行事件)只在角色运行时更新,超过 2 分钟就标出采样距今多久
+  const sampledAge = item.fetched_at ? generatedAt - item.fetched_at : 0;
+  const sampled = sampledAge > 120
+    ? ` · 采样于 ${runtimeAge(item.fetched_at, generatedAt)} 前` : "";
   const adapterClass = String(item.adapter || "runtime").replace(/[^\w-]/g, "");
   const plan = planLabel
     ? `<span class="runtime-usage-plan">${esc(planLabel)}</span>` : "";
@@ -311,7 +316,7 @@ function runtimeUsageCard(item, generatedAt) {
           <div class="runtime-usage-title-row">
             <h3>${esc(item.backend_name || item.backend_id)}</h3>${metrics}
           </div>
-          <small title="数据源：${esc(source)}">${esc(item.adapter || source)}</small></div>
+          <small title="数据源：${esc(source)}">${esc(item.adapter || source)}${esc(sampled)}</small></div>
       </div>
       <div class="runtime-usage-meta">${plan}
         <span class="runtime-usage-status ${esc(status)}"><i></i>${esc(RUNTIME_USAGE_STATUS_LABELS[status] || status)}</span>

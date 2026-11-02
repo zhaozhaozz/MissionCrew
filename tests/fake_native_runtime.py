@@ -218,6 +218,12 @@ def claude_background_agent(session_id: str, task_id: str,
 def run_claude() -> None:
     mark_launch("claude")
     args = sys.argv[1:]
+    if "/usage" in args:
+        # token 认证(实测 2.1.316):/usage 只报本次会话花费,不含账户限额
+        send({"type": "result", "subtype": "success", "local_command": "usage",
+              "result": "Total cost:            $0.0000\n"
+                        "Usage:                 0 input, 0 output"})
+        return
     session_id = "claude-session-1"
     if "--resume" in args:
         session_id = args[args.index("--resume") + 1]
@@ -314,6 +320,21 @@ def run_claude() -> None:
                     target=claude_background_agent,
                     args=(session_id, task_id, tool_use_id, turn_number),
                     daemon=True).start()
+            elif "RATE_LIMIT" in prompt:
+                # 真实形态(实测 2.1.316):每次 API 响应后转发 unified 限额响应头
+                send({"type": "rate_limit_event", "rate_limit_info": {
+                    "status": "allowed", "resetsAt": 4102444800,
+                    "rateLimitType": "five_hour", "isUsingOverage": False,
+                    "unifiedWindows": {
+                        "five_hour": {"utilization": 0.42,
+                                      "resetsAt": 4102444800,
+                                      "status": "allowed"},
+                        "seven_day": {"utilization": 0.04,
+                                      "resetsAt": 4103049600,
+                                      "status": "allowed"}}},
+                    "session_id": session_id})
+                claude_finish(session_id, turn_number,
+                              f"claude answer {turn_number}")
             elif "TRIGGER_COMPACT" in prompt:
                 send({"type": "system", "subtype": "compact_boundary",
                       "session_id": session_id,

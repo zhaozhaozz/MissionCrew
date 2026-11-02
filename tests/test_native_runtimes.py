@@ -332,6 +332,28 @@ def test_agent_user_question_round_trips_to_same_turn(
         provider.shutdown()
 
 
+def test_claude_usage_falls_back_to_stream_rate_limit_event(tmp_path):
+    provider = ClaudeRuntimeProvider(_Fallback(), _fake_command("claude_code"))
+    events: list[tuple[str, str]] = []
+    config = _config(tmp_path, "claude_code", "RATE_LIMIT", {}, events)
+    try:
+        # 还没运行过:token 认证的 /usage 只有花费统计,如实提示而非猜百分比
+        before = provider.account_usage(config.backend)
+        assert before.status == "unavailable" and not before.windows
+        assert "不含账户限额" in before.message
+
+        assert provider.start(config).success
+        snapshot = provider.account_usage(config.backend)
+    finally:
+        provider.shutdown()
+
+    assert snapshot.status == "ok" and snapshot.source == "claude_stream_rate_limit"
+    assert [(w.key, w.used_percent, w.resets_at) for w in snapshot.windows] == [
+        ("session", 42, 4102444800), ("weekly", 4, 4103049600)]
+    # 限额事件不进运行过程流
+    assert not any("rate_limit" in text for _, text in events)
+
+
 def test_claude_session_approval_echoes_native_permission_suggestion(tmp_path):
     provider = ClaudeRuntimeProvider(_Fallback(), _fake_command("claude_code"))
     requests = []

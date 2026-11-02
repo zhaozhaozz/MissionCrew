@@ -11,8 +11,9 @@ from missioncrew.runtime import (RuntimeCapabilities, RuntimeManager,
                                  RuntimeProvider, RuntimeUsageSnapshot,
                                  RuntimeUsageWindow)
 from missioncrew.runtime.codex import parse_codex_usage
-from missioncrew.runtime.usage import (parse_claude_usage, parse_grok_usage,
-                                       parse_kimi_usage, probe_claude_usage)
+from missioncrew.runtime.usage import (parse_claude_rate_limit, parse_claude_usage,
+                                       parse_grok_usage, parse_kimi_usage,
+                                       probe_claude_usage)
 
 
 def _backend(adapter: str) -> Backend:
@@ -34,6 +35,28 @@ Current week (Fable): 78% used · resets Aug 3, 11am (UTC)""",
     assert snapshot.windows[0].duration_minutes == 300
     assert snapshot.windows[1].resets_at == datetime(
         2026, 8, 3, 11, tzinfo=timezone.utc).timestamp()
+
+
+def test_claude_rate_limit_event_drops_windows_reset_after_sampling():
+    info = {"unifiedWindows": {
+        "five_hour": {"utilization": 1.08, "resetsAt": 1_000},
+        "seven_day": {"utilization": 0.5, "resetsAt": 9_000},
+        "seven_day_overage_included": {"utilization": 0.9, "resetsAt": 9_000},
+    }}
+
+    snapshot = parse_claude_rate_limit(
+        _backend("claude_code"), info, observed_at=500, now=2_000)
+
+    # 采样后 5 小时窗口已重置:旧的超额比例作废;超出上限的比例封顶为 100
+    assert [(w.key, w.used_percent, w.resets_at) for w in snapshot.windows] == [
+        ("session", 0, None), ("weekly", 50, 9_000)]
+    assert snapshot.fetched_at == 500
+    assert parse_claude_rate_limit(
+        _backend("claude_code"), info, observed_at=500, now=800
+    ).windows[0].used_percent == 100
+    assert parse_claude_rate_limit(
+        _backend("claude_code"), {"status": "allowed"}, observed_at=500
+    ).status == "unavailable"
 
 
 def test_codex_usage_parser_preserves_multiple_limit_ids():

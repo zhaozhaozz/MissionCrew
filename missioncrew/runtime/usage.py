@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
@@ -141,13 +142,16 @@ def _snapshot(backend: Backend, status: str, source: str, *,
               plan: str = "",
               windows: list[RuntimeUsageWindow] | None = None,
               metrics: list[RuntimeUsageMetric] | None = None,
-              message: str = "") -> RuntimeUsageSnapshot:
-    return RuntimeUsageSnapshot(
+              message: str = "",
+              fetched_at: float | None = None) -> RuntimeUsageSnapshot:
+    snapshot = RuntimeUsageSnapshot(
         backend_id=backend.id, backend_name=backend.name,
         adapter=backend.adapter, status=status, source=source, plan=plan,
         windows=tuple(windows or ()), metrics=tuple(metrics or ()),
         message=message,
     )
+    # 被动采集的数据以采样时刻为准,不是本次读取时刻
+    return replace(snapshot, fetched_at=fetched_at) if fetched_at else snapshot
 
 
 def _claude_reset_timestamp(value: str, now: datetime | None = None) -> float | None:
@@ -203,11 +207,16 @@ def parse_claude_usage(
     if not windows:
         status = "auth_required" if re.search(
             r"\b(login|authenticate|sign in)\b", text, re.IGNORECASE) else "unavailable"
+        if status == "auth_required":
+            message = "Claude Code 尚未登录"
+        elif re.search(r"^\s*Total cost:", text, re.MULTILINE):
+            # token 认证(CLAUDE_CODE_OAUTH_TOKEN)缺少账户资料权限,/usage 退化成
+            # 本次会话的花费统计
+            message = "当前认证方式下 /usage 不含账户限额，Claude 角色运行后从运行事件读取"
+        else:
+            message = "Claude Code 未返回可识别的 /usage 限额"
         return _snapshot(
-            backend, status, "claude_usage_command",
-            message=("Claude Code 尚未登录" if status == "auth_required"
-                     else "Claude Code 未返回可识别的 /usage 限额"),
-        )
+            backend, status, "claude_usage_command", message=message)
     return _snapshot(
         backend, "ok", "claude_usage_command", windows=windows)
 
@@ -240,6 +249,52 @@ def probe_claude_usage(
             backend, "unavailable", "claude_usage_command",
             message="Claude Code 用量命令执行失败")
     return parse_claude_usage(backend, text)
+
+
+# rate_limit_event 的窗口名 -> 与 /usage 解析一致的 key/标签/时长;角色联动按
+# key/label 区分会话窗口与周窗口,两条来源必须同口径。
+_CLAUDE_RATE_WINDOWS = (
+    ("five_hour", "session", "当前会话", 5 * 60),
+    ("seven_day", "weekly", "本周 · 全部模型", 7 * 24 * 60),
+)
+
+
+def parse_claude_rate_limit(
+        backend: Backend, info: dict, observed_at: float,
+        now: float | None = None) -> RuntimeUsageSnapshot:
+    """解析 stream-json ``rate_limit_event`` 里服务端下发的订阅限额窗口。
+
+    CLI 每次 API 响应后把 anthropic-ratelimit-unified-* 响应头转成该事件:
+    ``unifiedWindows.<窗口>.utilization`` 是已用比例(通常 0~1,超出上限时可大于 1),
+    ``resetsAt`` 是重置时刻(epoch 秒)。采样后窗口已重置的,旧比例作废、按 0 显示。
+    """
+    now = time.time() if now is None else now
+    unified = info.get("unifiedWindows")
+    unified = unified if isinstance(unified, dict) else {}
+    windows: list[RuntimeUsageWindow] = []
+    for name, key, label, duration in _CLAUDE_RATE_WINDOWS:
+        window = unified.get(name)
+        if not isinstance(window, dict):
+            continue
+        try:
+            used = _percent(float(window["utilization"]) * 100)
+        except (KeyError, TypeError, ValueError):
+            continue
+        if used is None:
+            continue
+        resets_at = _timestamp(window.get("resetsAt"))
+        if resets_at is not None and resets_at <= now:
+            used, resets_at = 0.0, None
+        windows.append(RuntimeUsageWindow(
+            key=key, label=label, used_percent=used,
+            resets_at=resets_at, duration_minutes=duration))
+    if not windows:
+        return _snapshot(
+            backend, "unavailable", "claude_stream_rate_limit",
+            message="Claude 运行事件未携带可识别的限额窗口")
+    return _snapshot(
+        backend, "ok", "claude_stream_rate_limit", windows=windows,
+        fetched_at=observed_at)
 
 
 def parse_antigravity_usage(backend: Backend, payload: dict) -> RuntimeUsageSnapshot:
