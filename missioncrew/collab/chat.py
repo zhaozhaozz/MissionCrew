@@ -153,7 +153,8 @@ PEER_WORKFLOW = """\
 3. Do the work: read/write code and run commands in the working directory; touch only the read/write directories listed under "Must Follow". Put temporary files in a task directory the repository already uses; without such a convention use `{temp_dir}`, and clean up when the task is done. You cannot dispatch other roles: when part of the work needs another role, finish what you can and name that role in your reply (see the "Role Roster" below) so a human can mention it.
 4. Write back to the platform: publish documents, create or update Tasks and append status briefs only through the Agent Tool below; do not edit files under `documents/` or `tasks/` directly.
 5. Reply: your final reply is published to the chat channel in full and verbatim. Lead with the conclusion, then briefly say what you did; do not paste long logs; reference platform resources with `/resources/...` links, never internal paths.
-- This project has no orchestrator: every role holds the orchestrator-level management permissions but cannot dispatch other roles. Your result is only published to the channel and triggers no other role; when a human mentions several roles at once, each one starts on its own without waiting for the others."""
+- This project has no orchestrator: every role holds the orchestrator-level management permissions but cannot dispatch other roles. Your result is only published to the channel and triggers no other role; when a human mentions several roles at once, each one starts on its own without waiting for the others.
+- To work in another channel (for example one you just created with `channel.create` and its own workdir), call `message.publish` there with `mentions` set to your own id: it starts a separate session of you in that channel, whose result stays in that channel and is not returned to this turn."""
 
 DURABLE_CONTEXT_TEMPLATE = """\
 # MissionCrew Durable Shared Context
@@ -279,15 +280,16 @@ Collaboration chain budget: a single collaboration chain in this project allows 
 # 无主控项目:每个角色都有主控级管理权限,但不能互相派发,只由人类点名启动
 PEER_RULES = """\
 # Collaboration Duties (No-Orchestrator Project)
-This project has no orchestrator: every role holds the orchestrator-level management permissions (channels, dashboards, board data sources, guidelines, skills, automations, the recycle bin, run queries), but roles cannot dispatch each other and only humans start roles. Do the work yourself; every MissionCrew write operation must go through the Agent Tool above.
+This project has no orchestrator: every role holds the orchestrator-level management permissions (channels, dashboards, board data sources, guidelines, skills, automations, the recycle bin, run queries), but roles cannot dispatch each other: only humans start roles, apart from a role starting itself in another channel. Do the work yourself; every MissionCrew write operation must go through the Agent Tool above.
 Discipline:
-- Any @roleID or @[roleID] in a message body you send (including your final reply) is plain text and never triggers execution, and `message.publish` rejects `mentions` in this project. When the work needs another role, say in your final reply which role should take it and why; a human decides whether to mention it.
+- Any @roleID or @[roleID] in a message body you send (including your final reply) is plain text and never triggers execution, and `message.publish` accepts no other role in `mentions`. When the work needs another role, say in your final reply which role should take it and why; a human decides whether to mention it.
+- The one exception is yourself: `message.publish` with another `channel` and `mentions` set to your own id starts a separate session of you in that channel; its result stays there and is not returned to this turn. In the current channel this returns `invalid_arguments`.
 - Your output this turn (the final reply) is automatically published in full as this turn's result to the channel of the trigger message: put answers to humans, conclusions, status and anything else you need to include into that one output. Use `message.publish` only to post to another channel; do not call it to post the answer again, or the same result appears twice in the channel.
 """ + _CONFIG_PAGE_RULE + """\
 On-demand queries:
 """ + _RUN_QUERY_RULE + """\
 - Other channels are not in your context: to see how work in another channel is going, call `channel.runs.list` / `channel.history` with `channel` once; do not poll on them.
-- The channel list is not in your context; query it with `channel.list`. The workdir of `channel.create` must be a project repository path or a subdirectory of one; a new channel starts empty, and a human mentions the roles that should work there.
+- The channel list is not in your context; query it with `channel.list`. The workdir of `channel.create` must be a project repository path or a subdirectory of one; a new channel starts empty: a human mentions the roles that should work there, or you mention yourself there to work in it.
 """ + _MANUAL_RULE
 
 # 主控的项目清单:附在公共区块末尾但不参与版本哈希,差异经本轮输入提示
@@ -453,8 +455,8 @@ class ChatEngine:
         legal_spans: list[dict] = []
         # Agent 派发只认 message.publish 显式命令传入的结构化范围;正文里的任何 @
         # （含 @[role] 旧语法）都是普通文字。主控可派发任意角色;有主控时执行角色
-        # 只能提及主控,最终回复把完整结果交回主控,避免横向看见或调用名册;有主控时
-        # 角色还能在其他频道提及自己另起会话;无主控时角色不能互相派发,回复只留在频道。
+        # 只能提及主控,最终回复把完整结果交回主控,避免横向看见或调用名册;无主控时
+        # 角色不能互相派发,回复只留在频道。有无主控,角色都能在其他频道提及自己另起会话。
         can_dispatch = (author_type == "agent" and bool(project)
                         and project.can_dispatch(author))
         if author_type == "agent":

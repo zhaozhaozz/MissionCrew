@@ -568,11 +568,11 @@ class Project:
     def can_mention(self, role_id: str, target_id: str,
                     cross_channel: bool = False) -> bool:
         """角色能否经 message.publish 的 mentions 启动 target:主控可提及任意角色,
-        有主控时其他角色只能提及主控,无主控时角色之间不能互相提及。有主控时角色
-        可以在其他频道(cross_channel)提及自己,在那里另起会话。仅人工点名的
-        角色不进协作图,由调用方另行拦截。"""
+        有主控时其他角色只能提及主控,无主控时角色之间不能互相提及。有无主控,
+        角色都可以在其他频道(cross_channel)提及自己,在那里另起会话。仅人工点名
+        的角色不进协作图,由调用方另行拦截。"""
         if target_id == role_id:
-            return cross_channel and self.has_orchestrator
+            return cross_channel
         return self.can_dispatch(role_id) or (
             self.has_orchestrator and target_id == self.orchestrator_role_id)
 

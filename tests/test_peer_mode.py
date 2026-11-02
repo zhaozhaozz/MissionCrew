@@ -46,6 +46,10 @@ def test_project_helpers_reflect_peer_mode(peer):
     assert project.has_orchestrator is False
     assert project.controls_platform("dev") and project.controls_platform("scribe")
     assert not project.can_dispatch("dev") and not project.can_dispatch("lead")
+    # 不能提及别人;只能在其他频道提及自己
+    assert not project.can_mention("dev", "reviewer", cross_channel=True)
+    assert project.can_mention("dev", "dev", cross_channel=True)
+    assert not project.can_mention("dev", "dev")
     normal = Project(id="p", name="p", orchestrator_role_id="lead")
     assert normal.has_orchestrator and normal.controls_platform("lead")
     assert not normal.controls_platform("dev")
@@ -179,7 +183,7 @@ def test_every_role_gets_orchestrator_actions_and_full_history(chat, peer):
 
 
 def test_message_tool_rejects_mentions_for_peer_roles(peer):
-    """角色能用 message.publish 发消息、建频道、写准则,但带 mentions 派发被拒。"""
+    """角色能用 message.publish 发消息、建频道、写准则,但 mentions 派发别人被拒。"""
     chat = ChatEngine(peer)
     channel = peer.get_channel("general")
     root = peer.add_message(channel.id, "human", "human", "@dev 安排复核", ["dev"])
@@ -190,7 +194,7 @@ def test_message_tool_rejects_mentions_for_peer_roles(peer):
     token = Path(config.env["MISSIONCREW_AGENT_TOKEN_FILE"]).read_text().strip()
     identity = chat.agent_tools.authenticate(token)
     publish = chat.agent_tools.capabilities(identity)["actions"]["message.publish"]
-    assert "mentions" not in publish["arguments"]
+    assert "your own" in publish["arguments"]["mentions"]
     assert "cannot dispatch" in publish["description"]
 
     with pytest.raises(AgentToolError) as denied:
@@ -208,6 +212,48 @@ def test_message_tool_rejects_mentions_for_peer_roles(peer):
     chat.wait_idle()
     assert "dispatched" not in posted
     assert _runs(peer) == ["dev"]   # 只有本轮自身,没有派生新运行
+
+
+def test_peer_role_can_start_itself_in_another_channel(peer):
+    """无主控时角色也能在其他频道提及自己另起会话,结果只留在那个频道。"""
+    chat = ChatEngine(peer)
+    channel = peer.get_channel("general")
+    root = peer.add_message(channel.id, "human", "human", "@dev 去新频道做原型", ["dev"])
+    run_id = peer.add_chat_run(channel.id, "dev", root, root, 0)
+    peer.update_chat_run(run_id, "running", backend_id="std-1")
+    config = chat._assemble(channel, peer.get_role("webshop", "dev"),
+                            peer.get_backend("std-1"), root, run_id=run_id)
+    identity = chat.agent_tools.authenticate(
+        Path(config.env["MISSIONCREW_AGENT_TOKEN_FILE"]).read_text().strip())
+
+    def publish(arguments: dict, op: str) -> dict:
+        return chat.agent_tools.execute(identity, "message.publish", arguments, run_id, op)
+
+    with pytest.raises(AgentToolError) as same_channel:
+        publish({"channel": "general", "content": "自己接着做", "mentions": ["dev"]}, "self-here")
+    assert same_channel.value.code == "invalid_arguments"
+    chat.agent_tools.execute(identity, "channel.create", {"id": "spike", "name": "spike"},
+                             run_id, "peer-spike")
+    with pytest.raises(AgentToolError) as with_other:
+        publish({"channel": "spike", "content": "一起做", "mentions": ["dev", "reviewer"]},
+                "self-and-other")
+    assert with_other.value.code == "permission_denied"
+
+    result = publish({"channel": "spike", "content": "在这里实现原型", "mentions": ["dev"]},
+                     "self-spike")
+    assert result["dispatched"] == ["dev"]
+    assert "handoff" not in result and "separate session" in result["resume"]
+    dev_turn = chat._assemble(
+        peer.get_channel("webshop:spike"), peer.get_role("webshop", "dev"),
+        peer.get_backend("std-1"), result["message_id"]).turn_prompt
+    assert "brief you posted for yourself from another channel" in dev_turn
+
+    chat.wait_idle()
+    # 新会话只启动自己,回复留在新频道,不拉起任何人
+    assert [r["role_id"] for r in peer.chat_runs_for_channel("webshop:spike")] == ["dev"]
+    reply = _msgs(peer, "webshop:spike")[-1]
+    assert reply["author"] == "dev" and reply["reply_to"] == result["message_id"]
+    assert json.loads(reply["mentions"]) == []
 
 
 def test_project_api_accepts_empty_orchestrator_and_frees_lead(seeded):
@@ -255,7 +301,8 @@ def test_task_dispatch_and_manual_in_peer_mode(peer):
     manual = render_manual(project)
     assert "orchestrator only" not in manual
     assert "This project has no orchestrator" in manual
-    assert "`message.publish`\n  rejects `mentions`" in manual
+    assert "`message.publish`\n  rejects any other role in `mentions`" in manual
+    assert "your own id starts a separate session of you" in manual
     assert "Collaboration Chain Budget" not in manual
     task = create_task(peer, "webshop", title="复核金额", channel_ids=["general"])
     with pytest.raises(ValueError, match="没有主控"):

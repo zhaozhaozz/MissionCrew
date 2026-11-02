@@ -553,10 +553,23 @@ def _message_publish_without_mentions(reason: str) -> dict:
     }
 
 
-# 无主控项目里角色能发消息但不能派发
-PEER_MESSAGE_PUBLISH = _message_publish_without_mentions(
-    "this project has no orchestrator, so roles cannot dispatch each other and only humans "
-    "start roles")
+# 无主控项目:角色不能互相派发,mentions 只能是在其他频道的自己
+PEER_MESSAGE_PUBLISH = {
+    "description": (
+        "Post a message to a project channel, only for posting to other channels (such as a "
+        "brief in a channel you just created); your final reply is already published to the "
+        "trigger channel by the platform, so do not use this to copy the answer. This project "
+        "has no orchestrator, so roles cannot dispatch each other; mentions may only name your "
+        "own id when channel is not the current one, which starts you there in a separate "
+        "session (for example to work in a channel you just created)"
+    ),
+    "arguments": {
+        "channel": "short channel id within the project",
+        "content": "message body; any @ in it never starts a role",
+        "mentions": ("optional array whose only allowed id is your own, and only for another "
+                     "channel; omit it to post without starting anyone"),
+    },
+}
 # 仅人工点名的角色不进 Agent 协作图,有主控时也不能提及主控
 MANUAL_ONLY_MESSAGE_PUBLISH = _message_publish_without_mentions(
     "you are a human-mention-only role, so you cannot start other roles")
@@ -1510,23 +1523,25 @@ class AgentActionService:
     def _ensure_can_mention(self, project: Project, role_id: str,
                             mentions: list[str], cross_channel: bool) -> None:
         """主控可提及任意角色;有主控时执行角色只能提及主控;发到其他频道时角色还
-        可以提及自己。无主控时、以及仅人工点名的角色不能启动任何角色。"""
-        if role_id in mentions and not cross_channel and project.has_orchestrator:
+        可以提及自己(有无主控皆可)。仅人工点名的角色不能启动任何角色。"""
+        if role_id in mentions and not cross_channel:
             raise AgentToolError(
                 "invalid_arguments",
                 "不能在当前频道调度自己;要在另一个频道另起会话,请把 channel 设为那个频道")
         if project.can_dispatch(role_id):
             return
-        if not project.has_orchestrator:
-            raise AgentToolError(
-                "permission_denied",
-                "本项目没有主控,角色之间不能派发;需要其他角色时请在最终回复里说明,"
-                "由人类点名", 403)
         if self._is_manual_only(project, role_id):
             raise AgentToolError(
                 "permission_denied",
                 "仅人工点名的角色不能启动其他角色;需要协作时请在最终回复里说明,"
                 "由人类点名", 403)
+        if not project.has_orchestrator:
+            if any(target != role_id for target in mentions):
+                raise AgentToolError(
+                    "permission_denied",
+                    "本项目没有主控,角色之间不能派发,mentions 只能是在其他频道的自己;"
+                    "需要其他角色时请在最终回复里说明,由人类点名", 403)
+            return
         denied = [target for target in mentions
                   if not project.can_mention(role_id, target, cross_channel)]
         if denied:
