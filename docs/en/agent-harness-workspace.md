@@ -13,7 +13,7 @@ Therefore, the fact that the source repository uses `docs/` does not mean the ru
 
 Each run involves two locations at the same time:
 
-1. `workdir` is the actual working directory. When the channel is bound to a code repository, it is usually that repository, and business source code and deliverables should be modified here.
+1. `workdir` is the actual working directory. When the channel is bound to a code repository, it is usually that repository, where agents read code and run commands. Several roles and humans may be changing the same repository at the same time, so the prompt requires an agent to create its own git worktree before changing code (following the repository's convention if it has one, otherwise at `<repository>/.worktrees/<name>`, which stays inside the authorized directories), to edit, build, and commit on a new branch there, and to state the worktree path and branch in its final reply; when the working directory is already a worktree created for the task, the agent works in it directly, and reading code or running checks that change no files needs no worktree. Committing, merging back, and cleanup follow the task brief and the project guidelines; details are in section 3 of `manual.md`.
 2. `MISSIONCREW_WORKSPACE` points to a separate `.missioncrew/` in the platform data directory. It holds the project materials, task views, history, and run records provided by MissionCrew, and never enters the business source code or business Git commits.
 
 Chat workspaces are isolated and reused per `project × channel × role`. Different roles do not share the same `channel-history.json` or Agent Tool token, but `.missioncrew/documents/` links to the same project document library, so project documents are shared among the roles permitted to run.

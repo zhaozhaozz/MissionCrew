@@ -85,8 +85,8 @@ class _PendingInteraction:
 # 提示词结构约定:人格(role_desc)是"选人用的专长画像",不是任务;
 # 任务只来自触发消息(由发起者——人类或调度角色——撰写的简报)。
 # 给角色的提示词一律用英文;人类可见内容的语言由公共区块里的 Language 一行约定。
-WORKDIR_SECTION = ("Working directory: `{workdir}` (the current directory; read/write files "
-                   "and run commands here to do the work)")
+WORKDIR_SECTION = ("Working directory: `{workdir}` (the current directory; read files and run "
+                   "commands here; make code changes in your own git worktree, see \"Must Follow\")")
 # 频道绑定目录缺失时的回退提示:让 Agent 知道当前目录不是代码仓,避免误操作
 MISSING_WORKDIR_NOTICE = (
     "Note: the working directory `{bound}` bound to this channel no longer exists (for "
@@ -125,7 +125,7 @@ Language: write everything MissionCrew shows to humans (final replies, messages,
 _EXECUTOR_STEPS = """\
 1. Read the task: the task comes only from the brief in the "Trigger Message" at the bottom; your role profile is not a task. If the brief is missing information, raise it in your reply instead of guessing or widening the scope.
 2. Gather context only when needed; do not preload. Channel history is `channel-history.json` under "Workspace Overview"; for guidelines and skills, check their descriptions under "Project Materials" first and read the full text only if relevant; project documents are in `{documents_dir}`.
-3. Do the work: read/write code and run commands in the working directory; touch only the read/write directories listed under "Must Follow". Put temporary files in a task directory the repository already uses (such as the project's `.tmp/` or `.e2e/`); without such a convention use `{temp_dir}`, and clean up when the task is done.
+3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (see "Must Follow"); touch only the read/write directories listed under "Must Follow". Put temporary files in a task directory the repository already uses (such as the project's `.tmp/` or `.e2e/`); without such a convention use `{temp_dir}`, and clean up when the task is done.
 4. Write back to the platform: publish documents, create or update Tasks and append status briefs only through the Agent Tool below; do not edit files under `documents/` or `tasks/` directly.
 5. Reply: your final reply is published to the chat channel in full and verbatim, where humans see it. Lead with the conclusion, then briefly say what you did; do not paste long logs; reference platform resources with `/resources/...` links, never internal paths."""
 
@@ -144,13 +144,13 @@ ORCHESTRATOR_WORKFLOW = """\
 2. Choose who and where: pick roles from the "Role Roster" below by profile, capabilities and preferences. Whether to open a new channel follows the project guidelines; without a convention, dispatch in the current channel. Before referencing, dispatching to, or creating another channel, check with `channel.list` (scope=active/archived/all) to avoid duplicate channels.
 3. Dispatch: call `message.publish` with `channel` (`{channel_id}` for the current channel) and a `mentions` array of roles; the content states the background, requirements and acceptance criteria. Dispatching always goes through `message.publish` with the target roles listed explicitly in `mentions`; there is no other way.
 4. Wrap up and wait for reports: once `message.publish` returns a non-empty `dispatched`, your dispatch duty for this turn is done; say briefly in your final reply that the work was dispatched, then end the turn, and do not call `message.publish` again for that note. When the executor finishes or fails, the platform automatically starts a new orchestrator turn with its full result; review, dispatch further, or summarize then.
-5. Review and summarize: check reports against the acceptance criteria, then dispatch further or write the conclusion. Record milestone conclusions in the Task with `task.brief`; state across turns lives there, not in session memory. Run verification commands inside the "Project repositories" directories; the current working directory is not necessarily a repository."""
+5. Review and summarize: check reports against the acceptance criteria, then dispatch further or write the conclusion. Record milestone conclusions in the Task with `task.brief`; state across turns lives there, not in session memory. Run verification commands inside the "Project repositories" directories (for code changes, in the git worktree the executor reported); the current working directory is not necessarily a repository."""
 
 # 无主控项目:每个角色都有主控级管理权限,但只执行、不派发,由人类点名启动
 PEER_WORKFLOW = """\
 1. Read the task: this turn's input is the human request (or automation script message) in the "Trigger Message" at the bottom; its type is on the "This Turn's Trigger" line. Your role profile is not a task. If the request is missing information, raise it in your reply instead of guessing or widening the scope.
 2. Gather context only when needed; do not preload. Channel history is `channel-history.json` under "Workspace Overview"; for guidelines and skills, check their descriptions under "Project Materials" first and read the full text only if relevant; project documents are in `{documents_dir}`.
-3. Do the work: read/write code and run commands in the working directory; touch only the read/write directories listed under "Must Follow". Put temporary files in a task directory the repository already uses; without such a convention use `{temp_dir}`, and clean up when the task is done. You cannot dispatch other roles: when part of the work needs another role, finish what you can and name that role in your reply (see the "Role Roster" below) so a human can mention it.
+3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (see "Must Follow"); touch only the read/write directories listed under "Must Follow". Put temporary files in a task directory the repository already uses; without such a convention use `{temp_dir}`, and clean up when the task is done. You cannot dispatch other roles: when part of the work needs another role, finish what you can and name that role in your reply (see the "Role Roster" below) so a human can mention it.
 4. Write back to the platform: publish documents, create or update Tasks and append status briefs only through the Agent Tool below; do not edit files under `documents/` or `tasks/` directly.
 5. Reply: your final reply is published to the chat channel in full and verbatim. Lead with the conclusion, then briefly say what you did; do not paste long logs; reference platform resources with `/resources/...` links, never internal paths.
 - This project has no orchestrator: every role holds the orchestrator-level management permissions but cannot dispatch other roles. Your result is only published to the channel and triggers no other role; when a human mentions several roles at once, each one starts on its own without waiting for the others.

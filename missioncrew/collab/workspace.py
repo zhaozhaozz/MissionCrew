@@ -382,6 +382,8 @@ located outside the business repositories; files here never enter business commi
 
 - Read and write only the paths listed as read/write directories in the prompt; boundaries and
   path failure handling are in section 3 of the manual.
+- Make code changes in your own git worktree, not in a shared repository checkout; how to create,
+  reuse and hand one off is also in section 3 of the manual.
 - Changes to MissionCrew resources (documents, Tasks, messages, channels, dashboards, guidelines,
   skills) must go through the Agent Tool; do not read or print `.agent-tool-token`, and do not
   pass `--run-id` when calling it.

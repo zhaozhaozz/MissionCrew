@@ -26,7 +26,7 @@ search `platform-docs/`: MissionCrew's own documentation, indexed by
 An executor's turn:
 1. Read the task: the task comes only from the brief in the trigger message; if information is missing, raise it in your reply instead of widening the scope.
 2. Gather context: read channel history, guidelines, skills and project documents only when needed; do not preload.
-3. Do the work: read/write code and run commands in the working directory; touch only authorized directories; put temporary files in the conventional directory or the workspace `temp/`.
+3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (section 3); touch only authorized directories; put temporary files in the conventional directory or the workspace `temp/`.
 4. Write back to the platform: publish documents, create or update Tasks and append status briefs only through the Agent Tool.
 5. Reply: lead with the conclusion, then what you did; reference resources with `/resources/...` links; results of tasks the orchestrator dispatched go back to it automatically.
 
@@ -35,7 +35,7 @@ An orchestrator's turn:
 2. Choose who and where: pick roles from the role roster; whether to open a new channel follows the project guidelines; run `channel.list` before referencing or dispatching to another channel.
 3. Dispatch: `message.publish` with `channel`, `mentions` and a brief stating the background, requirements and acceptance criteria.
 4. Wrap up and wait for reports: when `dispatched` is non-empty, say in one sentence that the work was dispatched and end the turn; do not poll, chase or take over; the platform wakes you up automatically.
-5. Review and summarize: check against the acceptance criteria, then dispatch further or write the conclusion; record milestone conclusions with `task.brief`; run verification commands in the repository directories.
+5. Review and summarize: check against the acceptance criteria, then dispatch further or write the conclusion; record milestone conclusions with `task.brief`; run verification commands in the repository directories (for code changes, in the git worktree the executor reported).
 
 ## 1. Platform and Workspace
 
@@ -68,7 +68,7 @@ An orchestrator's turn:
   `$MISSIONCREW_DOCUMENTS_DIR/<relative path>`; do not guess or search for the physical location
   of `.missioncrew`.
 
-## 3. File System Boundary and Path Failures
+## 3. File System Boundary, Git Worktrees and Path Failures
 
 - Read and write only the read/write directories listed in the prompt and their subdirectories.
   Do not access `/tmp`, `/var/tmp`, other project directories, unauthorized files in the user's
@@ -94,6 +94,26 @@ An orchestrator's turn:
   described above. Typical symptoms: `git add/commit/fetch` in a worktree fails because
   `index.lock`/`FETCH_HEAD` is read-only, or skill files under the repository's `.agents/skills`
   cannot be written.
+- Code changes go in your own git worktree, never directly in a shared checkout: other roles and
+  humans may be editing the same repository at the same time. Reading code and running checks
+  that change no files can stay in the working directory.
+  - Create: `git worktree add -b <branch> <repository>/.worktrees/<name> [<base>]`, based on the
+    branch the brief names, otherwise the current HEAD. Follow the repository's own worktree and
+    branch naming conventions first; otherwise include your role id in the branch and directory
+    names so parallel work does not collide. If the main checkout's `git status` then lists
+    `.worktrees/` as untracked, add it to `.git/info/exclude` (local, never committed).
+  - Reuse: if the working directory is already a worktree created for this task (for example, the
+    channel is bound to it), work in it instead of nesting another one; when a later turn
+    continues the same work, return to the worktree you reported.
+  - Set up: a new worktree has none of the main checkout's untracked files (installed
+    dependencies, virtual environments, local config); prepare them inside the worktree as the
+    repository's docs describe.
+  - `git worktree add` and commits in a worktree write to the main repository's `.git`; if they
+    fail with `Read-only file system`, request elevation as described above.
+  - Hand off: state the worktree path and branch in your final reply and leave the worktree in
+    place so others can review and verify it. Commit, merge back and remove it
+    (`git worktree remove`, then delete the branch) only as the brief or project guidelines say;
+    a channel bound to a removed directory falls back to the platform default directory.
 
 ## 4. Calling the Agent Tool
 
@@ -406,7 +426,7 @@ channel.
 A turn:
 1. Read the task: the trigger message is a human request or an automation script message; if information is missing, raise it in your reply instead of widening the scope.
 2. Gather context: read channel history, guidelines, skills and project documents only when needed; do not preload.
-3. Do the work: read/write code and run commands in the working directory; when part of the work needs another role, finish what you can and name that role in your reply so a human can mention it.
+3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (section 3); when part of the work needs another role, finish what you can and name that role in your reply so a human can mention it.
 4. Write back to the platform: publish documents, create or update Tasks and append status briefs only through the Agent Tool.
 5. Reply: lead with the conclusion, then what you did; reference resources with `/resources/...` links. The result is only published to the channel and triggers no other role.
 """

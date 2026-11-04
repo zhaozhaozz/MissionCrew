@@ -13,7 +13,7 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 每次执行同时涉及两个位置：
 
-1. `workdir` 是实际工作目录。频道绑定代码仓时，它通常就是代码仓，业务源码和交付物应在这里修改。
+1. `workdir` 是实际工作目录。频道绑定代码仓时，它通常就是代码仓，Agent 在这里读代码、跑命令。同一个仓可能有多个角色和人类同时在改，所以 Prompt 要求改代码前先建自己的 git worktree（仓库有约定时按约定，否则放在 `<仓库>/.worktrees/<名字>`，仍在授权目录内），在新分支上修改、构建和提交，并在最终回复里给出 worktree 路径与分支；工作目录本身已是为该任务建的 worktree 时直接在其中工作，只读代码、不改文件的检查不需要 worktree。提交、合并回主线与清理按任务简报和项目准则执行，细节见 `manual.md` 第 3 节。
 2. `MISSIONCREW_WORKSPACE` 指向平台数据根中的独立 `.missioncrew/`。这里保存 MissionCrew 提供的项目资料、任务视图、历史和运行记录，不会进入业务源码或业务 Git 提交。
 
 聊天工作区按 `project × channel × role` 隔离并复用。不同角色不会共享同一个 `channel-history.json` 或 Agent Tool 令牌，但 `.missioncrew/documents/` 链接到同一项目文档库，所以项目文档对获准执行的角色共享。
