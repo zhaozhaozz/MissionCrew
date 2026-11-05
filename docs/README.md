@@ -6,7 +6,7 @@ English version: [en/README.md](en/README.md)
 
 ## 使用平台
 
-- [定时自动化与任务自动处理](automation.md)：自动化脚本的运行环境（注入的环境变量、跨次保留的工作目录、调用平台动作的方式）、webhook 触发（专用端口、验签方式、事件文件与排队）、`board_source.save` 把外部列表同步成任务时的字段格式与合并规则、任务自动处理规则的配置位置与触发时机，以及同步 GitHub/GitCode Issue 的完整示例。写同步脚本或 webhook 脚本、排查同步结果或自动派发时读。
+- [定时自动化与任务自动处理](automation.md)：自动化脚本的运行环境（注入的环境变量、跨次保留的工作目录、调用平台动作的方式）、webhook 触发（全局 webhook 来源与订阅、专用端口、验签方式、事件文件与排队）、`board_source.save` 把外部列表同步成任务时的字段格式与合并规则、任务自动处理规则的配置位置与触发时机，以及同步 GitHub/GitCode Issue 的完整示例。写同步脚本或 webhook 脚本、排查同步结果或自动派发时读。
 - [Agent Tool API](agent-tool-api.md)：Agent 和脚本修改平台状态的统一动作接口，包括 CLI 用法、令牌与权限、各动作的参数和返回值、`version_conflict` 等错误码。调用动作前不确定参数或遇到错误时读。
 - [harness 工作区边界](agent-harness-workspace.md)：Agent 工作区 `.missioncrew/` 里每个目录的读写语义、任务快照的字段与刷新时机、注入的环境变量，以及工作区与业务代码仓的边界。不确定某个目录能不能写、快照何时更新时读。
 - [资源与 URL 约定](resources.md)：频道、任务、文档、准则、Skill、面板等资源的公开 URL 格式和生命周期。在回复里引用平台资源时读。

@@ -1,4 +1,4 @@
-"""Webhook 触发自动化:验签、事件文件、排队,以及只有 /hooks 的专用端口。"""
+"""Webhook 触发自动化:全局来源、验签、扇出、事件文件、排队,以及只有 /hooks 的专用端口。"""
 from __future__ import annotations
 
 import base64
@@ -22,8 +22,11 @@ from missioncrew.collab import automations as automation_mod
 from missioncrew.collab.automations import (AUTOMATION_RUNS_RETENTION_SECONDS,
                                            AutomationService, save_automation)
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.collab.webhooks import (WebhookRejected, new_webhook_secret,
+from missioncrew.collab.webhooks import (WebhookRejected, delete_webhook_source,
+                                         new_webhook_secret, save_webhook_source,
                                          verify_webhook, webhook_event)
+from missioncrew.core.models import Project
+from missioncrew.core.store import Store
 
 
 def _sign(secret: str, body: bytes) -> str:
@@ -46,20 +49,35 @@ def _wait_runs(store, automation_id, count, timeout=10.0):
     raise AssertionError("automation runs did not finish in time")
 
 
+def _wait_idle(service, timeout=5.0):
+    """运行记录先落库、随后才解除运行中标记;断言排队结果前等它真正空闲。"""
+    deadline = time.time() + timeout
+    while service.running_ids() and time.time() < deadline:
+        time.sleep(0.02)
+    assert service.running_ids() == set()
+
+
 @pytest.fixture()
 def hook(seeded):
-    """开启 webhook 的脚本 + 只含 webhook 路由的应用(不经主服务)。"""
+    """全局来源 gh + 订阅它的脚本 + 只含 webhook 路由的应用(不经主服务)。"""
     chat = ChatEngine(seeded, max_workers=2)
     service = AutomationService(seeded, chat.agent_tools)
+    source, _ = save_webhook_source(seeded, id="gh", name="GitHub org")
     automation, _ = save_automation(
-        seeded, "webshop", id="on-issue", webhook=True,
-        script=('echo "trigger=$MISSIONCREW_TRIGGER provider=$MISSIONCREW_WEBHOOK_PROVIDER '
+        seeded, "webshop", id="on-issue", webhook_source="gh",
+        script=('echo "trigger=$MISSIONCREW_TRIGGER source=$MISSIONCREW_WEBHOOK_SOURCE '
+                'provider=$MISSIONCREW_WEBHOOK_PROVIDER '
                 'event=$MISSIONCREW_WEBHOOK_EVENT delivery=$MISSIONCREW_WEBHOOK_DELIVERY"\n'
                 'cat "$MISSIONCREW_WEBHOOK_EVENT_FILE"\n'))
     ctx = SimpleNamespace(store=seeded, automations=service)
     client = StarletteClient(webhook_api.create_webhook_app(ctx))
+
+    def post(body: bytes, path: str = "/hooks/gh", secret: str = "", **headers):
+        return client.post(path, content=body, headers={
+            "X-Hub-Signature-256": _sign(secret or source.secret, body), **headers})
+
     return SimpleNamespace(store=seeded, service=service, automation=automation,
-                           secret=automation.webhook_secret, client=client)
+                           source=source, secret=source.secret, client=client, post=post)
 
 
 # ---- 验签与事件整理 ----
@@ -168,22 +186,47 @@ def test_webhook_event_parses_json_and_form_and_strips_secret_headers():
 
 def test_signed_delivery_runs_script_with_event_file(hook):
     body = json.dumps({"action": "labeled", "issue": {"number": 7}}).encode()
-    response = hook.client.post(
-        "/hooks/webshop/on-issue", content=body,
-        headers={"Content-Type": "application/json", "X-GitHub-Event": "issues",
-                 "X-GitHub-Delivery": "abc-1", "X-Hub-Signature-256": _sign(hook.secret, body)})
+    response = hook.post(body, **{"Content-Type": "application/json",
+                                  "X-GitHub-Event": "issues", "X-GitHub-Delivery": "abc-1"})
     assert response.status_code == 202, response.text
-    run_id = response.json()["run_id"]
+    [run_id] = response.json()["run_ids"]
+    assert response.json()["queued"] == 0
     [run] = _wait_runs(hook.store, hook.automation.id, 1)
     assert run["id"] == run_id and run["status"] == "succeeded", run
-    assert (run["trigger"], run["trigger_detail"]) == ("webhook", "github issues abc-1")
-    assert "trigger=webhook provider=github event=issues delivery=abc-1" in run["stdout"]
+    assert (run["trigger"], run["trigger_detail"]) == ("webhook", "gh: github issues abc-1")
+    assert ("trigger=webhook source=gh provider=github event=issues delivery=abc-1"
+            in run["stdout"])
     event = json.loads(run["stdout"].split("\n", 1)[1])
-    assert event["payload"]["issue"]["number"] == 7
+    assert event["source"] == "gh" and event["payload"]["issue"]["number"] == 7
     assert "x-hub-signature-256" in event["headers"]   # 签名不是密钥,保留给脚本
     # 事件文件只在运行期间存在
     workdir = automation_mod.automation_workdir(hook.automation)
     assert not (workdir / automation_mod.WEBHOOK_EVENT_FILE).exists()
+
+
+def test_one_source_fans_out_to_every_subscriber_across_projects(hook):
+    """多个脚本(含其他项目的)订阅同一来源:一次投递各跑一次,各自拿到同一事件。"""
+    hook.store.put_project(Project(id="ops", name="Ops"))
+    other, _ = save_automation(hook.store, "ops", id="notify", webhook_source="gh",
+                               script='echo "ops $MISSIONCREW_WEBHOOK_DELIVERY"')
+    save_automation(hook.store, "webshop", id="unrelated", script="echo no")
+    response = hook.post(b"{}", **{"X-GitHub-Event": "push", "X-GitHub-Delivery": "fan-1"})
+    assert response.status_code == 202 and len(response.json()["run_ids"]) == 2
+    [mine] = _wait_runs(hook.store, hook.automation.id, 1)
+    [theirs] = _wait_runs(hook.store, other.id, 1)
+    assert "delivery=fan-1" in mine["stdout"] and theirs["stdout"].strip() == "ops fan-1"
+    assert hook.store.list_automation_runs("webshop:unrelated") == []
+    accepted = next(row for row in hook.store.list_audit(None, 20)
+                    if row["action"] == "webhook_delivery_accepted")
+    assert "source=gh" in accepted["detail"] and "ops:notify=#" in accepted["detail"]
+
+
+def test_source_without_subscribers_accepts_and_runs_nothing(hook):
+    save_automation(hook.store, "webshop", id="on-issue", webhook_source="")
+    response = hook.post(b"{}")
+    assert response.status_code == 202
+    assert response.json() == {"ok": True, "run_ids": [], "queued": 0}
+    assert hook.store.list_automation_runs(hook.automation.id) == []
 
 
 def test_relayed_github_delivery_is_accepted_by_relay_signature(hook):
@@ -191,38 +234,35 @@ def test_relayed_github_delivery_is_accepted_by_relay_signature(hook):
     body = json.dumps({"action": "opened", "number": 9}).encode()
     timestamp = int(time.time())
     key = base64.b64decode(hook.secret.removeprefix("whsec_"))
-    response = hook.client.post("/hooks/webshop/on-issue", content=body, headers={
+    response = hook.client.post("/hooks/gh", content=body, headers={
         "Content-Type": "application/json", "X-GitHub-Event": "pull_request",
         "X-GitHub-Delivery": "gh-9", "X-Hub-Signature-256": _sign("github-app-secret", body),
         "webhook-id": "relay-9", "webhook-timestamp": str(timestamp),
         "webhook-signature": _standard(key, "relay-9", timestamp, body)})
     assert response.status_code == 202, response.text
     [run] = _wait_runs(hook.store, hook.automation.id, 1)
-    assert run["trigger_detail"] == "github pull_request gh-9"
-    assert any(row["action"] == "automation_webhook_accepted" and "auth=standard" in row["detail"]
+    assert run["trigger_detail"] == "gh: github pull_request gh-9"
+    assert any(row["action"] == "webhook_delivery_accepted" and "auth=standard" in row["detail"]
                for row in hook.store.list_audit(None, 20))
 
 
 def test_ping_and_rejections_do_not_run(hook):
     body = b"{}"
-    ping = hook.client.post("/hooks/webshop/on-issue", content=body, headers={
-        "Content-Type": "application/json", "X-GitHub-Event": "ping",
-        "X-Hub-Signature-256": _sign(hook.secret, body)})
+    ping = hook.post(body, **{"Content-Type": "application/json", "X-GitHub-Event": "ping"})
     assert ping.status_code == 200 and ping.json() == {"ok": True, "pong": True}
 
-    bad = hook.client.post("/hooks/webshop/on-issue", content=body, headers={
-        "X-Hub-Signature-256": _sign("wrong", body)})
+    bad = hook.post(body, secret="wrong")
     assert bad.status_code == 401 and bad.json()["error"] == "signature mismatch"
-    assert any(row["action"] == "automation_webhook_rejected"
+    assert any(row["action"] == "webhook_delivery_rejected" and "source=gh" in row["detail"]
                for row in hook.store.list_audit(None, 20))
 
-    save_automation(hook.store, "webshop", id="cron-only", script="echo hi", cron="0 9 * * *")
-    for path in ("/hooks/webshop/cron-only", "/hooks/webshop/missing",
-                 "/hooks/other/on-issue", "/hooks/webshop/bad%20id"):
-        assert hook.client.post(path, content=body, headers={
-            "X-Hub-Signature-256": _sign(hook.secret, body)}).status_code == 404, path
+    # 不存在的来源、停用的来源、非法路径一律 404,不区分原因
+    save_webhook_source(hook.store, id="paused", enabled=False)
+    for path in ("/hooks/missing", "/hooks/paused", "/hooks/gh/extra", "/hooks/bad%20id",
+                 "/hooks/webshop/on-issue"):
+        assert hook.post(body, path=path).status_code == 404, path
     # 端口上没有其他东西:其他路径 404,其他方法 405
-    assert hook.client.get("/hooks/webshop/on-issue").status_code == 405
+    assert hook.client.get("/hooks/gh").status_code == 405
     for path in ("/", "/api/overview", "/assets/js/api.js", "/docs", "/openapi.json"):
         assert hook.client.get(path).status_code == 404, path
     assert hook.store.list_automation_runs(hook.automation.id) == []
@@ -230,9 +270,7 @@ def test_ping_and_rejections_do_not_run(hook):
 
 def test_oversized_body_is_rejected(hook, monkeypatch):
     monkeypatch.setattr(webhook_api, "WEBHOOK_MAX_BODY", 10)
-    response = hook.client.post("/hooks/webshop/on-issue", content=b"x" * 11,
-                                headers={"X-Hub-Signature-256": _sign(hook.secret, b"x" * 11)})
-    assert response.status_code == 413
+    assert hook.post(b"x" * 11).status_code == 413
 
 
 def test_deliveries_queue_while_running_and_run_in_order(hook, monkeypatch):
@@ -242,13 +280,14 @@ def test_deliveries_queue_while_running_and_run_in_order(hook, monkeypatch):
 
     def deliver(delivery):
         body = json.dumps({"n": delivery}).encode()
-        return hook.client.post("/hooks/webshop/on-issue", content=body, headers={
-            "Content-Type": "application/json", "X-GitHub-Event": "push",
-            "X-GitHub-Delivery": delivery, "X-Hub-Signature-256": _sign(hook.secret, body)})
+        return hook.post(body, **{"Content-Type": "application/json",
+                                  "X-GitHub-Event": "push", "X-GitHub-Delivery": delivery})
 
     first = deliver("d1")
-    assert first.status_code == 202 and first.json()["run_id"]
-    assert [deliver(d).json() for d in ("d2", "d3")] == [{"ok": True, "queued": True}] * 2
+    assert first.status_code == 202 and first.json()["run_ids"]
+    assert [deliver(d).json() for d in ("d2", "d3")] == [
+        {"ok": True, "run_ids": [], "queued": 1}] * 2
+    # 唯一的订阅者排满时回 503,让发送方稍后重试
     full = deliver("d4")
     assert full.status_code == 503
     # cron/手动撞上运行中仍然直接拒绝,不排队
@@ -257,27 +296,47 @@ def test_deliveries_queue_while_running_and_run_in_order(hook, monkeypatch):
 
     runs = _wait_runs(hook.store, hook.automation.id, 3)
     assert [run["stdout"].strip() for run in runs] == ["d1", "d2", "d3"]
-    # 运行记录先落库、随后才解除运行中标记
-    deadline = time.time() + 5
-    while hook.service.running_ids() and time.time() < deadline:
-        time.sleep(0.02)
-    assert hook.service.running_ids() == set()
+    _wait_idle(hook.service)
 
 
-def test_queued_delivery_dropped_after_webhook_disabled(hook):
-    save_automation(hook.store, "webshop", id="on-issue", script="sleep 0.4")
-    body = b"{}"
-    headers = {"X-Hub-Signature-256": _sign(hook.secret, body)}
-    assert hook.client.post("/hooks/webshop/on-issue", content=body, headers=headers).status_code == 202
-    assert hook.client.post("/hooks/webshop/on-issue", content=body,
-                            headers=headers).json() == {"ok": True, "queued": True}
-    save_automation(hook.store, "webshop", id="on-issue", webhook=False)
-    runs = _wait_runs(hook.store, hook.automation.id, 1)
-    time.sleep(0.3)
-    assert len(hook.store.list_automation_runs(hook.automation.id)) == len(runs) == 1
+def test_full_queue_of_one_subscriber_only_drops_its_copy(hook, monkeypatch):
+    save_automation(hook.store, "webshop", id="on-issue", script="sleep 0.5")
+    fast, _ = save_automation(hook.store, "webshop", id="fast", webhook_source="gh",
+                              script="true")
+    monkeypatch.setattr(automation_mod, "WEBHOOK_QUEUE_LIMIT", 0)
+    assert len(hook.post(b"{}").json()["run_ids"]) == 2
+    _wait_runs(hook.store, fast.id, 1)
+    # on-issue 仍在运行且排队上限为 0:它的这份丢弃,fast 照常运行,整体仍是 202
+    second = hook.post(b"{}")
+    assert second.status_code == 202, second.text
+    assert second.json()["dropped"] == 1 and len(second.json()["run_ids"]) == 1
     assert any(row["action"] == "automation_webhook_dropped"
+               and "automation=webshop:on-issue" in row["detail"]
                for row in hook.store.list_audit(None, 20))
-    assert hook.service.running_ids() == set()
+    _wait_runs(hook.store, fast.id, 2)
+    _wait_idle(hook.service)
+
+
+def test_queued_delivery_dropped_after_unsubscribing_or_source_disabled(hook):
+    save_automation(hook.store, "webshop", id="on-issue", script="sleep 0.4")
+    assert hook.post(b"{}").status_code == 202
+    assert hook.post(b"{}").json() == {"ok": True, "run_ids": [], "queued": 1}
+    save_automation(hook.store, "webshop", id="on-issue", webhook_source="")
+    runs = _wait_runs(hook.store, hook.automation.id, 1)
+    _wait_idle(hook.service)
+    assert len(hook.store.list_automation_runs(hook.automation.id)) == len(runs) == 1
+    assert any(row["action"] == "automation_webhook_dropped" and "不再订阅" in row["detail"]
+               for row in hook.store.list_audit(None, 20))
+
+    save_automation(hook.store, "webshop", id="on-issue", webhook_source="gh")
+    assert hook.post(b"{}").status_code == 202
+    assert hook.post(b"{}").json()["queued"] == 1
+    save_webhook_source(hook.store, id="gh", enabled=False)
+    _wait_runs(hook.store, hook.automation.id, 2)
+    _wait_idle(hook.service)
+    assert len(hook.store.list_automation_runs(hook.automation.id)) == 2
+    assert any(row["action"] == "automation_webhook_dropped" and "停用" in row["detail"]
+               for row in hook.store.list_audit(None, 20))
 
 
 def test_manual_and_cron_runs_see_their_trigger(seeded):
@@ -307,32 +366,140 @@ def test_run_records_are_pruned_by_age(seeded):
     assert [run["id"] for run in seeded.list_automation_runs(rare.id)] == [rare_id]
 
 
+# ---- 来源维护 ----
+
+def test_source_paths_are_validated_unique_and_default_to_id(seeded):
+    source, created = save_webhook_source(seeded, id="gitcode")
+    assert created and source.path == "gitcode" and source.secret.startswith("whsec_")
+    secret = source.secret
+    # 更新不换密钥;路径可多段,前缀 /hooks/ 与首尾斜杠被去掉
+    source, created = save_webhook_source(seeded, id="gitcode", path="/hooks/team/gitcode/")
+    assert not created and source.path == "team/gitcode" and source.secret == secret
+    for bad in ("a b", "a//b", "a/b/c/d/e", "x" * 201):
+        with pytest.raises(ValueError):
+            save_webhook_source(seeded, id="gitcode", path=bad)
+    with pytest.raises(ValueError, match="已被来源 gitcode 使用"):
+        save_webhook_source(seeded, id="other", path="team/gitcode")
+    with pytest.raises(ValueError):
+        save_webhook_source(seeded, id="bad id")
+    assert save_webhook_source(seeded, id="gitcode", path="")[0].path == "gitcode"
+
+
+def test_automation_must_reference_existing_source_and_source_in_use_cannot_be_deleted(seeded):
+    with pytest.raises(ValueError, match="webhook 来源不存在"):
+        save_automation(seeded, "webshop", id="x", script="true", webhook_source="nope")
+    save_webhook_source(seeded, id="gh")
+    save_automation(seeded, "webshop", id="x", script="true", webhook_source="gh")
+    with pytest.raises(ValueError, match="webshop:x"):
+        delete_webhook_source(seeded, "gh")
+    save_automation(seeded, "webshop", id="x", webhook_source="")
+    delete_webhook_source(seeded, "gh")
+    assert seeded.get_webhook_source("gh") is None
+    with pytest.raises(LookupError):
+        delete_webhook_source(seeded, "gh")
+
+
+def test_legacy_automation_webhook_migrates_to_source_keeping_path_and_secret(tmp_path):
+    """旧版脚本自带 webhook 与密钥:迁成全局来源,沿用 `<项目>/<脚本>` 路径与原密钥。"""
+    path = tmp_path / "db.sqlite3"
+    store = Store(path)
+    legacy = {"id": "webshop:hook", "project_id": "webshop", "name": "PR hook",
+              "script": "true", "webhook": True, "webhook_secret": "old-secret"}
+    off = {"id": "ops:hook", "project_id": "ops", "script": "true",
+           "webhook": False, "webhook_secret": "stale"}
+    clash = {"id": "ops:pr", "project_id": "ops", "script": "true",
+             "webhook": True, "webhook_secret": "ops-secret"}
+    store._put("webhook_sources", "pr", {"id": "pr", "path": "pr", "secret": "x"})
+    for item in (legacy, off, clash):
+        store._put("automations", item["id"], item)
+    store = Store(path)   # 重新打开即迁移
+
+    migrated = store.get_automation("webshop:hook")
+    assert migrated.webhook_source == "hook"
+    source = store.get_webhook_source("hook")
+    assert (source.path, source.secret, source.name) == ("webshop/hook", "old-secret", "PR hook")
+    assert store.get_automation("ops:hook").webhook_source == ""
+    # 来源 id 已被占用时加项目前缀
+    assert store.get_automation("ops:pr").webhook_source == "ops-pr"
+    assert store.get_webhook_source("ops-pr").path == "ops/pr"
+    raw = json.loads(store._query("SELECT data FROM automations WHERE id='ops:hook'")[0]["data"])
+    assert "webhook" not in raw and "webhook_secret" not in raw
+    assert len(store.list_webhook_sources()) == 3
+    # 幂等:再打开不会重复迁移
+    reopened = Store(path)
+    assert sorted((item.id, item.path) for item in reopened.list_webhook_sources()) == [
+        ("hook", "webshop/hook"), ("ops-pr", "ops/pr"), ("pr", "pr")]
+
+
+def test_migrated_legacy_path_still_accepts_deliveries(seeded):
+    seeded._put("automations", "webshop:old", {
+        "id": "webshop:old", "project_id": "webshop", "script": "echo legacy",
+        "webhook": True, "webhook_secret": "legacy-secret"})
+    store = Store(seeded.path)
+    service = AutomationService(store, ChatEngine(store, max_workers=2).agent_tools)
+    client = StarletteClient(webhook_api.create_webhook_app(
+        SimpleNamespace(store=store, automations=service)))
+    response = client.post("/hooks/webshop/old", content=b"{}", headers={
+        "X-Hub-Signature-256": _sign("legacy-secret", b"{}")})
+    assert response.status_code == 202, response.text
+    [run] = _wait_runs(store, "webshop:old", 1)
+    assert run["stdout"].strip() == "legacy"
+
+
 # ---- 密钥只给人看 ----
 
-def test_secret_only_in_webhook_endpoint_and_rotates(seeded):
+def test_source_api_and_secret_only_in_secret_endpoint(seeded):
     with TestClient(create_app()) as client:
-        saved = client.post("/api/projects/webshop/automations", json={
-            "id": "hooked", "script": "echo ok", "webhook": True})
-        assert saved.status_code == 200, saved.text
-        data = saved.json()
-        assert data["webhook"] is True and "webhook_secret" not in data
-        assert data["webhook_path"] == "/hooks/webshop/hooked"
-        listed = client.get("/api/projects/webshop/automations").json()
-        assert listed["webhook_listener"] == {"enabled": False}   # 测试不起专用端口
-        assert all("webhook_secret" not in item for item in listed["automations"])
-        overview = client.get("/api/projects/webshop/overview").json()["automations"]
-        assert all("webhook_secret" not in item for item in overview)
+        created = client.post("/api/webhook-sources", json={"id": "gh", "name": "GitHub"})
+        assert created.status_code == 200, created.text
+        data = created.json()
+        assert "secret" not in data and data["webhook_path"] == "/hooks/gh"
+        assert data["enabled"] is True and data["automations"] == []
+        assert client.post("/api/webhook-sources", json={"id": "bad id"}).status_code == 400
 
-        config = client.get("/api/projects/webshop/automations/hooked/webhook").json()
-        assert config["enabled"] and len(config["secret"]) >= 32
-        rotated = client.post("/api/projects/webshop/automations/hooked/webhook/secret").json()
-        assert rotated["secret"] != config["secret"]
-        assert seeded.get_automation("webshop:hooked").webhook_secret == rotated["secret"]
-        # 关闭后保留密钥,但不能再轮换
-        client.post("/api/projects/webshop/automations", json={"id": "hooked", "webhook": False})
-        assert client.post(
-            "/api/projects/webshop/automations/hooked/webhook/secret").status_code == 409
-        assert seeded.get_automation("webshop:hooked").webhook_secret == rotated["secret"]
+        saved = client.post("/api/projects/webshop/automations", json={
+            "id": "hooked", "script": "echo ok", "webhook_source": "gh"})
+        assert saved.status_code == 200, saved.text
+        assert saved.json()["webhook_source"] == "gh"
+        assert saved.json()["webhook_path"] == "/hooks/gh"
+        assert client.post("/api/projects/webshop/automations", json={
+            "id": "hooked", "webhook_source": "missing"}).status_code == 400
+
+        listed = client.get("/api/webhook-sources").json()
+        assert listed["listener"] == {"enabled": False}   # 测试不起专用端口
+        [row] = listed["sources"]
+        assert row["automations"] == [
+            {"id": "webshop:hooked", "project_id": "webshop", "name": "hooked"}]
+        everything = json.dumps([
+            listed, client.get("/api/projects/webshop/automations").json(),
+            client.get("/api/projects/webshop/overview").json(),
+            client.get("/api/overview").json()], ensure_ascii=False)
+        secret = client.get("/api/webhook-sources/gh/secret").json()["secret"]
+        assert len(secret) >= 32 and secret not in everything
+
+        rotated = client.post("/api/webhook-sources/gh/secret").json()["secret"]
+        assert rotated != secret and seeded.get_webhook_source("gh").secret == rotated
+        assert client.get("/api/webhook-sources/missing/secret").status_code == 404
+
+        # 仍被订阅时拒绝删除;取消订阅后可以删除
+        assert client.delete("/api/webhook-sources/gh").status_code == 409
+        client.post("/api/projects/webshop/automations",
+                    json={"id": "hooked", "webhook_source": ""})
+        assert client.delete("/api/webhook-sources/gh").json() == {"deleted": True}
+        assert client.delete("/api/webhook-sources/gh").status_code == 404
+
+
+def test_global_settings_page_manages_webhook_sources(seeded):
+    with TestClient(create_app()) as client:
+        html = client.get("/").text
+        js = client.get("/assets/js/settings-webhooks.js").text
+        settings = client.get("/assets/js/settings-runtime.js").text
+    assert 'id="webhook-source-table"' in html
+    assert html.index('src="/assets/js/settings-webhooks.js"') < html.index(
+        'src="/assets/js/main.js"')
+    assert "renderWebhookSources()" in settings
+    # 密钥只在打开来源编辑框时经 /secret 端点读取
+    assert "/secret`" in js and "function editWebhookSource" in js
 
 
 def _lead_call(store, chat):
@@ -350,18 +517,27 @@ def _lead_call(store, chat):
         f"{action.replace('.', '-')}-{time.time_ns()}")
 
 
-def test_orchestrator_enables_webhook_without_seeing_secret(seeded):
+def test_orchestrator_subscribes_to_source_without_seeing_secret(seeded):
+    source, _ = save_webhook_source(seeded, id="gh", name="GitHub org", path="org/github")
     call = _lead_call(seeded, ChatEngine(seeded, max_workers=2))
     result = call("automation.save", {
-        "id": "gh-sync", "script": "echo ok", "cron": "*/30 * * * *", "webhook": True})
-    assert "webhook_secret" not in result["automation"]
-    assert result["automation"]["webhook_path"] == "/hooks/webshop/gh-sync"
-    assert "cron `*/30 * * * *` + webhook" in result["summary"]
-    assert seeded.get_automation("webshop:gh-sync").webhook_secret
+        "id": "gh-sync", "script": "echo ok", "cron": "*/30 * * * *", "webhook_source": "gh"})
+    assert result["automation"]["webhook_path"] == "/hooks/org/github"
+    assert "cron `*/30 * * * *` + webhook 来源 gh" in result["summary"]
+    assert seeded.get_automation("webshop:gh-sync").webhook_source == "gh"
     listed = call("automation.list", {})
     row = next(item for item in listed["automations"] if item["id"] == "gh-sync")
-    assert row["webhook"] is True and row["webhook_path"] == "/hooks/webshop/gh-sync"
-    assert "webhook_secret" not in json.dumps(listed)
+    assert row["webhook_source"] == "gh" and row["webhook_path"] == "/hooks/org/github"
+    assert listed["webhook_sources"] == [{
+        "id": "gh", "name": "GitHub org", "description": "", "enabled": True,
+        "webhook_path": "/hooks/org/github"}]
+    assert source.secret not in json.dumps(listed) + json.dumps(result)
+    # 旧参数 webhook 已不再接受;不存在的来源返回参数错误
+    for arguments in ({"id": "gh-sync", "webhook": True},
+                      {"id": "gh-sync", "webhook_source": "missing"}):
+        with pytest.raises(Exception) as exc:
+            call("automation.save", arguments)
+        assert getattr(exc.value, "code", "") == "invalid_arguments", exc.value
 
 
 # ---- 专用端口:真实监听 ----
@@ -381,7 +557,7 @@ def test_listener_serves_only_hooks_on_its_own_port(hook):
         base = f"http://127.0.0.1:{listener.port}"
         body = b"{}"
         request = urllib.request.Request(
-            f"{base}/hooks/webshop/on-issue", data=body, method="POST",
+            f"{base}/hooks/gh", data=body, method="POST",
             headers={"Content-Type": "application/json",
                      "X-Hub-Signature-256": _sign(hook.secret, body)})
         with urllib.request.urlopen(request, timeout=5) as response:

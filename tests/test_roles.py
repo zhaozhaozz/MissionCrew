@@ -597,7 +597,9 @@ def test_automation_ui_uses_sidebar_and_full_detail_view(client):
     assert 'openFormDialog(automation ? `编辑脚本' not in automations
     assert '<textarea id="af-desc" class="automation-description-input"' in automations
     assert "crontab(五段;留空 = 不定时)" in automations
-    assert 'id="af-webhook"' in automations   # 定时与 webhook 两种触发可同时开启
+    # 定时与 webhook 两种触发可同时开启;webhook 选择全局来源,不在脚本里管密钥
+    assert 'id="af-webhook-source"' in automations
+    assert "/webhook/secret" not in automations
     assert 'class="automation-trigger-editor"' in automations
     assert automations.index('class="automation-trigger-editor"') > automations.index("<h3>配置</h3>")
     assert all(label in automations for label in

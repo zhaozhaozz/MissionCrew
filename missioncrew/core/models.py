@@ -944,9 +944,9 @@ class Automation:
     description: str = ""
     script: str = ""
     cron: str = ""                 # 五段 crontab;空 = 不定时
-    enabled: bool = True           # 只管定时触发;webhook 由 webhook 字段单独开关
-    webhook: bool = False          # 接受专用 webhook 端口上的投递触发(可与 cron 并用)
-    webhook_secret: str = ""       # 验签密钥;只在人类页面显示,不进总览与 Agent 输出
+    enabled: bool = True           # 只管定时触发;webhook 由 webhook_source 单独决定
+    # 订阅的全局 webhook 来源 id;空 = 不接受 webhook 触发(可与 cron 并用)
+    webhook_source: str = ""
     actions: list[str] = field(
         default_factory=lambda: list(AUTOMATION_DEFAULT_ACTIONS))
     timeout_seconds: int = AUTOMATION_DEFAULT_TIMEOUT
@@ -966,17 +966,42 @@ class Automation:
     def to_dict(self) -> dict:
         return asdict(self)
 
-    def public_dict(self) -> dict:
-        """对外展示用:去掉 webhook 密钥,其余字段同 to_dict。"""
-        data = self.to_dict()
-        data.pop("webhook_secret", None)
-        return data
-
     @classmethod
     def from_dict(cls, d: dict) -> "Automation":
         d = dict(d)
         d["actions"] = [str(item) for item in d.get("actions", [])
                         if isinstance(item, str)]
+        return cls(**d)
+
+
+@dataclass
+class WebhookSource:
+    """全局 webhook 来源:一个投递入口(地址 + 验签密钥 + 启停)。
+
+    外部系统按来源配置一次;各项目的自动化脚本用 webhook_source 订阅来源,
+    来源收到的每次投递都会触发所有订阅它的脚本,由脚本自己过滤事件。
+    """
+
+    id: str
+    name: str = ""
+    description: str = ""
+    path: str = ""                 # 投递地址中 /hooks/ 之后的部分,全局唯一;默认同 id
+    secret: str = ""               # 验签密钥;只经人类页面的密钥端点读取
+    enabled: bool = True           # 停用后投递一律 404,订阅关系保留
+    created_at: float = field(default_factory=now)
+    updated_at: float = field(default_factory=now)
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    def public_dict(self) -> dict:
+        """对外展示用:去掉密钥,其余字段同 to_dict。"""
+        data = self.to_dict()
+        data.pop("secret", None)
+        return data
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "WebhookSource":
         return cls(**d)
 
 

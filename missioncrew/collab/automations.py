@@ -24,7 +24,6 @@ from ..core.config import mc_home
 from ..core.cron import next_cron_time, validate_cron
 from ..core.models import Automation
 from ..core.store import Store
-from .webhooks import new_webhook_secret
 
 # 单次运行 stdout/stderr 各自的持久化上限;超出部分保留尾部(更接近失败现场)
 AUTOMATION_OUTPUT_LIMIT = 20000
@@ -56,7 +55,7 @@ def save_automation(store: Store, project_id: str, *, id: str,
                     script: Optional[str] = None,
                     cron: Optional[str] = None,
                     enabled: Optional[bool] = None,
-                    webhook: Optional[bool] = None,
+                    webhook_source: Optional[str] = None,
                     actions: Optional[list] = None,
                     timeout_seconds: Optional[int] = None,
                     actor: str = "human",
@@ -92,13 +91,14 @@ def save_automation(store: Store, project_id: str, *, id: str,
         if not isinstance(enabled, bool):
             raise ValueError("enabled 必须是布尔值")
         automation.enabled = enabled
-    if webhook is not None:
-        if not isinstance(webhook, bool):
-            raise ValueError("webhook 必须是布尔值")
-        automation.webhook = webhook
-        # 首次开启时生成密钥;关闭后保留,重新开启时外部系统的配置仍然有效
-        if webhook and not automation.webhook_secret:
-            automation.webhook_secret = new_webhook_secret()
+    if webhook_source is not None:
+        if not isinstance(webhook_source, str):
+            raise ValueError("webhook_source 必须是来源 id 字符串")
+        source_id = webhook_source.strip()
+        # 只能订阅已有来源;来源由人在全局设置里创建(带地址与密钥)
+        if source_id and store.get_webhook_source(source_id) is None:
+            raise ValueError(f"webhook 来源不存在: {source_id}")
+        automation.webhook_source = source_id
     if actions is not None:
         if (not isinstance(actions, list)
                 or not all(isinstance(item, str) for item in actions)):
@@ -117,18 +117,9 @@ def save_automation(store: Store, project_id: str, *, id: str,
     store.audit(actor, "automation_saved",
                 detail=f"project={project_id} automation={automation.id} "
                        f"cron={automation.cron or '(manual)'} "
-                       f"enabled={automation.enabled} webhook={automation.webhook}")
+                       f"enabled={automation.enabled} "
+                       f"webhook_source={automation.webhook_source or '(none)'}")
     return automation, created
-
-
-def rotate_webhook_secret(store: Store, automation: Automation,
-                          actor: str = "human") -> Automation:
-    """换一个新密钥;外部系统要同步改成新值,旧密钥签名的投递随即被拒。"""
-    automation.webhook_secret = new_webhook_secret()
-    store.put_automation(automation)
-    store.audit(actor, "automation_webhook_secret_rotated",
-                detail=f"project={automation.project_id} automation={automation.id}")
-    return automation
 
 
 def delete_automation(store: Store, agent_tools: AgentActionService,
@@ -211,8 +202,11 @@ class AutomationService:
         """建运行记录并提交执行;调用方已把脚本登记为运行中。"""
         detail = ""
         if event is not None:
+            # 例:"github-org: github issues <投递 id>";来源在前,区分共用来源的投递
             detail = " ".join(part for part in (
                 event.get("provider"), event.get("event"), event.get("delivery")) if part)
+            if event.get("source"):
+                detail = f"{event['source']}: {detail}".rstrip()
         run_id = self.store.start_automation_run(
             automation.id, automation.project_id, trigger, detail)
         self.store.touch_automation_run_state(automation.id, "running")
@@ -260,12 +254,16 @@ class AutomationService:
                 if event is None:
                     self._running.discard(automation_id)
                     return
-            # 排队期间脚本可能被改、关掉 webhook 或删除:按最新定义决定
+            # 排队期间脚本可能被改、改选其他来源或删除,来源也可能被停用:按最新定义决定
             automation = self.store.get_automation(automation_id)
+            source_id = str(event.get("source") or "")
+            source = self.store.get_webhook_source(source_id)
             if automation is None:
                 reason = "脚本已删除"
-            elif not automation.webhook:
-                reason = "webhook 已关闭"
+            elif automation.webhook_source != source_id:
+                reason = "脚本已不再订阅该 webhook 来源"
+            elif source is None or not source.enabled:
+                reason = "webhook 来源已删除或停用"
             else:
                 try:
                     self._launch(automation, "webhook", event)
@@ -274,8 +272,8 @@ class AutomationService:
                     reason = f"启动失败: {exc}"
             self.store.audit(
                 "platform", "automation_webhook_dropped",
-                detail=f"automation={automation_id} delivery={event.get('delivery', '')} "
-                       f"reason={reason}")
+                detail=f"automation={automation_id} source={source_id} "
+                       f"delivery={event.get('delivery', '')} reason={reason}")
 
     def _run_script(self, automation: Automation, trigger: str = "manual",
                     event: Optional[dict] = None
@@ -307,12 +305,14 @@ class AutomationService:
             "MISSIONCREW_AUTOMATION_ID": automation.id,
             "MISSIONCREW_TRIGGER": trigger,
         })
-        for key in ("MISSIONCREW_WEBHOOK_EVENT_FILE", "MISSIONCREW_WEBHOOK_PROVIDER",
-                    "MISSIONCREW_WEBHOOK_EVENT", "MISSIONCREW_WEBHOOK_DELIVERY"):
+        for key in ("MISSIONCREW_WEBHOOK_EVENT_FILE", "MISSIONCREW_WEBHOOK_SOURCE",
+                    "MISSIONCREW_WEBHOOK_PROVIDER", "MISSIONCREW_WEBHOOK_EVENT",
+                    "MISSIONCREW_WEBHOOK_DELIVERY"):
             env.pop(key, None)
         if event is not None:
             env.update({
                 "MISSIONCREW_WEBHOOK_EVENT_FILE": str(event_file),
+                "MISSIONCREW_WEBHOOK_SOURCE": str(event.get("source") or ""),
                 "MISSIONCREW_WEBHOOK_PROVIDER": str(event.get("provider") or ""),
                 "MISSIONCREW_WEBHOOK_EVENT": str(event.get("event") or ""),
                 "MISSIONCREW_WEBHOOK_DELIVERY": str(event.get("delivery") or ""),

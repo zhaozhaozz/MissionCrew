@@ -64,9 +64,18 @@ class AutomationInput(BaseModel):
     script: Optional[str] = None
     cron: Optional[str] = None           # 五段 crontab;空字符串 = 不定时
     enabled: Optional[bool] = None       # 只管定时触发
-    webhook: Optional[bool] = None       # 是否接受专用 webhook 端口的投递
+    # 订阅的全局 webhook 来源 id;空字符串 = 不接受 webhook,None = 保留现值
+    webhook_source: Optional[str] = None
     actions: Optional[list[str]] = None  # None = 保留现值
     timeout_seconds: Optional[int] = Field(None, ge=1)
+
+
+class WebhookSourceInput(BaseModel):
+    id: str = Field(max_length=100)
+    name: Optional[str] = Field(None, max_length=200)
+    description: Optional[str] = Field(None, max_length=2000)
+    path: Optional[str] = Field(None, max_length=210)   # /hooks/ 之后的部分;空 = 同 id
+    enabled: Optional[bool] = None
 
 
 class MessageInput(BaseModel):

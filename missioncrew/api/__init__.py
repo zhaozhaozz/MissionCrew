@@ -15,7 +15,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from .. import __version__
 from . import (agent_tools, automations, backends, boards, chat, documents,
                guidelines, projects, recycle_bin, resources, roles, spa, system,
-               tasks, uploads)
+               tasks, uploads, webhook_sources)
 from .context import ApiContext
 
 
@@ -56,7 +56,7 @@ def create_app(webhook_host: Optional[str] = None,
     app.add_middleware(GZipMiddleware, minimum_size=1024)
     for module in (system, chat, agent_tools, roles, projects, resources, guidelines,
                    documents, boards, recycle_bin, backends, tasks, automations,
-                   uploads):
+                   webhook_sources, uploads):
         module.register(app, ctx)
     spa.register(app, ctx)   # catch-all 兜底,必须最后
     return app

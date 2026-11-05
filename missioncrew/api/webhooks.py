@@ -2,7 +2,7 @@
 
 主服务(看板 + REST API)没有身份验证,只适合在可信网络里访问;webhook 要让
 GitHub 这类外部系统够得着,所以单独监听一个端口,上面只有一条路由
-`POST /hooks/<项目>/<脚本短 id>`,其他路径一律 404、其他方法 405,不挂静态
+`POST /hooks/<webhook 来源路径>`,其他路径一律 404、其他方法 405,不挂静态
 文件、文档或 API。需要对外暴露时只转发这个端口。
 
 监听器在主服务进程里用独立线程跑一个 uvicorn 实例(非主线程不接管信号,
@@ -50,14 +50,14 @@ def create_webhook_app(ctx: ApiContext) -> Starlette:
             # 查库、验签、写运行记录都是同步调用,放线程池,不阻塞事件循环
             status, payload = await run_in_threadpool(
                 accept_webhook, ctx.store, ctx.automations,
-                request.path_params["project_id"],
-                request.path_params["automation_id"], headers, body)
+                request.path_params["source_path"], headers, body)
         except WebhookRejected as exc:
             return JSONResponse({"ok": False, "error": exc.message}, status_code=exc.status)
         return JSONResponse(payload, status_code=status)
 
     return Starlette(routes=[
-        Route("/hooks/{project_id}/{automation_id}", receive, methods=["POST"]),
+        # 来源路径可以有多段(旧版脚本迁移来的是 `<项目>/<脚本>`),按整段查来源
+        Route("/hooks/{source_path:path}", receive, methods=["POST"]),
     ])
 
 

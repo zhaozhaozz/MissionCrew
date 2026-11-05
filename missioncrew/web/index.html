@@ -368,6 +368,13 @@
         <p class="muted" id="model-provider-hint" hidden></p>
         <div class="runtime-table-wrap"><table class="mgr" id="model-provider-table"></table></div>
       </div>
+      <div class="section" id="webhook-source-section">
+        <h2>Webhook 来源(全局共享)
+          <button class="ghost" style="margin-left:8px" onclick="editWebhookSource(null)">＋ 新建来源</button></h2>
+        <p class="muted">每个来源有自己的投递地址与密钥，外部系统（GitHub、GitCode、GitLab 或自建服务）按来源配置一次。各项目的自动化脚本选择来源后，来源收到的每次投递都会触发所有选择它的脚本，由脚本自己过滤事件。</p>
+        <p class="muted" id="webhook-listener-state"></p>
+        <div class="runtime-table-wrap"><table class="mgr" id="webhook-source-table"></table></div>
+      </div>
     </div>
 
     <section id="config-chat" class="config-chat" aria-label="当前页面对话">
@@ -506,6 +513,7 @@
 <script src="/assets/js/automations.js"></script>
 <script src="/assets/js/settings-runtime.js"></script>
 <script src="/assets/js/settings-models.js"></script>
+<script src="/assets/js/settings-webhooks.js"></script>
 <script src="/assets/js/runtime-status.js"></script>
 <script src="/assets/js/main.js"></script>
 </body>

@@ -360,17 +360,19 @@ An orchestrator's turn:
 
 - `automation.save` creates or updates a project automation script: script is the full script
   text (run as an executable when it has a shebang, otherwise with bash), cron is a five-field
-  crontab (empty string = no schedule), webhook true also accepts deliveries from external
-  systems (GitHub, GitCode, ...) on the platform's dedicated webhook port, and actions is the
+  crontab (empty string = no schedule), webhook_source subscribes it to a global webhook source
+  so deliveries from external systems (GitHub, GitCode, ...) trigger it, and actions is the
   allowlist of actions the script token may call. Scripts are triggered by cron, webhook
   deliveries or manually, and can call platform actions through the `missioncrew.agent_tool` CLI
   at runtime (refreshing dashboard data on a schedule, syncing external systems into Tasks,
   posting inspection reports to channels, etc.).
-- A webhook's signing secret is shown only to humans on the automation page and never to you:
-  after enabling it, give the human the `webhook_path` from the result and ask them to configure
-  the external system with the secret from that page. A script reads what triggered it from
-  `MISSIONCREW_TRIGGER` and the webhook event from `MISSIONCREW_WEBHOOK_EVENT_FILE`, and filters
-  the events it cares about itself.
+- Webhook sources are global (shared by all projects; one source can trigger several scripts)
+  and only humans create them, with their delivery URL and secret, in Global settings → Webhook
+  sources; you never see a secret. `automation.list` lists the existing sources: pick one for
+  `webhook_source`, and if none fits, ask the human to create one there and tell you its id. A
+  script reads what triggered it from `MISSIONCREW_TRIGGER` and the webhook event from
+  `MISSIONCREW_WEBHOOK_EVENT_FILE`, and filters the events it cares about itself, because every
+  script on a shared source receives all of its deliveries.
 - Scripts are not in your workspace: `automation.list` lists them, and with `id` returns the full
   script and its recent runs (status, exit code, the tail of stdout/stderr; `before_id` pages
   back through all kept runs), so read it before changing or fixing a script. `automation.run` starts a manual run in the background (scripts

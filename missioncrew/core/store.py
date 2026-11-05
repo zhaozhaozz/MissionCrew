@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .models import (Automation, Backend, Board, BoardDataSource, Channel,
-                     Project, Resource, Role, Task, new_id, normalize_labels,
-                     with_status)
+                     Project, Resource, Role, Task, WebhookSource, new_id,
+                     normalize_labels, with_status)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -99,6 +99,7 @@ CREATE TABLE IF NOT EXISTS automation_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
   ON automation_runs(automation_id, id DESC);
+CREATE TABLE IF NOT EXISTS webhook_sources (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
@@ -135,6 +136,7 @@ class Store:
         self._migrate_backend_commands()
         self._migrate_chat_runs()
         self._migrate_automation_runs()
+        self._migrate_automation_webhooks()
         self._migrate_chat_messages()
         self._migrate_runtime_usage()
         self._migrate_chat_sessions()
@@ -160,6 +162,43 @@ class Store:
         if "trigger_detail" not in columns:
             self._conn.execute(
                 "ALTER TABLE automation_runs ADD COLUMN trigger_detail TEXT DEFAULT ''")
+
+    def _migrate_automation_webhooks(self) -> int:
+        """旧版每个脚本自带 webhook 开关与密钥,迁成全局 webhook 来源并让脚本订阅它。
+
+        迁出的来源沿用旧投递路径 `<项目>/<脚本短 id>` 与原密钥,外部系统的配置不用改;
+        已关闭 webhook 的脚本只丢弃保留的密钥。返回改写的脚本数。
+        """
+        rows = self._conn.execute("SELECT id, data FROM automations").fetchall()
+        taken = {row["id"] for row in self._conn.execute(
+            "SELECT id FROM webhook_sources").fetchall()}
+        changed = 0
+        for row in rows:
+            data = json.loads(row["data"])
+            if "webhook" not in data and "webhook_secret" not in data:
+                continue
+            enabled = bool(data.pop("webhook", False))
+            secret = str(data.pop("webhook_secret", "") or "")
+            project_id = str(data.get("project_id", ""))
+            short = str(data.get("id", "")).removeprefix(f"{project_id}:")
+            if enabled and secret and not data.get("webhook_source"):
+                source_id, n = short, 1
+                while source_id in taken:   # 不同项目的同名脚本:加项目前缀与序号区分
+                    n += 1
+                    source_id = f"{project_id}-{short}" + (f"-{n}" if n > 2 else "")
+                taken.add(source_id)
+                source = WebhookSource(
+                    id=source_id, name=str(data.get("name") or short),
+                    description=f"由自动化脚本 {data.get('id')} 的 webhook 迁移",
+                    path=f"{project_id}/{short}", secret=secret)
+                self._conn.execute(
+                    "INSERT INTO webhook_sources(id, data) VALUES(?, ?)",
+                    (source_id, json.dumps(source.to_dict(), ensure_ascii=False)))
+                data["webhook_source"] = source_id
+            self._conn.execute("UPDATE automations SET data=? WHERE id=?",
+                               (json.dumps(data, ensure_ascii=False), row["id"]))
+            changed += 1
+        return changed
 
     def _migrate_backend_commands(self) -> int:
         """删除旧 Backend 记录中的命令覆盖，统一回到内置 Runtime 启动方式。"""
@@ -1095,6 +1134,28 @@ class Store:
     def delete_automation(self, id: str) -> None:
         self._execute("DELETE FROM automation_runs WHERE automation_id=?", (id,))
         self._delete("automations", id)
+
+    # ---- 全局 webhook 来源 ----
+    def put_webhook_source(self, source: WebhookSource) -> None:
+        source.updated_at = time.time()
+        self._put("webhook_sources", source.id, source.to_dict())
+
+    def get_webhook_source(self, id: str) -> Optional[WebhookSource]:
+        d = self._get("webhook_sources", id)
+        return WebhookSource.from_dict(d) if d else None
+
+    def list_webhook_sources(self) -> list[WebhookSource]:
+        items = [WebhookSource.from_dict(d) for d in self._list("webhook_sources")]
+        return sorted(items, key=lambda item: (item.created_at, item.id))
+
+    def find_webhook_source_by_path(self, path: str) -> Optional[WebhookSource]:
+        rows = self._query(
+            "SELECT data FROM webhook_sources WHERE json_extract(data, '$.path')=?",
+            (path,))
+        return WebhookSource.from_dict(json.loads(rows[0]["data"])) if rows else None
+
+    def delete_webhook_source(self, id: str) -> None:
+        self._delete("webhook_sources", id)
 
     def touch_automation_run_state(self, id: str, status: str) -> None:
         """只更新最近运行状态字段，不覆盖脚本内容的并发编辑。"""

@@ -5,6 +5,7 @@ async function renderGlobalSettings() {
   renderGlobalRoleTable();
   await renderBackendTable();
   await renderModelProviders();
+  await renderWebhookSources();
   // 能查到最新版就直接展示:首次进入自动静默查询,不用等用户点按钮
   if (!Object.keys(updateHints).length) checkUpdates(true);
 }

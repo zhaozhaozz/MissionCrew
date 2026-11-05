@@ -471,9 +471,9 @@ ACTION_DEFINITIONS = {
     },
     "automation.save": {
         "description": (
-            "Create or update a project automation script; it is triggered by cron, by webhook "
-            "deliveries on the platform's dedicated webhook port, or manually, and it calls "
-            "platform actions with its own token"
+            "Create or update a project automation script; it is triggered by cron, by "
+            "deliveries to the global webhook source it subscribes to, or manually, and it "
+            "calls platform actions with its own token"
         ),
         "orchestrator_only": True,
         "arguments": {
@@ -482,10 +482,11 @@ ACTION_DEFINITIONS = {
                        "otherwise with bash)"),
             "cron": "five-field crontab; an empty string means no schedule",
             "enabled": "whether scheduled (cron) triggering is enabled",
-            "webhook": ("true accepts webhook deliveries (can be combined with cron); the "
-                        "result gives webhook_path, and the signing secret is shown only to "
-                        "humans on the automation page, so ask a human to configure the "
-                        "external system"),
+            "webhook_source": ("id of an existing global webhook source to subscribe to "
+                               "(automation.list lists them; can be combined with cron); every "
+                               "delivery to that source runs this script; an empty string "
+                               "removes the webhook trigger. Sources and their secrets are "
+                               "managed only by humans in global settings"),
             "actions": "allowlist array of actions it may call; omit it to keep the current value",
             "timeout_seconds": "timeout of a single run in seconds",
         },
@@ -496,8 +497,9 @@ ACTION_DEFINITIONS = {
         "arguments": {"id": "short script id"},
     },
     "automation.list": {
-        "description": ("On demand, list project automation scripts (schedule, enabled, actions "
-                        "allowlist, last run); pass id to get the full script and its recent "
+        "description": ("On demand, list project automation scripts (schedule, enabled, webhook "
+                        "source, actions allowlist, last run) and the global webhook sources "
+                        "they can subscribe to; pass id to get the full script and its recent "
                         "runs with the tail of their output, e.g. to fix a failing script; "
                         "page back with before_id through all kept runs (run_count)"),
         "orchestrator_only": True,
@@ -652,8 +654,8 @@ ACTION_ARGUMENTS = {
     "skill.list": {"id"},
     "skill.history": {"id", "revision", "file", "limit"},
     "automation.save": {
-        "id", "name", "description", "script", "cron", "enabled", "webhook", "actions",
-        "timeout_seconds",
+        "id", "name", "description", "script", "cron", "enabled", "webhook_source",
+        "actions", "timeout_seconds",
     },
     "automation.delete": {"id"},
     "automation.list": {"id", "runs", "before_id"},
@@ -1993,7 +1995,7 @@ class AgentActionService:
                 script=arguments.get("script"),
                 cron=arguments.get("cron"),
                 enabled=arguments.get("enabled"),
-                webhook=arguments.get("webhook"),
+                webhook_source=arguments.get("webhook_source"),
                 actions=arguments.get("actions"),
                 timeout_seconds=arguments.get("timeout_seconds"),
                 actor=identity.actor,
@@ -2002,14 +2004,13 @@ class AgentActionService:
         except ValueError as exc:
             raise AgentToolError("invalid_arguments", str(exc), 400) from exc
         triggers = [f"cron `{automation.cron}`"] if automation.cron else []
-        if automation.webhook:
-            triggers.append("webhook")
-        # 密钥只给人看:Agent 拿到的配置里没有 webhook_secret
+        if automation.webhook_source:
+            triggers.append(f"webhook 来源 {automation.webhook_source}")
         return {
             "summary": (f"已{'创建' if created else '更新'}自动化脚本 "
                         f"{automation.name}({' + '.join(triggers) or '仅手动触发'})"),
-            "automation": {**automation.public_dict(),
-                           "webhook_path": webhook_path(automation)},
+            "automation": {**automation.to_dict(),
+                           "webhook_path": self._automation_webhook_path(automation)},
             "resource_url": automation_resource_url(project.id, automation.id),
         }
 
@@ -2041,16 +2042,22 @@ class AgentActionService:
             raise AgentToolError("not_found", "自动化脚本不存在", 404)
         return automation
 
+    def _automation_webhook_path(self, automation) -> str:
+        source = (self.store.get_webhook_source(automation.webhook_source)
+                  if automation.webhook_source else None)
+        return webhook_path(source) if source else ""
+
     def _list_automations(self, project: Project, _identity: AgentIdentity,
                           arguments: dict, _context: AgentRunContext) -> dict:
-        """不带 id 列出摘要;带 id 返回脚本全文与最近运行(输出只留末尾)。"""
+        """不带 id 列出摘要与可订阅的 webhook 来源;带 id 返回脚本全文与最近运行
+        (输出只留末尾)。来源只给公开字段,密钥只给人看。"""
         def summary_row(automation) -> dict:
             return {
                 "id": automation.id.removeprefix(f"{project.id}:"),
                 "name": automation.name, "description": automation.description,
                 "cron": automation.cron, "enabled": automation.enabled,
-                "webhook": automation.webhook,
-                "webhook_path": webhook_path(automation) if automation.webhook else "",
+                "webhook_source": automation.webhook_source,
+                "webhook_path": self._automation_webhook_path(automation),
                 "actions": automation.actions,
                 "timeout_seconds": automation.timeout_seconds,
                 "last_run_at": automation.last_run_at,
@@ -2082,8 +2089,12 @@ class AgentActionService:
                     "run_count": self.store.count_automation_runs(automation.id),
                     "runs": runs}
         rows = [summary_row(item) for item in self.store.list_automations(project.id)]
-        return {"summary": f"项目 {project.id} 共 {len(rows)} 个自动化脚本",
-                "automations": rows}
+        sources = [{"id": item.id, "name": item.name, "description": item.description,
+                    "enabled": item.enabled, "webhook_path": webhook_path(item)}
+                   for item in self.store.list_webhook_sources()]
+        return {"summary": (f"项目 {project.id} 共 {len(rows)} 个自动化脚本,"
+                            f"平台共 {len(sources)} 个 webhook 来源"),
+                "automations": rows, "webhook_sources": sources}
 
     def _run_automation(self, project: Project, identity: AgentIdentity,
                         arguments: dict, _context: AgentRunContext) -> dict:

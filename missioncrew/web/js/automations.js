@@ -12,10 +12,6 @@ let automationPageRequest = 0;
 // undefined = view mode, null = new automation, string = editing automation id
 let automationEditingId;
 let automationInitialFormSnapshot = "";
-// 详情页当前脚本的 webhook 配置({automationId, path, secret, listener});密钥只从
-// /webhook 端点按需取,不在总览轮询里。切换脚本时重新隐藏密钥。
-let automationWebhook = null;
-let automationSecretVisible = false;
 
 function automationShortId(automation) {
   return automation.id.replace(`${automation.project_id}:`, "");
@@ -73,75 +69,36 @@ function automationRunRows(automation, runs) {
 // 触发方式摘要:定时(启用时)、Webhook(开启时)与始终可用的手动
 function automationTriggerMode(automation) {
   const modes = [automation.cron && automation.enabled ? "定时" : "",
-                 automation.webhook ? "Webhook" : "", "手动"].filter(Boolean);
+                 automation.webhook_source ? "Webhook" : "", "手动"].filter(Boolean);
   return modes.join("、") + (automation.cron && !automation.enabled ? "（定时已停用）" : "");
 }
 
+// webhook 区只展示订阅的全局来源;来源的地址、密钥与启停在「全局设置 → Webhook 来源」
+// 维护(settings-webhooks.js),这里的「管理来源」打开同一个编辑框
 function automationWebhookHtml(automation) {
-  if (!automation.webhook) return "";
-  const config = automationWebhook?.automationId === automation.id ? automationWebhook : null;
-  const listener = config?.listener || { enabled: false };
-  // 监听器是纯 HTTP,地址按当前访问的主机名拼;外部系统要经端口转发或隧道才能访问
-  const url = listener.enabled
-    ? `http://${location.hostname}:${listener.port}${automation.webhook_path}`
-    : automation.webhook_path;
-  const state = !config ? "加载中…"
-    : !listener.enabled ? '<span class="automation-error">服务未开启 webhook 端口（mc serve --webhook-port）</span>'
-    : listener.listening ? `<span class="pill automation-st-succeeded">监听中</span> <span class="muted">${esc(listener.host)}:${esc(listener.port)}</span>`
-    : `<span class="automation-error">${esc(listener.error || "未在监听")}</span>`;
-  const secret = config?.secret || "";
-  const shown = secret ? (automationSecretVisible ? secret : "•".repeat(20)) : "加载中…";
-  const id = esc(automation.id);
+  if (!automation.webhook_source) return "";
+  const source = webhookSourceById(automation.webhook_source);
+  const id = esc(automation.webhook_source);
+  const others = (source?.automations || []).filter(item => item.id !== automation.id);
+  const url = source ? webhookSourceUrl(source) : automation.webhook_path;
   return `<section class="automation-detail-section automation-webhook-section">
       <h3>Webhook</h3>
       <dl class="automation-config">
+        <div><dt>来源</dt><dd class="automation-webhook-value">
+          <span>${esc(source?.name || automation.webhook_source)}</span> <span class="muted">${id}</span>
+          ${source ? (source.enabled ? "" : '<span class="pill">已停用，投递返回 404</span>') : '<span class="muted">加载中…</span>'}
+          <button class="ghost compact" type="button" data-id="${id}"
+            onclick="editWebhookSource(this.dataset.id)">管理来源</button></dd></div>
         <div><dt>投递地址</dt><dd class="automation-webhook-value"><code>${esc(url)}</code>
           <button class="ghost compact" type="button" data-copy="${esc(url)}"
-            onclick="copyAutomationWebhookValue(this.dataset.copy, '投递地址')">复制</button></dd></div>
-        <div><dt>密钥</dt><dd class="automation-webhook-value"><code>${esc(shown)}</code>
-          ${secret ? `<button class="ghost compact" type="button" onclick="toggleAutomationSecret()">${automationSecretVisible ? "隐藏" : "显示"}</button>
-          <button class="ghost compact" type="button"
-            onclick="copyAutomationWebhookValue(automationWebhook?.secret, '密钥')">复制</button>
-          <button class="ghost compact" type="button" data-id="${id}"
-            onclick="rotateAutomationSecret(this.dataset.id)">重新生成</button>` : ""}</dd></div>
-        <div><dt>端口</dt><dd>${state}</dd></div>
+            onclick="copyWebhookValue(this.dataset.copy, '投递地址')">复制</button></dd></div>
+        <div><dt>端口</dt><dd>${source ? webhookListenerStateHtml() : "加载中…"}</dd></div>
+        <div><dt>共用此来源</dt><dd>${others.length
+          ? others.map(item => `<span class="pill" title="${esc(item.id)}">${esc(item.project_id)} / ${esc(item.name || item.id)}</span>`).join(" ")
+          : '<span class="muted">无其他脚本</span>'}</dd></div>
       </dl>
-      <p class="muted automation-webhook-hint">GitHub：Payload URL 填投递地址，Content type 选
-        <code>application/json</code>，Secret 填密钥；GitCode 选签名密钥或密码模式，填同一个密钥。
-        外部系统要能访问这个端口：对外只转发 webhook 端口，不要暴露主服务端口。脚本用
-        <code>$MISSIONCREW_TRIGGER</code> 区分触发来源，事件内容在
-        <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code>，由脚本决定处理哪些事件。</p>
+      <p class="muted automation-webhook-hint">来源收到的每次投递都会触发所有选择它的脚本。脚本用 <code>$MISSIONCREW_TRIGGER</code> 区分触发来源，事件内容在 <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code>，由脚本决定处理哪些事件。密钥在「管理来源」里查看。</p>
     </section>`;
-}
-
-function rerenderAutomationWebhook() {
-  const automation = projAutomations().find(item => item.id === selectedAutomationId);
-  const section = document.querySelector(".automation-webhook-section");
-  if (automation && section) section.outerHTML = automationWebhookHtml(automation);
-}
-
-function toggleAutomationSecret() {
-  automationSecretVisible = !automationSecretVisible;
-  rerenderAutomationWebhook();
-}
-
-async function copyAutomationWebhookValue(value, label) {
-  if (!value) return;
-  const copied = await copyTextToClipboard(value);
-  toast(copied ? `${label}已复制` : "复制失败，请手动选择复制", copied ? "success" : "error");
-}
-
-async function rotateAutomationSecret(id) {
-  const automation = projAutomations().find(item => item.id === id);
-  if (!automation || !await uiConfirm(
-    "重新生成后旧密钥立即失效，外部系统（GitHub/GitCode 等）的 Webhook 配置要同步改成新密钥。是否继续？",
-    "重新生成密钥")) return;
-  const result = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}` +
-    `/automations/${encodeURIComponent(automationShortId(automation))}/webhook/secret`);
-  if (automationWebhook?.automationId === id) automationWebhook.secret = result.secret;
-  automationSecretVisible = true;   // 刚生成的新密钥直接显示,方便复制到外部系统
-  rerenderAutomationWebhook();
-  toast("已生成新密钥", "success");
 }
 
 function automationDetailHtml(automation, runs) {
@@ -226,6 +183,25 @@ function automationActionGroups(names) {
   return [...groups].sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
+// 选择订阅的全局 webhook 来源;来源在全局设置里创建,可被多个脚本共用
+function automationWebhookSourceFieldHtml(automation) {
+  const current = automation?.webhook_source || "";
+  const sources = webhookSources.sources || [];
+  let options = sources.map(source => `<option value="${esc(source.id)}"
+      ${source.id === current ? "selected" : ""}>${esc(source.name || source.id)}（${
+      esc(source.webhook_path)}）${source.enabled ? "" : " · 已停用"}</option>`).join("");
+  // 来源列表没读到时保留现值,避免保存时悄悄取消订阅
+  if (current && !sources.some(source => source.id === current))
+    options += `<option value="${esc(current)}" selected>${esc(current)}</option>`;
+  return `<label class="automation-cron-field">
+      <span class="automation-cron-label">Webhook 来源（可与定时同时使用）</span>
+      <select id="af-webhook-source" aria-label="Webhook 来源">
+        <option value="">不接受 Webhook 触发</option>${options}
+      </select>
+      <span class="muted">来源（投递地址与密钥）在<a onclick="switchTab('settings')">全局设置 → Webhook 来源 ↗</a>中创建，同一来源可被多个脚本共用</span>
+    </label>`;
+}
+
 function automationEditorHtml(automation, runsSection = "") {
   const actions = automation?.actions || traitMeta.automation_default_actions || [];
   const actionBoxes = automationActionGroups(traitMeta.automation_actions || [])
@@ -280,9 +256,7 @@ function automationEditorHtml(automation, runsSection = "") {
             <input type="text" id="af-cron" aria-label="crontab"
               placeholder="例如 0 9 * * 1-5" value="${esc(automation?.cron || "")}">
           </label>
-          <label class="automation-toggle"><input type="checkbox" id="af-webhook"
-            ${automation?.webhook ? "checked" : ""}> 接受 Webhook 触发
-            <span class="muted">（保存后在详情页查看投递地址与密钥；可与定时同时使用）</span></label>
+          ${automationWebhookSourceFieldHtml(automation)}
         </dd></div>
         <div><dt>超时</dt><dd><input type="number" id="af-timeout" min="1" aria-label="超时秒数"
           value="${esc(automation?.timeout_seconds ?? 600)}"><span class="muted"> 秒</span></dd></div>
@@ -308,7 +282,7 @@ function automationFormSnapshot() {
     description: field("af-desc")?.value || "",
     cron: field("af-cron")?.value || "",
     enabled: Boolean(field("af-enabled")?.checked),
-    webhook: Boolean(field("af-webhook")?.checked),
+    webhook_source: field("af-webhook-source")?.value || "",
     timeout: field("af-timeout")?.value || "",
     actions: [...document.querySelectorAll(".automation-actions-grid input:checked")]
       .map(input => input.value).sort(),
@@ -344,7 +318,6 @@ async function renderAutomationPage(refresh = false) {
   const sameAutomation = detail.dataset.automationId === automation.id;
   const scrollTop = sameAutomation ? workspace?.scrollTop || 0 : 0;
   if (!sameAutomation) {
-    automationSecretVisible = false;
     detail.dataset.automationId = automation.id;
     detail.innerHTML = automationDetailHtml(automation, []);
     if (workspace) workspace.scrollTop = 0;
@@ -364,12 +337,11 @@ async function renderAutomationPage(refresh = false) {
     if (!automation) return renderAutomationPage(false);
     const shortId = automationShortId(automation);
     const base = `/api/projects/${encodeURIComponent(currentProject)}/automations/${encodeURIComponent(shortId)}`;
-    const [data, webhook] = await Promise.all([
+    const [data] = await Promise.all([
       api("GET", `${base}/runs?limit=30`),
-      automation.webhook ? api("GET", `${base}/webhook`) : null,
+      automation.webhook_source ? loadWebhookSources() : null,
     ]);
     if (request !== automationPageRequest) return;
-    automationWebhook = webhook ? { automationId: automation.id, ...webhook } : null;
     detail.dataset.automationId = automation.id;
     detail.innerHTML = automationDetailHtml(automation, data.runs);
     if (workspace) workspace.scrollTop = scrollTop;
@@ -384,7 +356,8 @@ async function openAutomationEditor(id) {
   const nextEditingId = id || null;
   if (automationEditingId !== undefined && automationEditingId !== nextEditingId
   && !await confirmAutomationDiscard()) return;
-  await ensureTraits();
+  // 来源列表读取失败时编辑框照常打开,只是下拉框里没有可选来源
+  await Promise.all([ensureTraits(), loadWebhookSources().catch(() => null)]);
   const automation = id
     ? projAutomations().find(item => item.id === id) : null;
   if (id && !automation) { uiAlert("脚本不存在,请刷新后重试"); return; }
@@ -428,7 +401,7 @@ async function saveAutomationForm(existingId) {
     script,
     cron: document.getElementById("af-cron").value.trim(),
     enabled: document.getElementById("af-enabled").checked,
-    webhook: document.getElementById("af-webhook").checked,
+    webhook_source: document.getElementById("af-webhook-source").value,
     actions,
     timeout_seconds: Number(document.getElementById("af-timeout").value) || 600,
   });
