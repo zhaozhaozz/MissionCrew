@@ -564,6 +564,16 @@
   .attachment-remove { border: 0; background: transparent; color: var(--muted);
                        cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
   .attachment-remove:hover { color: var(--accent); }
+  /* 上传中的附件:底部细进度条,总长未知时整条呼吸闪烁 */
+  .attachment-chip.uploading { position: relative; overflow: hidden; }
+  .attachment-status { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .attachment-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+                         background: var(--line); }
+  .attachment-progress > span { display: block; height: 100%; background: var(--accent);
+                                transition: width .2s ease-out; }
+  .attachment-progress.indeterminate > span { width: 100% !important;
+                                              animation: attachment-pulse 1.2s ease-in-out infinite; }
+  @keyframes attachment-pulse { 50% { opacity: .35; } }
   .msg-attachments { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
   .msg-attachments img { max-width: 260px; max-height: 180px; border-radius: 10px;
                          border: 1px solid var(--line); display: block; cursor: zoom-in; }

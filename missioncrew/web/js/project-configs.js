@@ -783,12 +783,18 @@ async function sendConfigChat() {
   hideMentionPicker();
   try {
     const channel = await resolveConfigChatTargetChannel(context, target);
+    // 附件在发送时才上传,附件条此时已清空,进度写在状态行
     const attachments = [];
-    for (const item of files) {
-      const stored = await uploadChatFile(item.file, channel.id);
+    for (const [index, item] of files.entries()) {
+      const prefix = `正在上传附件${files.length > 1 ? ` ${index + 1}/${files.length}` : ""}：${item.display}`;
+      status.textContent = `${prefix} 0%`;
+      const stored = await uploadChatFile(item.file, channel.id, {
+        onProgress: ratio => { status.textContent = `${prefix} ${uploadProgressLabel(ratio)}`; },
+      });
       if (!stored) throw new Error(`附件上传失败：${item.display}`);
       attachments.push(stored);
     }
+    if (files.length) status.textContent = "正在发送…";
     const fileBackedPage = context.tab === "guidelines" || context.tab === "docs";
     const currentPage = fileBackedPage ? await stageConfigPage(channel, context) : null;
     const effectiveSelection = currentPage?.text_snapshot_available === false

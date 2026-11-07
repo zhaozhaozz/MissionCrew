@@ -1463,7 +1463,7 @@ def test_project_config_managers_are_full_pages_with_orchestrator_requests(seede
     assert "composerPayload(box)" in js and "restoreComposerPayload(payload.content, mentions, box)" in js
     assert 'bindComposerEvents("config-chat-input", "config-chat-picker"' in js
     assert 'bindDropZone("config-chat-input-wrap", configChatOnFiles)' in js
-    assert "uploadChatFile(item.file, channel.id)" in js
+    assert "uploadChatFile(item.file, channel.id, {" in js and "uploadProgressLabel(ratio)" in js
     assert "messageContext.attachments = attachments" in js
     assert "attachmentBlock(attachments)" in js
     assert 'id="config-chat-channel"' in html and "chooseConfigChatChannel" in js

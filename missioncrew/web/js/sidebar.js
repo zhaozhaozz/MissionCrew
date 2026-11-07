@@ -409,6 +409,7 @@ function selectChannel(id, jump = true) {
   firstMsgId = 0; chanHasEarlier = false;
   runCards.clear();
   pendingUploads = [];
+  cancelAllChatUploads();   // 附件按频道落盘,换频道后旧频道的上传不再有意义
   renderPendingUploads();
   setComposerError();
   applyStickyMentions();
@@ -833,6 +834,9 @@ function restoreComposerPayload(content, mentionSpans = [],
 
 /* ---------------- 频道附件:上传后随消息告知 Agent 本地路径 ---------------- */
 let pendingUploads = [];   // 已上传待随下一条消息发送的附件
+let uploadingFiles = [];   // 上传中/排队中的附件(带进度),完成后移入 pendingUploads
+let uploadSeq = 0;
+const UPLOAD_PENDING_ERROR = "附件仍在上传，请等待上传完成后再发送";
 
 // 粘贴文本超过任一阈值时不再塞进输入框,改为转成 .txt 附件
 const PASTE_FILE_MIN_CHARS = 1500;
@@ -845,28 +849,109 @@ function isLongPaste(text) {
 
 function uploadDisplayName(name) { return String(name || "").replace(/^\d+(?:-\d+)?-/, ""); }
 
-async function uploadChatFile(file, channelId = currentChan) {
-  const filename = encodeURIComponent(file.name || "pasted-image.png");
-  const r = await fetch(`/api/chat/${encodeURIComponent(channelId)}/uploads?filename=${filename}`, {
-    method: "POST",
-    headers: { "Content-Type": file.type || "application/octet-stream" },
-    body: file,
+/* 上传单个附件到频道。fetch 拿不到请求体的发送进度,所以用 XHR:onProgress(ratio)
+   在字节发出过程中回调,ratio 取 0~1,总长未知时为 null;signal 中止即取消上传。
+   失败弹 toast 并返回 null,主动取消静默返回 null。 */
+function uploadChatFile(file, channelId = currentChan, { onProgress, signal } = {}) {
+  return new Promise(resolve => {
+    if (signal?.aborted) return resolve(null);
+    const filename = encodeURIComponent(file.name || "pasted-image.png");
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/chat/${encodeURIComponent(channelId)}/uploads?filename=${filename}`);
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    xhr.responseType = "json";   // 非 JSON 响应(如代理错误页)解析为 null,走兜底文案
+    xhr.upload.onprogress = event =>
+      onProgress?.(event.lengthComputable ? event.loaded / event.total : null);
+    xhr.onload = () => {
+      const body = xhr.response || {};
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body);
+      toast(body.detail || `附件上传失败 (${xhr.status})`, "error", 5000);
+      resolve(null);
+    };
+    xhr.onerror = () => {
+      toast("附件上传失败：网络错误", "error", 5000);
+      resolve(null);
+    };
+    xhr.onabort = () => resolve(null);
+    signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(file);
   });
-  if (!r.ok) {
-    const err = await r.json().catch(() => ({}));
-    toast(err.detail || `附件上传失败 (${r.status})`, "error", 5000);
-    return null;
-  }
-  return r.json();
 }
 
+// 进度文案:排队 → 百分比 → 字节已发完、等服务端落盘
+function uploadProgressLabel(ratio, started = true) {
+  if (!started) return "等待上传";
+  if (ratio === null || ratio === undefined) return "上传中";
+  return ratio >= 1 ? "处理中" : `${Math.floor(ratio * 100)}%`;
+}
+
+/* 主输入框附件:先把全部文件登记成上传中的条目,用户立刻看到附件条和进度;
+   再按顺序逐个上传,完成一个就移入 pendingUploads,保持选择顺序。 */
 async function addChatAttachments(files) {
   if (!currentChan || !files.length) return;
-  for (const file of files) {
-    const item = await uploadChatFile(file);
-    if (item) pendingUploads.push(item);
-  }
+  const channelId = currentChan;
+  const entries = files.map(file => {
+    const isImage = String(file.type || "").startsWith("image/");
+    return {
+      id: `upload-${++uploadSeq}`, file, display: file.name || "粘贴的图片",
+      is_image: isImage, url: isImage ? URL.createObjectURL(file) : "",
+      started: false, progress: 0, controller: new AbortController(),
+    };
+  });
+  uploadingFiles.push(...entries);
   renderPendingUploads();
+  for (const entry of entries) {
+    const { signal } = entry.controller;
+    if (signal.aborted) continue;   // 排队期间已被移除或切换了频道
+    entry.started = true;
+    updateUploadProgress(entry, 0);
+    const item = await uploadChatFile(entry.file, channelId, {
+      signal, onProgress: ratio => updateUploadProgress(entry, ratio),
+    });
+    releaseUploadEntry(entry);
+    if (item && !signal.aborted && currentChan === channelId) pendingUploads.push(item);
+    renderPendingUploads();
+  }
+  // 发送被"仍在上传"拦下时,全部传完即撤掉这条提示
+  if (!uploadingFiles.length
+      && document.getElementById("composer-error")?.textContent === UPLOAD_PENDING_ERROR)
+    setComposerError();
+}
+
+function releaseUploadEntry(entry) {
+  uploadingFiles = uploadingFiles.filter(item => item !== entry);
+  if (entry.url) URL.revokeObjectURL(entry.url);
+}
+
+// 移除上传中的附件 = 取消上传;排队中的条目由 addChatAttachments 循环跳过
+function cancelChatUpload(id) {
+  const entry = uploadingFiles.find(item => item.id === id);
+  if (!entry) return;
+  entry.controller.abort();
+  releaseUploadEntry(entry);
+  renderPendingUploads();
+}
+
+function cancelAllChatUploads() {
+  for (const entry of uploadingFiles.slice()) {
+    entry.controller.abort();
+    releaseUploadEntry(entry);
+  }
+}
+
+// 进度事件很密,只改对应附件的进度条和文案,不重绘整个附件条(避免缩略图闪烁)
+function updateUploadProgress(entry, ratio) {
+  entry.progress = ratio;
+  const chip = document.querySelector(`#composer-attachments [data-upload-id="${entry.id}"]`);
+  if (!chip) return;
+  const percent = ratio === null ? null : Math.round(Math.min(ratio, 1) * 100);
+  const bar = chip.querySelector(".attachment-progress");
+  bar.classList.toggle("indeterminate", percent === null);
+  if (percent !== null) {
+    bar.firstElementChild.style.width = `${percent}%`;
+    bar.setAttribute("aria-valuenow", String(percent));
+  }
+  chip.querySelector(".attachment-status").textContent = uploadProgressLabel(ratio, entry.started);
 }
 
 function handleChatFileInput(input) {
@@ -934,11 +1019,28 @@ function attachmentChipsHtml(items, removeFn) {
     </span>`).join("");
 }
 
+// 上传中的附件:底部进度条 + 百分比文案,× 即取消上传
+function uploadingChipHtml(entry) {
+  const percent = Math.round(Math.min(entry.progress ?? 0, 1) * 100);
+  return `
+    <span class="attachment-chip uploading" data-upload-id="${esc(entry.id)}" title="${esc(entry.display)}">
+      ${entry.url ? `<img src="${esc(entry.url)}" alt="">` : `<span class="attachment-kind">📄</span>`}
+      <span class="attachment-name">${esc(entry.display)}</span>
+      <span class="attachment-status">${esc(uploadProgressLabel(entry.progress, entry.started))}</span>
+      <button type="button" class="attachment-remove" title="取消上传"
+        onclick="cancelChatUpload('${esc(entry.id)}')">×</button>
+      <span class="attachment-progress${entry.progress === null ? " indeterminate" : ""}"
+        role="progressbar" aria-label="上传进度" aria-valuemin="0" aria-valuemax="100"
+        aria-valuenow="${percent}"><span style="width:${percent}%"></span></span>
+    </span>`;
+}
+
 function renderPendingUploads() {
   const wrap = document.getElementById("composer-attachments");
   if (!wrap) return;
-  wrap.hidden = !pendingUploads.length;
-  wrap.innerHTML = attachmentChipsHtml(pendingUploads, "removePendingUpload");
+  wrap.hidden = !pendingUploads.length && !uploadingFiles.length;
+  wrap.innerHTML = attachmentChipsHtml(pendingUploads, "removePendingUpload")
+    + uploadingFiles.map(uploadingChipHtml).join("");
 }
 
 function attachmentBlock(attachments) {
@@ -1027,6 +1129,11 @@ async function send() {
   const { mentions } = payload;
   const attachments = pendingUploads.slice();
   let content = payload.content;
+  if (uploadingFiles.length) {
+    // 不能先发正文、附件稍后补:Agent 只会从这条消息里拿到附件路径
+    setComposerError(UPLOAD_PENDING_ERROR);
+    return;
+  }
   if ((!content && !attachments.length) || !currentChan) return;
   if (projChannels().find(channel => channel.id === currentChan)?.archived) {
     toast("频道已归档，请先恢复后再发送消息", "error");
