@@ -137,7 +137,7 @@ def serve(host: Optional[str] = None, port: int = DEFAULT_SERVE_PORT,
     typer.echo(f"MissionCrew 看板: http://{host}:{port}")
     if webhook_port:
         typer.echo(f"Webhook 入口: http://{webhook_host}:{webhook_port}"
-                   "/hooks/<项目>/<脚本>")
+                   "/hooks/<来源路径>")
     uvicorn.run(create_app(webhook_host=webhook_host, webhook_port=webhook_port),
                 host=host, port=port, log_level="warning")
 
