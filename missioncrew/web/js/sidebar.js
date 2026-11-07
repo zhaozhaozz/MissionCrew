@@ -1145,6 +1145,8 @@ async function send() {
     box.focus();
     return;
   }
+  // 疑似密钥先问一句:存成凭据或返回修改时不发送,输入框内容原样保留
+  if (!await confirmSecretInMessage(content, box)) return;
   setComposerError();
   // 附件路径追加在正文尾部，不影响前面提及范围的字符偏移
   if (attachments.length)

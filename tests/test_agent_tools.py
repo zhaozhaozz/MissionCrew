@@ -143,7 +143,8 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     listed = capabilities.json()["result"]["actions"]
     assert set(listed) == {
         "document.publish", "document.rename", "document.history",
-        "task.brief", "task.create", "task.update", "message.publish", "channel.create"}
+        "task.brief", "task.create", "task.update", "message.publish", "channel.create",
+        "credential.request"}
     # 执行角色看到的说明写明 mentions 只能是主控;建频道不再提 channel.list
     assert "@lead" in listed["message.publish"]["description"]
     assert '"lead"' in listed["message.publish"]["arguments"]["mentions"]

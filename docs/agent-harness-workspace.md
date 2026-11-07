@@ -84,6 +84,12 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 
 `platform-docs/` 链接到数据目录里的 `platform-docs/`，内容是源码仓英文文档 `docs/en/*.md` 的副本，所有项目、所有角色共用。平台每次装配工作区时与源码比对，内容不同才重写，多出的文件删除，所以 Agent 对它的修改会在下一次装配时被还原。`README.md` 是索引，逐篇说明文档内容和适用场景；`manual.md` 只写 Agent 的行为规则，平台机制的完整说明都在这里，Agent 按需检索。
 
+### `credentials/`
+
+`credentials/` 链接到项目级凭据目录 `projects/<project>/runtime-context/credentials/`（目录权限 0700、文件 0600），每份凭据一个文件，文件名就是凭据名（如 `GITHUB_TOKEN`），内容是值本身：单行值不带结尾换行，多行值（如 PEM 私钥）保留结尾换行。`index.json` 列出每份凭据的名字、用途和作用域（`global` / `project`），不含值。项目可用的凭据是全局凭据加本项目凭据，同名时项目凭据覆盖全局。人在全局设置或项目设置里保存、替换、删除凭据后，平台立即重写受影响项目的目录（全局凭据影响所有项目），长驻会话的下一条命令就能读到新值；Agent 用 `credential.request` 登记、尚未填写的凭据不会出现在目录里。
+
+Agent 只在需要凭据的那条命令里内联读取（如 `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list`），不打印，也不复制进其他文件或消息；缺少凭据时调用 `credential.request`，请人到项目设置里填写，不在聊天里索要。凭据值从不进入 Prompt、Agent Tool 结果或任何 Web 接口的返回值，页面只显示值的末 4 位。消息、运行过程日志、自动化运行输出、Agent Tool 参数和 publish-file 发布的文本文件在落库前，平台会把其中出现的凭据原文（以及它的 URL 编码形式）替换成 `[credential:<名称>]`；短于 8 个字符的值不做替换，以免误伤正文。这只是防止无意泄漏的兜底：被拆开或重新编码过的值认不出来，它也不是针对恶意本地进程的隔离。
+
 ### `tasks/`
 
 `tasks/` 只存放平台生成的项目 Task 快照，不是协作草稿或报告目录。快照只读；Agent 创建、编辑、追加简报或删除 Task 时必须显式调用 Agent Tool，文件修改不会同步回 Task。Task 包含 `title`、`summary`、正文、`labels`（状态是 `status: 文本` 标签）和可选 `channel_ids`；属于自定义数据源的任务在快照里另有 `source`；带了 `external_id`、`url`（原始条目链接）或 `meta` 的任务（同步来的，或创建时写了这些字段的）快照里也有对应字段。快照在每次装配工作区时刷新，调用角色自己的 `task.*` 动作成功后也会立即刷新。聊天角色新建 Task 使用 `task.create`，修改 Task 使用带 `snapshot_updated_at` 的 `task.update`；工具会立即报告版本冲突。追加状态简报使用 `task.brief`；项目主控删除 Task 使用 `task.delete`，Task 与简报会进入项目回收站。快照 frontmatter 中的 `status_briefs` 是只读历史。协作草稿和报告应通过 `document.publish` 放到文档库下合适的目录。
@@ -104,6 +110,7 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 | 准则 | 准则工作树 + Git 历史 + Project 索引 | 项目级已启用准则实时视图 | 索引和原子镜像均已刷新；所有工作区读取同一版 |
 | Skill | 项目 Skill 包目录 + Git 历史 + Project 索引 | 项目级已启用 Skill 实时视图 | 包版本、内容和启用成员列表均已刷新 |
 | Task | SQLite Task + 状态简报记录 | 每次装配生成的角色工作区 Markdown | 工具修改会刷新调用角色的快照；内容编辑使用 `snapshot_updated_at`，简报追加不覆盖历史 |
+| 凭据 | SQLite 凭据表（值与元数据分列存放） | 项目级凭据目录 | 受影响项目（全局凭据为所有项目）的凭据目录与索引均已重写 |
 
 这里的“成功返回”指 Agent Tool 或 Web API 已完成整个同步链。若 Git、索引或实时视图任一步失败，调用会返回结构化错误而不是成功；准则视图使用同目录临时文件替换，读取者只会看到完整旧版或完整新版，不会读到半写入正文。已经发送给 Runtime 的 Prompt 不会在回合中被反向修改，但 Prompt 给出的文件路径会实时指向新版；下一轮装配会重新计算公共上下文版本并把新摘要发给复用 session。
 
@@ -130,6 +137,7 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 | `MISSIONCREW_TASKS_DIR` | 项目任务 Markdown 目录 |
 | `MISSIONCREW_MANUAL` | Agent 手册 `manual.md` |
 | `MISSIONCREW_PLATFORM_DOCS_DIR` | MissionCrew 自身文档副本 `platform-docs/` |
+| `MISSIONCREW_CREDENTIALS_DIR` | 项目可用凭据的目录 `credentials/`，每份凭据一个文件 |
 | `MISSIONCREW_CHANNEL_HISTORY` | 当前角色可见的频道历史文件；仅聊天执行 |
 | `MISSIONCREW_CHANNEL_ID` | 当前频道 id |
 | `MISSIONCREW_SESSION_KEY` | 当前 channel×role 的 Runtime 会话键 |
@@ -141,13 +149,13 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 | `MISSIONCREW_AGENT_TOKEN_FILE` | 路径稳定、内容按 Run 原子轮换的 Bearer capability 文件 |
 | `MISSIONCREW_AGENT_TOOL_PYTHON` | 可执行 Agent Tool CLI 模块的 Python 解释器 |
 
-以上三个 Agent Tool 变量在聊天执行与自动化脚本中都会注入；自动化脚本的令牌文件位于 `automations/<project>/<id>/.agent-tool-token`，并额外获得 `MISSIONCREW_PROJECT_ID` 与 `MISSIONCREW_AUTOMATION_ID`。
+以上三个 Agent Tool 变量在聊天执行与自动化脚本中都会注入；自动化脚本的令牌文件位于 `automations/<project>/<id>/.agent-tool-token`，并额外获得 `MISSIONCREW_PROJECT_ID` 与 `MISSIONCREW_AUTOMATION_ID`；脚本的 `MISSIONCREW_CREDENTIALS_DIR` 直接指向项目级凭据目录。
 
 Runtime 的实际 `PWD` 仍是 `workdir`。支持原生多目录授权的适配器会把允许目录转换为相应命令行参数；其他 Runtime 也能从环境变量和提示上下文获知这些路径。Agent Tool 的身份、scope、动作和错误契约见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
 ## 平台内部数据边界
 
-项目数据库、密钥、文档 Git 元数据、平台保存的原始频道历史和其他角色的历史视图不在 Agent 授权范围内。Agent 只获得当前执行需要的业务目录和自己的 harness 工作区。
+项目数据库、webhook 密钥、文档 Git 元数据、平台保存的原始频道历史和其他角色的历史视图不在 Agent 授权范围内；人保存给 Agent 的凭据只经 `credentials/` 提供。Agent 只获得当前执行需要的业务目录和自己的 harness 工作区。
 
 ## 开发约束
 

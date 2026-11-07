@@ -208,6 +208,7 @@
         <a onclick="scrollToSec('sec-proj-info')">项目信息</a>
         <a onclick="scrollToSec('sec-proj-res')">本地代码仓</a>
         <a onclick="scrollToSec('sec-proj-roles')">角色</a>
+        <a onclick="scrollToSec('sec-proj-credentials')">凭据</a>
         <a onclick="switchTab('guidelines')">准则文档 ↗</a>
         <a onclick="switchTab('skills')">Skills ↗</a>
         <a onclick="switchTab('recycle-bin')">回收站 ↗</a>
@@ -230,6 +231,14 @@
           <button class="ghost" onclick="openRoleExportDialog('project')">导出</button></h2>
         <p class="muted">新增角色时可从全局角色模板导入后再调整；角色定位(人格)是"选人"的专长画像,供人类或主控调度时挑人,不是任务描述。启停开关只控制新任务，不中断当前运行，也不删除角色配置和历史；项目主控需先切换后才能停用。</p>
         <table class="mgr" id="role-table"></table>
+      </div>
+      <div class="section" id="sec-proj-credentials">
+        <h2>凭据
+          <button class="ghost" style="margin-left:8px" onclick="editCredential('project', null)">+ 新建项目凭据</button></h2>
+        <p class="muted">只属于本项目的 token、密码、密钥；与全局凭据同名时本项目用这一份。Agent 需要但还没有的凭据会以“待填写”出现在这里，请在这里填写，不要发在聊天里。</p>
+        <div class="runtime-table-wrap"><table class="mgr" id="proj-credential-table"></table></div>
+        <h3>继承的全局凭据</h3>
+        <div class="runtime-table-wrap"><table class="mgr" id="proj-inherited-credential-table"></table></div>
       </div>
     </div>
 
@@ -375,6 +384,12 @@
         <p class="muted" id="webhook-listener-state"></p>
         <div class="runtime-table-wrap"><table class="mgr" id="webhook-source-table"></table></div>
       </div>
+      <div class="section" id="global-credential-section">
+        <h2>凭据(全局共享)
+          <button class="ghost" style="margin-left:8px" onclick="editCredential('global', null)">＋ 新建凭据</button></h2>
+        <p class="muted">保存给 Agent 用的 token、密码、密钥，所有项目都能使用；项目里有同名凭据时该项目用自己的。Agent 从工作区 <code>credentials/&lt;名称&gt;</code> 文件读取，值不进入提示词，保存后页面也不再显示。</p>
+        <div class="runtime-table-wrap"><table class="mgr" id="global-credential-table"></table></div>
+      </div>
     </div>
 
     <section id="config-chat" class="config-chat" aria-label="当前页面对话">
@@ -514,6 +529,7 @@
 <script src="/assets/js/settings-runtime.js"></script>
 <script src="/assets/js/settings-models.js"></script>
 <script src="/assets/js/settings-webhooks.js"></script>
+<script src="/assets/js/settings-credentials.js"></script>
 <script src="/assets/js/runtime-status.js"></script>
 <script src="/assets/js/main.js"></script>
 </body>

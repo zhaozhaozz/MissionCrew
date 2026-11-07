@@ -26,6 +26,7 @@
   | `MISSIONCREW_AGENT_TOKEN_FILE` | 本次运行的一次性令牌文件（工作目录下的 `.agent-tool-token`）；CLI 自行读取，脚本不需要读取，也不要打印 |
   | `MISSIONCREW_PROJECT_ID` | 项目 id |
   | `MISSIONCREW_AUTOMATION_ID` | 脚本 id，格式 `<项目 id>:<脚本短 id>` |
+  | `MISSIONCREW_CREDENTIALS_DIR` | 项目可用凭据的目录（全局凭据加本项目凭据，同名时项目覆盖全局），每份凭据一个文件；在需要的命令里内联读取，如 `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh ...`，不要打印。stdout/stderr 落库前同样会把凭据原文替换成 `[credential:<名称>]` |
   | `MISSIONCREW_TRIGGER` | 本次运行的触发来源：`cron`、`webhook` 或 `manual`（人在页面点「立即运行」或主控 `automation.run`） |
   | `MISSIONCREW_WEBHOOK_EVENT_FILE` | 仅 webhook 触发：本次事件文件的路径，格式见下文「Webhook 触发」 |
   | `MISSIONCREW_WEBHOOK_SOURCE` | 仅 webhook 触发：收到这次投递的 webhook 来源 id |

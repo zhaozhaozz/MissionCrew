@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from missioncrew.runtime import adapters, runtime_manager
 from missioncrew.collab.chat import ChatEngine
+from missioncrew.collab.credentials import credential_context_dir
 from missioncrew.collab.documents import (document_resource_url, library_for,
                                           normalize_document_resource_urls)
 from missioncrew.collab.platform_docs import SOURCE_DIR, platform_docs_dir
@@ -727,8 +728,10 @@ def test_all_project_directories_are_assembled_for_chat(seeded, tmp_path):
     chat_workspace = str(Path(chat_cfg.env["MISSIONCREW_WORKSPACE"]).resolve())
     assert chat_cfg.timeout is None
     platform_docs = str(platform_docs_dir().resolve())
+    credential_view = str(credential_context_dir("webshop"))
     assert chat_cfg.allowed_dirs == [
-        *shared, chat_workspace, guideline_view, skill_view, skill_root, platform_docs]
+        *shared, chat_workspace, guideline_view, skill_view, skill_root, credential_view,
+        platform_docs]
     assert chat_cfg.runtime_policy.readable_paths == chat_cfg.allowed_dirs
     assert chat_cfg.runtime_policy.writable_paths == chat_cfg.allowed_dirs
     assert all(path in chat_cfg.prompt for path in shared)

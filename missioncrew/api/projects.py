@@ -6,6 +6,7 @@ from dataclasses import asdict
 from fastapi import FastAPI, HTTPException
 
 from ..collab import board_sources
+from ..collab.credentials import remove_credential_context
 from ..collab.documents import archive_library, library_for
 from ..collab.guidelines import replace_guideline_library
 from ..collab.project_context import write_guideline_context
@@ -94,8 +95,6 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 "id", "instructions_fingerprint", ("instructions",), "Skill")
             if body.skills is not None else
             ([s.__dict__ for s in existing.skills] if existing else []))
-        data["resources"] = (body.resources if body.resources is not None else
-                             (existing.resources if existing else []))
         data["required_env"] = (body.required_env if body.required_env is not None else
                                 (existing.required_env if existing else None))
         data["task_auto_rules"] = (
@@ -148,6 +147,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             raise HTTPException(404, "项目不存在")
         archive = archive_library(project_id)
         store.delete_project(project_id)
+        remove_credential_context(project_id)
         store.audit("human", "project_deleted",
                     detail=f"project={project_id} documents_archive={archive}")
         return {"ok": True, "documents_archive": archive}

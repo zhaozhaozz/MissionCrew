@@ -14,7 +14,6 @@ MC_HOME 布局:
   projects/<id>/skill-history.git                完整 Skill 包 Git 版本历史
   projects/<id>/runtime-context/skills/<skill-id> 已启用 Skill 的共享链接视图
   projects/<id>/recycle-bin/<item-id>             项目资源统一回收站
-  secrets.yaml      受控资源的密钥(secret_ref -> value),不进入任何 Prompt
 """
 from __future__ import annotations
 
@@ -48,10 +47,6 @@ def projects_dir() -> Path:
     d = mc_home() / "projects"
     d.mkdir(parents=True, exist_ok=True)
     return d
-
-
-def secrets_path() -> Path:
-    return mc_home() / "secrets.yaml"
 
 
 # ---- pi Runtime 自有目录:全部落在 MC_HOME 下,不使用 ~/.pi 全局配置 ----

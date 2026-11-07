@@ -772,6 +772,7 @@ async function sendConfigChat() {
     status.textContent = "请先保存当前条目，再开始页面内对话。";
     return;
   }
+  if (!await confirmSecretInMessage(payload.content, box)) return;
   const selection = configChatSelection?.context_key === context.key
     ? configChatSelection : null;
   configChatSending = true;

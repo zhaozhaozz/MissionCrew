@@ -35,6 +35,7 @@ from ..core.config import (chat_max_workers, context_reinject_bytes,
                            context_reinject_turns, mc_home)
 from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
                           DispatchInactiveError, default_agent_tool_url)
+from .credentials import effective_credentials
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls)
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
@@ -1025,6 +1026,21 @@ class ChatEngine:
         self._write_channel_history(channel)
         return trigger_id, run_id
 
+    def _credentials_line(self, project_id: str) -> str:
+        """公共上下文里的凭据提示:只列名字,值在工作区 credentials/ 的文件里。"""
+        names = [item.name for item in effective_credentials(self.store, project_id)
+                 if item.has_value]
+        saved = ", ".join(f"`{name}`" for name in names) if names else "none yet"
+        return (
+            f"Credentials humans saved for this project: {saved} (files in "
+            "`$MISSIONCREW_CREDENTIALS_DIR`, purposes in `index.json` there). Use one only "
+            "inline in the command that needs it, such as "
+            "`TOKEN=\"$(cat \"$MISSIONCREW_CREDENTIALS_DIR/<NAME>\")\" <command>`; never "
+            "print it or write it into files, messages or documents, and never ask for a "
+            "secret in chat: call `credential.request` when one is missing (manual.md "
+            "section 12)."
+        )
+
     def _run_event_emitter(self, run_id: int, project, document_roots: list):
         """运行过程事件的落库入口:运行结束后丢弃迟到事件,含文档路径的
         文本改写成平台资源 URL。"""
@@ -1497,6 +1513,7 @@ class ChatEngine:
                 env["MISSIONCREW_TASKS_DIR"] = str(workspace.tasks)
                 env["MISSIONCREW_MANUAL"] = str(workspace.manual)
                 env["MISSIONCREW_PLATFORM_DOCS_DIR"] = str(workspace.platform_docs)
+                env["MISSIONCREW_CREDENTIALS_DIR"] = str(workspace.credentials)
                 manual_path = str(workspace.manual)
                 project_line = project.name + (
                     f" · {' '.join(project.description.split())}" if project.description else "")
@@ -1544,7 +1561,8 @@ class ChatEngine:
                     "Publish a file: `\"$MISSIONCREW_AGENT_TOOL_PYTHON\" -m "
                     "missioncrew.agent_tool publish-file "
                     "--source <local file> --path <path in the document library>`\n"
-                    "Available actions: " + ", ".join(allowed_actions)
+                    "Available actions: " + ", ".join(allowed_actions) + "\n"
+                    + self._credentials_line(project.id)
                 )
                 allowed_dirs = project_allowed_dirs(project, library, workspace.root)
                 if (project.controls_platform(role.id)

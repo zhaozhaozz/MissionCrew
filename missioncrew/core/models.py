@@ -452,7 +452,6 @@ class Project:
     max_chain_runs: int = DEFAULT_MAX_CHAIN_RUNS  # 单条人类消息最多触发的 Agent 执行数
     guidelines: list[GuidelineDocument] = field(default_factory=list)
     skills: list[ProjectSkill] = field(default_factory=list)
-    resources: list[str] = field(default_factory=list)  # 可申请的受控资源 id
     required_env: Optional[str] = None                  # 执行环境要求,如 linux/gpu
     task_auto_rules: list[TaskAutoRule] = field(default_factory=list)
     # 内置任务看板的自定义筛选列 [{title,query,color}],默认排在四个锁定状态列之后;
@@ -545,6 +544,8 @@ class Project:
         d["skills"] = [ProjectSkill.from_dict(v) for v in d.get("skills", [])]
         d.setdefault("orchestrator_role_id", "lead")
         d.setdefault("max_chain_runs", DEFAULT_MAX_CHAIN_RUNS)
+        # 旧阶段式受控资源 id 列表:从未接入执行链,已由凭据(Credential)取代
+        d.pop("resources", None)
         # 旧版标签看板字段:label 字符串列表,__post_init__ 会转成筛选列
         legacy_boards = d.pop("task_label_boards", None)
         if legacy_boards and not d.get("task_board_filters"):
@@ -577,25 +578,57 @@ class Project:
             self.has_orchestrator and target_id == self.orchestrator_role_id)
 
 
-@dataclass
-class Resource:
-    """受控资源:Agent 拿到的是任务级、限时、可审计的能力,不是裸凭据。"""
+# 凭据名即 Agent 读取的文件名,也是习惯上的环境变量名(如 GITHUB_TOKEN)
+CREDENTIAL_NAME_RE = _re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 
-    id: str
-    kind: str                    # db | api | deploy | logs ...
-    description: str = ""
-    env: str = ""                # 注入到执行环境的变量名
-    secret_ref: str = ""         # 在 secrets.yaml 中的键,值不落任何 Prompt
-    security_level: int = 0
-    stages: list[str] = field(default_factory=list)  # 允许使用的阶段,空=全部
-    ttl_seconds: int = 3600
+
+def credential_fingerprint(value: str) -> str:
+    """值的末 4 位,供人在页面上辨认是哪一份;太短的值不给,免得等于露出大半。"""
+    return f"…{value[-4:]}" if len(value) >= 12 else ""
+
+
+@dataclass
+class Credential:
+    """人类保存给 Agent 使用的凭据,本对象只含元数据。
+
+    值存在 credentials 表的独立列里,不进入本对象的任何序列化,因此总览、
+    Agent Tool 结果、回收站与审计都不可能顺带带出它。project_id 为空是全局
+    凭据,对所有项目可见;项目凭据只属于本项目,与全局同名时覆盖全局。
+    """
+
+    name: str
+    project_id: str = ""
+    description: str = ""          # 用途说明,Agent 据此判断该用哪一份
+    has_value: bool = False        # False = Agent 经 credential.request 登记、待人填写
+    fingerprint: str = ""
+    requested_by: str = ""         # 登记该待填写凭据的角色,如 role:dev;人保存值后清空
+    created_at: float = field(default_factory=now)
+    updated_at: float = field(default_factory=now)
+
+    def __post_init__(self):
+        if not CREDENTIAL_NAME_RE.fullmatch(self.name or ""):
+            raise ValueError(
+                "凭据名只能使用大写字母、数字和下划线,以字母开头,最长 64 个字符")
+
+    @property
+    def id(self) -> str:
+        return credential_id(self.project_id, self.name)
+
+    @property
+    def scope(self) -> str:
+        return "project" if self.project_id else "global"
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Resource":
+    def from_dict(cls, d: dict) -> "Credential":
         return cls(**d)
+
+
+def credential_id(project_id: str, name: str) -> str:
+    """存储主键:全局凭据就是名字,项目凭据是 `<项目>:<名字>`(同频道 id 的约定)。"""
+    return f"{project_id}:{name}" if project_id else name
 
 
 @dataclass

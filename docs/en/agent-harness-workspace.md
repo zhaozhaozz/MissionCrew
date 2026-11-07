@@ -84,6 +84,12 @@ Channels, tasks, dashboards, guidelines, skills, and documents use the same set 
 
 `platform-docs/` links to `platform-docs/` in the data directory; its content is a copy of the source repository's English docs, `docs/en/*.md`, shared by all projects and all roles. Each time the platform assembles a workspace, it compares the copy with the source, rewrites only the files whose content differs, and deletes extra files, so any changes an agent makes to it are reverted at the next assembly. `README.md` is the index and describes each document's content and when to use it; `manual.md` only contains the agent's behavior rules, while the complete description of platform mechanisms is here, for agents to look up as needed.
 
+### `credentials/`
+
+`credentials/` links to the project-level credential directory `projects/<project>/runtime-context/credentials/` (directory mode 0700, files 0600). Each credential is one file named after it (such as `GITHUB_TOKEN`) whose content is the value itself: a single-line value has no trailing newline, and a multi-line value (such as a PEM private key) keeps its trailing newline. `index.json` lists each credential's name, purpose and scope (`global` / `project`), without values. The credentials available to a project are the global credentials plus the project's own, and a project credential replaces a global one with the same name. After a human saves, replaces or deletes a credential in Global settings or Project settings, the platform rewrites the directories of the affected projects immediately (a global credential affects every project), so the next command of a long-lived session already reads the new value; credentials an agent registered with `credential.request` that have not been filled in yet do not appear in the directory.
+
+An agent reads a credential only inline in the command that needs it (for example `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list`), never prints it and never copies it into other files or messages; when a credential is missing it calls `credential.request` so a human fills it in under Project settings, instead of asking for it in chat. Credential values never enter the prompt, Agent Tool results or the response of any Web endpoint, and the page only shows the last 4 characters of a value. Before messages, run logs, automation run output, Agent Tool arguments and text files published with publish-file are stored, the platform replaces any credential value (and its URL-encoded form) found in them with `[credential:<name>]`; values shorter than 8 characters are not replaced, to avoid mangling ordinary text. This is only a safety net against accidental leaks: it cannot recognize a value that was split up or re-encoded, and it is not isolation against malicious local processes.
+
 ### `tasks/`
 
 `tasks/` only holds platform-generated snapshots of project tasks; it is not a directory for collaboration drafts or reports. Snapshots are read-only; when an agent creates, edits, appends a brief to, or deletes a task, it must call the Agent Tool explicitly, and file changes are not synced back to the task. A task contains `title`, `summary`, a body, `labels` (the status is a `status: <text>` label), and optional `channel_ids`; tasks of a custom data source additionally have `source` in the snapshot, and tasks that have `external_id`, `url` (the link to the original item) or `meta` (synced ones, or ones created with these fields) carry those fields too. Snapshots are refreshed each time the workspace is assembled, and also immediately after one of the calling role's own `task.*` actions succeeds. Chat roles create a task with `task.create` and modify a task with `task.update` carrying `snapshot_updated_at`; the tool reports version conflicts immediately. Append a status brief with `task.brief`; the project orchestrator deletes a task with `task.delete`, and the task and its briefs go into the project recycle bin. `status_briefs` in the snapshot frontmatter is read-only history. Collaboration drafts and reports should be put in a suitable directory of the document library through `document.publish`.
@@ -104,6 +110,7 @@ The status is free text; the built-in board uses `待处理` (to do), `处理中
 | Guideline | Guideline worktree + Git history + Project index | Project-level live view of enabled guidelines | The index and the atomic mirror have both been refreshed; all workspaces read the same version |
 | Skill | Project skill package directory + Git history + Project index | Project-level live view of enabled skills | The package version, content, and list of enabled members have all been refreshed |
 | Task | SQLite task + status brief records | Role workspace Markdown generated at each assembly | Tool changes refresh the calling role's snapshot; content edits use `snapshot_updated_at`, and appending a brief does not overwrite history |
+| Credential | SQLite credential table (value stored apart from metadata) | Project-level credential directory | The credential directory and index of every affected project (all projects for a global credential) have been rewritten |
 
 "Returns success" here means the Agent Tool or Web API has completed the entire sync chain. If any step among Git, the index, or the live view fails, the call returns a structured error instead of success; the guideline view is replaced using a temp file in the same directory, so readers only ever see the complete old version or the complete new version, never a half-written body. A prompt already sent to the runtime is not modified retroactively during the turn, but the file paths given in the prompt point to the new version in real time; the next assembly recomputes the shared context version and sends the new summary to the reused session.
 
@@ -130,6 +137,7 @@ The history file in a chat workspace is structured JSON that the agent reads pro
 | `MISSIONCREW_TASKS_DIR` | Directory of project task Markdown files |
 | `MISSIONCREW_MANUAL` | The agent manual `manual.md` |
 | `MISSIONCREW_PLATFORM_DOCS_DIR` | The copy of MissionCrew's own docs, `platform-docs/` |
+| `MISSIONCREW_CREDENTIALS_DIR` | The directory of credentials available to the project, `credentials/`, one file per credential |
 | `MISSIONCREW_CHANNEL_HISTORY` | The channel history file visible to the current role; chat runs only |
 | `MISSIONCREW_CHANNEL_ID` | The current channel id |
 | `MISSIONCREW_SESSION_KEY` | The runtime session key of the current channel×role |
@@ -141,13 +149,13 @@ The history file in a chat workspace is structured JSON that the agent reads pro
 | `MISSIONCREW_AGENT_TOKEN_FILE` | Bearer capability file whose path is stable and whose content is atomically rotated per run |
 | `MISSIONCREW_AGENT_TOOL_PYTHON` | Python interpreter that can run the Agent Tool CLI module |
 
-The three Agent Tool variables above are injected both in chat runs and in automation scripts; an automation script's token file is at `automations/<project>/<id>/.agent-tool-token`, and the script additionally gets `MISSIONCREW_PROJECT_ID` and `MISSIONCREW_AUTOMATION_ID`.
+The three Agent Tool variables above are injected both in chat runs and in automation scripts; an automation script's token file is at `automations/<project>/<id>/.agent-tool-token`, and the script additionally gets `MISSIONCREW_PROJECT_ID` and `MISSIONCREW_AUTOMATION_ID`; a script's `MISSIONCREW_CREDENTIALS_DIR` points directly at the project-level credential directory.
 
 The runtime's actual `PWD` is still `workdir`. Adapters that support native multi-directory authorization convert the allowed directories into the corresponding command-line arguments; other runtimes can also learn these paths from the environment variables and the prompt context. For the Agent Tool's identity, scope, action, and error contracts, see [MissionCrew Agent Tool API](agent-tool-api.md).
 
 ## Platform-internal data boundary
 
-Project databases, secrets, document Git metadata, the raw channel history stored by the platform, and other roles' history views are outside the agent's authorized scope. The agent only gets the business directories the current run needs and its own harness workspace.
+Project databases, webhook secrets, document Git metadata, the raw channel history stored by the platform, and other roles' history views are outside the agent's authorized scope; credentials humans save for agents are provided only through `credentials/`. The agent only gets the business directories the current run needs and its own harness workspace.
 
 ## Development constraints
 

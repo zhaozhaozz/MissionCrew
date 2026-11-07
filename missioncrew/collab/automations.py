@@ -20,6 +20,7 @@ from typing import Callable, Optional
 
 from .agent_tools import (AUTOMATION_ACTIONS, AgentActionService,
                           CONTROL_ID_RE, default_agent_tool_url)
+from .credentials import write_credential_context
 from ..core.config import mc_home
 from ..core.cron import next_cron_time, validate_cron
 from ..core.models import Automation
@@ -304,6 +305,9 @@ class AutomationService:
             "MISSIONCREW_PROJECT_ID": automation.project_id,
             "MISSIONCREW_AUTOMATION_ID": automation.id,
             "MISSIONCREW_TRIGGER": trigger,
+            # 与聊天角色读同一个项目凭据目录;输出落库前同样脱敏
+            "MISSIONCREW_CREDENTIALS_DIR": str(
+                write_credential_context(self.store, automation.project_id)),
         })
         for key in ("MISSIONCREW_WEBHOOK_EVENT_FILE", "MISSIONCREW_WEBHOOK_SOURCE",
                     "MISSIONCREW_WEBHOOK_PROVIDER", "MISSIONCREW_WEBHOOK_EVENT",

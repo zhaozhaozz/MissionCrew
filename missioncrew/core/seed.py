@@ -6,7 +6,7 @@ adapter 改为 claude_code / codex 并配置模型。
 from __future__ import annotations
 
 from .models import (DEFAULT_MAX_CHAIN_RUNS, TIER_ORDER, Backend, Channel,
-                     GuidelineDocument, Project, ProjectSkill, Resource, Role,
+                     GuidelineDocument, Project, ProjectSkill, Role,
                      _RETIRED_ABILITY_TEXT, preference_segments)
 from .store import Store
 
@@ -51,15 +51,7 @@ DEMO_PROJECT = Project(
                  "- 认证逻辑变化必须进行安全审查。\n"
                  "- 高风险变更必须获得人工批准。"),
     )],
-    resources=["test-db"],
 )
-
-DEMO_RESOURCES = [
-    Resource(id="test-db", kind="db", description="测试数据库(只读)",
-             env="TEST_DB_URL", secret_ref="WEBSHOP_TEST_DB_URL",
-             security_level=0, stages=["reproduce", "fix", "regression", "verify", "develop"],
-             ttl_seconds=3600),
-]
 
 
 _DEFAULT_ROLE_TIERS = {
@@ -197,8 +189,6 @@ DEFAULT_CHANNEL = Channel(id="general", name="大厅", project_id="webshop")
 def seed(store: Store) -> None:
     for b in DEMO_BACKENDS:
         store.put_backend(b)
-    for r in DEMO_RESOURCES:
-        store.put_resource(r)
     ensure_role_templates(store)
     demo_roles = project_roles_from_templates(store, DEMO_PROJECT.id)
     DEMO_PROJECT.orchestrator_role_id = demo_roles[0].id

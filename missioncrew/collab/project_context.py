@@ -7,6 +7,7 @@ import re
 import tempfile
 import threading
 
+from .credentials import credential_context_dir
 from .documents import DocumentLibrary, document_resource_url
 from .platform_docs import platform_docs_dir
 from .resource_urls import (guideline_resource_url, missioncrew_project_url,
@@ -97,6 +98,8 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary,
                     else [str(guideline_context_dir(project)),
                           str(skill_context_dir(project))])
     context_dirs.append(str(project_skill_library_dir(project.id)))
+    if workspace_dir is not None:
+        context_dirs.append(str(credential_context_dir(project.id)))   # 工作区 credentials/ 的链接目标
     if workspace_dir is not None:
         context_dirs.append(str(platform_docs_dir()))   # 工作区 platform-docs/ 的链接目标
     for raw in [*project.repo_paths(), str(library.root), *context_dirs]:

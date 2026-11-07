@@ -52,7 +52,8 @@ An orchestrator's turn:
   the platform regenerates both views every turn; `project.md` project summary and repositories; `channel-history.json` full channel history
   (executors get a redacted view); `temp/` temporary directory when the project has no convention;
   `manual.md` this manual; `platform-docs/` read-only copy of MissionCrew's own documentation
-  (`README.md` there lists every document).
+  (`README.md` there lists every document); `credentials/` secrets humans saved for the project
+  (section 12).
 - Do not read or print `.agent-tool-token`; the Agent Tool CLI reads the token file itself.
 
 ## 2. Resource URLs and External References
@@ -395,14 +396,37 @@ An orchestrator's turn:
   order, whose expression matches its labels, except tasks already in the 已完成 status;
   `task.create` then returns `auto_dispatch`. Delete scripts with `automation.delete`.
 
-## 12. Recycle Bin (recycle.*)
+## 12. Credentials (credential.*)
+
+- Humans save secrets (tokens, passwords, keys) in project settings or global settings; you
+  never receive them in chat. Each one available to this project is a file named after it
+  (such as `GITHUB_TOKEN`) in `$MISSIONCREW_CREDENTIALS_DIR`, the workspace's `credentials/`;
+  `index.json` there lists every credential with its purpose and scope (a project credential
+  replaces a global one with the same name). Files change as soon as a human edits a
+  credential, so read the file at the moment you use it.
+- Read a credential only inline in the command that needs it, for example
+  `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list` or a tool's own
+  `--password-file`/`--token-file` option pointing at the file. Never print it (a bare `cat` of
+  the file, `echo`, `env`, `set -x`, verbose HTTP logs), copy it into other files, repositories,
+  git remote URLs, scripts, Tasks, documents or messages, or quote it in your reply. Automation
+  scripts get the same directory through the same variable.
+- When the task needs a secret that is not in `index.json`, call `credential.request` with an
+  upper-case `name` and a `description` of what it is for and the minimal permissions it
+  needs; the platform asks the human with a link to the form. Never ask humans to paste a
+  secret into chat. Then report in your final reply that the work is waiting for that
+  credential, and continue once the file exists.
+- The platform replaces any saved credential value it finds in messages, run logs, Agent Tool
+  arguments and published documents with `[credential:<NAME>]`. That is a safety net for
+  mistakes, not a way to use secrets: a value written anywhere is still a leak to report.
+
+## 13. Recycle Bin (recycle.*)
 
 - Deleted platform resources such as documents, guidelines, skills, dashboards and channels go to
   the project's unified recycle bin (deletion is orchestrator only). `recycle.list` lists it and
   `recycle.restore` restores; use `recycle.purge` only when the user explicitly asks for permanent
   deletion.
 
-## 13. Config-Page Collaboration
+## 14. Config-Page Collaboration
 
 - Collaboration messages from a config page state the current page, the current item, unsaved
   drafts, and the fields, line numbers and original text the user selected. If the user only asks
@@ -410,7 +434,7 @@ An orchestrator's turn:
   or modify, persist it with the corresponding `guideline.save` / `skill.save` /
   `document.publish` action.
 
-## 14. Collaboration Chain Budget
+## 15. Collaboration Chain Budget
 
 - A single collaboration chain in this project allows at most __MAX_RUNS__ agent runs. This is
   only a total cap against runaway loops and does not limit dispatch depth; break down, assign,
@@ -502,7 +526,7 @@ def render_manual(project: Project) -> str:
         text = _replace_section(text, "## 0. Typical Flow", "## 1. ", _PEER_FLOW + "\n")
         text = _replace_section(text, "## 7. Messages", "## 8. ", _PEER_MESSAGES)
         # 协作链预算一节讲派发,无主控时不适用;自我提及计入预算已在第 7 节说明
-        text = _replace_section(text, "## 14. ", "", "").rstrip() + "\n"
+        text = _replace_section(text, "## 15. ", "", "").rstrip() + "\n"
         for old, new in _PEER_REPLACEMENTS:
             assert old in text, old
             text = text.replace(old, new)

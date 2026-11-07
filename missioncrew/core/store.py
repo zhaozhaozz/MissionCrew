@@ -10,13 +10,13 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from .models import (Automation, Backend, Board, BoardDataSource, Channel,
-                     Project, Resource, Role, Task, WebhookSource, new_id,
-                     normalize_labels, with_status)
+                     Credential, Project, Role, Task, WebhookSource, credential_id,
+                     new_id, normalize_labels, with_status)
+from .redaction import redact_text, redaction_pairs
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS backends  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS resources (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS tasks     (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS task_briefs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,6 +100,10 @@ CREATE TABLE IF NOT EXISTS automation_runs (
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
   ON automation_runs(automation_id, id DESC);
 CREATE TABLE IF NOT EXISTS webhook_sources (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+-- 凭据:data 是不含值的元数据 JSON,值单独一列,通用的 _get/_list 只读 data 列
+CREATE TABLE IF NOT EXISTS credentials (
+  id TEXT PRIMARY KEY, data TEXT NOT NULL, value TEXT NOT NULL DEFAULT ''
+);
 CREATE TABLE IF NOT EXISTS run_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id INTEGER NOT NULL, kind TEXT NOT NULL, content TEXT NOT NULL,
@@ -133,6 +137,10 @@ class Store:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        # 旧阶段式受控资源表从未接入执行链,已由 credentials 取代
+        self._conn.execute("DROP TABLE IF EXISTS resources")
+        # 脱敏用的 (原文, 占位符) 缓存;凭据经本实例写入时作废重建
+        self._redaction: Optional[list[tuple[str, str]]] = None
         self._migrate_backend_commands()
         self._migrate_chat_runs()
         self._migrate_automation_runs()
@@ -634,6 +642,8 @@ class Store:
                 self.delete_task(task.id)
         for automation in self.list_automations(id):
             self.delete_automation(automation.id)
+        for credential in self.list_credentials(id):
+            self.delete_credential(credential.id)
         self.revoke_agent_tokens(project_id=id)
         self._delete("projects", id)
 
@@ -652,10 +662,6 @@ class Store:
     def list_backends(self) -> list[Backend]:
         return [Backend.from_dict(d) for d in self._list("backends")]
 
-    def put_resource(self, r: Resource) -> None: self._put("resources", r.id, r.to_dict())
-    def get_resource(self, id: str) -> Optional[Resource]:
-        d = self._get("resources", id)
-        return Resource.from_dict(d) if d else None
 
     def put_task(self, t: Task) -> None:
         t.updated_at = time.time()
@@ -1157,6 +1163,81 @@ class Store:
     def delete_webhook_source(self, id: str) -> None:
         self._delete("webhook_sources", id)
 
+    # ---- 凭据(全局 + 项目;值与元数据分列存放) ----
+    def put_credential(self, credential: Credential,
+                       value: Optional[str] = None) -> None:
+        """保存元数据;value 不为 None 时一并替换值(空串 = 清空,回到待填写)。"""
+        credential.updated_at = time.time()
+        with self._lock:
+            if value is None:
+                self._execute(
+                    "INSERT INTO credentials(id, data) VALUES(?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+                    (credential.id, json.dumps(credential.to_dict(), ensure_ascii=False)))
+            else:
+                self._execute(
+                    "INSERT INTO credentials(id, data, value) VALUES(?, ?, ?) "
+                    "ON CONFLICT(id) DO UPDATE SET data=excluded.data, value=excluded.value",
+                    (credential.id, json.dumps(credential.to_dict(), ensure_ascii=False),
+                     value))
+            self._redaction = None
+
+    def get_credential(self, project_id: str, name: str) -> Optional[Credential]:
+        d = self._get("credentials", credential_id(project_id, name))
+        return Credential.from_dict(d) if d else None
+
+    def list_credentials(self, project_id: Optional[str] = None) -> list[Credential]:
+        """project_id 为 None 列出全部;空串只列全局;否则只列该项目自己的。"""
+        items = [Credential.from_dict(d) for d in self._list("credentials")]
+        if project_id is not None:
+            items = [item for item in items if item.project_id == project_id]
+        return sorted(items, key=lambda item: (item.project_id, item.name))
+
+    def credential_value(self, project_id: str, name: str) -> str:
+        rows = self._query("SELECT value FROM credentials WHERE id=?",
+                           (credential_id(project_id, name),))
+        return str(rows[0]["value"]) if rows else ""
+
+    def delete_credential(self, id: str) -> None:
+        with self._lock:
+            self._delete("credentials", id)
+            self._redaction = None
+
+    def _redaction_pairs(self) -> list[tuple[str, str]]:
+        with self._lock:
+            if self._redaction is None:
+                rows = self._query(
+                    "SELECT data, value FROM credentials WHERE value != ''")
+                self._redaction = redaction_pairs(
+                    (json.loads(row["data"])["name"], str(row["value"]))
+                    for row in rows)
+            return self._redaction
+
+    def redact_credentials(self, text: str) -> str:
+        """把文本里出现的凭据原文换成 [credential:<名字>],供各写入口落库前调用。"""
+        pairs = self._redaction_pairs()
+        return redact_text(text, pairs) if pairs and text else text
+
+    def _redact_message(self, content: str,
+                        spans: list[dict]) -> tuple[str, list[dict]]:
+        """消息正文脱敏。提及范围是正文里的码点偏移,替换会改变长度,所以只替换
+        提及之间的片段,再按新长度平移各提及范围。"""
+        if not self._redaction_pairs() or not content:
+            return content, spans
+        ordered = sorted(spans, key=lambda item: item.get("start", 0))
+        if not all(type(item.get("start")) is int and type(item.get("end")) is int
+                   for item in ordered):
+            return self.redact_credentials(content), spans
+        out, shifted, cursor = "", [], 0
+        for span in ordered:
+            out += self.redact_credentials(content[cursor:span["start"]])
+            start = len(out)
+            out += content[span["start"]:span["end"]]
+            shifted.append({**span, "start": start, "end": len(out)})
+            cursor = span["end"]
+        out += self.redact_credentials(content[cursor:])
+        return out, shifted
+
     def touch_automation_run_state(self, id: str, status: str) -> None:
         """只更新最近运行状态字段，不覆盖脚本内容的并发编辑。"""
         with self._lock, self._conn:
@@ -1192,10 +1273,12 @@ class Store:
                               exit_code: Optional[int] = None,
                               stdout: str = "", stderr: str = "",
                               error: str = "") -> None:
+        redact = self.redact_credentials
         self._execute(
             "UPDATE automation_runs SET status=?, exit_code=?, stdout=?, "
             "stderr=?, error=?, finished_at=? WHERE id=?",
-            (status, exit_code, stdout, stderr, error, time.time(), run_id),
+            (status, exit_code, redact(stdout), redact(stderr), redact(error),
+             time.time(), run_id),
         )
 
     def get_automation_run(self, run_id: int) -> Optional[dict]:
@@ -1229,6 +1312,7 @@ class Store:
                     kind: str = "message",
                     mention_spans: Optional[list[dict]] = None,
                     context: Optional[dict] = None) -> int:
+        content, mention_spans = self._redact_message(content, mention_spans or [])
         msg_id = self._execute(
             "INSERT INTO messages(channel, author, author_type, content, mentions, "
             "mention_spans, context, runtime_id, model, effort, kind, reply_to, root_id, "
@@ -1474,6 +1558,7 @@ class Store:
     def append_run_event(self, run_id: int, kind: str, text: str) -> Optional[int]:
         if not text:
             return None
+        text = self.redact_credentials(text)
         # JSON 事件必须保持一行一个对象；相邻权限/用量事件不能字符串拼接。
         if kind in self.RUN_EVENT_STRUCTURED_KINDS:
             return self._execute(
@@ -1490,9 +1575,10 @@ class Store:
                 if last and last["kind"] == kind and last["n"] < self.RUN_EVENT_MAX:
                     capacity = self.RUN_EVENT_MAX - last["n"]
                     chunk, remaining = remaining[:capacity], remaining[capacity:]
-                    self._execute(
-                        "UPDATE run_events SET content = content || ? WHERE id=?",
-                        (chunk, last["id"]))
+                    if not self._append_redacted_across_boundary(int(last["id"]), chunk):
+                        self._execute(
+                            "UPDATE run_events SET content = content || ? WHERE id=?",
+                            (chunk, last["id"]))
                     event_id = int(last["id"])
                 else:
                     chunk, remaining = (remaining[: self.RUN_EVENT_MAX],
@@ -1502,6 +1588,26 @@ class Store:
                         "VALUES(?,?,?,?)",
                         (run_id, kind, chunk, time.time()))
         return event_id
+
+    def _append_redacted_across_boundary(self, event_id: int, chunk: str) -> bool:
+        """流式文本按增量追加,一个凭据值可能被拆在相邻几次追加里,单看新片段认不出。
+        把行尾最多 (最长原文 - 1) 个字符与新片段拼起来再查;命中时连同行尾一起
+        改写并返回 True,否则返回 False 交给调用方普通追加。"""
+        pairs = self._redaction_pairs()
+        if not pairs:
+            return False
+        overlap = max(len(secret) for secret, _ in pairs) - 1
+        tail = str(self._query(
+            "SELECT substr(content, -?) AS tail FROM run_events WHERE id=?",
+            (overlap, event_id))[0]["tail"] or "")
+        merged = tail + chunk
+        redacted = redact_text(merged, pairs)
+        if redacted == merged:
+            return False
+        self._execute(
+            "UPDATE run_events SET content = substr(content, 1, length(content) - ?) || ? "
+            "WHERE id=?", (len(tail), redacted, event_id))
+        return True
 
     def append_interaction_event(self, run_id: int, kind: str,
                                  payload: dict) -> int:

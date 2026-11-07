@@ -78,6 +78,12 @@ class WebhookSourceInput(BaseModel):
     enabled: Optional[bool] = None
 
 
+class CredentialInput(BaseModel):
+    name: str = Field(max_length=64)
+    description: Optional[str] = Field(None, max_length=2000)
+    value: Optional[str] = Field(None, max_length=70000)   # None = 保留原值;只写不读
+
+
 class MessageInput(BaseModel):
     author: str = "human"
     content: str
@@ -233,7 +239,6 @@ class ProjectInput(BaseModel):
     max_chain_runs: Optional[int] = Field(None, ge=1)
     guidelines: Optional[list[dict]] = None
     skills: Optional[list[dict | str]] = None
-    resources: Optional[list[str]] = None
     required_env: Optional[str] = None
     task_auto_rules: Optional[list[dict]] = None      # None = 保留现值
     # 内置任务看板锁定状态列之后的自定义筛选列;None = 保留现值

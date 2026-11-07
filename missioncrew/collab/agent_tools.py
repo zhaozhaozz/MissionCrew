@@ -19,10 +19,12 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import quote
 
 from . import board_sources
 from . import channels as channel_ops
 from .content_channels import content_channel, rebind_content_channel
+from .credentials import request_credential
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
 from .guidelines import (guideline_history, read_guideline_version, save_guideline,
@@ -57,6 +59,27 @@ MAX_HISTORY_READ_BYTES = 5 * 1024 * 1024
 TOKEN_LIFETIME_SECONDS = 7 * 24 * 60 * 60
 TOKEN_RENEWAL_WINDOW_SECONDS = 24 * 60 * 60
 LOGGER = logging.getLogger(__name__)
+
+
+def _redact_arguments(value, redact: Callable[[str], str]):
+    """递归替换参数里所有字符串中的凭据原文(键名不动)。"""
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, dict):
+        return {key: _redact_arguments(item, redact) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_arguments(item, redact) for item in value]
+    return value
+
+
+def _redact_text_bytes(payload: bytes, redact: Callable[[str], str]) -> bytes:
+    """文本文件脱敏后重新编码;不是 UTF-8 的二进制文件原样返回。"""
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return payload
+    cleaned = redact(text)
+    return payload if cleaned == text else cleaned.encode("utf-8")
 
 
 class AgentToolError(Exception):
@@ -518,6 +541,24 @@ ACTION_DEFINITIONS = {
         "automation_allowed": False,
         "arguments": {"id": "short script id"},
     },
+    "credential.request": {
+        "description": (
+            "Ask a human to save a secret (token, password, key) the task needs instead of "
+            "asking for it in chat: the platform posts a notice in the current channel with a "
+            "link to the form, and once a human fills it in the value appears as the file "
+            "$MISSIONCREW_CREDENTIALS_DIR/<name>, readable from your next command on. "
+            "Credentials already saved for the project (including global ones) are listed in "
+            "index.json in that directory; asking for one of them returns already_exists"
+        ),
+        "orchestrator_only": False,
+        "automation_allowed": False,
+        "arguments": {
+            "name": ("credential name in upper case letters, digits and underscores, e.g. "
+                     "GITHUB_TOKEN; it becomes the file name"),
+            "description": ("what it is for and the minimal permissions it needs, shown to "
+                            "the human who fills it in"),
+        },
+    },
     "recycle.list": {
         "description": "List the current project's unified recycle bin",
         "orchestrator_only": True,
@@ -660,6 +701,7 @@ ACTION_ARGUMENTS = {
     "automation.delete": {"id"},
     "automation.list": {"id", "runs", "before_id"},
     "automation.run": {"id"},
+    "credential.request": {"name", "description"},
     "recycle.list": set(),
     "recycle.restore": {"id"},
     "recycle.purge": {"id"},
@@ -1082,6 +1124,7 @@ class AgentActionService:
             raise AgentToolError(
                 "permission_denied", f"{subject} 无权执行 {action}", 403,
             )
+        arguments = _redact_arguments(arguments, self.store.redact_credentials)
         handlers = {
             "task.create": self._create_task,
             "task.update": self._update_task,
@@ -1120,6 +1163,7 @@ class AgentActionService:
             "automation.delete": self._delete_automation,
             "automation.list": self._list_automations,
             "automation.run": self._run_automation,
+            "credential.request": self._request_credential,
             "recycle.list": self._list_recycle_bin,
             "recycle.restore": self._restore_recycle_item,
             "recycle.purge": self._purge_recycle_item,
@@ -1426,6 +1470,8 @@ class AgentActionService:
                 raise AgentToolError("invalid_arguments", "content_base64 不是有效 Base64") from exc
         if len(payload) > MAX_DOCUMENT_BYTES:
             raise AgentToolError("file_too_large", "单个发布文件不能超过 50 MB", 413)
+        if has_base64:
+            payload = _redact_text_bytes(payload, self.store.redact_credentials)
         overwrite = arguments.get("overwrite", False)
         if not isinstance(overwrite, bool):
             raise AgentToolError("invalid_arguments", "overwrite 必须是布尔值")
@@ -2114,6 +2160,32 @@ class AgentActionService:
                         "在后台执行"),
             "run_id": run_id,
             "resource_url": automation_resource_url(project.id, automation.id),
+        }
+
+    def _request_credential(self, project: Project, identity: AgentIdentity,
+                            arguments: dict, _context: AgentRunContext) -> dict:
+        self._require_chat_identity(identity)
+        name = str(arguments.get("name") or "").strip()
+        description = str(arguments.get("description") or "").strip()
+        if not description:
+            raise AgentToolError(
+                "invalid_arguments", "description 必填:说明凭据用途和所需的最小权限")
+        try:
+            credential, _created = request_credential(
+                self.store, project_id=project.id, name=name,
+                description=description, actor=identity.actor)
+        except FileExistsError as exc:
+            raise AgentToolError(
+                "already_exists",
+                f"凭据 {name} 已可用,直接读取 $MISSIONCREW_CREDENTIALS_DIR/{name}",
+                409) from exc
+        settings_url = f"/{quote(project.id, safe='')}/proj"
+        return {
+            "summary": (f"请求凭据 `{credential.name}`({credential.description})。"
+                        f"请在[项目设置 → 凭据]({settings_url})中填写,"
+                        "不要把值直接发在聊天里"),
+            "credential": {"name": credential.name, "description": credential.description,
+                           "status": "pending"},
         }
 
     def _save_guideline(self, project: Project, identity: AgentIdentity,

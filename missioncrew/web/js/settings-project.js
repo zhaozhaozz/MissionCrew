@@ -58,6 +58,7 @@ async function renderProjSettings() {
     </div>`;
   renderRoleTable();
   renderResourceTable();
+  renderProjectCredentials();
   loadDocFiles();
 }
 
