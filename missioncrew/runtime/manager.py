@@ -126,15 +126,15 @@ class RuntimeManager:
 
     def set_wake_handler(self, handler, begin=None) -> None:
         """注册 Runtime 自唤醒回调(Claude 后台任务汇报 turn、ACP 客户端
-        终端结束后的自发汇报)。
+        终端结束后的自发汇报或 Runtime 自带定时器触发的一轮)。
 
         业务层不感知具体协议:回调收到统一 payload(session_key/输出/
         触发任务),由 ChatEngine 落成频道内的新运行。``begin`` 是 turn
         开始时的同步回调,返回运行 id 与实时事件接收器,让唤醒 turn 在
-        首个工具调用前就持有绑定运行的 Agent Tool 令牌;Claude 能识别
-        turn 起点,ACP 只按静默判定结束,仍走 turn 结束后整体交付。"""
+        首个工具调用前就持有绑定运行的 Agent Tool 令牌;Claude 以 init 等
+        消息识别 turn 起点,ACP 以主代理首个模型输出或客户端终端请求为起点。"""
         from . import acp, claude
-        acp.set_wake_handler(handler)
+        acp.set_wake_handler(handler, begin=begin)
         claude.set_wake_handler(handler, begin=begin)
 
     def set_usage_refresh_handler(self, handler) -> None:

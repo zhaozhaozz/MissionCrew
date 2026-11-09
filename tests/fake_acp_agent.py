@@ -39,6 +39,24 @@ _THINKING_LEVELS = {"fake/base": ["low", "high", "max"],
                     "fake/pro": ["on", "high"]}
 
 
+def thought(text):
+    send({"jsonrpc": "2.0", "method": "session/update", "params": {
+        "sessionId": "s-test",
+        "update": {"sessionUpdate": "agent_thought_chunk",
+                   "content": {"type": "text", "text": text}}}})
+
+
+def call(rid, method, params):
+    """反向请求客户端并读到对应应答(期间不会有其他客户端消息)。"""
+    send({"jsonrpc": "2.0", "id": rid, "method": method,
+          "params": {"sessionId": "s-test", **params}})
+    for line in sys.stdin:
+        resp = json.loads(line.strip())
+        if resp.get("id") == rid:
+            return resp.get("result") or {}
+    return {}
+
+
 def _config_options(model, thinking):
     model = model or "fake/base"
     return [{
@@ -144,6 +162,18 @@ def main():
                   "params": {"sessionId": "s-test",
                              "terminalId": pending_terminal}})
             pending_terminal = ""
+            if shape == "terminal-token":
+                # 模拟 Grok 自发的一轮里先思考、再起前台命令读令牌文件:
+                # 命令执行时平台必须已经签发令牌
+                thought("后台命令结束,读取令牌后汇报")
+                terminal = call(905, "terminal/create", {
+                    "command": "cat", "args": ["token.txt"]})["terminalId"]
+                call(906, "terminal/wait_for_exit", {"terminalId": terminal})
+                token = call(907, "terminal/output",
+                             {"terminalId": terminal})["output"].strip()
+                call(908, "terminal/release", {"terminalId": terminal})
+                chunk(f"自发汇报:令牌={token or '缺失'}")
+                continue
             chunk(f"自发汇报:后台命令完成 exit={exit_code}"
                   f" 输出={output.strip()}")
             continue
@@ -228,7 +258,7 @@ def main():
             if shape == "slow":
                 time.sleep(1)
             text = msg["params"]["prompt"][0]["text"]
-            if shape == "terminal":
+            if shape in ("terminal", "terminal-token"):
                 # 模拟 Grok:后台命令交给客户端终端,turn 立即结束;终端退出
                 # 后(上方 mid==902 分支)在 turn 之外自发汇报
                 send({"jsonrpc": "2.0", "id": 901, "method": "terminal/create",

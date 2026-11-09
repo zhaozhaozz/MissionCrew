@@ -367,9 +367,9 @@ class ChatEngine:
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
-        # Claude 后台命令结束后 CLI 会自发唤醒模型汇报;平台把这类 turn
-        # 落成频道里的新运行,汇报按常规回路交回主控验收。turn 开始时同步
-        # 落成运行并签发令牌,turn 结束后在执行池里收尾
+        # 后台命令结束或 Runtime 自带定时器到点后,CLI 会自发唤醒模型汇报;
+        # 平台把这类 turn 落成频道里的新运行,汇报按常规回路交回主控验收。
+        # turn 开始时同步落成运行并签发令牌,turn 结束后在执行池里收尾
         runtime_manager.set_wake_handler(
             self._handle_runtime_wake, begin=self._begin_runtime_wake)
 
@@ -1009,9 +1009,13 @@ class ChatEngine:
         """以一条平台消息为触发锚点落成运行;频道正在停止时不再开新运行。"""
         described = "、".join(f"`{task['description']}`" for task in tasks
                              if task.get("description"))
-        trigger_text = (f"@{role.id} 的后台命令已结束"
-                        + (f"：{described}" if described else "")
-                        + "，以下是其自动汇报。")
+        if tasks:
+            trigger_text = (f"@{role.id} 的后台命令已结束"
+                            + (f"：{described}" if described else "")
+                            + "，以下是其自动汇报。")
+        else:
+            # 没有已结束的后台命令:Runtime 自己开了一轮(自带定时器等)
+            trigger_text = f"@{role.id} 由 Runtime 自行唤醒（如自带的定时提醒），以下是其汇报。"
         with self._run_state_lock:
             if channel.id in self._stopping_channels:
                 return None
@@ -1070,6 +1074,10 @@ class ChatEngine:
         if resolved is None:
             return None
         channel, role, backend, backend_id = resolved
+        if self._agent_execution_lock(channel.id, role.id).locked():
+            # 同一 channel×role 的常规运行正在装配或执行,令牌归它:此时落成
+            # 唤醒运行会撤销它刚签发的令牌。退回缓冲路径,常规 turn 开始时交付
+            return None
         opened = self._open_wake_run(
             channel, role, backend, backend_id, self._wake_tasks(payload))
         if opened is None:
@@ -1186,9 +1194,10 @@ class ChatEngine:
                 if not self.store.chat_run_is_active(run_id):
                     return
                 try:
+                    what = "后台命令汇报" if tasks else "自行唤醒的一轮"
                     self._post_failure(
                         channel, role.id, anchor, root, depth - 1,
-                        f"@{role.id}(后端 {backend_id})后台命令汇报失败: {error}")
+                        f"@{role.id}(后端 {backend_id}){what}失败: {error}")
                 finally:
                     self.store.update_chat_run(
                         run_id, "failed", backend_id=backend_id, error=error)

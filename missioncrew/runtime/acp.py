@@ -44,9 +44,15 @@ _DETACHED_TERMINAL_STATUSES = {
 }
 _DETACHED_FOLLOWUP_LIMIT = 3
 _TERMINAL_OUTPUT_LIMIT = 128 * 1024
-# turn 之外的自发 session/update(如 Grok 后台任务结束后的自动汇报)按
-# 静默间隔去抖:这么久没有新事件就认为该自发 turn 已结束,整体交付
+# turn 之外的自发 session/update(如 Grok 后台任务结束后的自动汇报、Runtime
+# 自带定时器触发的一轮)按静默间隔去抖:这么久没有新事件就认为该自发 turn 已结束
 _WAKE_DEBOUNCE_SECONDS = 3.0
+# 已落成运行的自发 turn 只在"最后是正文且没有进行中的工具"时按上面的间隔收尾;
+# 刚拿到工具结果、模型还在酝酿下一步时最多等 _WAKE_THINK_SECONDS,工具仍在
+# 运行(长测试、构建)时最多等 _WAKE_TOOL_SECONDS。过早收尾会撤销令牌,
+# 工具跑完后的平台写操作随之失败,还会多出一条"无输出"的失败消息
+_WAKE_THINK_SECONDS = 60.0
+_WAKE_TOOL_SECONDS = 1800.0
 
 # ACP 用量(规范中仍标 unstable):session/prompt 响应的 usage 是该次 prompt
 # 的用量,inputTokens 含缓存读写;usage_update 通知给当前上下文占用 used、
@@ -55,15 +61,21 @@ ACP_USAGE_FIELDS = {"input": "inputTokens", "cache_read": "cachedReadTokens",
                     "cache_write": "cachedWriteTokens", "output": "outputTokens",
                     "reasoning": "thoughtTokens", "total": "totalTokens"}
 
-# 平台注册的自唤醒回调:客户端终端里的后台任务结束后,支持自发汇报的
-# Runtime(Grok 的 task_completed 扩展等)会在 turn 之外产出输出,经此
-# 回调交给 ChatEngine 落成频道里的新运行。
+# 平台注册的自唤醒回调:客户端终端里的后台任务结束、或 Runtime 自带的定时器
+# 到点后,Runtime(Grok 的 task_completed 扩展、scheduler 等)会在 turn 之外
+# 自发跑一轮。ACP 没有自发 turn 的起止标记:主代理的首个模型输出或客户端
+# 终端请求即视为起点,同步调用 begin 让平台落成运行、签发绑定该运行的
+# Agent Tool 令牌并返回实时事件接收器;按静默判定结束后把输出交给 handler
+# 收尾。begin 缺席或返回 None 时退回旧路径:事件缓冲,结束后整体交付。
 _WAKE_HANDLER: Optional[Callable[[dict], None]] = None
+_WAKE_BEGIN_HANDLER: Optional[Callable[[dict], Optional[dict]]] = None
 
 
-def set_wake_handler(handler: Optional[Callable[[dict], None]]) -> None:
-    global _WAKE_HANDLER
+def set_wake_handler(handler: Optional[Callable[[dict], None]],
+                     begin: Optional[Callable[[dict], Optional[dict]]] = None) -> None:
+    global _WAKE_HANDLER, _WAKE_BEGIN_HANDLER
     _WAKE_HANDLER = handler
+    _WAKE_BEGIN_HANDLER = begin
 
 
 class _ClientTerminal:
@@ -79,6 +91,7 @@ class _ClientTerminal:
             4096, int(output_byte_limit or _TERMINAL_OUTPUT_LIMIT))
         self.created_at = time.time()
         self.origin_trigger = 0   # 发起 turn 的触发消息 id,创建后由客户端补记
+        self.wake_run_id = 0      # 由已落成运行的自发 turn 创建时记下该运行
         self.truncated = False
         self._buffer = bytearray()
         self._buffer_lock = threading.Lock()
@@ -223,6 +236,13 @@ class _AcpClient:
         self._wake_tasks: list[dict] = []
         self._wake_last_at = 0.0
         self._wake_timer_running = False
+        # 当前自发 turn 落成的运行:run_id/实时接收器/触发消息,未落成时为 0/None
+        self._wake_run_id = 0
+        self._wake_emit: Optional[Callable[[str, str], Any]] = None
+        self._wake_trigger_id = 0
+        self._wake_begin_tried = False       # 每个自发 turn 只请求一次 begin
+        self._wake_open_tools: set[str] = set()   # 进行中的工具调用,决定何时收尾
+        self._wake_last_kind = ""
         self.wake_meta: dict = {}
         threading.Thread(target=self._read_loop, daemon=True).start()
         threading.Thread(target=self._stderr_loop, daemon=True).start()
@@ -230,8 +250,11 @@ class _AcpClient:
     def begin_turn(self, timeout: Optional[float],
                    emit: Optional[Callable[[str, str], None]]) -> None:
         """为长驻客户端开启新一轮，重置超时、输出和事件接收器。"""
+        # 先在锁内置位再交付:begin 回调与本方法并发时,先落成的唤醒运行由
+        # 这里收尾,后落成的看到 _turn_active 自行收尾,不会悬在 running
+        with self._wake_lock:
+            self._turn_active = True
         self._dispatch_wake()   # 尚未交付的自发汇报先于新 turn 交付,避免混流
-        self._turn_active = True
         self.deadline = time.time() + timeout if timeout is not None else None
         self.chunks = []
         self.context_usage = {}
@@ -264,6 +287,7 @@ class _AcpClient:
                 traceback.print_exc()
         for q in list(self._pending.values()):   # EOF:让等待方立刻失败
             q.put({"error": {"message": "ACP 进程退出"}})
+        self._abort_wake("Runtime 进程已退出,自发汇报未完成")
 
     def _stderr_loop(self) -> None:
         """持续排空 stderr；长驻进程若写满该管道会阻塞整个协议。"""
@@ -296,8 +320,8 @@ class _AcpClient:
                 return
             update = params.get("update") or {}
             kind = update.get("sessionUpdate")
-            if (kind == "agent_message_chunk" and isinstance(meta, dict)
-                    and meta.get("parentToolCallId")):
+            from_subagent = isinstance(meta, dict) and bool(meta.get("parentToolCallId"))
+            if kind == "agent_message_chunk" and from_subagent:
                 # 子代理(task 工具)与主代理共用 sessionId,只靠 parentToolCallId
                 # 区分(traecli 实测)。子代理正文已作为工具结果交回主代理;并入
                 # 回复会与主代理及并行子代理的流式分片逐字交错,只当过程事件展示
@@ -312,9 +336,10 @@ class _AcpClient:
             if not isinstance(content, dict):
                 content = {}
             if not self._turn_active:
-                # turn 之外的自发更新:Runtime 的后台任务自动汇报。缓冲后
-                # 经唤醒管线交付,不能混入上一轮已结束的运行。
-                self._buffer_wake_update(str(kind or ""), content, update)
+                # turn 之外的自发更新:Runtime 的后台任务自动汇报或定时器
+                # 触发的一轮。经唤醒管线交付,不能混入上一轮已结束的运行。
+                self._buffer_wake_update(str(kind or ""), content, update,
+                                         from_subagent=from_subagent)
                 return
             if kind == "agent_message_chunk":
                 if content.get("type") == "text":
@@ -330,32 +355,106 @@ class _AcpClient:
                 if label or status:
                     self.emit("tool", f"{label} {status}".strip() + "\n")
 
-    def _buffer_wake_update(self, kind: str, content: dict, update: dict) -> None:
+    def _buffer_wake_update(self, kind: str, content: dict, update: dict,
+                            from_subagent: bool = False) -> None:
         text = (str(content.get("text") or "")
                 if isinstance(content, dict) else "")
-        with self._wake_lock:
-            if kind == "agent_message_chunk" and text:
-                self._wake_chunks.append(text)
-                self._wake_events.append(("text", text))
-            elif kind == "agent_thought_chunk" and text:
-                self._wake_events.append(("thinking", text))
-            elif kind in ("tool_call", "tool_call_update"):
-                label = update.get("title") or update.get("toolCallId") or ""
-                status = update.get("status") or ""
-                if not label and not status:
-                    return
-                self._wake_events.append(
-                    ("tool", f"{label} {status}".strip() + "\n"))
-            else:
+        if kind == "agent_message_chunk" and text:
+            event = ("text", text)
+        elif kind == "agent_thought_chunk" and text:
+            event = ("thinking", text)
+        elif kind in ("tool_call", "tool_call_update"):
+            label = update.get("title") or update.get("toolCallId") or ""
+            status = update.get("status") or ""
+            if not label and not status:
                 return
-            self._wake_last_at = time.time()
-            if not self._wake_timer_running:
-                self._wake_timer_running = True
-                threading.Thread(target=self._wake_watchdog,
-                                 daemon=True).start()
+            event = ("tool", f"{label} {status}".strip() + "\n")
+        else:
+            return
+        # 主代理的模型输出说明自发 turn 已经开始:先落成运行、签发令牌,
+        # 这一轮随后的工具调用才拿得到令牌。子代理残留和旧工具调用的
+        # 状态更新(tool_call_update)不算起点
+        if not from_subagent and kind != "tool_call_update":
+            self._begin_wake_run()
+        with self._wake_lock:
+            if kind == "agent_message_chunk":
+                self._wake_chunks.append(text)
+            call_id = str(update.get("toolCallId") or "")
+            if call_id and kind in ("tool_call", "tool_call_update"):
+                if update.get("status") in ("completed", "failed"):
+                    self._wake_open_tools.discard(call_id)
+                else:
+                    self._wake_open_tools.add(call_id)
+            self._wake_last_kind = event[0]
+            emit = self._wake_emit
+            if emit is None:
+                self._wake_events.append(event)
+            self._touch_wake_locked()
+        if emit is not None:
+            self._emit_wake(emit, *event)
+
+    def _touch_wake_locked(self) -> None:
+        """记一次自发 turn 活动并确保有静默看门狗;调用方持有 _wake_lock。"""
+        self._wake_last_at = time.time()
+        if not self._wake_timer_running:
+            self._wake_timer_running = True
+            threading.Thread(target=self._wake_watchdog, daemon=True).start()
+
+    @staticmethod
+    def _emit_wake(emit: Callable[[str, str], Any], kind: str, text: str) -> None:
+        try:
+            emit(kind, text)
+        except Exception:
+            pass   # 上报失败只丢事件,不能拖死读循环
+
+    def _begin_wake_run(self) -> None:
+        """自发 turn 起点:同步请平台落成运行并签发令牌。
+
+        在协议读取线程里调用:之后的 terminal/create 等请求排在它后面处理,
+        命令真正执行时令牌文件已经就位。"""
+        begin, handler = _WAKE_BEGIN_HANDLER, _WAKE_HANDLER
+        meta = dict(self.wake_meta)
+        with self._wake_lock:
+            if self._wake_run_id or self._wake_begin_tried or self._turn_active:
+                return
+            self._wake_begin_tried = True
+            tasks = list(self._wake_tasks)
+        if begin is None or handler is None or not meta.get("session_key"):
+            return
+        try:
+            bound = begin({
+                "runtime": "acp",
+                "backend_id": str(meta.get("backend_id") or ""),
+                "session_key": str(meta["session_key"]),
+                "workdir": self.cwd,
+                "project_id": str(meta.get("project_id") or ""),
+                "role_id": str(meta.get("role_id") or ""),
+                "tasks": tasks,
+            })
+        except Exception:
+            traceback.print_exc()   # 退回缓冲路径,读循环照常
+            return
+        run_id = int((bound or {}).get("run_id") or 0)
+        emit = (bound or {}).get("emit")
+        if run_id <= 0 or not callable(emit):
+            return
+        with self._wake_lock:
+            self._wake_run_id = run_id
+            self._wake_emit = emit
+            self._wake_trigger_id = int((bound or {}).get("trigger_id") or 0)
+            # begin 之前缓冲的事件按序补发到运行
+            pending = list(self._wake_events)
+            self._wake_events.clear()
+            finish_now = self._turn_active
+            self._touch_wake_locked()
+        for kind, text in pending:
+            self._emit_wake(emit, kind, text)
+        if finish_now:
+            # begin 期间常规 turn 已开始:立即收尾,运行不悬挂
+            self._dispatch_wake()
 
     def _wake_watchdog(self) -> None:
-        """自发 turn 没有终止标记,按静默间隔判定结束后整体交付。"""
+        """自发 turn 没有终止标记,按静默间隔判定结束后交付。"""
         while True:
             time.sleep(min(_WAKE_DEBOUNCE_SECONDS, 0.2))
             with self._wake_lock:
@@ -363,24 +462,36 @@ class _AcpClient:
                     # 新运行 turn 已开始,begin_turn 负责交付缓冲
                     self._wake_timer_running = False
                     return
-                if time.time() - self._wake_last_at >= _WAKE_DEBOUNCE_SECONDS:
+                quiet = time.time() - self._wake_last_at
+                limit = _WAKE_DEBOUNCE_SECONDS
+                if self._wake_run_id:
+                    if self._wake_open_tools:
+                        limit = _WAKE_TOOL_SECONDS
+                    elif self._wake_last_kind != "text":
+                        limit = _WAKE_THINK_SECONDS
+                if quiet >= limit:
                     self._wake_timer_running = False
                     break
         self._dispatch_wake()
 
-    def _dispatch_wake(self) -> None:
+    def _dispatch_wake(self, success: bool = True, error: str = "") -> None:
         with self._wake_lock:
+            run_id = self._wake_run_id
             output = "".join(self._wake_chunks).strip()
             events = list(self._wake_events)
             tasks = list(self._wake_tasks)
-            if not output:
-                # 没有可交付正文(纯思考/工具残留):丢弃事件,保留任务
-                # 记录等待真正的汇报 turn
-                self._wake_chunks.clear()
-                self._wake_events.clear()
-                return
             self._wake_chunks.clear()
             self._wake_events.clear()
+            self._wake_run_id = 0
+            self._wake_emit = None
+            self._wake_trigger_id = 0
+            self._wake_begin_tried = False
+            self._wake_open_tools.clear()
+            self._wake_last_kind = ""
+            if not output and not run_id:
+                # 没有可交付正文(纯思考/工具残留):丢弃事件,保留任务
+                # 记录等待真正的汇报 turn
+                return
             self._wake_tasks.clear()
         handler = _WAKE_HANDLER
         meta = dict(self.wake_meta)
@@ -393,32 +504,57 @@ class _AcpClient:
             "workdir": self.cwd,
             "project_id": str(meta.get("project_id") or ""),
             "role_id": str(meta.get("role_id") or ""),
-            "success": True,
+            "success": success,
             "output": output,
-            "events": events,
+            "error": error,
+            # 已落成运行的事件已实时写入,收尾 payload 不再重复携带
+            "events": [] if run_id else events,
             "tasks": tasks,
+            "run_id": run_id,
         }
         # 平台回调可能发消息/落库,不能阻塞协议读取线程
         threading.Thread(target=handler, args=(payload,), daemon=True,
                          name="acp-wake").start()
+
+    def _abort_wake(self, error: str) -> None:
+        """进程关闭或退出时,已落成的唤醒运行按失败收尾,不悬在 running。"""
+        with self._wake_lock:
+            bound = bool(self._wake_run_id)
+        if bound:
+            self._dispatch_wake(success=False, error=error)
+
+    def _emit_live(self, kind: str, text: str) -> None:
+        """过程事件归属:常规 turn,或已落成运行的自发 turn。"""
+        with self._wake_lock:
+            emit = None if self._turn_active else self._wake_emit
+        if emit is not None:
+            self._emit_wake(emit, kind, text)
+        else:
+            self.emit(kind, text)
 
     def _watch_terminal(self, terminal_id: str,
                         terminal: _ClientTerminal) -> None:
         terminal.exited.wait()
         status = terminal.exit_status() or {}
         state = "completed" if status.get("exitCode") == 0 else "failed"
+        line = f"客户端终端已退出: {terminal.command[:160]} ({state})\n"
         if self._turn_active:
-            self.emit("status",
-                      f"客户端终端已退出: {terminal.command[:160]} ({state})\n")
+            self.emit("status", line)
             return
         with self._wake_lock:
-            self._wake_tasks.append({
-                "task_id": terminal_id,
-                "description": terminal.command[:200],
-                "status": state,
-                "origin_trigger": getattr(terminal, "origin_trigger", 0),
-            })
-            del self._wake_tasks[:-10]
+            # 本轮自发 turn 自己起的命令在本轮内结束:只是它的过程事件
+            emit = (self._wake_emit if terminal.wake_run_id
+                    and terminal.wake_run_id == self._wake_run_id else None)
+            if emit is None:
+                self._wake_tasks.append({
+                    "task_id": terminal_id,
+                    "description": terminal.command[:200],
+                    "status": state,
+                    "origin_trigger": terminal.origin_trigger,
+                })
+                del self._wake_tasks[:-10]
+        if emit is not None:
+            self._emit_wake(emit, "status", line)
 
     def live_terminal_count(self) -> int:
         with self._terminals_lock:
@@ -515,6 +651,9 @@ class _AcpClient:
                 reply(error={"code": -32602, "message": "missing command"})
                 return
             args = [str(item) for item in params.get("args") or []]
+            if not self._turn_active:
+                # 自发 turn 要跑命令:命令里可能调 Agent Tool,先落成运行拿令牌
+                self._begin_wake_run()
             env = dict(self.env)
             for item in params.get("env") or []:
                 if isinstance(item, dict) and item.get("name"):
@@ -526,8 +665,15 @@ class _AcpClient:
             except OSError as exc:
                 reply(error={"code": -32603, "message": f"spawn failed: {exc}"})
                 return
-            # 记录发起 turn 的触发消息:唤醒汇报按它继承派发语义
-            terminal.origin_trigger = int(
+            # 记录发起 turn 的触发消息:唤醒汇报按它继承派发语义。自发 turn
+            # 起的命令归属该轮落成的运行,触发消息是它的平台锚点
+            with self._wake_lock:
+                in_wake = not self._turn_active and self._wake_run_id > 0
+                terminal.wake_run_id = self._wake_run_id if in_wake else 0
+                wake_trigger = self._wake_trigger_id if in_wake else 0
+                if in_wake:
+                    self._touch_wake_locked()
+            terminal.origin_trigger = wake_trigger or int(
                 self.wake_meta.get("trigger_message_id") or 0)
             with self._terminals_lock:
                 self._terminal_seq += 1
@@ -535,8 +681,8 @@ class _AcpClient:
                 self._terminals[terminal_id] = terminal
             threading.Thread(target=self._watch_terminal,
                              args=(terminal_id, terminal), daemon=True).start()
-            self.emit("status",
-                      f"客户端终端已创建 {terminal_id}: {terminal.command[:160]}\n")
+            self._emit_live(
+                "status", f"客户端终端已创建 {terminal_id}: {terminal.command[:160]}\n")
             reply({"terminalId": terminal_id})
             return
 
@@ -627,6 +773,7 @@ class _AcpClient:
             self._terminals.clear()
         for terminal in terminals:
             terminal.kill()
+        self._abort_wake("Runtime 会话已停止,自发汇报未完成")
         if self.proc.stdin is not None:
             try:
                 self.proc.stdin.close()

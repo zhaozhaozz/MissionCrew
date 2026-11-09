@@ -1557,8 +1557,11 @@ def test_runtime_wake_finish_without_output_closes_run_as_failed(chat, seeded):
 
     run = seeded.get_chat_run(run_id)
     assert run["status"] == "failed" and "已停止" in run["error"]
-    assert any(m["author_type"] == "platform" and "后台命令汇报失败" in m["content"]
-               for m in seeded.list_messages("general"))
+    messages = seeded.list_messages("general")
+    # 没有已结束的后台命令:触发与失败消息都说明是 Runtime 自行开的一轮
+    assert messages[0]["content"].startswith("@dev 由 Runtime 自行唤醒")
+    assert any(m["author_type"] == "platform" and "自行唤醒的一轮失败" in m["content"]
+               for m in messages)
     assert _wake_token_row(seeded, run_id)["revoked_at"] is not None
     token_file = chat_workspace_dir("webshop", "general", "dev") / ".agent-tool-token"
     assert not token_file.exists()
@@ -1577,6 +1580,22 @@ def test_runtime_wake_begin_skipped_while_channel_stopping(chat, seeded):
         chat._stopping_channels.discard("general")
     assert seeded.chat_runs_for_channel("general") == []
     assert seeded.list_messages("general") == []
+
+
+def test_runtime_wake_begin_skipped_while_regular_run_holds_capability(chat, seeded):
+    """同一 channel×role 的常规运行持有执行锁时,令牌归它:不落成唤醒运行,
+    以免撤销它刚签发的令牌;provider 退回缓冲路径。"""
+    seeded.put_chat_session("general::dev", "general", "dev", "mock-claude",
+                            "claude_code", "/tmp", "native-1", "v1")
+    with chat._agent_execution_lock("general", "dev"):
+        assert chat._begin_runtime_wake({
+            "session_key": "general::dev", "backend_id": "mock-claude",
+            "tasks": []}) is None
+    assert seeded.chat_runs_for_channel("general") == []
+    # 执行锁释放后照常落成
+    assert chat._begin_runtime_wake({
+        "session_key": "general::dev", "backend_id": "mock-claude",
+        "tasks": []})["run_id"] > 0
 
 
 def test_manual_only_role_is_invisible_to_agents_but_human_can_dispatch(chat, seeded):

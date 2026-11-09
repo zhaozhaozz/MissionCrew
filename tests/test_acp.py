@@ -726,6 +726,39 @@ def test_acp_client_terminal_background_wake(tmp_path, monkeypatch):
         acp.close_sessions()
 
 
+def test_acp_spontaneous_turn_command_sees_token_issued_at_begin(tmp_path, monkeypatch):
+    """端到端(真实 stdio 协议):后台命令结束后 agent 自发的一轮先思考再起
+    前台命令读令牌文件。平台在首个输出处同步 begin 签发令牌,命令执行时文件
+    已就位;收尾 payload 带 run_id,事件已实时写入。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.3)
+    token_file = tmp_path / "token.txt"
+    binding = _WakeBinding()
+    real_begin = binding.begin
+
+    def _begin(payload):
+        token_file.write_text("run-88-token\n")   # ChatEngine 在此签发令牌
+        return real_begin(payload)
+
+    binding.begin = _begin
+    saved = {}
+    try:
+        with binding:
+            result = _adapter("kimi", "terminal-token").run(_chat_cfg(tmp_path, saved))
+            assert result.success, result.summary
+            assert _wait_for(lambda: binding.finished, timeout=8)
+        payload = binding.finished[0]
+        assert payload["run_id"] == 88
+        assert payload["output"] == "自发汇报:令牌=run-88-token"
+        assert len(binding.begun) == 1
+        # 触发任务是那条已结束的后台命令,派发语义按它的发起消息继承
+        assert binding.begun[0]["tasks"][0]["origin_trigger"] == 77
+        kinds = [kind for kind, _ in binding.live]
+        assert kinds[0] == "thinking" and "text" in kinds
+        assert any("客户端终端已创建" in text for _, text in binding.live)
+    finally:
+        acp.close_sessions()
+
+
 def test_wake_buffer_accepts_tool_call_list_content(tmp_path):
     """turn 之外的 tool_call 更新按 ACP 约定带 content 列表;唤醒缓冲不能把它当 dict
     (线上曾因此让读循环崩溃,之后该会话所有响应无人消费、运行永远 running)。"""
@@ -758,6 +791,198 @@ def test_wake_buffer_accepts_tool_call_list_content(tmp_path):
                 "status": "completed", "content": [{"type": "content",
                     "content": {"type": "text", "text": "ok"}}],
             }}})
+    finally:
+        client.close()
+
+
+def _wake_client(tmp_path):
+    """turn 已结束的长驻客户端:请求只记录不发送,会话可定位频道×角色。"""
+    client = acp._AcpClient(["cat"], str(tmp_path), {}, timeout=5)
+    client._write = lambda obj: None
+    client.wake_meta = {"session_key": "general::lead", "backend_id": "grok",
+                        "project_id": "webshop", "role_id": "lead",
+                        "trigger_message_id": 11}
+    client.end_turn()
+    return client
+
+
+def _update(client, update, meta=None):
+    client._handle({"jsonrpc": "2.0", "method": "session/update", "params": {
+        "sessionId": "s1", "_meta": meta or {}, "update": update}})
+
+
+def _thought(text):
+    return {"sessionUpdate": "agent_thought_chunk",
+            "content": {"type": "text", "text": text}}
+
+
+def _say(text):
+    return {"sessionUpdate": "agent_message_chunk",
+            "content": {"type": "text", "text": text}}
+
+
+def _wait_for(predicate, timeout=5.0):
+    deadline = time.time() + timeout
+    while not predicate() and time.time() < deadline:
+        time.sleep(0.02)
+    return predicate()
+
+
+class _WakeBinding:
+    """模拟 ChatEngine 的两段唤醒回调:begin 落成运行并收实时事件,handler 收尾。"""
+
+    def __init__(self, run_id=88, trigger_id=501):
+        self.run_id, self.trigger_id = run_id, trigger_id
+        self.begun: list[dict] = []
+        self.live: list[tuple[str, str]] = []
+        self.finished: list[dict] = []
+
+    def begin(self, payload):
+        self.begun.append(payload)
+        if not self.run_id:
+            return None
+        return {"run_id": self.run_id, "trigger_id": self.trigger_id,
+                "emit": lambda kind, text: self.live.append((kind, text))}
+
+    def __enter__(self):
+        acp.set_wake_handler(self.finished.append, begin=self.begin)
+        return self
+
+    def __exit__(self, *exc):
+        acp.set_wake_handler(None)
+
+
+def test_acp_wake_turn_begins_run_before_its_first_command(tmp_path, monkeypatch):
+    """Runtime 自发的一轮(后台命令汇报、自带定时器到点):主代理首个输出即
+    落成运行并签发令牌,随后起的命令归属该运行,事件实时写入,收尾带 run_id。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.1)
+    client = _wake_client(tmp_path)
+    try:
+        with _WakeBinding() as wake:
+            _update(client, _thought("定时提醒到点,先核对时间"))
+            # 起点:同步 begin,此时还没有任何命令执行
+            assert len(wake.begun) == 1
+            assert wake.begun[0]["session_key"] == "general::lead"
+            assert wake.begun[0]["tasks"] == []
+            assert wake.live == [("thinking", "定时提醒到点,先核对时间")]
+            _update(client, {"sessionUpdate": "tool_call", "toolCallId": "c1",
+                             "title": "run_terminal_command", "status": "in_progress"})
+            sent = []
+            client._write = lambda obj: sent.append(obj)
+            client._handle_terminal_request(
+                {"id": 7}, "terminal/create", {"command": "echo agent-tool"})
+            terminal_id = sent[-1]["result"]["terminalId"]
+            terminal = client._terminals[terminal_id]
+            assert terminal.wake_run_id == 88
+            assert terminal.origin_trigger == 501   # 锚定该轮的平台触发消息
+            assert terminal.exited.wait(5)
+            # 本轮自己起的命令在本轮内结束:是过程事件,不是待汇报的后台任务
+            assert _wait_for(lambda: any("客户端终端已退出" in text
+                                         for _, text in wake.live))
+            assert client._wake_tasks == []
+            _update(client, {"sessionUpdate": "tool_call_update", "toolCallId": "c1",
+                             "status": "completed"})
+            _update(client, _say("已重新派发 dev2。"))
+            assert _wait_for(lambda: wake.finished)
+            payload = wake.finished[0]
+            assert payload["run_id"] == 88 and payload["success"] is True
+            assert payload["output"] == "已重新派发 dev2。"
+            assert payload["events"] == []   # 已实时写入,不再回放
+            assert ("text", "已重新派发 dev2。") in wake.live
+            assert len(wake.begun) == 1
+            assert client._wake_run_id == 0
+    finally:
+        client.close()
+
+
+def test_acp_wake_turn_starting_with_a_command_begins_first(tmp_path):
+    """自发 turn 的第一个动作就是起命令(之前没有任何 update):先落成运行再执行。"""
+    client = _wake_client(tmp_path)
+    try:
+        with _WakeBinding() as wake:
+            client._handle_terminal_request(
+                {"id": 1}, "terminal/create", {"command": "true"})
+            assert len(wake.begun) == 1
+            assert client._wake_run_id == 88
+            assert any("客户端终端已创建" in text for _, text in wake.live)
+    finally:
+        client.close()
+
+
+def test_acp_wake_residue_does_not_begin_a_run(tmp_path, monkeypatch):
+    """turn 外的子代理残留与旧工具调用的状态更新不是自发 turn 的起点。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.1)
+    client = _wake_client(tmp_path)
+    try:
+        with _WakeBinding() as wake:
+            _update(client, _say("# 后台子代理"), {"parentToolCallId": "call-c"})
+            _update(client, {"sessionUpdate": "tool_call_update", "toolCallId": "old",
+                             "status": "completed"})
+            time.sleep(0.4)
+            assert wake.begun == [] and wake.finished == []
+    finally:
+        client.close()
+
+
+def test_acp_begun_wake_waits_for_running_tool(tmp_path, monkeypatch):
+    """已落成运行的自发 turn 里工具还在跑(长测试):静默不收尾,否则令牌被撤销,
+    工具跑完后的平台写操作失败;出现正文且工具结束后才按静默收尾。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.1)
+    monkeypatch.setattr(acp, "_WAKE_THINK_SECONDS", 0.6)
+    client = _wake_client(tmp_path)
+    try:
+        with _WakeBinding() as wake:
+            _update(client, _thought("跑测试"))
+            _update(client, {"sessionUpdate": "tool_call", "toolCallId": "t1",
+                             "title": "npm test", "status": "in_progress"})
+            time.sleep(0.8)
+            assert wake.finished == []
+            _update(client, {"sessionUpdate": "tool_call_update", "toolCallId": "t1",
+                             "status": "completed"})
+            # 工具刚结束、模型还在酝酿下一步:按 _WAKE_THINK_SECONDS 等
+            time.sleep(0.3)
+            assert wake.finished == []
+            _update(client, _say("测试通过,已提交。"))
+            assert _wait_for(lambda: wake.finished, timeout=2)
+            assert wake.finished[0]["output"] == "测试通过,已提交。"
+    finally:
+        client.close()
+
+
+def test_acp_wake_without_begin_binding_keeps_buffering(tmp_path, monkeypatch):
+    """begin 未能落成运行(返回 None)时退回旧路径:事件缓冲,结束后整体交付。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.1)
+    client = _wake_client(tmp_path)
+    try:
+        with _WakeBinding(run_id=0) as wake:
+            _update(client, _thought("汇报"))
+            _update(client, _say("缓冲汇报"))
+            assert len(wake.begun) == 1    # 同一轮只请求一次
+            assert _wait_for(lambda: wake.finished)
+            payload = wake.finished[0]
+            assert payload["run_id"] == 0
+            assert payload["events"] == [("thinking", "汇报"), ("text", "缓冲汇报")]
+    finally:
+        client.close()
+
+
+def test_acp_begun_wake_closed_by_new_turn_or_close(tmp_path):
+    """已落成的唤醒运行不悬挂:常规 turn 开始时先收尾;进程关闭时按失败收尾。"""
+    client = _wake_client(tmp_path)
+    try:
+        with _WakeBinding() as wake:
+            _update(client, _thought("还在想"))
+            client.begin_turn(5, None)
+            assert _wait_for(lambda: wake.finished)
+            assert wake.finished[0]["run_id"] == 88
+            client.end_turn()
+            _update(client, _thought("又一轮"))
+            assert len(wake.begun) == 2
+            client.close()
+            assert _wait_for(lambda: len(wake.finished) == 2)
+            closed = wake.finished[1]
+            assert closed["run_id"] == 88 and closed["success"] is False
+            assert "已停止" in closed["error"]
     finally:
         client.close()
 
