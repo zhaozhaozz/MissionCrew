@@ -56,6 +56,7 @@ async function renderProjSettings() {
       <button class="ghost" onclick="switchTab('skills')">Skills</button>
       <button class="danger" onclick="deleteProject('${esc(project.id)}')">删除项目</button>
     </div>`;
+  renderProjectNotifySetting();
   renderRoleTable();
   renderResourceTable();
   renderProjectCredentials();

@@ -1,0 +1,142 @@
+"""浏览器"任务结束"通知:直接执行 notifications.js,覆盖偏好、文案与投递分流。"""
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+NOTIFY_JS = ROOT / "missioncrew" / "web" / "js" / "notifications.js"
+NODE = shutil.which("node")
+
+# 最小浏览器桩:只提供投递路径用到的全局量,记录发出的页内提示与系统通知
+BROWSER_STUBS = r"""
+const store = {};
+const localStorage = {
+  getItem: key => (key in store ? store[key] : null),
+  setItem: (key, value) => { store[key] = String(value); },
+};
+const sent = { toasts: [], system: [] };
+const page = { visible: true, focused: true };
+const document = {
+  get visibilityState() { return page.visible ? "visible" : "hidden"; },
+  hasFocus: () => page.focused,
+};
+const window = { isSecureContext: true };
+class Notification {
+  constructor(title, options) { sent.system.push({ title, ...options }); }
+  close() {}
+}
+Notification.permission = "granted";
+const toast = (msg, type) => sent.toasts.push({ msg, type });
+const updateDocumentTitle = () => {};
+let currentTab = "chat", currentChan = null;
+const overview = { projects: [{ id: "a" }, { id: "b" }] };
+"""
+
+
+def evaluate(script: str):
+    """桩 + 模块 + 用例拼成一个脚本(与浏览器经典脚本共享全局作用域一致)。"""
+    if NODE is None:
+        pytest.skip("node is required to execute the browser notification module")
+    runner = r"""
+const vm = require("vm");
+const context = {};
+vm.createContext(context);
+vm.runInContext(require("fs").readFileSync(0, "utf8"), context);
+process.stdout.write(JSON.stringify(context.result));
+"""
+    source = "\n".join([BROWSER_STUBS, NOTIFY_JS.read_text(encoding="utf-8"),
+                        f"var result = (() => {{ {script} }})();"])
+    completed = subprocess.run(
+        [NODE, "-e", runner], input=source, text=True,
+        capture_output=True, check=True, timeout=10,
+    )
+    return json.loads(completed.stdout)
+
+
+def chain(project="a", channel="a:dev", root=1, status="done", **extra):
+    return {"project_id": project, "project_name": project.upper(), "channel": channel,
+            "channel_name": channel.split(":")[-1], "root_id": root, "status": status,
+            "finished_at": 100.0 + root, "roles": ["dev"], "error": "",
+            "reply": {"author": "dev", "content": "已修复"},
+            "resource_url": f"/resources/{project}/channels/{channel.split(':')[-1]}",
+            **extra}
+
+
+def test_prefs_default_off_and_project_switch_turns_global_on():
+    result = evaluate("""
+const empty = normalizeNotifyPrefs('{bad');
+const muted = normalizeNotifyPrefs({ enabled: true, projects: { a: false, b: true, c: 0 } });
+const reopened = withProjectNotify(normalizeNotifyPrefs(null), 'a', true);
+const off = withProjectNotify(muted, 'b', false);
+return {
+  empty, muted,
+  mutedA: notifyEnabledFor(muted, 'a'), mutedB: notifyEnabledFor(muted, 'b'),
+  noProject: notifyEnabledFor(muted, ''),
+  reopened, off,
+};
+""")
+    assert result["empty"] == {"enabled": False, "projects": {}}
+    # 只记"关闭"的项目,其余跟随总开关
+    assert result["muted"] == {"enabled": True, "projects": {"a": False}}
+    assert (result["mutedA"], result["mutedB"], result["noProject"]) == (False, True, False)
+    assert result["reopened"] == {"enabled": True, "projects": {}}
+    assert result["off"] == {"enabled": True, "projects": {"a": False, "b": False}}
+
+
+def test_notice_text_prefers_error_for_failed_chains_and_merges_bursts():
+    item = chain()
+    failed = chain(root=2, status="failed", error="exit 1")
+    result = evaluate(f"""
+return {{
+  done: completionNotice({json.dumps(item)}),
+  failed: completionNotice({json.dumps(failed)}),
+  burst: noticesFor([1, 2, 3, 4].map(root => ({{ ...{json.dumps(failed)}, root_id: root }}))),
+}};
+""")
+    assert result["done"]["title"] == "任务完成 · #dev"
+    assert result["done"]["body"] == "A · @dev：已修复"
+    assert result["done"]["url"] == "/resources/a/channels/dev"
+    assert result["failed"]["title"] == "任务失败 · #dev"
+    assert result["failed"]["body"] == "A · 执行出错：exit 1"
+    [summary] = result["burst"]
+    assert summary["title"] == "4 个任务已结束（4 个失败）"
+    assert summary["body"] == "#dev"
+
+
+def test_delivery_skips_muted_stopped_and_watched_channel_then_uses_system_when_hidden():
+    items = [chain(), chain(root=2, status="stopped"), chain(project="b", channel="b:ops", root=3),
+             chain(channel="a:watched", root=4)]
+    result = evaluate(f"""
+notifyPrefs = normalizeNotifyPrefs({{ enabled: true, projects: {{ b: false }} }});
+currentChan = 'a:watched';
+deliverCompletions({json.dumps(items)});
+const foreground = sent.toasts.map(t => t.msg);
+page.visible = false; page.focused = false;
+deliverCompletions([{json.dumps(chain(root=5))}]);
+// 同一条链在另一个标签页已经提醒过:不重复
+deliverCompletions([{json.dumps(chain(root=5))}]);
+return {{ foreground, system: sent.system.map(n => n.title), unread: notifyUnread }};
+""")
+    assert result["foreground"] == ["任务完成 · #dev\nA · @dev：已修复"]
+    assert result["system"] == ["任务完成 · #dev"]
+    assert result["unread"] == 1
+
+
+def test_hidden_page_without_system_notifications_buffers_until_focus():
+    result = evaluate(f"""
+notifyPrefs = normalizeNotifyPrefs({{ enabled: true }});
+window.isSecureContext = false;     // 局域网 http:浏览器不给系统通知
+page.visible = false; page.focused = false;
+deliverCompletions([{json.dumps(chain())}]);
+const whileHidden = {{ toasts: sent.toasts.length, unread: notifyUnread, title: notifyTitlePrefix() }};
+page.visible = true; page.focused = true;
+onNotifyPageFocus();
+return {{ whileHidden, toasts: sent.toasts.map(t => t.msg), unread: notifyUnread }};
+""")
+    assert result["whileHidden"] == {"toasts": 0, "unread": 1, "title": "(1) "}
+    assert result["toasts"] == ["任务完成 · #dev\nA · @dev：已修复"]
+    assert result["unread"] == 0

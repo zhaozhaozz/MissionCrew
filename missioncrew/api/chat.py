@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 
 from fastapi import FastAPI, HTTPException, Request
 
@@ -20,6 +22,15 @@ from .schemas import (ChannelCreate, ChannelUpdate, ContentChannelInput, Message
                       RuntimeInteractionInput)
 
 LIST_SCOPES = {"active", "archived", "all"}
+# 通知增量的最长补报窗口:页面挂起/休眠很久后回来,只补最近这段,不把积压一次弹出
+COMPLETION_LOOKBACK_SECONDS = 3600
+COMPLETION_TEXT_MAX = 160
+
+
+def _notice_text(text: str) -> str:
+    """把 Markdown 回复压成通知里放得下的一行纯文本。"""
+    plain = " ".join(re.sub(r"`+|\*\*", "", text or "").split())
+    return plain if len(plain) <= COMPLETION_TEXT_MAX else plain[:COMPLETION_TEXT_MAX] + "…"
 
 
 def register(app: FastAPI, ctx: ApiContext) -> None:
@@ -206,6 +217,37 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             payload["has_earlier"] = bool(
                 earliest and store.recent_messages(channel_id, 1, before_id=earliest))
         return payload
+
+    @app.get("/api/chat/runs/completions")
+    def run_completions(since: float | None = None):
+        """浏览器"任务结束"通知的增量源:``(since, now]`` 内整条结束的协作链。
+
+        游标一律是服务端时间(响应的 ``now``),不受浏览器时钟偏差影响;首次调用
+        不带 since 只领游标,不把历史运行当成新通知。项目开关是浏览器本地偏好,
+        由前端过滤。
+        """
+        now = time.time()
+        if since is None:
+            return {"now": now, "completions": []}
+        completions = []
+        for chain in store.finished_chat_chains(
+                max(since, now - COMPLETION_LOOKBACK_SECONDS), now):
+            channel = store.get_channel(chain["channel"])
+            project = store.get_project(channel.project_id or "") if channel else None
+            if project is None:
+                continue
+            reply = store.last_chain_reply(channel.id, chain["root_id"])
+            completions.append({
+                **chain,
+                "error": _notice_text(chain["error"]),
+                "project_id": project.id, "project_name": project.name or project.id,
+                "channel_name": channel.name or channel.id,
+                "reply": ({"author": reply["author"],
+                           "content": _notice_text(reply["content"])}
+                          if reply else None),
+                "resource_url": channel_resource_url(project.id, channel.id),
+            })
+        return {"now": now, "completions": completions}
 
     @app.get("/api/chat/runs/{run_id}/events")
     def run_events(run_id: int):

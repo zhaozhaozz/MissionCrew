@@ -101,7 +101,8 @@ function updateDocumentTitle() {
     ? [titlePart(currentTitleItem(), TITLE_ITEM_MAX),
        titlePart(project?.name || currentProject, TITLE_PROJECT_MAX)]
     : [];
-  document.title = [...parts.filter(Boolean), "MissionCrew"].join("-");
+  // 页面在后台期间结束的任务数作前缀,回到页面清零(见 notifications.js)
+  document.title = notifyTitlePrefix() + [...parts.filter(Boolean), "MissionCrew"].join("-");
 }
 
 function syncUrl(push = true) {
@@ -500,6 +501,7 @@ function _secState(sec, listId, countId, count) {
 
 function renderSidebar() {
   updateDocumentTitle();   // 名字随总览轮询到位,标题一起刷新
+  renderNotifyButton();
   const scrollState = captureScrollPositions(["#side-scroll"]);
   prepareDocSidebarReveal();   // 新打开的文档:先展开其分区与目录,渲染后再滚进视野
   // 频道 -> 聊天

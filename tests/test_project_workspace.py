@@ -1620,7 +1620,9 @@ def test_document_title_tracks_current_item_and_project(seeded):
     router = client.get("/assets/js/router.js").text
 
     assert "<title>MissionCrew</title>" in html
-    assert 'document.title = [...parts.filter(Boolean), "MissionCrew"].join("-");' in router
+    # 前缀是页面在后台期间结束的任务数(浏览器通知),回到页面清零
+    assert ('document.title = notifyTitlePrefix() + '
+            '[...parts.filter(Boolean), "MissionCrew"].join("-");') in router
     assert 'return chars.slice(0, max).join("").trimEnd() + "...";' in router
     for tab in ("chat", "board", "custom", "docs", "guidelines", "skills",
                 "automations", "recycle-bin", "proj", "runtime-status", "settings"):

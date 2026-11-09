@@ -63,6 +63,8 @@ CREATE TABLE IF NOT EXISTS chat_runs (
   depth INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued',
   error TEXT DEFAULT '', created_at REAL NOT NULL, finished_at REAL
 );
+CREATE INDEX IF NOT EXISTS idx_chat_runs_finished ON chat_runs(finished_at);
+CREATE INDEX IF NOT EXISTS idx_chat_runs_chain ON chat_runs(root_id, channel);
 CREATE TABLE IF NOT EXISTS chat_sessions (
   session_key TEXT PRIMARY KEY,
   channel TEXT NOT NULL, role_id TEXT NOT NULL,
@@ -1479,6 +1481,44 @@ class Store:
         rows = self._query(
             "SELECT * FROM chat_runs WHERE trigger_message_id=?", (message_id,))
         return [dict(row) for row in rows]
+
+    def finished_chat_chains(self, since: float, until: float) -> list[dict]:
+        """``(since, until]`` 内整条结束的协作链,供浏览器"任务结束"通知增量拉取。
+
+        协作链 = 同一频道里同一 root 消息引发的全部运行(主控派发、结果交回都沿用
+        root)。引擎先发布回复(可能顺带派发下一轮)再把本轮标成终态,所以链上
+        只要还有排队/运行/等待用户的运行就没结束;最后一次结束时刻落在窗口内的
+        链只会被报告一次。status/error 取链上最后结束的那次运行。
+        """
+        rows = self._query(
+            "SELECT r.channel, r.root_id, r.role_id, r.status, r.error, r.finished_at "
+            "FROM chat_runs r WHERE (r.root_id, r.channel) IN ("
+            "  SELECT root_id, channel FROM chat_runs "
+            "  WHERE finished_at > ? AND finished_at <= ?) "
+            "AND NOT EXISTS (SELECT 1 FROM chat_runs a "
+            "  WHERE a.root_id=r.root_id AND a.channel=r.channel "
+            "  AND a.status IN ('queued','running','waiting_user')) "
+            "ORDER BY r.finished_at, r.id",
+            (since, until))
+        chains: dict[tuple[str, int], dict] = {}
+        for row in rows:
+            chain = chains.setdefault((row["channel"], row["root_id"]), {
+                "channel": row["channel"], "root_id": row["root_id"],
+                "roles": [], "runs": 0, "failed": 0})
+            chain["runs"] += 1
+            chain["failed"] += row["status"] == "failed"
+            if row["role_id"] not in chain["roles"]:
+                chain["roles"].append(row["role_id"])
+            chain.update(status=row["status"], error=row["error"] or "",
+                         finished_at=row["finished_at"])
+        return [chain for chain in chains.values() if chain["finished_at"] <= until]
+
+    def last_chain_reply(self, channel: str, root_id: int) -> Optional[dict]:
+        """协作链里最后一条 Agent 回复,作为"任务结束"通知的正文。"""
+        rows = self._query(
+            "SELECT author, content FROM messages WHERE channel=? AND root_id=? "
+            "AND author_type='agent' ORDER BY id DESC LIMIT 1", (channel, root_id))
+        return dict(rows[0]) if rows else None
 
     # ---- 聊天:Runtime 持久会话 ----
     def get_chat_session(self, session_key: str) -> Optional[dict]:

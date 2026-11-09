@@ -19,6 +19,8 @@
     </header>
     <div id="proj-row">
       <select id="proj-sel" onchange="setProject(this.value)"></select>
+      <button class="proj-btn" id="proj-notify" type="button" onclick="toggleProjectNotify()"
+        title="任务结束通知" aria-label="本项目任务结束通知" aria-pressed="false"></button>
       <button class="proj-btn" id="proj-cfg" onclick="switchTab('proj')" title="项目设置">⚙</button>
       <button class="proj-btn" id="proj-add" onclick="openNewProject()" title="新建项目">＋</button>
     </div>
@@ -206,6 +208,7 @@
     <div id="proj-view" class="page">
       <div class="subnav">
         <a onclick="scrollToSec('sec-proj-info')">项目信息</a>
+        <a onclick="scrollToSec('sec-proj-notify')">通知</a>
         <a onclick="scrollToSec('sec-proj-res')">本地代码仓</a>
         <a onclick="scrollToSec('sec-proj-roles')">角色</a>
         <a onclick="scrollToSec('sec-proj-credentials')">凭据</a>
@@ -217,6 +220,11 @@
         <h2>项目信息 <span class="muted" id="proj-label"></span></h2>
         <p class="muted">项目是第一层级:角色、频道、任务、准则都归属当前项目,项目之间互不相干。</p>
         <div class="form" id="proj-form"></div>
+      </div>
+      <div class="section" id="sec-proj-notify">
+        <h2>浏览器通知(仅本浏览器)</h2>
+        <p class="muted">本项目里一条消息引发的 Agent 协作全部结束（含执行失败）时提醒你。总开关、系统通知授权与各项目一览在「全局设置」。</p>
+        <div class="notify-setting" id="proj-notify-setting"></div>
       </div>
       <div class="section" id="sec-proj-res">
         <h2>本地代码仓 <span class="muted" id="res-proj-label"></span>
@@ -384,6 +392,11 @@
         <p class="muted" id="webhook-listener-state"></p>
         <div class="runtime-table-wrap"><table class="mgr" id="webhook-source-table"></table></div>
       </div>
+      <div class="section" id="notify-settings-section">
+        <h2>浏览器通知(仅本浏览器)</h2>
+        <p class="muted">一条消息引发的 Agent 协作全部结束（含执行失败，不含手动停止）时提醒你：页面在前台时页内提示，切到其他标签页或窗口时弹系统通知，点击直达对应频道。设置保存在本浏览器；单个项目也可在项目设置或侧栏项目名后的铃铛开关。</p>
+        <div class="notify-setting" id="notify-settings"></div>
+      </div>
       <div class="section" id="global-credential-section">
         <h2>凭据(全局共享)
           <button class="ghost" style="margin-left:8px" onclick="editCredential('global', null)">＋ 新建凭据</button></h2>
@@ -531,6 +544,7 @@
 <script src="/assets/js/settings-webhooks.js"></script>
 <script src="/assets/js/settings-credentials.js"></script>
 <script src="/assets/js/runtime-status.js"></script>
+<script src="/assets/js/notifications.js"></script>
 <script src="/assets/js/main.js"></script>
 </body>
 </html>

@@ -138,7 +138,8 @@ function toggleTheme() {
 })();
 
 /* ---- Toast 通知:操作结果的轻量反馈(错误仍由 api() 统一上报) ---- */
-function toast(msg, type = "info", ms = 3200) {
+// onClick:点击提示时先执行(如跳到对应频道)再关闭;不传则点击只关闭
+function toast(msg, type = "info", ms = 3200, onClick = null) {
   const box = document.getElementById("toasts");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
@@ -148,7 +149,7 @@ function toast(msg, type = "info", ms = 3200) {
     el.classList.add("out");
     setTimeout(() => { el.remove(); if (!box.children.length) lowerToasts(box); }, 190);
   };
-  el.onclick = dismiss;
+  el.onclick = () => { if (onClick) onClick(); dismiss(); };
   box.appendChild(el);
   raiseToasts(box);
   setTimeout(dismiss, ms);

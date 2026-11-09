@@ -58,10 +58,12 @@
   });
 })();
 
+initNotifications();
 loadOverview();
 ensureTraits().catch(() => {});   // 能力标签词表:聊天页的角色悬停卡片开页就要用
 pollRuntimeStatus();
 setInterval(pollMessages, 2000);
 setInterval(pollConfigChat, 2000);
 setInterval(pollRuntimeStatus, 10000);
+setInterval(pollRunCompletions, 5000);   // 只在有项目开启了任务结束通知时才真正请求
 setInterval(() => loadOverview().catch(() => {}), 8000);  // 服务重启间隙静默跳过

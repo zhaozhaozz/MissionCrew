@@ -34,6 +34,8 @@ missioncrew/
                       任务看板渲染器同时服务内置任务看板与自定义任务看板,两者只差
                       绑定(数据端点/配置保存),个人视图状态(筛选/分列/折叠,存浏览器)
                       的纯数据转换在 taskboard-view.js,须先于 boards.js 加载;
+                      notifications.js 是任务结束的浏览器通知(偏好存浏览器,轮询
+                      /api/chat/runs/completions 的整条协作链结束增量);
                       task-rules.js 是项目级自动处理规则的列表页与编辑器(看板 ⚡ 共用),
                       条件与标签表达式互转的纯函数在 rule-condition.js;
                       tasks.js 只留任务详情与配置持久化;markdown.js

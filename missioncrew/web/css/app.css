@@ -104,6 +104,15 @@
   .proj-btn:hover { border-color: var(--accent); color: var(--accent); }
   .proj-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
   #proj-add { color: var(--accent); font-size: 17px; }
+  #proj-notify { display: grid; place-items: center; }
+  #proj-notify[hidden] { display: none; }
+  #proj-notify svg { width: 15px; height: 15px; fill: none; stroke: currentColor;
+                     stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }
+  #proj-notify.notify-on { color: var(--accent); }
+  .notify-setting { max-width: 640px; }
+  .notify-setting .form-actions { margin-top: 10px; }
+  .notify-support { margin: 8px 0 0; }
+  .notify-project-table { margin-top: 12px; }
   .side-nav { display: flex; align-items: center; padding: 7px 10px; border-radius: 8px;
               cursor: pointer; color: var(--muted); margin: 10px 0 2px;
               font-weight: 500; transition: all .15s; }

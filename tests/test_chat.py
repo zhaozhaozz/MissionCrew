@@ -1628,3 +1628,36 @@ def test_manual_only_role_is_invisible_to_agents_but_human_can_dispatch(chat, se
                          seeded.get_backend("std-1"), msg_id)
     assert "You are a human-mention-only role" in own.prompt
     assert "## Role Roster" not in own.common_prompt
+
+
+def test_run_completions_report_each_finished_chain_once(seeded):
+    """浏览器通知增量:链上还有活动运行就不报,整条结束后只报一次。"""
+    client = TestClient(create_app())
+    first = client.get("/api/chat/runs/completions").json()
+    assert first["completions"] == []          # 首次只领游标,不把历史当新通知
+
+    root = seeded.add_message("general", "human", "human", "@lead 修复登录", [])
+    lead_run = seeded.add_chat_run("general", "lead", root, root, 0)
+    dev_run = seeded.add_chat_run("general", "dev", root, root, 1)
+    seeded.update_chat_run(dev_run, "failed", error="exit `1`")
+    pending = client.get("/api/chat/runs/completions",
+                         params={"since": first["now"]}).json()
+    assert pending["completions"] == []        # 主控仍在运行:任务没结束
+
+    seeded.add_message("general", "lead", "agent", "**已修复**,\n\n见 `auth.py`。",
+                       [], root, root, 2)
+    seeded.update_chat_run(lead_run, "done")
+    done = client.get("/api/chat/runs/completions",
+                      params={"since": pending["now"]}).json()
+    [chain] = done["completions"]
+    assert chain["root_id"] == root and chain["channel"] == "general"
+    assert chain["status"] == "done"           # 取最后结束的那次运行
+    assert chain["roles"] == ["dev", "lead"]
+    assert (chain["runs"], chain["failed"]) == (2, 1)
+    assert chain["reply"] == {"author": "lead", "content": "已修复, 见 auth.py。"}
+    assert chain["project_id"] == "webshop"
+    assert chain["resource_url"] == "/resources/webshop/channels/general"
+
+    again = client.get("/api/chat/runs/completions",
+                       params={"since": done["now"]}).json()
+    assert again["completions"] == []
