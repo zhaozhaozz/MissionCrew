@@ -22,6 +22,7 @@ from typing import Callable, Optional
 from urllib.parse import quote
 
 from . import board_sources
+from .callbacks import CallbackService, public_callback, resolve_fire_at
 from . import channels as channel_ops
 from .content_channels import content_channel, rebind_content_channel
 from .credentials import request_credential
@@ -559,6 +560,47 @@ ACTION_DEFINITIONS = {
                             "the human who fills it in"),
         },
     },
+    "callback.create": {
+        "description": (
+            "Register a one-shot callback that starts you again in the current channel later: "
+            "at a time (delay_seconds or at), when a channel gets a new message from someone "
+            "else (channel), or when a Task changes (task). Give at most one of channel/task; "
+            "with a time as well, whichever happens first fires it, so the time works as a "
+            "deadline. A watch without a time expires after 7 days. When it fires, the platform "
+            "posts a callback message here that says what happened and repeats your note, and "
+            "starts a normal run of you with its own Agent Tool token; your reply follows the "
+            "same hand-back rules as the turn that registered it. It fires once; register again "
+            "in that run if you need to keep waiting. Humans can see and cancel it in the "
+            "channel, and stopping the channel's agents cancels it. Use it instead of `sleep`, "
+            "polling or a runtime's own scheduler"
+        ),
+        "orchestrator_only": False,
+        "automation_allowed": False,
+        "arguments": {
+            "note": ("required: what to do when called back; the callback message repeats it, "
+                     "so make it self-contained (task, branch, next step)"),
+            "delay_seconds": "seconds from now, at least 30 and at most 30 days",
+            "at": "absolute time in ISO 8601 with a time zone, e.g. 2026-11-09T07:22:00Z",
+            "channel": ("short id of a project channel to watch; a new message there from a "
+                        "human, a role other than you, or an automation script fires it"),
+            "task": ("id of a project Task to watch; any change of its title, summary, body, "
+                     "labels/status, channels, link, archive state or a new brief fires it; "
+                     "your own changes through this tool do not"),
+        },
+    },
+    "callback.list": {
+        "description": "List your callbacks that are still waiting in this project",
+        "orchestrator_only": False,
+        "automation_allowed": False,
+        "arguments": {},
+    },
+    "callback.cancel": {
+        "description": ("Cancel a waiting callback by id; you can cancel your own, the "
+                        "orchestrator can cancel any in the project"),
+        "orchestrator_only": False,
+        "automation_allowed": False,
+        "arguments": {"id": "callback id returned by callback.create or callback.list"},
+    },
     "recycle.list": {
         "description": "List the current project's unified recycle bin",
         "orchestrator_only": True,
@@ -702,6 +744,9 @@ ACTION_ARGUMENTS = {
     "automation.list": {"id", "runs", "before_id"},
     "automation.run": {"id"},
     "credential.request": {"name", "description"},
+    "callback.create": {"note", "delay_seconds", "at", "channel", "task"},
+    "callback.list": set(),
+    "callback.cancel": {"id"},
     "recycle.list": set(),
     "recycle.restore": {"id"},
     "recycle.purge": {"id"},
@@ -715,7 +760,7 @@ CONVERSATION_RECEIPT_ACTIONS = (
         "message.publish", "channel.runs.list", "channel.run.stop",
         "channel.history", "channel.list", "recycle.list", "dashboard.list",
         "board_source.list", "guideline.list", "skill.list", "automation.list",
-        "document.history", "guideline.history", "skill.history",
+        "document.history", "guideline.history", "skill.history", "callback.list",
     }
 )
 
@@ -726,8 +771,11 @@ class AgentActionService:
     def __init__(self, store: Store, post_message: Callable[..., int],
                  stop_run: Callable[..., dict],
                  history_records: Optional[Callable[..., list[dict]]] = None,
-                 stop_channel_sessions: Optional[Callable[[str], int]] = None):
+                 stop_channel_sessions: Optional[Callable[[str], int]] = None,
+                 callbacks: Optional[CallbackService] = None):
         self.store = store
+        # 角色登记的一次性回调;None = 没有聊天引擎(测试),callback.* 不可用
+        self._callbacks = callbacks
         self._post_message = post_message
         self._stop_run = stop_run
         # (channel, role_id, limit, before_id) -> 与 channel-history.json 同构的
@@ -1164,11 +1212,23 @@ class AgentActionService:
             "automation.list": self._list_automations,
             "automation.run": self._run_automation,
             "credential.request": self._request_credential,
+            "callback.create": self._create_callback,
+            "callback.list": self._list_callbacks,
+            "callback.cancel": self._cancel_callback,
             "recycle.list": self._list_recycle_bin,
             "recycle.restore": self._restore_recycle_item,
             "recycle.purge": self._purge_recycle_item,
         }
-        return handlers[action](project, identity, arguments, context)
+        handler = handlers[action]
+        task_id = (str(arguments.get("id") or "")
+                   if action.startswith("task.") and not identity.is_automation
+                   and self._callbacks is not None else "")
+        if task_id:
+            # 登记者自己改所盯的 Task 不应把自己叫醒:改动前后由回调服务顺延基线
+            with self._callbacks.own_task_change(
+                    identity.channel_id, identity.role_id, task_id):
+                return handler(project, identity, arguments, context)
+        return handler(project, identity, arguments, context)
 
     @staticmethod
     def _require_chat_identity(identity: AgentIdentity) -> None:
@@ -2187,6 +2247,69 @@ class AgentActionService:
             "credential": {"name": credential.name, "description": credential.description,
                            "status": "pending"},
         }
+
+    def _require_callbacks(self) -> CallbackService:
+        if self._callbacks is None:
+            raise AgentToolError("unsupported_action", "当前环境没有回调服务", 501)
+        return self._callbacks
+
+    def _create_callback(self, project: Project, identity: AgentIdentity,
+                         arguments: dict, context: AgentRunContext) -> dict:
+        self._require_chat_identity(identity)
+        service = self._require_callbacks()
+        fire_at = resolve_fire_at(
+            arguments.get("delay_seconds"), arguments.get("at"), time.time())
+        raw_channel = str(arguments.get("channel") or "").strip()
+        raw_task = str(arguments.get("task") or "").strip()
+        if raw_channel and raw_task:
+            raise AgentToolError("invalid_arguments", "channel 与 task 只能盯一个")
+        watch_kind = watch_target = ""
+        if raw_channel:
+            watch_kind, watch_target = "channel", self._project_channel(project, raw_channel).id
+        elif raw_task:
+            task = self.store.get_task(raw_task)
+            if task is None or task.project_id != project.id:
+                raise AgentToolError("not_found", f"Task 不存在或不属于本项目: {raw_task}", 404)
+            watch_kind, watch_target = "task", task.id
+        run = self.store.get_chat_run(context.run_id) if context.run_id else None
+        row = service.create(
+            project_id=project.id, channel_id=identity.channel_id,
+            role_id=identity.role_id, note=str(arguments.get("note") or ""),
+            fire_at=fire_at, watch_kind=watch_kind, watch_target=watch_target,
+            origin_run_id=context.run_id,
+            origin_trigger=int(run["trigger_message_id"]) if run else 0)
+        view = public_callback(row)
+        return {"callback": view,
+                "summary": f"登记回调 #{view['id']}：{view['conditions']}时回到本频道"}
+
+    def _list_callbacks(self, project: Project, identity: AgentIdentity,
+                        _arguments: dict, _context: AgentRunContext) -> dict:
+        self._require_chat_identity(identity)
+        rows = self.store.list_chat_callbacks(
+            project_id=project.id, role_id=identity.role_id, status="pending")
+        return {"callbacks": [public_callback(row) for row in rows]}
+
+    def _cancel_callback(self, project: Project, identity: AgentIdentity,
+                         arguments: dict, _context: AgentRunContext) -> dict:
+        self._require_chat_identity(identity)
+        service = self._require_callbacks()
+        raw_id = arguments.get("id")
+        if isinstance(raw_id, bool) or not isinstance(raw_id, (int, str)) \
+                or not str(raw_id).strip().lstrip("#").isdigit():
+            raise AgentToolError("invalid_arguments", "id 必须是回调编号")
+        callback_id = int(str(raw_id).strip().lstrip("#"))
+        row = self.store.get_chat_callback(callback_id)
+        if row is None or row["project_id"] != project.id:
+            raise AgentToolError("not_found", f"回调不存在: {callback_id}", 404)
+        if (row["role_id"] != identity.role_id
+                and not project.controls_platform(identity.role_id)):
+            raise AgentToolError(
+                "permission_denied", "只能取消自己登记的回调", 403)
+        if row["status"] != "pending" or not service.cancel(
+                callback_id, identity.actor, f"@{identity.role_id} 取消"):
+            raise AgentToolError(
+                "invalid_arguments", f"回调 #{callback_id} 已结束（{row['status']}）")
+        return {"summary": f"取消回调 #{callback_id}（{public_callback(row)['conditions']}）"}
 
     def _save_guideline(self, project: Project, identity: AgentIdentity,
                         arguments: dict, _context: AgentRunContext) -> dict:

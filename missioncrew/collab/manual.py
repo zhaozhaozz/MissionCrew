@@ -439,6 +439,25 @@ An orchestrator's turn:
 - A single collaboration chain in this project allows at most __MAX_RUNS__ agent runs. This is
   only a total cap against runaway loops and does not limit dispatch depth; break down, assign,
   review and drive the work autonomously within the budget.
+
+## 16. Callbacks (callback.*)
+
+- When work has to continue later, register a one-shot callback with `callback.create` and end
+  the turn, instead of `sleep`, polling or a runtime's own scheduler: the platform starts you
+  again in the current channel at a time (`delay_seconds` or `at`), when a channel gets a new
+  message from a human, another role or an automation script (`channel`), or when a Task
+  changes (`task`). Typical uses: retry after a quota resets, follow up when a human replies,
+  continue when another channel's work lands, review when a Task's status changes.
+- Watch at most one channel or Task; adding a time makes it a deadline, so whichever happens
+  first fires it. A watch without a time expires after 7 days. Your own messages and your own
+  Task changes through this tool never fire your callbacks.
+- `note` is repeated in the callback message, so make it self-contained: the task, branch or
+  document, and the next step. The callback run is a normal run with its own Agent Tool token;
+  its reply follows the hand-back rules of the turn that registered it.
+- A callback fires once; register again in that run if you still need to wait. `callback.list`
+  shows your waiting callbacks and `callback.cancel` cancels one (the orchestrator can cancel
+  any in the project). Humans see them in the channel and can cancel them; stopping the
+  channel's agents cancels all of them there.
 """
 
 
@@ -509,6 +528,8 @@ _PEER_REPLACEMENTS = (
      "executor\n  explicitly in `mentions` to start the work.",
      "A new channel\n  starts empty: a human mentions the roles that should work there, or you "
      "mention\n  yourself there with `message.publish` to work in it."),
+    ("(the orchestrator can cancel\n  any in the project)",
+     "(without an orchestrator,\n  every role can cancel any in the project)"),
 )
 
 
@@ -526,7 +547,7 @@ def render_manual(project: Project) -> str:
         text = _replace_section(text, "## 0. Typical Flow", "## 1. ", _PEER_FLOW + "\n")
         text = _replace_section(text, "## 7. Messages", "## 8. ", _PEER_MESSAGES)
         # 协作链预算一节讲派发,无主控时不适用;自我提及计入预算已在第 7 节说明
-        text = _replace_section(text, "## 15. ", "", "").rstrip() + "\n"
+        text = _replace_section(text, "## 15. ", "## 16. ", "")
         for old, new in _PEER_REPLACEMENTS:
             assert old in text, old
             text = text.replace(old, new)

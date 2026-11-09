@@ -448,6 +448,16 @@
   .channel-tasks-btn:hover, .channel-tasks-btn.active { border-color: var(--accent);
                        background: var(--accent-soft); color: var(--accent); }
   .channel-tasks-btn:not([hidden]) ~ .channel-head-toggle { margin-left: 0; }
+  /* 频道回调:与 Task 按钮同款计数按钮,出现时由它承担右对齐 */
+  .channel-callbacks-btn:not([hidden]) ~ .channel-tasks-btn { margin-left: 0; }
+  .callback-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+  .callback-list li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .callback-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .callback-head button { margin-left: auto; }
+  .callback-role { color: var(--accent); }
+  .callback-when { color: var(--text-2); font-size: 13px; }
+  .callback-note { margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
+  .callback-meta { margin-top: 4px; font-size: 12px; }
   .channel-tasks-pop { position: fixed; z-index: 45; display: flex; flex-direction: column;
                        width: min(320px, calc(100vw - 24px)); border: 1px solid var(--line);
                        border-radius: 10px; background: var(--card); box-shadow: var(--shadow-md);

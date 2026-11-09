@@ -36,6 +36,7 @@ def create_app(webhook_host: Optional[str] = None,
         runtime_manager.start_idle_reaper()
         ctx.role_usage_linkage.start()
         ctx.automation_scheduler.start()
+        ctx.chat.callbacks.start()
         if ctx.webhook_listener:
             ctx.webhook_listener.start()
         try:
@@ -45,6 +46,7 @@ def create_app(webhook_host: Optional[str] = None,
             if ctx.webhook_listener:
                 ctx.webhook_listener.stop()
             ctx.automation_scheduler.stop()
+            ctx.chat.callbacks.stop()
             ctx.role_usage_linkage.stop()
             # 先等聊天执行池收尾再关 runtime:工作线程可能仍在驱动 Agent,
             # 且它按调用时的环境变量写频道历史,不能活过应用生命周期

@@ -11,7 +11,9 @@ missioncrew/
 ├── collab/           业务引擎:chat.py(聊天协作/主控派发)、workspace.py
 │                     (Agent 工作区装配)、manual.py(写进工作区的手册,Prompt
 │                     只留必守规则)、platform_docs.py(把 docs/ 复制给 Agent 检索)、
-│                     documents/tasks/skills/guidelines 等
+│                     documents/tasks/skills/guidelines 等;callbacks.py 是角色
+│                     登记的一次性回调(到点/频道或 Task 有更新时轮询触发,回到原
+│                     频道启动原角色)
 ├── runtime/          Runtime 统一抽象层(业务层只使用 runtime_manager)
 │   ├── base.py       RuntimeProvider 契约、host_isolated_environ()
 │   ├── manager.py    RuntimeManager 控制面 + _BuiltinProvider;唯一对外入口

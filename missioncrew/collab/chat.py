@@ -35,6 +35,7 @@ from ..core.config import (chat_max_workers, context_reinject_bytes,
                            context_reinject_turns, mc_home)
 from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
                           DispatchInactiveError, default_agent_tool_url)
+from .callbacks import CallbackService
 from .credentials import effective_credentials
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls)
@@ -312,7 +313,10 @@ def _trigger_kind(record: dict, orchestrator_id: str,
     """一句话说明本轮触发是谁发的,主控据此区分人类请求与执行角色回报。"""
     author = record.get("author") or {}
     kind, author_id = str(author.get("type") or ""), str(author.get("id") or "")
-    if kind == "human":
+    if record.get("kind") == "callback":
+        text = ("a callback you registered with `callback.create` fired; the message says what "
+                "happened and repeats your note, so continue that work")
+    elif kind == "human":
         text = "human message"
     elif kind == "agent":
         if role_id and author_id == role_id:
@@ -360,10 +364,14 @@ class ChatEngine:
         self._stopping_channels: set[str] = set()
         self._interaction_lock = threading.Lock()
         self._interactions: dict[str, _PendingInteraction] = {}
+        # 角色登记的一次性回调:轮询线程由服务装配时启动(测试直接调 tick)
+        self.callbacks = CallbackService(
+            store, self._fire_callback, self._post_callback_notice)
         self.agent_tools = AgentActionService(
             store, self.post, self.stop_run,
             history_records=self.channel_history_records,
-            stop_channel_sessions=self.stop_channel_sessions)
+            stop_channel_sessions=self.stop_channel_sessions,
+            callbacks=self.callbacks)
         # 正在更新的 runtime 集合(由 server 注入共享):更新期间不派发执行,
         # 避免 Agent 跑在半更新的二进制上
         self.updating_backends: set[str] = set()
@@ -569,9 +577,12 @@ class ChatEngine:
         if trigger_message_id is None:
             return False
         trigger = self.store.get_message(trigger_message_id)
-        if (trigger and trigger.get("author_type") == "agent"
-                and trigger.get("author") == role_id):
-            # 角色在其他频道启动了自己:沿用发起那一轮的派发语义
+        if trigger and ((trigger.get("author_type") == "agent"
+                         and trigger.get("author") == role_id)
+                        or (trigger.get("kind") == "callback"
+                            and role_id in self._decoded_mentions(trigger))):
+            # 角色在其他频道启动了自己,或自己登记的回调触发:沿用发起
+            # (登记)那一轮的派发语义
             origin = self._decoded_context(trigger).get("self_dispatch_origin")
             return (type(origin) is int
                     and self._is_direct_human_dispatch(origin, role_id))
@@ -673,6 +684,9 @@ class ChatEngine:
         with self._run_state_lock:
             runs = self.store.stop_active_chat_runs(channel_id)
             self._stopping_channels.add(channel_id)
+            # 停止 = 不再调度:本频道登记的回调一并取消,否则过后又把角色叫起来
+            cancelled_callbacks = self.store.cancel_chat_callbacks(
+                "用户停止了频道中的 Agent", channel=channel_id)
             run_ids = {run["id"] for run in runs}
             for run in runs:
                 self.store.append_run_event(
@@ -712,11 +726,13 @@ class ChatEngine:
                     )
 
             with self._run_state_lock:
-                if runs or stopped or runtime_errors:
+                if runs or stopped or runtime_errors or cancelled_callbacks:
                     content = (f"已停止当前频道中的 {len(runs)} 个 Agent 运行"
                                if runs else "当前频道没有活动 Agent 运行")
                     if stopped:
                         content += f"，并终止 {stopped} 个 Runtime 进程"
+                    if cancelled_callbacks:
+                        content += f"，取消 {len(cancelled_callbacks)} 个等待中的回调"
                     if runtime_errors:
                         content += f"；其中 {runtime_errors} 个 Runtime 终止请求失败，请检查运行状态"
                     marker_id = self.store.add_message(
@@ -727,16 +743,18 @@ class ChatEngine:
         finally:
             with self._run_state_lock:
                 self._stopping_channels.discard(channel_id)
-        if runs or stopped or runtime_errors:
+        if runs or stopped or runtime_errors or cancelled_callbacks:
             self.store.audit(
                 "human", "chat_agents_stopped",
                 detail=(f"channel={channel_id} runs={len(runs)} "
                         f"interrupted=0 stopped={stopped} "
-                        f"errors={runtime_errors} marker={marker_id}"),
+                        f"errors={runtime_errors} marker={marker_id} "
+                        f"callbacks={len(cancelled_callbacks)}"),
             )
         result = {
             "ok": True,
             "stopped_runs": len(runs),
+            "cancelled_callbacks": len(cancelled_callbacks),
             "interrupted_runtimes": 0,
             "stopped_runtimes": stopped,
             "runtime_errors": runtime_errors,
@@ -1029,6 +1047,51 @@ class ChatEngine:
                 effort=role.effort or "")
         self._write_channel_history(channel)
         return trigger_id, run_id
+
+    def _fire_callback(self, callback: dict, content: str,
+                       context: dict) -> Optional[int]:
+        """回调触发:在登记的频道发一条平台消息并照常启动登记的角色(新协作链)。
+
+        认领(pending → fired)、发消息与建运行在运行状态锁内完成,与停止频道
+        互斥;频道正在停止时返回 None,回调留待下一轮。频道或角色已不可用时
+        取消回调。"""
+        callback_id = int(callback["id"])
+        channel = self.store.get_channel(str(callback["channel"]))
+        role = (self.store.get_role(channel.project_id or "", str(callback["role_id"]))
+                if channel else None)
+        problem = ("频道已删除" if channel is None else
+                   "频道已归档" if channel.archived else
+                   "角色已删除" if role is None else
+                   "角色已停用" if not role.enabled else "")
+        if problem or channel is None or role is None:
+            self.store.finish_chat_callback(callback_id, "cancelled", problem)
+            return None
+        mention = f"@{role.id}"
+        detail = str((context.get("callback") or {}).get("detail") or "")
+        with self._run_state_lock:
+            if channel.id in self._stopping_channels:
+                return None
+            if not self.store.finish_chat_callback(callback_id, "fired", detail):
+                return None   # 刚被取消
+            msg_id = self.store.add_message(
+                channel.id, "platform", "platform", content, [role.id],
+                kind="callback", context=context,
+                mention_spans=([{"role_id": role.id, "start": 0, "end": len(mention)}]
+                               if content.startswith(mention) else []))
+            self.store.set_chat_callback_message(callback_id, msg_id)
+            self._write_channel_history(channel)
+            self._trigger(channel, role.id, msg_id, msg_id, 0)
+        return msg_id
+
+    def _post_callback_notice(self, channel_id: str, content: str,
+                              context: dict) -> None:
+        """回调过期等提示:只发平台消息,不触发任何角色。"""
+        channel = self.store.get_channel(channel_id)
+        if channel is None:
+            return
+        self.store.add_message(channel_id, "platform", "platform", content, [],
+                               kind="callback", context=context)
+        self._write_channel_history(channel)
 
     def _credentials_line(self, project_id: str) -> str:
         """公共上下文里的凭据提示:只列名字,值在工作区 credentials/ 的文件里。"""
@@ -1571,6 +1634,11 @@ class ChatEngine:
                     "missioncrew.agent_tool publish-file "
                     "--source <local file> --path <path in the document library>`\n"
                     "Available actions: " + ", ".join(allowed_actions) + "\n"
+                    + ("To continue later (at a time, when a channel gets a new message or when "
+                       "a Task changes), register `callback.create` and end the turn instead of "
+                       "`sleep` or polling; when it fires the platform starts you again in this "
+                       "channel with your note (manual.md section 16).\n"
+                       if "callback.create" in allowed_actions else "")
                     + self._credentials_line(project.id)
                 )
                 allowed_dirs = project_allowed_dirs(project, library, workspace.root)

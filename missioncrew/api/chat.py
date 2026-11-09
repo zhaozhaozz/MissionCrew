@@ -8,6 +8,7 @@ import time
 from fastapi import FastAPI, HTTPException, Request
 
 from ..collab import channels as channel_ops
+from ..collab.callbacks import public_callback
 from ..collab.content_channels import (CONTENT_KIND_LABELS,
                                        content_channel as find_content_channel,
                                        ensure_content_channel)
@@ -208,6 +209,9 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             "channel": channel_data(channel),
             "messages": items,
             "active_runs": store.active_chat_runs(channel_id),
+            # 本频道角色登记、仍在等待的回调:频道头显示并可取消
+            "callbacks": [public_callback(row) for row in
+                          store.list_chat_callbacks(channel=channel_id, status="pending")],
             # 最近执行记录(含已结束):前端按 events_size 变化拉取过程事件
             "runs": store.chat_runs_for_channel(channel_id),
         }
@@ -321,6 +325,15 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"path": str(path)}
+
+    @app.post("/api/chat/callbacks/{callback_id}/cancel")
+    def cancel_callback(callback_id: int):
+        row = store.get_chat_callback(callback_id)
+        if row is None:
+            raise HTTPException(404, "回调不存在")
+        if not chat.callbacks.cancel(callback_id, "human", "用户在页面取消"):
+            raise HTTPException(409, f"回调 #{callback_id} 已结束")
+        return {"ok": True, "callback": public_callback(store.get_chat_callback(callback_id))}
 
     @app.delete("/api/chat/channels/{channel_id}")
     def delete_channel(channel_id: str):

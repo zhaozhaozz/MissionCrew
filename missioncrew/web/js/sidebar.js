@@ -757,6 +757,7 @@ async function pollMessages() {
     appendMessages(d.messages);
     syncRuns(d.runs || []);
     updateChatRunControls(d.active_runs || []);
+    updateChannelCallbacks(chan, d.callbacks || []);
     if (setChannelRunningCount(chan, (d.active_runs || []).length))
       refreshChannelRunningMarkers();
     const pane = document.getElementById("msgs");

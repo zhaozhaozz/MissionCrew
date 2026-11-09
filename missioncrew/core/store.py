@@ -65,6 +65,23 @@ CREATE TABLE IF NOT EXISTS chat_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_runs_finished ON chat_runs(finished_at);
 CREATE INDEX IF NOT EXISTS idx_chat_runs_chain ON chat_runs(root_id, channel);
+-- 角色登记的一次性回调:到点(fire_at)或所盯的频道/Task 有更新时,在登记的
+-- 频道(channel)以平台消息重新启动该角色。watch_kind 为空只看时间;只盯更新、
+-- 没给时间的回调到 expires_at 仍无更新就过期。baseline 是登记时的对照基线:
+-- 频道是最后一条消息 id,Task 是内容指纹。
+CREATE TABLE IF NOT EXISTS chat_callbacks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL, channel TEXT NOT NULL, role_id TEXT NOT NULL,
+  note TEXT NOT NULL, fire_at REAL NOT NULL DEFAULT 0,
+  expires_at REAL NOT NULL DEFAULT 0,
+  watch_kind TEXT NOT NULL DEFAULT '', watch_target TEXT NOT NULL DEFAULT '',
+  baseline TEXT NOT NULL DEFAULT '',
+  origin_run_id INTEGER NOT NULL DEFAULT 0, origin_trigger INTEGER NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'pending', reason TEXT NOT NULL DEFAULT '',
+  message_id INTEGER NOT NULL DEFAULT 0,
+  created_at REAL NOT NULL, finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS idx_chat_callbacks_status ON chat_callbacks(status, channel);
 CREATE TABLE IF NOT EXISTS chat_sessions (
   session_key TEXT PRIMARY KEY,
   channel TEXT NOT NULL, role_id TEXT NOT NULL,
@@ -544,6 +561,7 @@ class Store:
             "SELECT id FROM channels WHERE json_extract(data, '$.project_id')=?"
             ")", (id, project_id))
         self.revoke_agent_tokens(project_id=project_id, role_id=id)
+        self.cancel_chat_callbacks("角色已删除", project_id=project_id, role_id=id)
         self.delete_role_usage_block(project_id, id)
         self._delete("roles", f"{project_id}:{id}")
     def delete_backend(self, id: str) -> None:
@@ -567,6 +585,7 @@ class Store:
             self._unlink_channel_from_tasks(channel)
         self._execute("DELETE FROM chat_sessions WHERE channel=?", (id,))
         self.revoke_agent_tokens(channel=id)
+        self.cancel_chat_callbacks("频道已删除", channel=id)
         self._delete("channels", id)
 
     def purge_channel_conversation(self, id: str) -> dict[str, int]:
@@ -647,6 +666,7 @@ class Store:
         for credential in self.list_credentials(id):
             self.delete_credential(credential.id)
         self.revoke_agent_tokens(project_id=id)
+        self.cancel_chat_callbacks("项目已删除", project_id=id)
         self._delete("projects", id)
 
     # ---- Projects / Backends / Resources / Tasks ----
@@ -1518,6 +1538,95 @@ class Store:
         rows = self._query(
             "SELECT author, content FROM messages WHERE channel=? AND root_id=? "
             "AND author_type='agent' ORDER BY id DESC LIMIT 1", (channel, root_id))
+        return dict(rows[0]) if rows else None
+
+    # ---- 聊天:角色登记的一次性回调 ----
+    def add_chat_callback(self, *, project_id: str, channel: str, role_id: str,
+                          note: str, fire_at: float = 0.0, expires_at: float = 0.0,
+                          watch_kind: str = "", watch_target: str = "",
+                          baseline: str = "", origin_run_id: int = 0,
+                          origin_trigger: int = 0) -> int:
+        note = self.redact_credentials(note)
+        return self._execute(
+            "INSERT INTO chat_callbacks(project_id,channel,role_id,note,fire_at,"
+            "expires_at,watch_kind,watch_target,baseline,origin_run_id,"
+            "origin_trigger,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?)",
+            (project_id, channel, role_id, note, fire_at, expires_at, watch_kind,
+             watch_target, baseline, origin_run_id, origin_trigger, time.time()))
+
+    def get_chat_callback(self, callback_id: int) -> Optional[dict]:
+        rows = self._query("SELECT * FROM chat_callbacks WHERE id=?", (callback_id,))
+        return dict(rows[0]) if rows else None
+
+    def list_chat_callbacks(self, *, project_id: str = "", channel: str = "",
+                            role_id: str = "", status: str = "pending",
+                            limit: int = 200) -> list[dict]:
+        clauses, params = [], []
+        for column, value in (("project_id", project_id), ("channel", channel),
+                              ("role_id", role_id), ("status", status)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        return [dict(row) for row in self._query(
+            f"SELECT * FROM chat_callbacks {where}ORDER BY id DESC LIMIT ?",
+            (*params, max(1, min(int(limit), 1000))))]
+
+    def finish_chat_callback(self, callback_id: int, status: str, reason: str = "",
+                             message_id: int = 0) -> bool:
+        """把仍在等待的回调记为 fired/cancelled/expired;已结束的不改,返回是否命中。"""
+        with self._lock:
+            cursor = self._conn.execute(
+                "UPDATE chat_callbacks SET status=?, reason=?, message_id=?, "
+                "finished_at=? WHERE id=? AND status='pending'",
+                (status, reason, message_id, time.time(), callback_id))
+            self._conn.commit()
+            return cursor.rowcount > 0
+
+    def cancel_chat_callbacks(self, reason: str, *, project_id: str = "",
+                              channel: str = "", role_id: str = "") -> list[int]:
+        """按归属批量取消等待中的回调(停止频道 Agent、删除频道/角色/项目)。"""
+        clauses, params = ["status='pending'"], []
+        for column, value in (("project_id", project_id), ("channel", channel),
+                              ("role_id", role_id)):
+            if value:
+                clauses.append(f"{column}=?")
+                params.append(value)
+        if len(clauses) == 1:
+            raise ValueError("取消回调必须限定项目、频道或角色")
+        where = " AND ".join(clauses)
+        with self._lock:
+            ids = [int(row["id"]) for row in self._conn.execute(
+                f"SELECT id FROM chat_callbacks WHERE {where}", params).fetchall()]
+            if ids:
+                self._conn.execute(
+                    f"UPDATE chat_callbacks SET status='cancelled', reason=?, "
+                    f"finished_at=? WHERE {where}", (reason, time.time(), *params))
+                self._conn.commit()
+        return ids
+
+    def set_chat_callback_message(self, callback_id: int, message_id: int) -> None:
+        self._execute("UPDATE chat_callbacks SET message_id=? WHERE id=?",
+                      (message_id, callback_id))
+
+    def rebase_chat_callback(self, callback_id: int, baseline: str) -> None:
+        self._execute(
+            "UPDATE chat_callbacks SET baseline=? WHERE id=? AND status='pending'",
+            (baseline, callback_id))
+
+    def last_message_id(self, channel: str) -> int:
+        rows = self._query("SELECT MAX(id) AS last FROM messages WHERE channel=?", (channel,))
+        return int(rows[0]["last"] or 0)
+
+    def first_update_message(self, channel: str, after_id: int,
+                             exclude_role: str = "") -> Optional[dict]:
+        """频道里 after_id 之后第一条"有内容的更新":人类、Agent、自动化脚本的
+        消息;平台回执与通知不算,登记者自己的消息也不算。"""
+        rows = self._query(
+            "SELECT * FROM messages WHERE channel=? AND id>? "
+            "AND author_type IN ('human','agent','automation') "
+            "AND NOT (author_type='agent' AND author=?) ORDER BY id LIMIT 1",
+            (channel, after_id, exclude_role))
         return dict(rows[0]) if rows else None
 
     # ---- 聊天:Runtime 持久会话 ----

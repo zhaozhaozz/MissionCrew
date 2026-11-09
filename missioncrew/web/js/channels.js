@@ -226,6 +226,9 @@ function renderChannelState() {
         <span class="badge">${archived ? "已归档" : "活跃"}</span>
         <span class="channel-background-marker channel-head-marker"
           data-channel-id="${esc(channel.id)}" hidden>⏳ <b></b> 个后台命令</span>
+        <button class="channel-tasks-btn channel-callbacks-btn" id="channel-callbacks-btn"
+          type="button" hidden aria-haspopup="dialog"
+          onclick="openChannelCallbacks(event)"></button>
         <button class="channel-tasks-btn" id="channel-tasks-btn" type="button" hidden
           aria-haspopup="dialog" aria-controls="channel-tasks-pop" aria-expanded="false"
           onclick="toggleChannelTasksPopover(event)"></button>
@@ -240,6 +243,7 @@ function renderChannelState() {
     refreshRuntimeIndicators();   // 头部标记刚重建,用最近一次 Runtime 快照点亮
   }
   renderChannelTasks();
+  renderChannelCallbacksButton();
   const banner = document.getElementById("channel-archive-banner");
   banner.hidden = !archived;
   document.getElementById("composer").classList.toggle("channel-archived", archived);
@@ -360,6 +364,70 @@ document.addEventListener("keydown", event => {
   if (event.key === "Escape" && !document.querySelector("dialog[open]"))
     closeChannelTasksPopover();
 });
+
+/* ---- 频道回调 ----
+   角色经 callback.create 登记的一次性回调(到点、某频道有新消息或某 Task 有更新时,
+   回到本频道重新启动该角色)。数据随频道消息轮询下发,标题行显示「⏰ N」,点开列出
+   等待中的回调,人可以逐个取消;停止频道 Agent 时平台会一并取消。 */
+let channelCallbacks = { channelId: null, items: [] };
+
+function updateChannelCallbacks(channelId, items) {
+  channelCallbacks = { channelId, items: Array.isArray(items) ? items : [] };
+  renderChannelCallbacksButton();
+  if (fdlg.open && fdlg.dataset.view === "channel-callbacks") renderChannelCallbacksDialog();
+}
+
+function currentChannelCallbacks() {
+  return channelCallbacks.channelId === currentChan ? channelCallbacks.items : [];
+}
+
+function renderChannelCallbacksButton() {
+  const button = document.getElementById("channel-callbacks-btn");
+  if (!button) return;
+  const items = currentChannelCallbacks();
+  button.hidden = !items.length;
+  button.innerHTML = `⏰ <b>${items.length}</b>`;
+  button.title = `${items.length} 个等待中的回调：到点或所盯的频道 / Task 有更新时重新启动登记的角色`;
+}
+
+function openChannelCallbacks(event) {
+  event?.stopPropagation();   // 标题行本身的点击是展开/收起频道信息
+  fdlg.dataset.view = "channel-callbacks";
+  fdlg.addEventListener("close", () => { delete fdlg.dataset.view; }, { once: true });
+  renderChannelCallbacksDialog(true);
+}
+
+function renderChannelCallbacksDialog(opening = false) {
+  const items = currentChannelCallbacks();
+  const body = items.length ? `<ul class="callback-list">${items.map(item => `
+      <li>
+        <div class="callback-head">
+          <b>#${item.id}</b><span class="callback-role">@${esc(item.role_id)}</span>
+          <span class="callback-when">${esc(item.conditions)}</span>
+          <button class="ghost compact danger" type="button"
+            onclick="cancelChannelCallback(${item.id})">取消</button>
+        </div>
+        <div class="callback-note">${esc(item.note)}</div>
+        <div class="callback-meta muted">登记于 ${esc(fmtTs(item.created_at))}</div>
+      </li>`).join("")}</ul>`
+    : '<p class="empty">本频道没有等待中的回调</p>';
+  const actions = `<button class="ghost" onclick="fdlg.close()">关闭</button>`;
+  if (opening) {
+    openFormDialog("等待中的回调", body, actions);
+  } else {
+    document.getElementById("fdlg-body").innerHTML = body;
+  }
+}
+
+// 确认框叠在回调列表之上(独立的 udlg),列表随本地状态原地刷新
+async function cancelChannelCallback(callbackId) {
+  if (!await uiConfirm(`取消回调 #${callbackId}？取消后到点或有更新时不会再启动该角色。`)) return;
+  try {
+    await api("POST", `/api/chat/callbacks/${callbackId}/cancel`);
+    toast(`已取消回调 #${callbackId}`, "success");
+  } catch (e) { /* api() 已提示;已结束的回调同样从列表移除 */ }
+  updateChannelCallbacks(currentChan, currentChannelCallbacks().filter(item => item.id !== callbackId));
+}
 
 function openChannelDialog() {
   if (!currentProject) { uiAlert("请先创建/选择项目"); return; }
