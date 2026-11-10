@@ -397,6 +397,13 @@ An orchestrator's turn:
   check), write a cron script that queries GitHub itself with `gh api` and keeps what it saw
   last time in its working directory; do not create webhooks or other settings on GitHub
   unless a human asks for exactly that.
+- `webhook.history` shows what a source really received in the last 7 days (external webhook
+  deliveries or polled GitHub events): event name, action, repository and which scripts each
+  one ran, including events no script received (empty `outcomes`). Filter with `event`,
+  `action` and `repository`, and pass `id` to get one delivery's full event, the same JSON a
+  script reads from `MISSIONCREW_WEBHOOK_EVENT_FILE`. Read it before writing or changing a
+  script's filter or `github_events`, so the filter matches events that actually occur, and to
+  find out why a script did not run for an event you expected.
 - Scripts are not in your workspace: `automation.list` lists them, and with `id` returns the full
   script and its recent runs (status, exit code, the tail of stdout/stderr; `before_id` pages
   back through all kept runs), so read it before changing or fixing a script. `automation.run` starts a manual run in the background (scripts

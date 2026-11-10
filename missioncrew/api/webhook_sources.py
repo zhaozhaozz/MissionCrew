@@ -3,14 +3,17 @@
 来源是平台级资源(不属于某个项目),只由人在全局设置页维护;Agent 只能在
 automation.save 里引用已有来源。密钥只经 /secret 端点给人看,列表里不带。
 GitHub 轮询来源(kind=github)没有投递地址与密钥可配,列表里带它的轮询状态。
+每个来源收到的事件留有投递记录(/deliveries),人在页面上查,Agent 用
+webhook.history 查。
 """
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
 from ..collab.github_events import poll_status
-from ..collab.webhooks import (delete_webhook_source, rotate_webhook_source_secret,
-                               save_webhook_source, source_subscribers, webhook_path)
+from ..collab.webhooks import (delete_webhook_source, public_delivery,
+                               rotate_webhook_source_secret, save_webhook_source,
+                               source_subscribers, webhook_path)
 from ..core.models import WebhookSource
 from .context import ApiContext
 from .schemas import WebhookSourceInput
@@ -32,6 +35,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         data["webhook_path"] = webhook_path(source) if source.kind == "webhook" else ""
         if source.kind == "github":
             data["poll"] = poll_status(store, source)
+        data["delivery_count"] = store.count_webhook_deliveries(source.id)
         data["automations"] = [
             {"id": item.id, "project_id": item.project_id, "name": item.name,
              # GitHub 轮询来源:各脚本订阅的仓库与事件,来源轮询的是它们的并集
@@ -78,6 +82,26 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
         return {"deleted": True}
+
+    @app.get("/api/webhook-sources/{source_id}/deliveries")
+    def deliveries(source_id: str, limit: int = 50, before_id: int = 0,
+                   event: str = "", action: str = "", repository: str = ""):
+        """来源的投递记录摘要,新的在前;before_id 向前翻页,其余参数过滤。"""
+        source = _must_source(source_id)
+        rows = store.list_webhook_deliveries(
+            source.id, limit=limit, before_id=before_id, event=event.strip(),
+            action=action.strip(), repository=repository.strip())
+        return {"deliveries": [public_delivery(row) for row in rows],
+                "total": store.count_webhook_deliveries(source.id)}
+
+    @app.get("/api/webhook-sources/{source_id}/deliveries/{delivery_id}")
+    def delivery(source_id: str, delivery_id: int):
+        """单条投递:摘要加事件全文(与脚本读到的事件文件同形)。"""
+        source = _must_source(source_id)
+        row = store.get_webhook_delivery(delivery_id)
+        if row is None or row["source_id"] != source.id:
+            raise HTTPException(404, "投递记录不存在")
+        return {**public_delivery(row), "event_file": row["event_data"]}
 
     @app.get("/api/webhook-sources/{source_id}/secret")
     def secret(source_id: str):

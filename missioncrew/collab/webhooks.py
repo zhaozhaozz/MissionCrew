@@ -53,6 +53,13 @@ PROVIDER_HEADERS = (
 )
 
 
+# 投递记录:每个来源收到的事件留档,供人排查、供 Agent 对照历史写过滤条件
+DELIVERY_RETENTION_SECONDS = 7 * 24 * 3600
+DELIVERY_KEEP_PER_SOURCE = 1000
+# 单条记录的事件全文上限;更大的只留摘要与请求头,正文不存
+DELIVERY_MAX_BYTES = 256 * 1024
+
+
 class WebhookRejected(Exception):
     """投递被拒:status 是回给发送方的 HTTP 状态码,message 只含简短原因。"""
 
@@ -322,6 +329,8 @@ def accept_webhook(store: Store, service, path: str,
         raise
     event = webhook_event(headers, body, source=source.id)
     if event["provider"] == "github" and event["event"] == "ping":
+        # ping 不触发脚本,但留一条记录:人在 GitHub 上配好 webhook 后据此确认连通
+        record_delivery(store, source, event, auth=mode, outcomes=[])
         return 200, {"ok": True, "pong": True}
     result = fan_out_event(store, service, source, event, auth=mode)
     if result["targets"] and result["dropped"] == result["targets"]:
@@ -345,13 +354,15 @@ def fan_out_event(store: Store, service, source: WebhookSource, event: dict,
         targets = source_subscribers(store, source.id)
     run_ids: list[int] = []
     queued = dropped = 0
-    outcomes = []
+    outcomes = []          # 审计用的短文本
+    records = []           # 投递记录里的结构化结果
     for automation in targets:
         try:
             run_id = service.trigger_webhook(automation, event)
         except ValueError as exc:   # 该脚本排队已满
             dropped += 1
             outcomes.append(f"{automation.id}=dropped")
+            records.append({"automation": automation.id, "result": "dropped"})
             store.audit("platform", "automation_webhook_dropped",
                         detail=f"automation={automation.id} source={source.id} "
                                f"delivery={event['delivery']} reason={exc}")
@@ -359,13 +370,72 @@ def fan_out_event(store: Store, service, source: WebhookSource, event: dict,
         if run_id is None:
             queued += 1
             outcomes.append(f"{automation.id}=queued")
+            records.append({"automation": automation.id, "result": "queued"})
         else:
             run_ids.append(run_id)
             outcomes.append(f"{automation.id}=#{run_id}")
+            records.append({"automation": automation.id, "result": "run", "run_id": run_id})
     store.audit("platform", "webhook_delivery_accepted",
                 detail=f"source={source.id} auth={auth} "
                        f"event={event['provider']}:{event['event']} "
                        f"delivery={event['delivery']} "
                        f"targets={','.join(outcomes) or '(none)'}")
+    record_delivery(store, source, event, auth=auth, outcomes=records)
     return {"targets": len(targets), "run_ids": run_ids, "queued": queued,
             "dropped": dropped}
+
+
+def delivery_summary(event: dict) -> tuple[str, str]:
+    """从事件正文里取列表与过滤用的两项摘要:(动作, 仓库)。
+
+    动作取 payload.action(GitHub、GitCode、Gitea 的写法),没有时取 GitLab 的
+    object_attributes.action;仓库取 repository.full_name,没有时取 GitLab 的
+    project.path_with_namespace。取不到就是空串。
+    """
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return "", ""
+
+    def text(*path) -> str:
+        value = payload
+        for key in path:
+            value = value.get(key) if isinstance(value, dict) else None
+        return value if isinstance(value, str) else ""
+
+    return (text("action") or text("object_attributes", "action"),
+            text("repository", "full_name") or text("project", "path_with_namespace"))
+
+
+def record_delivery(store: Store, source: WebhookSource, event: dict, *, auth: str,
+                    outcomes: list) -> int:
+    """把来源收到的一份事件记进投递记录,返回记录 id。
+
+    通过验签的外部投递(含没有脚本订阅的、GitHub 的 ping)与轮询来源取到的事件
+    (含没有脚本要的)都记;被拒收的投递不记,它们的内容不可信,原因在审计里。
+    outcomes 是 [{automation, result: run|queued|dropped, run_id?}],空 = 没有
+    脚本接收。事件全文超过上限时去掉正文再存。
+    """
+    action, repository = delivery_summary(event)
+    data = json.dumps(event, ensure_ascii=False)
+    size = len(data.encode("utf-8"))
+    if size > DELIVERY_MAX_BYTES:
+        data = json.dumps({**event, "payload": None, "body": None,
+                           "payload_omitted": True}, ensure_ascii=False)
+    return store.add_webhook_delivery(
+        source.id, received_at=float(event.get("received_at") or time.time()),
+        provider=str(event.get("provider") or ""), event=str(event.get("event") or ""),
+        action=action, repository=repository, delivery=str(event.get("delivery") or ""),
+        transport=str(event.get("transport") or "webhook"), auth=auth,
+        outcomes=outcomes, data=data, size=size, keep=DELIVERY_KEEP_PER_SOURCE)
+
+
+def prune_deliveries(store: Store) -> None:
+    """清掉超出保留期的投递记录;由每小时的系统任务调用。"""
+    store.prune_webhook_deliveries(time.time() - DELIVERY_RETENTION_SECONDS)
+
+
+def public_delivery(row: dict) -> dict:
+    """列表里的一条投递摘要:时间、事件、动作、仓库、投递 id、大小与各脚本的结果。"""
+    return {key: row.get(key) for key in (
+        "id", "received_at", "provider", "event", "action", "repository",
+        "delivery", "transport", "auth", "size", "outcomes")}

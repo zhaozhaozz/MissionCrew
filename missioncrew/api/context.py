@@ -15,6 +15,7 @@ from ..collab.automations import AutomationScheduler, AutomationService
 from ..collab.chat import ChatEngine
 from ..collab.content_channels import content_channel
 from ..collab.github_events import GitHubEventPoller
+from ..collab.webhooks import prune_deliveries
 from ..collab.guidelines import sync_all_guideline_libraries
 from ..collab.recycle_bin import migrate_legacy_skill_trash
 from ..collab.skills import (sync_all_project_skill_libraries,
@@ -106,6 +107,8 @@ class ApiContext:
         ctx.chat.agent_tools.bind_automation_trigger(ctx.automations.trigger)
         ctx.automation_scheduler = AutomationScheduler(store, ctx.automations)
         ctx.github_poller = GitHubEventPoller(store, ctx.automations)
+        ctx.automation_scheduler.register_system_job(
+            "webhook-deliveries-prune", "30 * * * *", lambda: prune_deliveries(store))
         # 长时间没再运行的脚本也要按期清理运行记录
         ctx.automation_scheduler.register_system_job(
             "automation-runs-prune", "0 * * * *", ctx.automations.prune_runs)

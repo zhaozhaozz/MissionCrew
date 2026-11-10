@@ -42,7 +42,7 @@ from ..core.models import Automation, WebhookSource
 from ..core.store import Store
 from .github import (GitHubError, GitHubResponse, Transport, github_request,
                      github_token, token_kind)
-from .webhooks import fan_out_event, source_subscribers
+from .webhooks import fan_out_event, record_delivery, source_subscribers
 
 REPO_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+")
 EVENT_NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
@@ -390,6 +390,11 @@ class GitHubEventPoller:
                                 for automation in targets:
                                     room[automation.id] -= 1
                                 delivered += 1
+                            else:
+                                # 没有脚本要的事件也进投递记录:Agent 翻历史才知道
+                                # 这个仓库还有哪些事件可以订阅
+                                record_delivery(self.store, source, item.event,
+                                                auth="poll", outcomes=[])
                             item.mark()     # 没人要的事件同样记为已见
                             sent += 1
                     finally:

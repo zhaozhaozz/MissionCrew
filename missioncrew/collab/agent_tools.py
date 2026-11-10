@@ -547,6 +547,25 @@ ACTION_DEFINITIONS = {
                           "for paging back"),
         },
     },
+    "webhook.history": {
+        "description": ("On demand, list what a global webhook source received recently "
+                        "(external webhook deliveries or events from GitHub polling, newest "
+                        "first, kept for 7 days): event name, action, repository, delivery "
+                        "id and which scripts it ran, including events no script received. "
+                        "Use it to see which events a source really emits before writing or "
+                        "fixing a script's filter; pass id to get one delivery's full event, "
+                        "the same JSON a script reads from MISSIONCREW_WEBHOOK_EVENT_FILE"),
+        "orchestrator_only": True,
+        "arguments": {
+            "source": "id of the webhook source (automation.list lists them)",
+            "id": "optional delivery record id; returns that delivery with its full event",
+            "event": "optional filter: exact event name, e.g. issues or pull_request",
+            "action": "optional filter: exact action, e.g. opened or merged",
+            "repository": "optional filter: owner/repo",
+            "limit": "how many deliveries to list; default 20, at most 100",
+            "before_id": "only list earlier deliveries with id below this value, for paging back",
+        },
+    },
     "automation.run": {
         "description": ("Trigger a manual run of an automation script now (also when scheduling "
                         "is disabled); it runs in the background, so check the result later "
@@ -756,6 +775,8 @@ ACTION_ARGUMENTS = {
     },
     "automation.delete": {"id"},
     "automation.list": {"id", "runs", "before_id"},
+    "webhook.history": {"source", "id", "event", "action", "repository", "limit",
+                        "before_id"},
     "automation.run": {"id"},
     "credential.request": {"name", "description"},
     "callback.create": {"note", "delay_seconds", "at", "channel", "task"},
@@ -774,7 +795,7 @@ CONVERSATION_RECEIPT_ACTIONS = (
         "message.publish", "channel.runs.list", "channel.run.stop",
         "channel.history", "channel.list", "recycle.list", "dashboard.list",
         "board_source.list", "guideline.list", "skill.list", "automation.list",
-        "document.history", "guideline.history", "skill.history", "callback.list",
+        "webhook.history", "document.history", "guideline.history", "skill.history", "callback.list",
     }
 )
 
@@ -1224,6 +1245,7 @@ class AgentActionService:
             "automation.save": self._save_automation,
             "automation.delete": self._delete_automation,
             "automation.list": self._list_automations,
+            "webhook.history": self._webhook_history,
             "automation.run": self._run_automation,
             "credential.request": self._request_credential,
             "callback.create": self._create_callback,
@@ -2242,6 +2264,45 @@ class AgentActionService:
         return {"summary": (f"项目 {project.id} 共 {len(rows)} 个自动化脚本,"
                             f"平台共 {len(sources)} 个 webhook 来源"),
                 "automations": rows, "webhook_sources": sources}
+
+    def _webhook_history(self, _project: Project, _identity: AgentIdentity,
+                         arguments: dict, _context: AgentRunContext) -> dict:
+        """来源的投递记录:不带 id 列摘要(可按事件、动作、仓库过滤并翻页),带 id
+        返回那一条的事件全文。来源是全局资源,任何项目的脚本订阅后都会收到它的
+        投递,所以历史同样对各项目的主控可见;记录里没有来源密钥。"""
+        from .webhooks import public_delivery
+
+        source_id = str(arguments.get("source") or "").strip()
+        source = self.store.get_webhook_source(source_id) if source_id else None
+        if source is None:
+            raise AgentToolError("not_found", f"webhook 来源不存在: {source_id or '(未填)'}", 404)
+
+        def integer(name: str, default: int, low: int, high: int) -> int:
+            value = arguments.get(name, default)
+            if not isinstance(value, int) or isinstance(value, bool) or not low <= value <= high:
+                raise AgentToolError("invalid_arguments", f"{name} 必须是 {low}..{high} 的整数")
+            return value
+
+        if arguments.get("id") is not None:
+            row = self.store.get_webhook_delivery(integer("id", 0, 1, 2 ** 62))
+            if row is None or row["source_id"] != source.id:
+                raise AgentToolError("not_found", "投递记录不存在(可能已过保留期)", 404)
+            return {"summary": (f"来源 {source.id} 的投递 #{row['id']}:"
+                                f"{row['event'] or '(无事件名)'} {row['action']}".rstrip()),
+                    "delivery": public_delivery(row), "event_file": row["event_data"]}
+        filters = {}
+        for name in ("event", "action", "repository"):
+            value = arguments.get(name, "")
+            if not isinstance(value, str):
+                raise AgentToolError("invalid_arguments", f"{name} 必须是字符串")
+            filters[name] = value.strip()
+        rows = self.store.list_webhook_deliveries(
+            source.id, limit=integer("limit", 20, 1, 100),
+            before_id=integer("before_id", 0, 0, 2 ** 62), **filters)
+        total = self.store.count_webhook_deliveries(source.id)
+        return {"summary": f"来源 {source.id} 共保留 {total} 条投递记录,本次返回 {len(rows)} 条",
+                "source": source.id, "total": total,
+                "deliveries": [public_delivery(row) for row in rows]}
 
     def _run_automation(self, project: Project, identity: AgentIdentity,
                         arguments: dict, _context: AgentRunContext) -> dict:

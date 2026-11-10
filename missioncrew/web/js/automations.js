@@ -89,7 +89,9 @@ function automationWebhookHtml(automation) {
         <div><dt>来源</dt><dd class="automation-webhook-value">
           <span>${esc(source.name || source.id)}</span> <span class="muted">${id}</span>
           <button class="ghost compact" type="button" data-id="${id}"
-            onclick="editWebhookSource(this.dataset.id)">管理来源</button></dd></div>
+            onclick="editWebhookSource(this.dataset.id)">管理来源</button>
+          <button class="ghost compact" type="button" data-id="${id}"
+            onclick="openWebhookDeliveries(this.dataset.id)">投递记录</button></dd></div>
         <div><dt>订阅的仓库</dt><dd>${automationGithubReposHtml(automation, source)}</dd></div>
         <div><dt>事件</dt><dd>${(automation.github_events || []).length
           ? automation.github_events.map(name => `<code>${esc(name)}</code>`).join(" ")
@@ -109,7 +111,9 @@ function automationWebhookHtml(automation) {
           <span>${esc(source?.name || automation.webhook_source)}</span> <span class="muted">${id}</span>
           ${source ? (source.enabled ? "" : '<span class="pill">已停用，投递返回 404</span>') : '<span class="muted">加载中…</span>'}
           <button class="ghost compact" type="button" data-id="${id}"
-            onclick="editWebhookSource(this.dataset.id)">管理来源</button></dd></div>
+            onclick="editWebhookSource(this.dataset.id)">管理来源</button>
+          <button class="ghost compact" type="button" data-id="${id}"
+            onclick="openWebhookDeliveries(this.dataset.id)">投递记录</button></dd></div>
         <div><dt>投递地址</dt><dd class="automation-webhook-value"><code>${esc(url)}</code>
           <button class="ghost compact" type="button" data-copy="${esc(url)}"
             onclick="copyWebhookValue(this.dataset.copy, '投递地址')">复制</button></dd></div>

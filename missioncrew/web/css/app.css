@@ -115,6 +115,11 @@
   .github-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
     margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
   .github-identity.loading { opacity: .6; }
+  /* 投递记录对话框:行可点开看事件全文 */
+  .webhook-delivery-row { cursor: pointer; }
+  .webhook-delivery-detail pre { max-height: 360px; overflow: auto; margin: 0; font-size: 12px;
+    white-space: pre-wrap; word-break: break-all; }
+  .webhook-delivery-filters { align-items: end; }
   .notify-support { margin: 8px 0 0; }
   .notify-project-table { margin-top: 12px; }
   .side-nav { display: flex; align-items: center; padding: 7px 10px; border-radius: 8px;

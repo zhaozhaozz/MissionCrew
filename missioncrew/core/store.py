@@ -122,6 +122,19 @@ CREATE TABLE IF NOT EXISTS webhook_sources (id TEXT PRIMARY KEY, data TEXT NOT N
 -- 轮询来源的进度(各事件流的游标、已见事件 id、最近一次轮询结果);与来源定义分开存,
 -- 每次轮询都写,不改动来源本身的 updated_at
 CREATE TABLE IF NOT EXISTS webhook_source_state (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+-- 来源收到的每一次投递(外部 webhook 与轮询生成的都记):摘要列供列表与过滤,
+-- data 是事件全文 JSON(过大时不存正文),outcomes 是交给了哪些脚本及结果
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_id TEXT NOT NULL, received_at REAL NOT NULL,
+  provider TEXT DEFAULT '', event TEXT DEFAULT '', action TEXT DEFAULT '',
+  repository TEXT DEFAULT '', delivery TEXT DEFAULT '',
+  transport TEXT DEFAULT 'webhook', auth TEXT DEFAULT '',
+  outcomes TEXT NOT NULL DEFAULT '[]', size INTEGER NOT NULL DEFAULT 0,
+  data TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_source
+  ON webhook_deliveries(source_id, id DESC);
 -- 凭据:data 是不含值的元数据 JSON,值单独一列,通用的 _get/_list 只读 data 列
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY, data TEXT NOT NULL, value TEXT NOT NULL DEFAULT ''
@@ -1188,6 +1201,79 @@ class Store:
     def delete_webhook_source(self, id: str) -> None:
         self._delete("webhook_sources", id)
         self._delete("webhook_source_state", id)
+        self._execute("DELETE FROM webhook_deliveries WHERE source_id=?", (id,))
+
+    # ---- webhook 投递记录 ----
+    _DELIVERY_COLUMNS = ("id, source_id, received_at, provider, event, action, repository, "
+                         "delivery, transport, auth, outcomes, size")
+
+    def add_webhook_delivery(self, source_id: str, *, received_at: float, provider: str,
+                             event: str, action: str, repository: str, delivery: str,
+                             transport: str, auth: str, outcomes: list,
+                             data: str, size: int, keep: int) -> int:
+        """记一次投递并返回记录 id。data 是事件全文 JSON,入库前同样脱敏(外部系统
+        送来的正文里也可能带着已保存的凭据);keep 是每个来源保留的条数上限,每
+        100 条顺手清一次更早的。"""
+        new_id = self._execute(
+            "INSERT INTO webhook_deliveries(source_id, received_at, provider, event, action, "
+            "repository, delivery, transport, auth, outcomes, size, data) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (source_id, received_at, provider, event, action, repository, delivery,
+             transport, auth, json.dumps(outcomes, ensure_ascii=False), size,
+             self.redact_credentials(data)))
+        if new_id % 100 == 0:
+            self._execute(
+                "DELETE FROM webhook_deliveries WHERE source_id=? AND id NOT IN "
+                "(SELECT id FROM webhook_deliveries WHERE source_id=? "
+                "ORDER BY id DESC LIMIT ?)", (source_id, source_id, keep))
+        return new_id
+
+    @staticmethod
+    def _delivery_row(row: sqlite3.Row) -> dict:
+        item = dict(row)
+        item["outcomes"] = json.loads(item.get("outcomes") or "[]")
+        return item
+
+    def list_webhook_deliveries(self, source_id: str, limit: int = 50, before_id: int = 0,
+                                event: str = "", action: str = "",
+                                repository: str = "") -> list[dict]:
+        """按 id 倒序列出投递摘要(不含事件正文);event/action 精确匹配,repository
+        不区分大小写,before_id>0 时只取更早的,用于向前翻页。"""
+        conditions, params = ["source_id=?"], [source_id]
+        if before_id > 0:
+            conditions.append("id<?")
+            params.append(before_id)
+        for column, value in (("event", event), ("action", action)):
+            if value:
+                conditions.append(f"{column}=?")
+                params.append(value)
+        if repository:
+            conditions.append("LOWER(repository)=?")
+            params.append(repository.lower())
+        params.append(max(1, min(int(limit), 200)))
+        rows = self._query(
+            f"SELECT {self._DELIVERY_COLUMNS} FROM webhook_deliveries "
+            f"WHERE {' AND '.join(conditions)} ORDER BY id DESC LIMIT ?", tuple(params))
+        return [self._delivery_row(row) for row in rows]
+
+    def get_webhook_delivery(self, delivery_id: int) -> Optional[dict]:
+        """单条记录,`event_data` 是事件全文(正文过大没存时其中 payload 为 null)。"""
+        rows = self._query(
+            f"SELECT {self._DELIVERY_COLUMNS}, data FROM webhook_deliveries WHERE id=?",
+            (delivery_id,))
+        if not rows:
+            return None
+        item = self._delivery_row(rows[0])
+        item["event_data"] = json.loads(item.pop("data") or "null")
+        return item
+
+    def count_webhook_deliveries(self, source_id: str) -> int:
+        rows = self._query(
+            "SELECT COUNT(*) AS n FROM webhook_deliveries WHERE source_id=?", (source_id,))
+        return int(rows[0]["n"]) if rows else 0
+
+    def prune_webhook_deliveries(self, cutoff: float) -> None:
+        self._execute("DELETE FROM webhook_deliveries WHERE received_at<?", (cutoff,))
 
     def get_webhook_source_state(self, id: str) -> dict:
         return self._get("webhook_source_state", id) or {}

@@ -540,6 +540,140 @@ def test_orchestrator_subscribes_to_source_without_seeing_secret(seeded):
         assert getattr(exc.value, "code", "") == "invalid_arguments", exc.value
 
 
+# ---- 投递记录 ----
+
+def _issue(hook, delivery, action="opened", repo="acme/webshop", event="issues"):
+    body = json.dumps({"action": action, "issue": {"number": 7},
+                       "repository": {"full_name": repo}}).encode()
+    return hook.post(body, **{"Content-Type": "application/json",
+                              "X-GitHub-Event": event, "X-GitHub-Delivery": delivery})
+
+
+def test_every_verified_delivery_is_recorded_with_its_outcome(hook):
+    [run_id] = _issue(hook, "d-1").json()["run_ids"]
+    _wait_runs(hook.store, hook.automation.id, 1)
+    _wait_idle(hook.service)
+    hook.post(b"{}", **{"Content-Type": "application/json", "X-GitHub-Event": "ping"})
+    assert hook.post(b"{}", secret="wrong").status_code == 401       # 拒收的不记
+    save_automation(hook.store, "webshop", id="on-issue", webhook_source="")
+    _issue(hook, "d-2", action="closed")                              # 没有订阅者也记
+
+    closed, ping, opened = hook.store.list_webhook_deliveries("gh")
+    assert (opened["event"], opened["action"], opened["repository"], opened["delivery"]) == (
+        "issues", "opened", "acme/webshop", "d-1")
+    assert opened["transport"] == "webhook" and opened["auth"] == "hmac"
+    assert opened["outcomes"] == [
+        {"automation": "webshop:on-issue", "result": "run", "run_id": run_id}]
+    assert ping["event"] == "ping" and ping["outcomes"] == []
+    assert closed["action"] == "closed" and closed["outcomes"] == []
+    assert "data" not in opened                                       # 列表不带正文
+
+    detail = hook.store.get_webhook_delivery(opened["id"])
+    assert detail["event_data"]["payload"]["issue"]["number"] == 7
+    assert detail["event_data"]["source"] == "gh"
+    assert hook.secret not in json.dumps(detail)
+
+
+def test_delivery_history_filters_pages_and_bounds_what_it_keeps(hook, monkeypatch):
+    from missioncrew.collab import webhooks as webhooks_mod
+    from missioncrew.collab.credentials import save_credential
+
+    save_automation(hook.store, "webshop", id="on-issue", webhook_source="")   # 只看记录
+    token = "ghp_" + "a1B2c3D4e5" * 4
+    save_credential(hook.store, project_id="", name="GITHUB_TOKEN", value=token)
+    _issue(hook, "a-1")
+    _issue(hook, "a-2", action="closed")
+    _issue(hook, "a-3", repo="Acme/API", event="pull_request", action="merged")
+    leaked = json.dumps({"action": "created", "comment": {"body": f"token is {token}"}}).encode()
+    hook.post(leaked, **{"Content-Type": "application/json", "X-GitHub-Event": "issue_comment"})
+
+    listed = hook.store.list_webhook_deliveries
+    assert [row["delivery"] for row in listed("gh", event="issues")] == ["a-2", "a-1"]
+    assert [row["delivery"] for row in listed("gh", action="merged")] == ["a-3"]
+    assert [row["delivery"] for row in listed("gh", repository="acme/api")] == ["a-3"]
+    newest = listed("gh", limit=2)
+    assert len(newest) == 2
+    assert [row["delivery"] for row in listed("gh", before_id=newest[-1]["id"])] == ["a-2", "a-1"]
+    # 正文里出现已保存的凭据时,落库前同样脱敏
+    comment = hook.store.get_webhook_delivery(newest[0]["id"])["event_data"]
+    assert comment["payload"]["comment"]["body"] == "token is [credential:GITHUB_TOKEN]"
+
+    # 过大的事件只留摘要与请求头
+    monkeypatch.setattr(webhooks_mod, "DELIVERY_MAX_BYTES", 600)
+    big = json.dumps({"action": "opened", "repository": {"full_name": "acme/webshop"},
+                      "issue": {"body": "x" * 2000}}).encode()
+    hook.post(big, **{"Content-Type": "application/json", "X-GitHub-Event": "issues"})
+    [row] = listed("gh", limit=1)
+    stored = hook.store.get_webhook_delivery(row["id"])
+    assert row["action"] == "opened" and row["size"] > 2000
+    assert stored["event_data"]["payload"] is None and stored["event_data"]["payload_omitted"]
+
+    # 超出保留期的清掉;删除来源连同记录一起删
+    hook.store._execute("UPDATE webhook_deliveries SET received_at=? WHERE delivery='a-1'",
+                        (time.time() - webhooks_mod.DELIVERY_RETENTION_SECONDS - 60,))
+    webhooks_mod.prune_deliveries(hook.store)
+    assert "a-1" not in [item["delivery"] for item in listed("gh")]
+    delete_webhook_source(hook.store, "gh")
+    assert hook.store.count_webhook_deliveries("gh") == 0
+
+
+def test_delivery_history_api_and_page(hook):
+    _issue(hook, "api-1")
+    _wait_runs(hook.store, hook.automation.id, 1)
+    with TestClient(create_app()) as client:
+        [source] = client.get("/api/webhook-sources").json()["sources"]
+        assert source["delivery_count"] == 1
+        listed = client.get("/api/webhook-sources/gh/deliveries?event=issues").json()
+        assert listed["total"] == 1
+        [row] = listed["deliveries"]
+        assert row["delivery"] == "api-1" and row["outcomes"][0]["result"] == "run"
+        assert client.get("/api/webhook-sources/gh/deliveries?event=push").json()[
+            "deliveries"] == []
+        detail = client.get(f"/api/webhook-sources/gh/deliveries/{row['id']}").json()
+        assert detail["event_file"]["payload"]["issue"]["number"] == 7
+        assert hook.secret not in json.dumps([listed, detail])
+        assert client.get("/api/webhook-sources/gh/deliveries/999999").status_code == 404
+        assert client.get("/api/webhook-sources/missing/deliveries").status_code == 404
+        # 记录属于它的来源,不能从别的来源读到
+        client.post("/api/webhook-sources", json={"id": "other"})
+        assert client.get(f"/api/webhook-sources/other/deliveries/{row['id']}").status_code == 404
+        js = client.get("/assets/js/settings-webhooks.js").text
+        automations = client.get("/assets/js/automations.js").text
+    assert "function openWebhookDeliveries" in js and "/deliveries?" in js
+    assert "openWebhookDeliveries(this.dataset.id)" in automations
+
+
+def test_orchestrator_reads_delivery_history_to_work_out_filters(hook):
+    _issue(hook, "h-1")
+    _issue(hook, "h-2", event="pull_request", action="merged")
+    _wait_runs(hook.store, hook.automation.id, 2)
+    chat = ChatEngine(hook.store, max_workers=2)
+    call = _lead_call(hook.store, chat)
+    listed = call("webhook.history", {"source": "gh"})
+    assert listed["total"] == 2 and "共保留 2 条" in listed["summary"]
+    assert [(row["event"], row["action"]) for row in listed["deliveries"]] == [
+        ("pull_request", "merged"), ("issues", "opened")]
+    [merged] = call("webhook.history", {"source": "gh", "action": "merged"})["deliveries"]
+    one = call("webhook.history", {"source": "gh", "id": merged["id"]})
+    # 事件全文与脚本读到的事件文件同形,可以直接拿来试过滤条件
+    assert one["event_file"]["event"] == "pull_request"
+    assert one["event_file"]["payload"]["repository"]["full_name"] == "acme/webshop"
+    assert one["delivery"]["outcomes"][0]["automation"] == "webshop:on-issue"
+    assert hook.secret not in json.dumps([listed, one])
+    assert call("webhook.history", {"source": "gh", "limit": 1,
+                                    "before_id": merged["id"]})["deliveries"][0]["event"] == "issues"
+    for arguments, code in (({"source": "missing"}, "not_found"),
+                            ({"source": "gh", "id": 999999}, "not_found"),
+                            ({"source": "gh", "limit": 0}, "invalid_arguments"),
+                            ({"source": "gh", "event": 5}, "invalid_arguments")):
+        with pytest.raises(Exception) as exc:
+            call("webhook.history", arguments)
+        assert getattr(exc.value, "code", "") == code, exc.value
+    # 只读查询不在频道留回执
+    assert not [row for row in hook.store.recent_messages("general", 50)
+                if "webhook.history" in str(row.get("content"))]
+
+
 # ---- 专用端口:真实监听 ----
 
 def _free_port() -> int:

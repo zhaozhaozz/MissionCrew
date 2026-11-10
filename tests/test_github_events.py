@@ -239,6 +239,12 @@ def test_script_event_allowlist_filters_what_it_receives(watch):
     # 没人要的事件已记为已见,放开白名单后也不会补投
     save_automation(watch.store, "webshop", id="on-event", github_events=[])
     assert watch.poller.poll("watch", now=1120.0)["delivered_total"] == 1
+    # 投递记录里三个事件都在:交给了脚本的带结果,没人要的结果为空,Agent 据此知道还能订什么
+    history = {row["event"]: row for row in watch.store.list_webhook_deliveries("watch")}
+    assert sorted(history) == ["issue_comment", "pull_request", "watch"]
+    assert history["pull_request"]["outcomes"][0]["automation"] == "webshop:on-event"
+    assert history["watch"]["outcomes"] == [] and history["watch"]["transport"] == "poll"
+    assert history["watch"]["repository"] == "acme/webshop" and history["watch"]["auth"] == "poll"
 
 
 def test_each_script_only_gets_the_repositories_it_subscribed(watch):

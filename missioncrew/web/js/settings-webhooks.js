@@ -108,6 +108,9 @@ async function renderWebhookSources() {
         : '<span class="pill">已停用</span>'}</td>
       <td>${webhookSubscribersHtml(source)}</td>
       <td><button class="ghost" data-id="${esc(source.id)}"
+        onclick="openWebhookDeliveries(this.dataset.id)">记录${
+        source.delivery_count ? ` ${source.delivery_count}` : ""}</button>
+        <button class="ghost" data-id="${esc(source.id)}"
         onclick="editWebhookSource(this.dataset.id)">编辑</button></td></tr>`;
   }).join("");
   table.innerHTML =
@@ -246,6 +249,105 @@ async function editWebhookSource(id, { revealSecret = false, kind = "webhook" } 
   if (webhookSecretState?.sourceId !== source.id) return;   // 期间已切到别的来源
   webhookSecretState.secret = secret;
   rerenderWebhookSecret();
+}
+
+/* ---- 投递记录:来源收到过哪些事件、交给了哪些脚本(保留 7 天) ----
+   外部 webhook 的每次投递和 GitHub 轮询取到的每个事件都有一条,包括没有脚本接收的。
+   列表只有摘要,点一行再按需取事件全文(与脚本读到的事件文件同形)。 */
+const WEBHOOK_DELIVERY_PAGE = 50;
+let webhookDeliveryState = null;   // { sourceId, rows, total, more }
+
+function webhookDeliveryOutcomeHtml(row) {
+  if (!row.outcomes.length)
+    return `<span class="muted">${row.event === "ping" ? "ping 已应答" : "无脚本接收"}</span>`;
+  return row.outcomes.map(item => {
+    const result = item.result === "run" ? `运行 #${item.run_id}`
+      : item.result === "queued" ? "已排队" : "排队已满，已丢弃";
+    return `<span class="pill ${item.result === "dropped" ? "automation-st-failed" : ""}"
+      title="${esc(item.automation)}">${esc(item.automation)} · ${result}</span>`;
+  }).join(" ");
+}
+
+function webhookDeliveryRowsHtml(rows) {
+  return rows.map(row => `<tr class="webhook-delivery-row" data-id="${row.id}"
+      onclick="toggleWebhookDelivery(${row.id})" title="点击查看事件全文">
+      <td class="muted">${esc(fmtTs(row.received_at))}</td>
+      <td><code>${esc(row.event || "—")}</code>${row.action ? ` <span class="muted">${esc(row.action)}</span>` : ""}</td>
+      <td>${esc(row.repository || "—")}</td>
+      <td class="muted">${esc(row.delivery || "—")}</td>
+      <td>${webhookDeliveryOutcomeHtml(row)}</td></tr>`).join("");
+}
+
+function renderWebhookDeliveries() {
+  const state = webhookDeliveryState;
+  const table = document.getElementById("wd-table");
+  if (!state || !table) return;
+  table.innerHTML = `<tr><th>时间</th><th>事件 / 动作</th><th>仓库</th><th>投递 id</th><th>结果</th></tr>` +
+    (webhookDeliveryRowsHtml(state.rows) || `<tr><td colspan="5" class="empty">没有符合条件的投递记录</td></tr>`);
+  document.getElementById("wd-count").textContent =
+    `共保留 ${state.total} 条，已显示 ${state.rows.length} 条`;
+  document.getElementById("wd-more").hidden = !state.more;
+}
+
+// append = 向前翻页(接在已显示的记录后面);否则按当前过滤条件重新查询
+async function loadWebhookDeliveries(append = false) {
+  const state = webhookDeliveryState;
+  if (!state) return;
+  const params = new URLSearchParams({ limit: WEBHOOK_DELIVERY_PAGE });
+  for (const name of ["event", "action", "repository"]) {
+    const value = document.getElementById(`wd-${name}`)?.value.trim();
+    if (value) params.set(name, value);
+  }
+  if (append && state.rows.length) params.set("before_id", state.rows[state.rows.length - 1].id);
+  const data = await api("GET",
+    `/api/webhook-sources/${encodeURIComponent(state.sourceId)}/deliveries?${params}`);
+  if (webhookDeliveryState !== state) return;   // 期间已关闭或换了来源
+  state.rows = append ? state.rows.concat(data.deliveries) : data.deliveries;
+  state.total = data.total;
+  state.more = data.deliveries.length === WEBHOOK_DELIVERY_PAGE;
+  renderWebhookDeliveries();
+}
+
+async function toggleWebhookDelivery(id) {
+  const row = document.querySelector(`.webhook-delivery-row[data-id="${id}"]`);
+  if (!row || !webhookDeliveryState) return;
+  if (row.nextElementSibling?.classList.contains("webhook-delivery-detail")) {
+    row.nextElementSibling.remove();
+    return;
+  }
+  const detail = await api("GET",
+    `/api/webhook-sources/${encodeURIComponent(webhookDeliveryState.sourceId)}/deliveries/${id}`);
+  if (!row.isConnected) return;
+  const file = detail.event_file || {};
+  const note = file.payload_omitted ? '<p class="muted">事件正文超过 256 KB，没有保存，只留请求头。</p>' : "";
+  row.insertAdjacentHTML("afterend", `<tr class="webhook-delivery-detail"><td colspan="5">${note}
+    <pre>${esc(JSON.stringify(file, null, 2))}</pre></td></tr>`);
+}
+
+function openWebhookDeliveries(id) {
+  const source = webhookSourceById(id);
+  webhookDeliveryState = { sourceId: id, rows: [], total: 0, more: false };
+  openFormDialog(`投递记录 · ${source?.name || id}`, `
+    <p class="muted">这个来源收到过的事件，新的在前，保留 7 天、最多 1000 条；被拒收（验签失败）的投递不在其中。
+      点一行查看事件全文，它与脚本从 <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code> 读到的内容相同。</p>
+    <div class="row webhook-delivery-filters">
+      <div><label>事件</label><input type="text" id="wd-event" placeholder="issues"></div>
+      <div><label>动作</label><input type="text" id="wd-action" placeholder="opened"></div>
+      <div><label>仓库</label><input type="text" id="wd-repository" placeholder="owner/repo"></div>
+      <div><label>&nbsp;</label><button class="ghost" type="button" onclick="loadWebhookDeliveries()">筛选</button></div>
+    </div>
+    <div class="runtime-table-wrap"><table class="mgr" id="wd-table"><tr><td class="empty">读取中…</td></tr></table></div>
+    <p class="muted"><span id="wd-count"></span>
+      <button class="ghost compact" type="button" id="wd-more" hidden onclick="loadWebhookDeliveries(true)">加载更早的</button></p>`,
+    `<button class="ghost" onclick="fdlg.close()">关闭</button>`, { size: "wide" });
+  for (const name of ["event", "action", "repository"])
+    document.getElementById(`wd-${name}`).addEventListener("keydown", e => {
+      if (e.key === "Enter") { e.preventDefault(); loadWebhookDeliveries(); }
+    });
+  loadWebhookDeliveries().catch(() => {
+    const table = document.getElementById("wd-table");
+    if (table) table.innerHTML = `<tr><td class="empty">投递记录读取失败</td></tr>`;
+  });
 }
 
 // 来源变化会影响全局设置的列表和自动化页的 webhook 区,两处都刷新
