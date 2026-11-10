@@ -16,7 +16,8 @@ from missioncrew.api import create_app
 from missioncrew.collab.automations import AutomationService, save_automation
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.credentials import (credential_context_dir, delete_credential,
-                                            effective_credentials, save_credential,
+                                            effective_credentials, request_environment,
+                                            save_credential, save_environment,
                                             write_credential_context)
 from missioncrew.core.models import Project
 from missioncrew.core.store import Store
@@ -322,6 +323,197 @@ def test_legacy_resource_table_and_project_field_are_dropped(tmp_path):
     assert "resources" not in tables and "credentials" in tables
     project = Project.from_dict({"id": "p", "name": "p", "resources": ["test-db"]})
     assert "resources" not in project.to_dict()
+
+
+
+# ---- 环境:一组变量,每个变量各自标记是否 secret ----
+
+BOT_PASSWORD = "p@ss-" + "Qw3rTy9z" * 3
+BOT_VARIABLES = [{"name": "URL", "secret": False, "value": "http://127.0.0.1:8791"},
+                 {"name": "USERNAME", "secret": False, "value": "admin-operator"},
+                 {"name": "PASSWORD", "secret": True, "value": BOT_PASSWORD}]
+
+
+def test_environment_keeps_secret_values_apart_and_writes_a_directory(seeded):
+    environment, created = save_environment(
+        seeded, project_id="webshop", name="LOCAL_BOT", description="本机 Bot 控制台",
+        variables=BOT_VARIABLES)
+    assert created and environment.is_environment and environment.has_value
+    # 元数据里只有普通变量的值;secret 只留指纹,原文只在 value 列
+    data = json.dumps(seeded.get_credential("webshop", "LOCAL_BOT").to_dict())
+    assert "admin-operator" in data and BOT_PASSWORD not in data
+    password = environment.variable("PASSWORD")
+    assert password.secret and password.value == "" and password.fingerprint == "…Ty9z"
+    assert seeded.credential_secrets("webshop", "LOCAL_BOT") == {"PASSWORD": BOT_PASSWORD}
+    assert seeded.credential_value("webshop", "LOCAL_BOT") == ""    # 不当单值凭据读
+
+    directory = credential_context_dir("webshop") / "LOCAL_BOT"
+    assert directory.is_dir() and directory.stat().st_mode & 0o777 == 0o700
+    assert {entry.name: entry.read_text() for entry in directory.iterdir()} == {
+        "URL": "http://127.0.0.1:8791", "USERNAME": "admin-operator",
+        "PASSWORD": BOT_PASSWORD}
+    assert (directory / "PASSWORD").stat().st_mode & 0o777 == 0o600
+    index_text = (credential_context_dir("webshop") / "index.json").read_text()
+    assert BOT_PASSWORD not in index_text
+    [entry] = json.loads(index_text)["credentials"]
+    assert entry["type"] == "environment" and entry["variables"] == [
+        {"name": "URL", "secret": False, "available": True, "value": "http://127.0.0.1:8791"},
+        {"name": "USERNAME", "secret": False, "available": True, "value": "admin-operator"},
+        {"name": "PASSWORD", "secret": True, "available": True}]
+
+    # 只有 secret 变量脱敏,占位符带环境名和变量名;普通变量的值原样保留
+    text = seeded.redact_credentials(f"curl -u admin-operator:{BOT_PASSWORD} http://127.0.0.1:8791")
+    assert text == "curl -u admin-operator:[credential:LOCAL_BOT.PASSWORD] http://127.0.0.1:8791"
+
+
+def test_environment_update_replaces_the_variable_list_and_guards_secret_values(seeded):
+    save_environment(seeded, project_id="webshop", name="LOCAL_BOT", variables=BOT_VARIABLES)
+    directory = credential_context_dir("webshop") / "LOCAL_BOT"
+
+    # 不带 value = 保留原值;列表里没有的变量被删掉,文件一起消失
+    updated, created = save_environment(seeded, project_id="webshop", name="LOCAL_BOT", variables=[
+        {"name": "USERNAME", "secret": False, "value": "root-operator"},
+        {"name": "PASSWORD", "secret": True}])
+    assert not created and [item.name for item in updated.variables] == ["USERNAME", "PASSWORD"]
+    assert sorted(entry.name for entry in directory.iterdir()) == ["PASSWORD", "USERNAME"]
+    assert (directory / "USERNAME").read_text() == "root-operator"
+    assert (directory / "PASSWORD").read_text() == BOT_PASSWORD
+
+    # 普通变量改成 secret 可以沿用原值,之后它不再出现在元数据里并开始脱敏
+    save_environment(seeded, project_id="webshop", name="LOCAL_BOT", variables=[
+        {"name": "USERNAME", "secret": True}, {"name": "PASSWORD", "secret": True}])
+    assert "root-operator" not in json.dumps(
+        seeded.get_credential("webshop", "LOCAL_BOT").to_dict())
+    assert seeded.redact_credentials("login root-operator") == \
+        "login [credential:LOCAL_BOT.USERNAME]"
+
+    # secret 改回普通变量必须重新填值,否则等于把保密值显示出来
+    with pytest.raises(ValueError, match="重新填写"):
+        save_environment(seeded, project_id="webshop", name="LOCAL_BOT", variables=[
+            {"name": "USERNAME", "secret": True}, {"name": "PASSWORD", "secret": False}])
+    for variables, message in (([], "至少"),
+                               ([{"name": "bad-name", "value": "x"}], "变量名"),
+                               ([{"name": "A", "value": "1"}, {"name": "A", "value": "2"}], "重复"),
+                               ([{"name": "NEW_ONE", "secret": True}], "请填写"),
+                               ([{"name": "BIG", "secret": False, "value": "x" * 5000}], "4 KB")):
+        with pytest.raises(ValueError, match=message):
+            save_environment(seeded, project_id="webshop", name="LOCAL_BOT", variables=variables)
+
+    # 单值凭据与环境共用名字空间,类型不能互换;GITHUB_TOKEN 只能是单值凭据
+    save_credential(seeded, project_id="webshop", name="NPM_TOKEN", value=NPM)
+    with pytest.raises(ValueError, match="单个凭据"):
+        save_environment(seeded, project_id="webshop", name="NPM_TOKEN", variables=BOT_VARIABLES)
+    with pytest.raises(ValueError, match="是环境"):
+        save_credential(seeded, project_id="webshop", name="LOCAL_BOT", value="x" * 12)
+    with pytest.raises(ValueError, match="GitHub 身份"):
+        save_environment(seeded, project_id="", name="GITHUB_TOKEN", variables=BOT_VARIABLES)
+
+
+def test_project_environment_replaces_a_global_credential_of_the_same_name(seeded):
+    save_credential(seeded, project_id="", name="STAGING", value="g" * 20)
+    root = credential_context_dir("webshop")
+    assert (root / "STAGING").is_file()
+    # 项目里同名的环境整份盖住全局那份:同一个名字从文件变成目录,删掉后再变回来
+    save_environment(seeded, project_id="webshop", name="STAGING", variables=BOT_VARIABLES)
+    assert (root / "STAGING").is_dir() and (root / "STAGING" / "URL").is_file()
+    delete_credential(seeded, project_id="webshop", name="STAGING")
+    assert (root / "STAGING").read_text() == "g" * 20
+
+
+def test_credential_request_with_variables_registers_an_environment(seeded):
+    chat = ChatEngine(seeded, max_workers=2)
+    config, call = _run(seeded, chat, "dev")
+    directory = Path(config.env["MISSIONCREW_CREDENTIALS_DIR"]) / "LOCAL_BOT"
+
+    result = call("credential.request", {
+        "name": "LOCAL_BOT", "description": "登录本机 Bot 控制台",
+        "variables": [{"name": "USERNAME", "secret": False, "value": "admin-operator"},
+                      {"name": "PASSWORD"}]})
+    assert result["credential"] == {
+        "name": "LOCAL_BOT", "type": "environment", "description": "登录本机 Bot 控制台",
+        "status": "pending", "variables": [
+            {"name": "USERNAME", "secret": False, "status": "available"},
+            {"name": "PASSWORD", "secret": True, "status": "pending"}]}
+    assert result["resource_url"] == "/resources/webshop/settings/credentials"
+    receipt = seeded.list_messages("general")[-1]["content"]
+    assert "请求环境 `LOCAL_BOT`" in receipt and "待填写变量 `PASSWORD`" in receipt
+    pending = seeded.get_credential("webshop", "LOCAL_BOT")
+    assert not pending.has_value and pending.requested_by == "role:dev"
+    # Agent 自己带来的普通变量马上可用;secret 等人填,索引里标着还缺
+    assert (directory / "USERNAME").read_text() == "admin-operator"
+    assert not (directory / "PASSWORD").exists()
+    [entry] = json.loads((directory.parent / "index.json").read_text())["credentials"]
+    assert entry["variables"][1] == {"name": "PASSWORD", "secret": True, "available": False}
+    assert "Credentials humans saved for this project: `LOCAL_BOT/`" in (
+        chat._credentials_line("webshop"))
+
+    # 人把缺的补上后环境不再待填写;Agent 再要同样的变量得到 already_exists
+    save_environment(seeded, project_id="webshop", name="LOCAL_BOT", variables=[
+        {"name": "USERNAME", "secret": False, "value": "admin-operator"},
+        {"name": "PASSWORD", "secret": True, "value": BOT_PASSWORD}])
+    filled = seeded.get_credential("webshop", "LOCAL_BOT")
+    assert filled.has_value and filled.requested_by == ""
+    assert (directory / "PASSWORD").read_text() == BOT_PASSWORD
+    with pytest.raises(Exception) as exc:
+        call("credential.request", {"name": "LOCAL_BOT", "description": "x",
+                                    "variables": [{"name": "PASSWORD"}]})
+    assert getattr(exc.value, "code", "") == "already_exists", exc.value
+
+    # 给已有环境补一个变量:原有变量和它们的值不动,环境回到待填写
+    call("credential.request", {"name": "LOCAL_BOT", "description": "再要一个 API key",
+                                "variables": [{"name": "USERNAME", "secret": True},
+                                              {"name": "API_KEY"}]})
+    extended = seeded.get_credential("webshop", "LOCAL_BOT")
+    assert [(item.name, item.secret, item.has_value) for item in extended.variables] == [
+        ("USERNAME", False, True), ("PASSWORD", True, True), ("API_KEY", True, False)]
+    assert not extended.has_value and extended.description == "登录本机 Bot 控制台"
+    assert (directory / "PASSWORD").read_text() == BOT_PASSWORD
+
+    # secret 的值不能经参数传;名字被单值凭据占用、继承的全局环境缺变量都要求换做法
+    save_credential(seeded, project_id="webshop", name="NPM_TOKEN", value=NPM)
+    save_environment(seeded, project_id="", name="SHARED", variables=BOT_VARIABLES)
+    for arguments in ({"name": "OTHER", "variables": [{"name": "TOKEN", "value": "s" * 20}]},
+                      {"name": "NPM_TOKEN", "variables": [{"name": "TOKEN"}]},
+                      {"name": "LOCAL_BOT"},
+                      {"name": "SHARED", "variables": [{"name": "API_KEY"}]},
+                      {"name": "OTHER", "variables": []}):
+        with pytest.raises(Exception) as exc:
+            call("credential.request", {"description": "x", **arguments})
+        assert getattr(exc.value, "code", "") == "invalid_arguments", (arguments, exc.value)
+    with pytest.raises(Exception) as exc:      # 全局环境里已有的变量:直接用
+        call("credential.request", {"name": "SHARED", "description": "x",
+                                    "variables": [{"name": "PASSWORD"}]})
+    assert getattr(exc.value, "code", "") == "already_exists", exc.value
+    assert seeded.get_credential("webshop", "SHARED") is None
+
+
+def test_api_saves_environments_and_only_returns_plain_variable_values(seeded):
+    with TestClient(create_app()) as client:
+        created = client.post("/api/projects/webshop/credentials", json={
+            "name": "LOCAL_BOT", "description": "本机 Bot 控制台", "variables": BOT_VARIABLES})
+        assert created.status_code == 200, created.text
+        body = created.json()
+        assert body["kind"] == "environment" and body["created"] is True and body["has_value"]
+        listing = client.get("/api/projects/webshop/credentials")
+        assert BOT_PASSWORD not in listing.text and "admin-operator" in listing.text
+        [item] = listing.json()["credentials"]
+        assert item["variables"][2] == {"name": "PASSWORD", "secret": True, "has_value": True,
+                                        "fingerprint": "…Ty9z", "value": ""}
+        # 保留 secret 原值、只改普通变量
+        kept = client.post("/api/projects/webshop/credentials", json={
+            "name": "LOCAL_BOT", "variables": [
+                {"name": "URL", "secret": False, "value": "http://127.0.0.1:9000"},
+                {"name": "PASSWORD", "secret": True}]})
+        assert kept.status_code == 200, kept.text
+        assert seeded.credential_secrets("webshop", "LOCAL_BOT") == {"PASSWORD": BOT_PASSWORD}
+        for payload in ({"name": "LOCAL_BOT", "value": "x" * 12},
+                        {"name": "LOCAL_BOT", "value": "x" * 12, "variables": BOT_VARIABLES},
+                        {"name": "LOCAL_BOT", "variables": []},
+                        {"name": "LOCAL_BOT", "variables": [{"name": "TOKEN"}]}):
+            assert client.post("/api/projects/webshop/credentials",
+                               json=payload).status_code == 400, payload
+        assert client.delete("/api/projects/webshop/credentials/LOCAL_BOT").status_code == 200
+        assert not (credential_context_dir("webshop") / "LOCAL_BOT").exists()
 
 
 WEB_JS = Path(__file__).resolve().parents[1] / "missioncrew" / "web" / "js"

@@ -2,12 +2,15 @@
 
 值只写不读:保存时可以提交新值,任何端点都不返回值,页面只显示末 4 位指纹;
 要改就整份替换。项目列表同时带上继承来的全局凭据,并标出被项目同名覆盖的。
+环境(一组变量)走同一组端点,请求体带 variables;其中普通变量的值不保密,随
+列表返回,secret 变量与单值凭据一样只写不读。
 """
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from ..collab.credentials import delete_credential, save_credential
+from ..collab.credentials import (delete_credential, save_credential,
+                                  save_environment)
 from ..core.models import Credential
 from .context import ApiContext
 from .schemas import CredentialInput
@@ -22,9 +25,17 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     def _save(project_id: str, body: CredentialInput) -> dict:
         try:
-            credential, created = save_credential(
-                store, project_id=project_id, name=body.name,
-                description=body.description, value=body.value)
+            if body.variables is not None:
+                if body.value is not None:
+                    raise ValueError("环境按变量填写,不能同时提交单个值")
+                credential, created = save_environment(
+                    store, project_id=project_id, name=body.name,
+                    description=body.description,
+                    variables=[item.model_dump() for item in body.variables])
+            else:
+                credential, created = save_credential(
+                    store, project_id=project_id, name=body.name,
+                    description=body.description, value=body.value)
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
         except ValueError as exc:

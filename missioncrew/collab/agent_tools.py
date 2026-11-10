@@ -24,7 +24,7 @@ from . import board_sources
 from .callbacks import CallbackService, public_callback, resolve_fire_at
 from . import channels as channel_ops
 from .content_channels import content_channel, rebind_content_channel
-from .credentials import request_credential
+from .credentials import request_credential, request_environment
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
 from .guidelines import (guideline_history, read_guideline_version, save_guideline,
@@ -581,6 +581,9 @@ ACTION_DEFINITIONS = {
             "asking for it in chat: the platform posts a notice in the current channel with a "
             "link to the form, and once a human fills it in the value appears as the file "
             "$MISSIONCREW_CREDENTIALS_DIR/<name>, readable from your next command on. "
+            "When several values belong together (address + user name + password), pass "
+            "variables to request an environment instead: a directory "
+            "$MISSIONCREW_CREDENTIALS_DIR/<name>/ with one file per variable. "
             "Credentials already saved for the project (including global ones) are listed in "
             "index.json in that directory; asking for one of them returns already_exists. "
             "The result's resource_url is the link to that form; use it as is when you point "
@@ -589,10 +592,19 @@ ACTION_DEFINITIONS = {
         "orchestrator_only": False,
         "automation_allowed": False,
         "arguments": {
-            "name": ("credential name in upper case letters, digits and underscores, e.g. "
-                     "GITHUB_TOKEN; it becomes the file name"),
+            "name": ("credential or environment name in upper case letters, digits and "
+                     "underscores, e.g. GITHUB_TOKEN or STAGING_ADMIN; it becomes the file "
+                     "or directory name"),
             "description": ("what it is for and the minimal permissions it needs, shown to "
                             "the human who fills it in"),
+            "variables": ("optional, makes it an environment: a list of {name, secret, "
+                          "value}. name is upper case like URL, USERNAME, PASSWORD. secret "
+                          "defaults to true: a human fills the value and the platform "
+                          "redacts it; never pass a secret value here. With secret false "
+                          "the value is plain configuration, visible to everyone: give the "
+                          "value when you already know it, or leave it for the human. For "
+                          "an environment this project already has, only the variables it "
+                          "lacks are added"),
         },
     },
     "callback.create": {
@@ -802,7 +814,7 @@ ACTION_ARGUMENTS = {
     "webhook.history": {"source", "id", "event", "action", "repository", "limit",
                         "before_id"},
     "automation.run": {"id"},
-    "credential.request": {"name", "description"},
+    "credential.request": {"name", "description", "variables"},
     "callback.create": {"note", "delay_seconds", "at", "channel", "task",
                         "webhook_source", "event", "action", "repository", "filter"},
     "callback.list": set(),
@@ -2357,6 +2369,10 @@ class AgentActionService:
         if not description:
             raise AgentToolError(
                 "invalid_arguments", "description 必填:说明凭据用途和所需的最小权限")
+        settings_url = settings_resource_url(project.id, "credentials")
+        if arguments.get("variables") is not None:
+            return self._request_environment(
+                project, identity, name, description, arguments["variables"], settings_url)
         try:
             credential, _created = request_credential(
                 self.store, project_id=project.id, name=name,
@@ -2366,13 +2382,43 @@ class AgentActionService:
                 "already_exists",
                 f"凭据 {name} 已可用,直接读取 $MISSIONCREW_CREDENTIALS_DIR/{name}",
                 409) from exc
-        settings_url = settings_resource_url(project.id, "credentials")
+        except ValueError as exc:
+            raise AgentToolError("invalid_arguments", str(exc)) from exc
         return {
             "summary": (f"请求凭据 `{credential.name}`({credential.description})。"
                         f"请在[项目设置 → 凭据]({settings_url})中填写,"
                         "不要把值直接发在聊天里"),
             "credential": {"name": credential.name, "description": credential.description,
                            "status": "pending"},
+            "resource_url": settings_url,
+        }
+
+    def _request_environment(self, project: Project, identity: AgentIdentity, name: str,
+                             description: str, variables, settings_url: str) -> dict:
+        try:
+            credential, _created = request_environment(
+                self.store, project_id=project.id, name=name, description=description,
+                variables=variables, actor=identity.actor)
+        except FileExistsError as exc:
+            raise AgentToolError(
+                "already_exists",
+                f"环境 {name} 里这些变量都已可用,直接读取 "
+                f"$MISSIONCREW_CREDENTIALS_DIR/{name}/<变量名>", 409) from exc
+        except ValueError as exc:
+            raise AgentToolError("invalid_arguments", str(exc)) from exc
+        listed = [{"name": item.name, "secret": item.secret,
+                   "status": "available" if item.has_value else "pending"}
+                  for item in credential.variables]
+        pending = [item["name"] for item in listed if item["status"] == "pending"]
+        waiting = (f"待填写变量 {'、'.join(f'`{key}`' for key in pending)}。"
+                   f"请在[项目设置 → 凭据]({settings_url})中填写,不要把值直接发在聊天里"
+                   if pending else "变量都已有值,无需填写")
+        return {
+            "summary": f"请求环境 `{credential.name}`({credential.description})。{waiting}",
+            "credential": {"name": credential.name, "type": "environment",
+                           "description": credential.description,
+                           "status": "pending" if pending else "available",
+                           "variables": listed},
             "resource_url": settings_url,
         }
 

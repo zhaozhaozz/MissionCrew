@@ -115,6 +115,27 @@
   .github-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
     margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
   .github-identity.loading { opacity: .6; }
+  /* 环境(一组变量):列表里每个变量一枚小标签;表单里一行一个变量,窄屏时值输入框换到下一行 */
+  .env-var-chips { display: inline-flex; flex-wrap: wrap; gap: 4px 6px; vertical-align: middle; }
+  .env-var-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 100%;
+    padding: 1px 8px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+  .env-var-chip .pill { margin: 0; }
+  .env-var-value { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .env-vars { display: grid; gap: 8px; }
+  /* 变量标签会把值列撑宽,操作列的按钮保持一行 */
+  #proj-credential-table td:last-child, #proj-inherited-credential-table td:last-child,
+  #global-credential-table td:last-child { white-space: nowrap; }
+  .env-var-row { display: grid; align-items: start; gap: 8px;
+    grid-template-columns: minmax(130px, 1fr) minmax(180px, 2fr) auto auto auto; }
+  .form .env-var-row input[type=text], .form .env-var-row input[type=password],
+  .form .env-var-row textarea { width: 100%; margin: 0; }
+  .form .env-var-row .env-var-name { font-family: var(--mono, ui-monospace, monospace); }
+  .form label.env-var-secret { display: inline-flex; align-items: center; gap: 4px; margin: 0;
+    padding-top: 7px; white-space: nowrap; color: var(--text-2); }
+  @media (max-width: 640px) {
+    .env-var-row { grid-template-columns: 1fr auto auto auto; }
+    .env-var-row .env-var-value-input { grid-column: 1 / -1; grid-row: 2; }
+  }
   /* 投递记录对话框:行可点开看事件全文 */
   .webhook-delivery-row { cursor: pointer; }
   .webhook-delivery-detail pre { max-height: 360px; overflow: auto; margin: 0; font-size: 12px;

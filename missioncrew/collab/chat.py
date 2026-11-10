@@ -1095,10 +1095,14 @@ class ChatEngine:
         self._write_channel_history(channel)
 
     def _credentials_line(self, project_id: str) -> str:
-        """公共上下文里的凭据提示:只列名字,值在工作区 credentials/ 的文件里。"""
-        names = [item.name for item in effective_credentials(self.store, project_id)
-                 if item.has_value]
-        saved = ", ".join(f"`{name}`" for name in names) if names else "none yet"
+        """公共上下文里的凭据提示:只列名字,值在工作区 credentials/ 的文件里。
+        环境(一组变量)写成带斜杠的目录名,只要有一个变量有值就列出。"""
+        available = [item for item in effective_credentials(self.store, project_id)
+                     if (any(variable.has_value for variable in item.variables)
+                         if item.is_environment else item.has_value)]
+        names = [item.name for item in available if not item.is_environment]
+        saved = ", ".join(f"`{item.name}/`" if item.is_environment else f"`{item.name}`"
+                          for item in available) if available else "none yet"
         github = (
             f" `{GITHUB_TOKEN_NAME}` is also the project's GitHub identity: when "
             "`$GH_CONFIG_DIR` is set, `gh` and git over HTTPS to github.com are already "
@@ -1106,7 +1110,8 @@ class ChatEngine:
             if GITHUB_TOKEN_NAME in names else "")
         return (
             f"Credentials humans saved for this project: {saved} (files in "
-            "`$MISSIONCREW_CREDENTIALS_DIR`, purposes in `index.json` there). Use one only "
+            "`$MISSIONCREW_CREDENTIALS_DIR`, purposes in `index.json` there; a name ending "
+            "in `/` is an environment, a directory with one file per variable). Use one only "
             "inline in the command that needs it, such as "
             "`TOKEN=\"$(cat \"$MISSIONCREW_CREDENTIALS_DIR/<NAME>\")\" <command>`; never "
             "print it or write it into files, messages or documents, and never ask for a "

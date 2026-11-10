@@ -1,7 +1,9 @@
 /* ---------------- 凭据:全局共享 + 项目独有(项目同名覆盖全局) ----------------
    值只写不读:页面只提交新值,接口从不返回值,列表只显示末 4 位指纹,要改就整份替换。
    Agent 从工作区 credentials/ 的文件读取;Agent 缺凭据时经 credential.request 登记成
-   "待填写"条目,人在这里填。聊天发送前检测疑似密钥,引导存成凭据而不是发进聊天。 */
+   "待填写"条目,人在这里填。聊天发送前检测疑似密钥,引导存成凭据而不是发进聊天。
+   环境(kind = environment)是同一张表里的另一种条目:一组变量,每个变量各自标记是否
+   secret。secret 变量与单值凭据同样只写不读;普通变量的值随列表返回、直接显示。 */
 
 let globalCredentials = [];
 let projectCredentials = { credentials: [], inherited: [] };
@@ -9,7 +11,25 @@ let projectCredentials = { credentials: [], inherited: [] };
 const credentialApiBase = scope => scope === "global" ? "/api/credentials"
   : `/api/projects/${encodeURIComponent(currentProject)}/credentials`;
 
+const isEnvironment = item => item?.kind === "environment";
+
+// 环境的状态列:逐个变量列出;普通变量直接显示值,secret 只显示末 4 位,没值的标待填写
+function environmentStateHtml(item) {
+  const variables = (item.variables || []).map(variable => {
+    const detail = !variable.has_value ? `<span class="pill st-in_progress">待填写</span>`
+      : variable.secret ? `<span class="muted">${esc(variable.fingerprint || "已保存")}</span>`
+      : `<span class="env-var-value" title="${esc(variable.value)}">${esc(variable.value)}</span>`;
+    return `<span class="env-var-chip${variable.secret ? " secret" : ""}"
+      title="${variable.secret ? "secret:保存后不再显示,出现在消息和日志里会被脱敏" : "普通变量:值不保密"}">${
+      variable.secret ? "🔒 " : ""}<code>${esc(variable.name)}</code> ${detail}</span>`;
+  }).join("");
+  const pending = item.has_value ? "" : `<span class="pill st-in_progress" title="${esc(
+    item.requested_by ? `${item.requested_by} 请求,填写后 Agent 即可读取` : "还有变量没有值")}">待填写</span> `;
+  return `${pending}<span class="env-var-chips">${variables}</span>`;
+}
+
 function credentialStateHtml(item) {
+  if (isEnvironment(item)) return environmentStateHtml(item);
   if (!item.has_value)
     return `<span class="pill st-in_progress" title="${esc(item.requested_by
       ? `${item.requested_by} 请求,填写后 Agent 即可读取` : "填写后 Agent 即可读取")}">待填写</span>`;
@@ -24,16 +44,19 @@ function credentialRowsHtml(items, scope, { inherited = false } = {}) {
       ? (item.overridden ? "" : `<button class="ghost" data-name="${esc(item.name)}"
           onclick="editCredential('project', null, this.dataset.name)">在本项目覆盖</button>`)
       : `<button class="ghost" data-name="${esc(item.name)}"
-          onclick="editCredential('${scope}', this.dataset.name)">${item.has_value ? "替换" : "填写"}</button>
+          onclick="editCredential('${scope}', this.dataset.name)">${
+          !item.has_value ? "填写" : isEnvironment(item) ? "编辑" : "替换"}</button>
          <button class="danger" data-name="${esc(item.name)}"
           onclick="deleteCredential('${scope}', this.dataset.name)">删除</button>`;
-    return `<tr><td><code>${esc(item.name)}</code> ${note}</td>
+    const kind = isEnvironment(item)
+      ? ` <span class="pill" title="一组配套使用的变量,Agent 从 credentials/${esc(item.name)}/ 目录按变量名读取">环境</span>` : "";
+    return `<tr><td><code>${esc(item.name)}</code>${kind} ${note}</td>
       <td class="muted">${esc(item.description || "—")}</td>
       <td>${credentialStateHtml(item)}</td><td>${actions}</td></tr>`;
   }).join("");
 }
 
-const CREDENTIAL_TABLE_HEAD = "<tr><th>名称</th><th>用途</th><th>状态</th><th></th></tr>";
+const CREDENTIAL_TABLE_HEAD = "<tr><th>名称</th><th>用途</th><th>值</th><th></th></tr>";
 
 async function renderGlobalCredentials() {
   const table = document.getElementById("global-credential-table");
@@ -156,6 +179,11 @@ function toggleCredentialMultiline() {
 function editCredential(scope, name, presetName = "", { presetValue = "", onSaved = null } = {}) {
   const existing = name ? credentialByName(scope, name) : null;
   if (name && !existing) { uiAlert("凭据不存在,请刷新后重试"); return; }
+  if (isEnvironment(existing)) { editEnvironment(scope, name); return; }
+  // "在本项目覆盖"一个全局环境:带着它的变量名和普通变量的值打开环境表单
+  const inherited = !name && presetName && scope === "project"
+    ? (projectCredentials.inherited || []).find(item => item.name === presetName) : null;
+  if (isEnvironment(inherited)) { editEnvironment(scope, null, inherited); return; }
   const where = scope === "global" ? "全局凭据(所有项目可用)" : `项目「${currentProject}」的凭据`;
   const multiline = presetValue.includes("\n");
   const placeholder = existing?.has_value ? "留空 = 保留原值" : "粘贴凭据值";
@@ -211,13 +239,136 @@ async function saveCredential(scope, existingName) {
 }
 
 async function deleteCredential(scope, name) {
+  const label = isEnvironment(credentialByName(scope, name)) ? "环境" : "凭据";
   const inheritedNote = scope === "project"
     && (projectCredentials.inherited || []).some(item => item.name === name)
-    ? "删除后本项目改用同名的全局凭据。" : "删除后 Agent 读不到这份凭据。";
-  if (!await uiConfirm(`删除凭据 ${name}?${inheritedNote}`, "删除凭据")) return;
+    ? `删除后本项目改用同名的全局${label}。` : `删除后 Agent 读不到这份${label}。`;
+  if (!await uiConfirm(`删除${label} ${name}?${inheritedNote}`, `删除${label}`)) return;
   await api("DELETE", `${credentialApiBase(scope)}/${encodeURIComponent(name)}`);
   await refreshCredentialViews();
-  toast(`凭据 ${name} 已删除`, "success");
+  toast(`${label} ${name} 已删除`, "success");
+}
+
+/* ---- 环境:一组配套使用的变量(地址 + 用户名 + 密码),每个变量各自标记是否 secret ----
+   表单里一行一个变量。secret 变量已有值时输入框留空表示保留原值;普通变量的值直接
+   显示、可改。把已保存的 secret 改成普通变量必须重新填值——保留原值等于把保密值显示出来。 */
+function environmentVariableRowHtml(variable = {}) {
+  const secret = variable.secret !== false;
+  const kept = Boolean(variable.has_value && variable.secret);   // 已保存、页面看不到的 secret 值
+  return `<div class="env-var-row" data-kept="${kept ? "1" : ""}">
+    <input type="text" class="env-var-name" value="${esc(variable.name || "")}"
+      placeholder="变量名,如 USERNAME" spellcheck="false" autocomplete="off">
+    ${environmentValueInputHtml(secret, false, kept)}
+    <label class="env-var-secret" title="secret:保存后不再显示,出现在消息和日志里会被脱敏"><input
+      type="checkbox" ${secret ? "checked" : ""} onchange="toggleEnvironmentSecret(this)"> secret</label>
+    <button class="ghost compact" type="button" title="切换单行 / 多行输入(PEM 证书等)"
+      onclick="toggleEnvironmentMultiline(this)">多行</button>
+    <button class="ghost compact" type="button" title="删除这个变量"
+      onclick="this.closest('.env-var-row').remove()">✕</button>
+  </div>`;
+}
+
+function environmentValueInputHtml(secret, multiline, kept) {
+  const placeholder = !secret ? (kept ? "改为普通变量要重新填写值" : "值(不保密,直接显示)")
+    : kept ? "留空 = 保留原值" : "值(保存后不再显示)";
+  return multiline
+    ? `<textarea class="env-var-value-input" rows="4" spellcheck="false" autocomplete="off"
+         placeholder="${esc(placeholder)}"></textarea>`
+    : `<input type="${secret ? "password" : "text"}" class="env-var-value-input" spellcheck="false"
+         autocomplete="${secret ? "new-password" : "off"}" placeholder="${esc(placeholder)}">`;
+}
+
+// 重画一行的值输入框(切换 secret 或单行/多行时),保留已输入的内容
+function redrawEnvironmentValueInput(row, { multiline = null } = {}) {
+  const current = row.querySelector(".env-var-value-input");
+  const value = current.value;
+  const secret = row.querySelector(".env-var-secret input").checked;
+  current.outerHTML = environmentValueInputHtml(
+    secret, multiline ?? current.tagName === "TEXTAREA", row.dataset.kept === "1");
+  row.querySelector(".env-var-value-input").value = value;
+}
+
+function toggleEnvironmentSecret(checkbox) {
+  redrawEnvironmentValueInput(checkbox.closest(".env-var-row"));
+}
+
+function toggleEnvironmentMultiline(button) {
+  const row = button.closest(".env-var-row");
+  redrawEnvironmentValueInput(
+    row, { multiline: row.querySelector(".env-var-value-input").tagName !== "TEXTAREA" });
+}
+
+function addEnvironmentVariableRow(variable) {
+  const box = document.getElementById("env-vars");
+  box.insertAdjacentHTML("beforeend", environmentVariableRowHtml(variable));
+  const row = box.lastElementChild;
+  if (variable && !variable.secret && variable.value)
+    row.querySelector(".env-var-value-input").value = variable.value;
+  return row;
+}
+
+/* name 为空 = 新建;template 是"在本项目覆盖"时带过来的全局环境:沿用它的变量名和普通
+   变量的值,secret 变量要重新填(项目这份是独立的一份,读不到全局那份的保密值)。 */
+function editEnvironment(scope, name, template = null) {
+  const existing = name ? credentialByName(scope, name) : null;
+  if (name && !existing) { uiAlert("环境不存在,请刷新后重试"); return; }
+  const where = scope === "global" ? "全局环境(所有项目可用)" : `项目「${currentProject}」的环境`;
+  const requested = existing && !existing.has_value && existing.requested_by
+    ? `<p class="muted">${esc(existing.requested_by)} 请求了这个环境,请把标着“待填写”的变量补上。</p>` : "";
+  const fixedName = existing?.name || template?.name || "";
+  openFormDialog(existing ? `${existing.has_value ? "编辑" : "填写"}环境 ${existing.name}` : `新建${where}`, `
+    ${requested}
+    <label>名称(大写字母、数字、下划线;Agent 读取的目录名)</label>
+    <input type="text" id="env-name" value="${esc(fixedName)}" ${existing ? "disabled" : ""}
+      placeholder="例如 STAGING_ADMIN">
+    <label>用途(写给 Agent 看:这组变量对应哪个系统、能做什么)</label>
+    <textarea id="env-desc" rows="2" placeholder="例如:预发环境管理后台,只读账号">${
+      esc(existing?.description || template?.description || "")}</textarea>
+    <label class="label-with-action">变量 <button class="ghost compact" type="button"
+      onclick="addEnvironmentVariableRow().querySelector('.env-var-name').focus()">+ 添加变量</button></label>
+    <div id="env-vars" class="env-vars"></div>
+    <p class="muted">勾上 secret 的变量保存后不再显示,只留末 4 位供辨认,平台会把消息、运行日志里出现的值替换成
+      <code>[credential:环境.变量]</code>;不勾的是普通变量,值不保密、直接显示,不要放密码或 token。
+      Agent 经工作区 <code>credentials/${esc(fixedName || "<名称>")}/&lt;变量名&gt;</code> 文件读取。${
+      scope === "project" ? "与全局环境同名时,本项目整份使用这一个。" : "项目里有同名环境时,该项目整份使用项目那个。"}</p>`,
+    `<button class="action" data-scope="${scope}" data-name="${esc(existing?.name || "")}"
+       onclick="saveEnvironment(this.dataset.scope, this.dataset.name || null)">保存</button>
+     <button class="ghost" onclick="fdlg.close()">取消</button>`, { size: "wide" });
+  const variables = existing?.variables
+    || (template?.variables || []).map(item => ({ ...item, has_value: false }));
+  if (variables.length) variables.forEach(addEnvironmentVariableRow);
+  else addEnvironmentVariableRow();
+}
+
+async function saveEnvironment(scope, existingName) {
+  const name = existingName || document.getElementById("env-name").value.trim();
+  const namePattern = /^[A-Z][A-Z0-9_]{0,63}$/;
+  if (!namePattern.test(name)) {
+    uiAlert("名称只能使用大写字母、数字和下划线,以字母开头,例如 STAGING_ADMIN");
+    return;
+  }
+  const variables = [];
+  for (const row of document.querySelectorAll("#env-vars .env-var-row")) {
+    const key = row.querySelector(".env-var-name").value.trim();
+    const value = row.querySelector(".env-var-value-input").value;
+    const secret = row.querySelector(".env-var-secret input").checked;
+    if (!key && !value.trim()) continue;                // 没填的空行直接忽略
+    if (!namePattern.test(key)) {
+      uiAlert(`变量名「${key}」不合法:只能使用大写字母、数字和下划线,以字母开头,例如 USERNAME`);
+      return;
+    }
+    if (variables.some(item => item.name === key)) { uiAlert(`变量 ${key} 重复`); return; }
+    if (!value.trim() && row.dataset.kept !== "1") { uiAlert(`请填写变量 ${key} 的值`); return; }
+    if (!value.trim() && !secret) { uiAlert(`变量 ${key} 从 secret 改为普通变量,要重新填写值`); return; }
+    variables.push({ name: key, secret, ...(value.trim() ? { value } : {}) });
+  }
+  if (!variables.length) { uiAlert("环境至少要有一个变量"); return; }
+  const saved = await api("POST", credentialApiBase(scope), {
+    name, description: document.getElementById("env-desc").value.trim(), variables,
+  });
+  fdlg.close();
+  await refreshCredentialViews();
+  toast(`环境 ${saved.name} 已保存,Agent 下一条命令即可读取`, "success");
 }
 
 async function refreshCredentialViews() {

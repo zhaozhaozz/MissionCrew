@@ -587,6 +587,31 @@ def credential_fingerprint(value: str) -> str:
     return f"…{value[-4:]}" if len(value) >= 12 else ""
 
 
+CREDENTIAL_KINDS = ("secret", "environment")
+
+
+@dataclass
+class CredentialVariable:
+    """环境里的一个变量。secret 变量的值与单值凭据一样只存在 credentials 表的 value
+    列,本对象的 value 恒为空;普通变量的值就放在这里,页面与 Agent 都能直接看到。"""
+
+    name: str
+    secret: bool = True
+    has_value: bool = False
+    fingerprint: str = ""          # 仅 secret:值的末 4 位
+    value: str = ""                # 仅普通变量
+
+    def __post_init__(self):
+        if not CREDENTIAL_NAME_RE.fullmatch(self.name or ""):
+            raise ValueError(
+                "变量名只能使用大写字母、数字和下划线,以字母开头,最长 64 个字符")
+        self.secret = bool(self.secret)
+        if self.secret:
+            self.value = ""
+        else:
+            self.fingerprint = ""
+
+
 @dataclass
 class Credential:
     """人类保存给 Agent 使用的凭据,本对象只含元数据。
@@ -594,21 +619,37 @@ class Credential:
     值存在 credentials 表的独立列里,不进入本对象的任何序列化,因此总览、
     Agent Tool 结果、回收站与审计都不可能顺带带出它。project_id 为空是全局
     凭据,对所有项目可见;项目凭据只属于本项目,与全局同名时覆盖全局。
+
+    kind 有两种:`secret` 是单个保密值;`environment`(环境)是一组变量,每个变量
+    各自标记是否 secret,用来放需要配套使用的值(地址 + 用户名 + 密码)。
     """
 
     name: str
     project_id: str = ""
     description: str = ""          # 用途说明,Agent 据此判断该用哪一份
-    has_value: bool = False        # False = Agent 经 credential.request 登记、待人填写
+    has_value: bool = False        # False = 待人填写;环境 = 还有变量没有值
     fingerprint: str = ""
     requested_by: str = ""         # 登记该待填写凭据的角色,如 role:dev;人保存值后清空
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
+    kind: str = "secret"
+    variables: list[CredentialVariable] = field(default_factory=list)   # 仅环境
 
     def __post_init__(self):
         if not CREDENTIAL_NAME_RE.fullmatch(self.name or ""):
             raise ValueError(
                 "凭据名只能使用大写字母、数字和下划线,以字母开头,最长 64 个字符")
+        if self.kind not in CREDENTIAL_KINDS:
+            raise ValueError(f"未知凭据类型: {self.kind}")
+        self.variables = [item if isinstance(item, CredentialVariable)
+                          else CredentialVariable(**item) for item in self.variables]
+
+    @property
+    def is_environment(self) -> bool:
+        return self.kind == "environment"
+
+    def variable(self, name: str) -> Optional["CredentialVariable"]:
+        return next((item for item in self.variables if item.name == name), None)
 
     @property
     def id(self) -> str:

@@ -242,8 +242,9 @@
       </div>
       <div class="section" id="sec-proj-credentials">
         <h2>凭据
-          <button class="ghost" style="margin-left:8px" onclick="editCredential('project', null)">+ 新建项目凭据</button></h2>
-        <p class="muted">只属于本项目的 token、密码、密钥；与全局凭据同名时本项目用这一份。Agent 需要但还没有的凭据会以“待填写”出现在这里，请在这里填写，不要发在聊天里。</p>
+          <button class="ghost" style="margin-left:8px" onclick="editCredential('project', null)">+ 新建项目凭据</button>
+          <button class="ghost" onclick="editEnvironment('project', null)">+ 新建环境</button></h2>
+        <p class="muted">只属于本项目的 token、密码、密钥；与全局凭据同名时本项目用这一份。需要配套使用的几个值（地址、用户名、密码）建成一个环境：一组变量，每个变量单独选择是否 secret。Agent 需要但还没有的凭据会以“待填写”出现在这里，请在这里填写，不要发在聊天里。</p>
         <div class="github-identity" id="proj-github-identity"></div>
         <div class="runtime-table-wrap"><table class="mgr" id="proj-credential-table"></table></div>
         <h3>继承的全局凭据</h3>
@@ -401,8 +402,9 @@
       </div>
       <div class="section" id="global-credential-section">
         <h2>凭据(全局共享)
-          <button class="ghost" style="margin-left:8px" onclick="editCredential('global', null)">＋ 新建凭据</button></h2>
-        <p class="muted">保存给 Agent 用的 token、密码、密钥，所有项目都能使用；项目里有同名凭据时该项目用自己的。Agent 从工作区 <code>credentials/&lt;名称&gt;</code> 文件读取，值不进入提示词，保存后页面也不再显示。</p>
+          <button class="ghost" style="margin-left:8px" onclick="editCredential('global', null)">＋ 新建凭据</button>
+          <button class="ghost" onclick="editEnvironment('global', null)">＋ 新建环境</button></h2>
+        <p class="muted">保存给 Agent 用的 token、密码、密钥，所有项目都能使用；项目里有同名凭据时该项目用自己的。Agent 从工作区 <code>credentials/&lt;名称&gt;</code> 文件读取，值不进入提示词，保存后页面也不再显示。环境是一组配套使用的变量（地址、用户名、密码），每个变量单独选择是否 secret，Agent 从 <code>credentials/&lt;名称&gt;/&lt;变量名&gt;</code> 读取。</p>
         <div class="github-identity" id="global-github-identity"></div>
         <div class="runtime-table-wrap"><table class="mgr" id="global-credential-table"></table></div>
       </div>

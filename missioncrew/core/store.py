@@ -138,7 +138,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_source
   ON webhook_deliveries(source_id, id DESC);
--- 凭据:data 是不含值的元数据 JSON,值单独一列,通用的 _get/_list 只读 data 列
+-- 凭据:data 是不含保密值的元数据 JSON,保密值单独一列(单值凭据是原文,环境是
+-- "变量名 -> 值"的 JSON,只含 secret 变量),通用的 _get/_list 只读 data 列
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY, data TEXT NOT NULL, value TEXT NOT NULL DEFAULT ''
 );
@@ -162,6 +163,16 @@ CREATE TABLE IF NOT EXISTS runtime_usage (
 CREATE INDEX IF NOT EXISTS idx_runtime_usage_started
   ON runtime_usage(started_at DESC);
 """
+
+
+def _environment_secrets(raw) -> dict[str, str]:
+    """credentials.value 列里环境的保密值:JSON 对象,损坏或为空时当作没有。"""
+    try:
+        data = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return ({str(key): str(value) for key, value in data.items() if value}
+            if isinstance(data, dict) else {})
 
 
 class Store:
@@ -1309,9 +1320,12 @@ class Store:
 
     # ---- 凭据(全局 + 项目;值与元数据分列存放) ----
     def put_credential(self, credential: Credential,
-                       value: Optional[str] = None) -> None:
-        """保存元数据;value 不为 None 时一并替换值(空串 = 清空,回到待填写)。"""
+                       value: Optional[str | dict] = None) -> None:
+        """保存元数据;value 不为 None 时一并替换保密值(空串 = 清空,回到待填写)。
+        环境传"secret 变量名 -> 值"的字典,整份替换。"""
         credential.updated_at = time.time()
+        if isinstance(value, dict):
+            value = json.dumps(value, ensure_ascii=False) if value else ""
         with self._lock:
             if value is None:
                 self._execute(
@@ -1338,9 +1352,20 @@ class Store:
         return sorted(items, key=lambda item: (item.project_id, item.name))
 
     def credential_value(self, project_id: str, name: str) -> str:
-        rows = self._query("SELECT value FROM credentials WHERE id=?",
+        """单值凭据的值;没有这份凭据、还没填写或它是环境时返回空串。"""
+        rows = self._query("SELECT data, value FROM credentials WHERE id=?",
                            (credential_id(project_id, name),))
-        return str(rows[0]["value"]) if rows else ""
+        if not rows or json.loads(rows[0]["data"]).get("kind") == "environment":
+            return ""
+        return str(rows[0]["value"])
+
+    def credential_secrets(self, project_id: str, name: str) -> dict[str, str]:
+        """环境里 secret 变量的值(变量名 -> 值);不是环境时返回空字典。"""
+        rows = self._query("SELECT data, value FROM credentials WHERE id=?",
+                           (credential_id(project_id, name),))
+        if not rows or json.loads(rows[0]["data"]).get("kind") != "environment":
+            return {}
+        return _environment_secrets(rows[0]["value"])
 
     def delete_credential(self, id: str) -> None:
         with self._lock:
@@ -1352,9 +1377,16 @@ class Store:
             if self._redaction is None:
                 rows = self._query(
                     "SELECT data, value FROM credentials WHERE value != ''")
-                self._redaction = redaction_pairs(
-                    (json.loads(row["data"])["name"], str(row["value"]))
-                    for row in rows)
+                named: list[tuple[str, str]] = []
+                for row in rows:
+                    data = json.loads(row["data"])
+                    if data.get("kind") == "environment":
+                        # 环境只有 secret 变量的值在这一列,占位符写成 <环境>.<变量>
+                        named += [(f"{data['name']}.{variable}", value) for variable, value
+                                  in _environment_secrets(row["value"]).items()]
+                    else:
+                        named.append((data["name"], str(row["value"])))
+                self._redaction = redaction_pairs(named)
             return self._redaction
 
     def redact_credentials(self, text: str) -> str:

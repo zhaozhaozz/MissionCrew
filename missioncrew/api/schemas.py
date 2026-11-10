@@ -85,10 +85,18 @@ class WebhookSourceInput(BaseModel):
     github: Optional[dict] = None
 
 
+class CredentialVariableInput(BaseModel):
+    name: str = Field(max_length=64)
+    secret: bool = True
+    value: Optional[str] = Field(None, max_length=70000)   # None = 保留原值
+
+
 class CredentialInput(BaseModel):
     name: str = Field(max_length=64)
     description: Optional[str] = Field(None, max_length=2000)
     value: Optional[str] = Field(None, max_length=70000)   # None = 保留原值;只写不读
+    # 给出 variables 即保存环境(一组变量):它是保存后的完整变量列表
+    variables: Optional[list[CredentialVariableInput]] = Field(None, max_length=50)
 
 
 class MessageInput(BaseModel):

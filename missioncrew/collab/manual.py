@@ -451,16 +451,30 @@ An orchestrator's turn:
   `GITHUB_TOKEN` credential `gh` and git use the login of the user running MissionCrew.
   `gh api user` shows which account you are; a 403 or 404 from GitHub usually means the token
   lacks that permission or repository, so report it instead of trying another account.
+- An environment is a group of values that are used together (address, user name, password):
+  a directory `$MISSIONCREW_CREDENTIALS_DIR/<NAME>/` with one file per variable, for example
+  `curl -u "$(cat "$E/USERNAME"):$(cat "$E/PASSWORD")" "$(cat "$E/URL")/api"` after
+  `E="$MISSIONCREW_CREDENTIALS_DIR/STAGING_ADMIN"`. In `index.json` its entry has
+  `"type": "environment"` and a `variables` list: each variable says whether it is `secret`
+  and whether it is `available` (already has a value). Variables with `secret: false` are plain
+  configuration whose value is also in `index.json`; you may quote those. Treat `secret: true`
+  variables exactly like any other credential.
 - When the task needs a secret that is not in `index.json`, call `credential.request` with an
   upper-case `name` and a `description` of what it is for and the minimal permissions it
   needs; the platform asks the human with a link to the form. When you mention the form
   yourself, link it as `__PROJECT_URL__/settings/credentials` (the result's `resource_url`),
   not as a page address you made up. Never ask humans to paste a secret into chat. Then
   report in your final reply that the work is waiting for that credential, and continue once
-  the file exists.
+  the file exists. When you need several values that go together, request one environment
+  instead of several credentials: add `variables`, a list of `{name, secret, value}`. Mark
+  everything that must stay private as `secret: true` and leave its value out (a human fills
+  it in); for `secret: false` variables pass the value if you already know it (a user name
+  from the repository's docs, a base URL). Requesting variables an environment of this
+  project lacks adds them to it.
 - The platform replaces any saved credential value it finds in messages, run logs, Agent Tool
-  arguments and published documents with `[credential:<NAME>]`. That is a safety net for
-  mistakes, not a way to use secrets: a value written anywhere is still a leak to report.
+  arguments and published documents with `[credential:<NAME>]` (`[credential:<ENV>.<VAR>]` for
+  an environment's secret variable). That is a safety net for mistakes, not a way to use
+  secrets: a value written anywhere is still a leak to report.
 
 ## 13. Recycle Bin (recycle.*)
 
