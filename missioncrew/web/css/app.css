@@ -111,6 +111,10 @@
   #proj-notify.notify-on { color: var(--accent); }
   .notify-setting { max-width: 640px; }
   .notify-setting .form-actions { margin-top: 10px; }
+  /* 凭据区顶部的 GitHub 身份一行:核对结果与操作按钮同排,窄屏自动换行 */
+  .github-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
+    margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
+  .github-identity.loading { opacity: .6; }
   .notify-support { margin: 8px 0 0; }
   .notify-project-table { margin-top: 12px; }
   .side-nav { display: flex; align-items: center; padding: 7px 10px; border-radius: 8px;

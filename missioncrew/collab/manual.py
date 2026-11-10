@@ -405,11 +405,21 @@ An orchestrator's turn:
   replaces a global one with the same name). Files change as soon as a human edits a
   credential, so read the file at the moment you use it.
 - Read a credential only inline in the command that needs it, for example
-  `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list` or a tool's own
+  `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM_TOKEN")" npm publish` or a tool's own
   `--password-file`/`--token-file` option pointing at the file. Never print it (a bare `cat` of
   the file, `echo`, `env`, `set -x`, verbose HTTP logs), copy it into other files, repositories,
   git remote URLs, scripts, Tasks, documents or messages, or quote it in your reply. Automation
   scripts get the same directory through the same variable.
+- `GITHUB_TOKEN` is the project's GitHub identity. While it is saved the platform signs `gh`
+  and git in with it: `GH_CONFIG_DIR` points at a generated gh configuration and git gets a
+  credential helper for HTTPS remotes on github.com. Run `gh pr list`, `gh api ...` or
+  `git push` directly; do not pass the token yourself and do not run `gh auth login`. SSH
+  remotes keep using the machine's own keys. If `GH_CONFIG_DIR` is not set in your session
+  (the token was saved after the session started), read the file inline instead:
+  `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list`. Without a
+  `GITHUB_TOKEN` credential `gh` and git use the login of the user running MissionCrew.
+  `gh api user` shows which account you are; a 403 or 404 from GitHub usually means the token
+  lacks that permission or repository, so report it instead of trying another account.
 - When the task needs a secret that is not in `index.json`, call `credential.request` with an
   upper-case `name` and a `description` of what it is for and the minimal permissions it
   needs; the platform asks the human with a link to the form. Never ask humans to paste a

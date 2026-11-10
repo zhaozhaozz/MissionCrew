@@ -17,7 +17,7 @@ Combined, items from external systems can flow through fully automatically: **Gi
 ### Execution environment
 
 - **Working directory**: `<data-directory>/automations/<project-id>/<script-short-id>/`; it is kept across runs and can hold state files (for example, the time of the last sync). Before each run, the platform writes the script body to `script` in this directory, so do not use this file name for anything else.
-- **Environment variables**: the script inherits the environment of the MissionCrew service process, and `PATH` as well as the login state of CLIs such as `gh` and `gitcode` all come from the user who started the service; the platform additionally injects:
+- **Environment variables**: the script inherits the environment of the MissionCrew service process, and `PATH` as well as the login state of CLIs such as `gh` and `gitcode` all come from the user who started the service; when the project has a `GITHUB_TOKEN` credential, `gh` and git in the script use that GitHub identity instead, without the script passing the token (the mechanism is in "GitHub identity" of [harness workspace boundaries](agent-harness-workspace.md)). The platform additionally injects:
 
   | Variable | Meaning |
   | --- | --- |
@@ -26,7 +26,7 @@ Combined, items from external systems can flow through fully automatically: **Gi
   | `MISSIONCREW_AGENT_TOKEN_FILE` | The one-time token file of this run (`.agent-tool-token` in the working directory); the CLI reads it itself, so the script does not need to read it and must not print it |
   | `MISSIONCREW_PROJECT_ID` | Project id |
   | `MISSIONCREW_AUTOMATION_ID` | Script id, in the format `<project-id>:<script-short-id>` |
-  | `MISSIONCREW_CREDENTIALS_DIR` | Directory of the credentials available to the project (global credentials plus the project's own, a project credential replacing a global one with the same name), one file per credential; read one inline in the command that needs it, such as `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh ...`, and never print it. stdout/stderr also have credential values replaced with `[credential:<name>]` before they are stored |
+  | `MISSIONCREW_CREDENTIALS_DIR` | Directory of the credentials available to the project (global credentials plus the project's own, a project credential replacing a global one with the same name), one file per credential; read one inline in the command that needs it, such as `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM_TOKEN")" npm publish`, and never print it. stdout/stderr also have credential values replaced with `[credential:<name>]` before they are stored |
   | `MISSIONCREW_TRIGGER` | What triggered this run: `cron`, `webhook` or `manual` (a human clicking "Run now" (立即运行) on the page, or the orchestrator's `automation.run`) |
   | `MISSIONCREW_WEBHOOK_EVENT_FILE` | Webhook runs only: path of this run's event file; the format is described under "Webhook triggers" below |
   | `MISSIONCREW_WEBHOOK_SOURCE` | Webhook runs only: id of the webhook source that received this delivery |

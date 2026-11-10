@@ -37,6 +37,7 @@ from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
                           DispatchInactiveError, default_agent_tool_url)
 from .callbacks import CallbackService
 from .credentials import effective_credentials
+from .github import GITHUB_TOKEN_NAME, github_env
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls)
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
@@ -1098,6 +1099,11 @@ class ChatEngine:
         names = [item.name for item in effective_credentials(self.store, project_id)
                  if item.has_value]
         saved = ", ".join(f"`{name}`" for name in names) if names else "none yet"
+        github = (
+            f" `{GITHUB_TOKEN_NAME}` is also the project's GitHub identity: when "
+            "`$GH_CONFIG_DIR` is set, `gh` and git over HTTPS to github.com are already "
+            "signed in with it, so run them directly without passing the token."
+            if GITHUB_TOKEN_NAME in names else "")
         return (
             f"Credentials humans saved for this project: {saved} (files in "
             "`$MISSIONCREW_CREDENTIALS_DIR`, purposes in `index.json` there). Use one only "
@@ -1105,7 +1111,7 @@ class ChatEngine:
             "`TOKEN=\"$(cat \"$MISSIONCREW_CREDENTIALS_DIR/<NAME>\")\" <command>`; never "
             "print it or write it into files, messages or documents, and never ask for a "
             "secret in chat: call `credential.request` when one is missing (manual.md "
-            "section 12)."
+            "section 12)." + github
         )
 
     def _run_event_emitter(self, run_id: int, project, document_roots: list):
@@ -1586,6 +1592,8 @@ class ChatEngine:
                 env["MISSIONCREW_MANUAL"] = str(workspace.manual)
                 env["MISSIONCREW_PLATFORM_DOCS_DIR"] = str(workspace.platform_docs)
                 env["MISSIONCREW_CREDENTIALS_DIR"] = str(workspace.credentials)
+                # 项目有 GITHUB_TOKEN 凭据时,gh 与 git 直接以这个身份工作
+                env.update(github_env(project.id, workspace.credentials))
                 manual_path = str(workspace.manual)
                 project_line = project.name + (
                     f" · {' '.join(project.description.split())}" if project.description else "")

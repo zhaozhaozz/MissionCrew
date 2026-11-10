@@ -20,6 +20,8 @@ from typing import Optional
 from ..core.config import projects_dir
 from ..core.models import Credential, credential_fingerprint
 from ..core.store import Store
+from .github import (GITHUB_TOKEN_NAME, remove_github_cli_config,
+                     sync_github_cli_config)
 
 INDEX_FILE = "index.json"        # 凭据目录里不含值的索引:名字、用途、作用域
 MAX_VALUE_BYTES = 64 * 1024
@@ -134,7 +136,7 @@ def _file_content(value: str) -> str:
     return value + "\n" if "\n" in value else value
 
 
-def _write_private(path: Path, content: str) -> None:
+def write_private_file(path: Path, content: str) -> None:
     """原子写入 0600 文件(mkstemp 建的临时文件本就是 0600);内容未变不重写。"""
     try:
         if path.read_text(encoding="utf-8") == content:
@@ -180,9 +182,13 @@ def write_credential_context(store: Store, project_id: str) -> Path:
             else:
                 entry.unlink()
         for name, value in wanted.items():
-            _write_private(directory / name, _file_content(value))
-        _write_private(directory / INDEX_FILE,
-                       json.dumps({"credentials": index}, ensure_ascii=False, indent=2) + "\n")
+            write_private_file(directory / name, _file_content(value))
+        write_private_file(
+            directory / INDEX_FILE,
+            json.dumps({"credentials": index}, ensure_ascii=False, indent=2) + "\n")
+        # GITHUB_TOKEN 同时是项目的 GitHub 身份:gh 配置与凭据文件在同一把锁里一起更新
+        sync_github_cli_config(project_id, wanted.get(GITHUB_TOKEN_NAME, ""),
+                               write_private_file)
     return directory
 
 
@@ -190,3 +196,4 @@ def remove_credential_context(project_id: str) -> None:
     """项目删除后清掉它的凭据目录(其中也有继承来的全局凭据文件)。"""
     with _CONTEXT_LOCK:
         shutil.rmtree(credential_context_dir(project_id), ignore_errors=True)
+        remove_github_cli_config(project_id)

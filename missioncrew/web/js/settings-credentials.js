@@ -46,6 +46,7 @@ async function renderGlobalCredentials() {
   }
   table.innerHTML = CREDENTIAL_TABLE_HEAD + (credentialRowsHtml(globalCredentials, "global")
     || `<tr><td colspan="4" class="empty">还没有全局凭据</td></tr>`);
+  renderGithubIdentity("global");   // 核对要访问 GitHub,不阻塞列表
 }
 
 async function renderProjectCredentials() {
@@ -66,6 +67,65 @@ async function renderProjectCredentials() {
     inheritedTable.innerHTML = CREDENTIAL_TABLE_HEAD + (
       credentialRowsHtml(projectCredentials.inherited, "global", { inherited: true })
       || `<tr><td colspan="4" class="empty">没有全局凭据</td></tr>`);
+  renderGithubIdentity("project");
+}
+
+/* ---- GitHub 身份:名为 GITHUB_TOKEN 的凭据(个人访问令牌)就是项目在 GitHub 上的身份 ----
+   保存后平台让 Agent 与自动化脚本里的 gh、git 直接以它登录;这里显示核对结果
+   (账号、令牌类型、权限、到期时间),token 本身仍走凭据表单,只写不读。 */
+const GITHUB_TOKEN_NAME = "GITHUB_TOKEN";
+const GITHUB_TOKEN_KINDS = {
+  classic: "classic PAT", fine_grained: "fine-grained PAT", oauth: "OAuth 令牌",
+  app_user: "GitHub App 用户令牌", app_installation: "GitHub App 安装令牌", unknown: "未知类型",
+};
+
+function githubIdentityHtml(scope, status) {
+  const own = scope === "global" ? globalCredentials : projectCredentials.credentials;
+  const hasOwn = own.some(item => item.name === GITHUB_TOKEN_NAME);
+  const setButton = label => `<button class="ghost compact" type="button"
+    onclick="editCredential('${scope}', ${hasOwn ? `'${GITHUB_TOKEN_NAME}'` : "null"}, '${GITHUB_TOKEN_NAME}')">${label}</button>`;
+  if (!status.configured)
+    return `<strong>GitHub 身份</strong> <span class="muted">未设置。保存名为
+      <code>${GITHUB_TOKEN_NAME}</code> 的凭据(个人访问令牌,classic 或 fine-grained 均可)后,Agent
+      与自动化脚本里的 <code>gh</code>、<code>git</code> 直接使用这个身份,GitHub 轮询来源也用它查询事件。</span>
+      ${setButton("设置 GitHub token")}`;
+  const identity = status.identity || {};
+  const inherited = scope === "project" && status.scope === "global";
+  const facts = [];
+  if (identity.ok) {
+    facts.push(`<a href="${esc(identity.url)}" target="_blank" rel="noopener">@${esc(identity.login)}</a>${
+      identity.name ? ` (${esc(identity.name)})` : ""}`);
+    facts.push(esc(GITHUB_TOKEN_KINDS[identity.kind] || identity.kind));
+    if (identity.scopes) facts.push(`权限 ${esc(identity.scopes.join(", ") || "无")}`);
+    else if (identity.kind === "fine_grained") facts.push("权限以令牌自身的仓库与权限项为准");
+    if (identity.expires_at) facts.push(`到期 ${esc(identity.expires_at)}`);
+    if (identity.notifications === true) facts.push("通知接口可用");
+    if (identity.notifications === false) facts.push("通知接口不可用(需要带 notifications 或 repo 权限的 classic PAT)");
+  }
+  const state = identity.ok ? `<span class="pill st-done">已连接</span>`
+    : `<span class="pill st-failed" title="${esc(identity.error || "")}">核对失败</span>
+       <span class="automation-error">${esc(identity.error || "")}</span>`;
+  return `<strong>GitHub 身份</strong> ${state} <span>${facts.join(" · ")}</span>
+    ${inherited ? '<span class="pill">沿用全局 token</span>' : ""}
+    <button class="ghost compact" type="button" onclick="renderGithubIdentity('${scope}', { refresh: true })">重新核对</button>
+    ${setButton(inherited ? "在本项目单独设置" : "替换 token")}`;
+}
+
+async function renderGithubIdentity(scope, { refresh = false } = {}) {
+  const box = document.getElementById(scope === "global" ? "global-github-identity" : "proj-github-identity");
+  if (!box || (scope === "project" && !currentProject)) return;
+  const project = currentProject;
+  const base = scope === "global" ? "/api/github" : `/api/projects/${encodeURIComponent(project)}/github`;
+  if (refresh) box.classList.add("loading");
+  try {
+    const status = await api("GET", base + (refresh ? "?refresh=true" : ""));
+    if (scope === "project" && project !== currentProject) return;   // 期间已切换项目
+    box.innerHTML = githubIdentityHtml(scope, status);
+  } catch (e) {
+    box.innerHTML = `<strong>GitHub 身份</strong> <span class="automation-error">读取失败</span>`;
+  } finally {
+    box.classList.remove("loading");
+  }
 }
 
 function credentialByName(scope, name) {
@@ -109,6 +169,9 @@ function editCredential(scope, name, presetName = "", { presetValue = "", onSave
     <label>用途(写给 Agent 看:做什么用、权限范围)</label>
     <textarea id="cred-desc" rows="2" placeholder="例如:webshop 仓库的细粒度 PAT,只有 Issues/PR 读写">${
       esc(existing?.description || "")}</textarea>
+    ${(existing?.name || presetName) === GITHUB_TOKEN_NAME ? `<p class="muted">这份凭据是 GitHub 身份:填个人访问令牌。
+      classic(<code>ghp_…</code>)按 scope 授权,读写仓库勾 <code>repo</code>,要用通知接口勾 <code>notifications</code>
+      或 <code>repo</code>;fine-grained(<code>github_pat_…</code>)按仓库与权限项授权,不能用通知接口。</p>` : ""}
     <label class="label-with-action">值 <button class="ghost compact" type="button"
       id="cred-multiline" onclick="toggleCredentialMultiline()">${
       multiline ? "改为单行密码框" : "改为多行输入"}</button></label>

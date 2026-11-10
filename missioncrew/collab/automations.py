@@ -21,6 +21,7 @@ from typing import Callable, Optional
 from .agent_tools import (AUTOMATION_ACTIONS, AgentActionService,
                           CONTROL_ID_RE, default_agent_tool_url)
 from .credentials import write_credential_context
+from .github import github_env
 from ..core.config import mc_home
 from ..core.cron import next_cron_time, validate_cron
 from ..core.models import Automation
@@ -297,6 +298,7 @@ class AutomationService:
         token_file.write_text(token + "\n", encoding="utf-8")
         token_file.chmod(0o600)
 
+        credentials_dir = write_credential_context(self.store, automation.project_id)
         env = dict(os.environ)
         env.update({
             "MISSIONCREW_AGENT_TOOL_URL": default_agent_tool_url(),
@@ -306,9 +308,10 @@ class AutomationService:
             "MISSIONCREW_AUTOMATION_ID": automation.id,
             "MISSIONCREW_TRIGGER": trigger,
             # 与聊天角色读同一个项目凭据目录;输出落库前同样脱敏
-            "MISSIONCREW_CREDENTIALS_DIR": str(
-                write_credential_context(self.store, automation.project_id)),
+            "MISSIONCREW_CREDENTIALS_DIR": str(credentials_dir),
         })
+        # 项目有 GITHUB_TOKEN 凭据时,脚本里的 gh 与 git 直接是这个身份
+        env.update(github_env(automation.project_id, credentials_dir))
         for key in ("MISSIONCREW_WEBHOOK_EVENT_FILE", "MISSIONCREW_WEBHOOK_SOURCE",
                     "MISSIONCREW_WEBHOOK_PROVIDER", "MISSIONCREW_WEBHOOK_EVENT",
                     "MISSIONCREW_WEBHOOK_DELIVERY"):

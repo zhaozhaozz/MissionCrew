@@ -17,7 +17,7 @@
 ### 运行环境
 
 - **工作目录**：`<数据目录>/automations/<项目 id>/<脚本短 id>/`，跨次运行保留，可以存放状态文件（例如上次同步的时间）。每次运行前平台把脚本正文写成该目录下的 `script`，不要用这个文件名保存别的内容。
-- **环境变量**：脚本继承 MissionCrew 服务进程的环境，`PATH` 以及 `gh`、`gitcode` 等 CLI 的登录状态都来自启动服务的用户；平台另外注入：
+- **环境变量**：脚本继承 MissionCrew 服务进程的环境，`PATH` 以及 `gh`、`gitcode` 等 CLI 的登录状态都来自启动服务的用户；项目有 `GITHUB_TOKEN` 凭据时，脚本里的 `gh` 与 git 改用这个 GitHub 身份，不用自己传 token（机制见 [harness 工作区边界](agent-harness-workspace.md) 的「GitHub 身份」）。平台另外注入：
 
   | 变量 | 含义 |
   | --- | --- |
@@ -26,7 +26,7 @@
   | `MISSIONCREW_AGENT_TOKEN_FILE` | 本次运行的一次性令牌文件（工作目录下的 `.agent-tool-token`）；CLI 自行读取，脚本不需要读取，也不要打印 |
   | `MISSIONCREW_PROJECT_ID` | 项目 id |
   | `MISSIONCREW_AUTOMATION_ID` | 脚本 id，格式 `<项目 id>:<脚本短 id>` |
-  | `MISSIONCREW_CREDENTIALS_DIR` | 项目可用凭据的目录（全局凭据加本项目凭据，同名时项目覆盖全局），每份凭据一个文件；在需要的命令里内联读取，如 `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh ...`，不要打印。stdout/stderr 落库前同样会把凭据原文替换成 `[credential:<名称>]` |
+  | `MISSIONCREW_CREDENTIALS_DIR` | 项目可用凭据的目录（全局凭据加本项目凭据，同名时项目覆盖全局），每份凭据一个文件；在需要的命令里内联读取，如 `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM_TOKEN")" npm publish`，不要打印。stdout/stderr 落库前同样会把凭据原文替换成 `[credential:<名称>]` |
   | `MISSIONCREW_TRIGGER` | 本次运行的触发来源：`cron`、`webhook` 或 `manual`（人在页面点「立即运行」或主控 `automation.run`） |
   | `MISSIONCREW_WEBHOOK_EVENT_FILE` | 仅 webhook 触发：本次事件文件的路径，格式见下文「Webhook 触发」 |
   | `MISSIONCREW_WEBHOOK_SOURCE` | 仅 webhook 触发：收到这次投递的 webhook 来源 id |

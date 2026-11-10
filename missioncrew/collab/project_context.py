@@ -8,6 +8,7 @@ import tempfile
 import threading
 
 from .credentials import credential_context_dir
+from .github import github_cli_dir
 from .documents import DocumentLibrary, document_resource_url
 from .platform_docs import platform_docs_dir
 from .resource_urls import (guideline_resource_url, missioncrew_project_url,
@@ -100,6 +101,8 @@ def project_allowed_dirs(project: Project, library: DocumentLibrary,
     context_dirs.append(str(project_skill_library_dir(project.id)))
     if workspace_dir is not None:
         context_dirs.append(str(credential_context_dir(project.id)))   # 工作区 credentials/ 的链接目标
+        # 项目有 GitHub 身份时 gh 从这里读登录状态(GH_CONFIG_DIR);没有时目录不存在,下面自动跳过
+        context_dirs.append(str(github_cli_dir(project.id)))
     if workspace_dir is not None:
         context_dirs.append(str(platform_docs_dir()))   # 工作区 platform-docs/ 的链接目标
     for raw in [*project.repo_paths(), str(library.root), *context_dirs]:

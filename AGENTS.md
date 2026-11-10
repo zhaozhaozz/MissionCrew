@@ -11,7 +11,9 @@ missioncrew/
 ├── collab/           业务引擎:chat.py(聊天协作/主控派发)、workspace.py
 │                     (Agent 工作区装配)、manual.py(写进工作区的手册,Prompt
 │                     只留必守规则)、platform_docs.py(把 docs/ 复制给 Agent 检索)、
-│                     documents/tasks/skills/guidelines 等;callbacks.py 是角色
+│                     documents/tasks/skills/guidelines 等;github.py 是 GitHub 身份
+│                     (`GITHUB_TOKEN` 凭据 → gh 配置目录与 git credential helper、
+│                     token 核对、REST 客户端);callbacks.py 是角色
 │                     登记的一次性回调(到点/频道或 Task 有更新时轮询触发,回到原
 │                     频道启动原角色)
 ├── runtime/          Runtime 统一抽象层(业务层只使用 runtime_manager)
@@ -61,5 +63,5 @@ docs/                 详细文档,中文版在 docs/、英文版在 docs/en/(�
 - 给角色的提示词(公共上下文、本轮输入、注入横幅、`manual.md`、工作区 README、Agent Tool 动作说明与 `resume`、页面对话 instructions)一律用英文;人类可见内容的语言只由身份段的 `Language` 一行约定为简体中文。平台发到频道的通知、错误信息和工具回执 summary 面向人类,保持中文。改提示词标题时同步 `MockAdapter` 的 `_role_from_prompt`/`_trigger_from_prompt`,它们按 `You are role @`、`# Trigger Message` 解析。
 - 平台机制的完整说明只写在 `docs/`(人与 Agent 共用一份):`docs/*.md` 是中文版,`docs/en/` 下是同名英文版,两者内容保持一致、同一提交里一起改(有测试钉住文件一一对应)。`platform_docs.py` 把 `docs/en/*.md` 复制到数据目录,经工作区 `platform-docs/` 交给 Agent 按需检索。`manual.md` 与 Prompt 只写 Agent 的行为规则和关键约束,细节指向具体文档,不要另写一份;新增、删除文档或改变用途时同步更新两个 `README.md` 索引。
 - 专用 webhook 端口(`api/webhooks.py`)上只有 `POST /hooks/<来源路径>` 一条路由:主服务无身份验证,对外只转发这个端口,不要往它上面挂其他接口或静态文件。webhook 来源(`WebhookSource`)是全局资源,只由人维护;自动化脚本经 `webhook_source` 订阅来源,一次投递扇出给全部订阅者。来源密钥只给人看:列表与 Agent Tool 结果一律用 `WebhookSource.public_dict()`,密钥只经 `/api/webhook-sources/{id}/secret` 端点返回。
-- 凭据(`Credential`)分全局与项目两层,同名时项目覆盖全局。值只存 `credentials` 表的 `value` 列,只经项目凭据目录(工作区 `credentials/`、脚本的 `MISSIONCREW_CREDENTIALS_DIR`)交给 Agent,不进 Prompt、Agent Tool 结果或任何 API 返回,接口只写不读。新增会持久化人或 Agent 文本的写入口(消息、过程日志、运行输出、Agent Tool 参数等)要先过 `store.redact_credentials`。
+- 凭据(`Credential`)分全局与项目两层,同名时项目覆盖全局。值只存 `credentials` 表的 `value` 列,只经项目凭据目录(工作区 `credentials/`、脚本的 `MISSIONCREW_CREDENTIALS_DIR`)交给 Agent,不进 Prompt、Agent Tool 结果或任何 API 返回,接口只写不读。新增会持久化人或 Agent 文本的写入口(消息、过程日志、运行输出、Agent Tool 参数等)要先过 `store.redact_credentials`。名为 `GITHUB_TOKEN` 的凭据同时是项目的 GitHub 身份:`write_credential_context` 在同一把锁里重写 gh 配置目录,派发与脚本环境经 `github_env()` 注入 `GH_CONFIG_DIR` 和 git credential helper;环境变量里只放文件路径,不放 token。
 - 总览分层(均带 ETag,前端 8s 轮询):`/api/overview` 只含全局数据(projects/backends/role_templates,准则/Skill 只留元信息+内容指纹);角色/面板/数据源(状态取值与颜色,不含同步统计)/自动化走 `/api/projects/{id}/overview`;频道与任务走 `/api/projects/{id}/channels|tasks?scope=active|archived|all`(响应含全量口径 counts,任务不含 body;项目任务列表只在看板页拉取,聊天页只带 `channel` 参数拉当前频道绑定的任务)。全文走准则单条端点、`skills/library` 与 `/api/tasks/{id}`。项目整对象回传时,带指纹的精简条目由 `save_project` 按主键回填现有全文,不得清空正文;给总览新增字段前先掂量轮询体积。

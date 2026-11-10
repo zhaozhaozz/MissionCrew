@@ -88,7 +88,27 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 
 `credentials/` 链接到项目级凭据目录 `projects/<project>/runtime-context/credentials/`（目录权限 0700、文件 0600），每份凭据一个文件，文件名就是凭据名（如 `GITHUB_TOKEN`），内容是值本身：单行值不带结尾换行，多行值（如 PEM 私钥）保留结尾换行。`index.json` 列出每份凭据的名字、用途和作用域（`global` / `project`），不含值。项目可用的凭据是全局凭据加本项目凭据，同名时项目凭据覆盖全局。人在全局设置或项目设置里保存、替换、删除凭据后，平台立即重写受影响项目的目录（全局凭据影响所有项目），长驻会话的下一条命令就能读到新值；Agent 用 `credential.request` 登记、尚未填写的凭据不会出现在目录里。
 
-Agent 只在需要凭据的那条命令里内联读取（如 `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list`），不打印，也不复制进其他文件或消息；缺少凭据时调用 `credential.request`，请人到项目设置里填写，不在聊天里索要。凭据值从不进入 Prompt、Agent Tool 结果或任何 Web 接口的返回值，页面只显示值的末 4 位。消息、运行过程日志、自动化运行输出、Agent Tool 参数和 publish-file 发布的文本文件在落库前，平台会把其中出现的凭据原文（以及它的 URL 编码形式）替换成 `[credential:<名称>]`；短于 8 个字符的值不做替换，以免误伤正文。这只是防止无意泄漏的兜底：被拆开或重新编码过的值认不出来，它也不是针对恶意本地进程的隔离。
+Agent 只在需要凭据的那条命令里内联读取（如 `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM_TOKEN")" npm publish`），不打印，也不复制进其他文件或消息；缺少凭据时调用 `credential.request`，请人到项目设置里填写，不在聊天里索要。凭据值从不进入 Prompt、Agent Tool 结果或任何 Web 接口的返回值，页面只显示值的末 4 位。消息、运行过程日志、自动化运行输出、Agent Tool 参数和 publish-file 发布的文本文件在落库前，平台会把其中出现的凭据原文（以及它的 URL 编码形式）替换成 `[credential:<名称>]`；短于 8 个字符的值不做替换，以免误伤正文。这只是防止无意泄漏的兜底：被拆开或重新编码过的值认不出来，它也不是针对恶意本地进程的隔离。
+
+### GitHub 身份（`GITHUB_TOKEN`）
+
+名为 `GITHUB_TOKEN` 的凭据是项目在 GitHub 上的身份：值是个人访问令牌（PAT），classic（`ghp_…`）与 fine-grained（`github_pat_…`）都可以，同样分全局与项目两层，项目的那份覆盖全局的。保存后 Agent 和自动化脚本里的 `gh`、`git` 直接以这个身份工作，不用传 token，效果等同在本机执行过 `gh auth login` 和 `gh auth setup-git`：
+
+- **gh**：平台在 `projects/<project>/runtime-context/github-cli/` 生成 gh 配置（`hosts.yml`，目录权限 0700、文件 0600），并注入 `GH_CONFIG_DIR` 指向它。宿主环境里已有的 `GH_TOKEN`、`GITHUB_TOKEN` 环境变量会被置空，因为 gh 优先使用它们，不置空就会盖过项目身份。
+- **git**：平台经 `GIT_CONFIG_COUNT`、`GIT_CONFIG_KEY_<n>`、`GIT_CONFIG_VALUE_<n>` 给 `https://github.com` 与 `https://gist.github.com` 配一个 credential helper，git 需要凭据时由它读取 `credentials/GITHUB_TOKEN`；同时清掉这两个主机上宿主已有的 helper，所以不会落回启动服务的用户的账号。这只影响 HTTPS 远端，不改任何仓库或用户的 git 配置文件；SSH 远端（`git@github.com:…`）仍然使用本机的 SSH 密钥。
+
+gh 配置和 helper 都在每次调用时读文件，替换 token 后长驻会话的下一条命令就用新值。这几个环境变量在 Runtime 进程启动时注入：第一次保存 `GITHUB_TOKEN` 之前已经启动的长驻会话里没有它们，这类会话可以内联读取凭据文件（`GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list`），之后启动的会话自动生效。没有 `GITHUB_TOKEN` 凭据时平台什么都不注入，`gh` 与 git 沿用启动 MissionCrew 的用户自己的登录状态。
+
+设置页凭据区顶部的「GitHub 身份」一行显示核对结果：平台用 token 调用 GitHub 的 `GET /user`，列出账号、令牌类型、权限（classic PAT 的 scope；fine-grained PAT 的权限项无法从接口查到）、到期时间，以及通知接口是否可用。结果在服务进程内缓存 10 分钟，点「重新核对」立即重查。`GET /api/github`（全局那份）与 `GET /api/projects/<project>/github`（项目生效的那份）返回同样的内容，不含 token。
+
+两类 PAT 的差别：
+
+| | classic PAT | fine-grained PAT |
+| --- | --- | --- |
+| 授权方式 | 按 scope，对账号能访问的所有仓库生效 | 按选定的仓库和权限项 |
+| 读写代码、Issue、PR | `repo`（只操作公开仓时可用 `public_repo`） | Contents、Issues、Pull requests 等权限项按需设为读写 |
+| 通知接口（`/notifications`） | 可用，需要 `notifications` 或 `repo` | 不可用 |
+| 仓库事件接口（`/repos/<owner>/<repo>/events`） | 可用 | 可用，需要 Metadata 读权限（选了仓库就自带） |
 
 ### `tasks/`
 
@@ -138,6 +158,8 @@ Agent 只在需要凭据的那条命令里内联读取（如 `GH_TOKEN="$(cat "$
 | `MISSIONCREW_MANUAL` | Agent 手册 `manual.md` |
 | `MISSIONCREW_PLATFORM_DOCS_DIR` | MissionCrew 自身文档副本 `platform-docs/` |
 | `MISSIONCREW_CREDENTIALS_DIR` | 项目可用凭据的目录 `credentials/`，每份凭据一个文件 |
+| `GH_CONFIG_DIR` | 仅项目有 `GITHUB_TOKEN` 凭据时：平台生成的 gh 配置目录，`gh` 据此以项目的 GitHub 身份登录 |
+| `GIT_CONFIG_COUNT`、`GIT_CONFIG_KEY_<n>`、`GIT_CONFIG_VALUE_<n>` | 仅项目有 `GITHUB_TOKEN` 凭据时：给 github.com 的 HTTPS 远端配置读取该凭据的 git credential helper，接在环境里已有的同类配置之后 |
 | `MISSIONCREW_CHANNEL_HISTORY` | 当前角色可见的频道历史文件；仅聊天执行 |
 | `MISSIONCREW_CHANNEL_ID` | 当前频道 id |
 | `MISSIONCREW_SESSION_KEY` | 当前 channel×role 的 Runtime 会话键 |
