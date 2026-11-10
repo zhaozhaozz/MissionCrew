@@ -1670,6 +1670,11 @@
            border-left: 3px solid var(--accent); border-radius: 10px;
            box-shadow: var(--shadow-md); padding: 10px 14px; font-size: 13px;
            line-height: 1.5; white-space: pre-wrap; animation: toastIn .22s ease; }
+  /* 提示所属项目:实底标签独占一行,多个项目的通知叠在一起时先看到它 */
+  .toast-label { display: block; width: fit-content; max-width: 100%; margin-bottom: 5px;
+                 padding: 1px 9px; border-radius: 999px; background: var(--accent); color: #fff;
+                 font-size: 12.5px; font-weight: 700; letter-spacing: .02em;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .toast.success { border-left-color: var(--ok); }
   .toast.error { border-left-color: var(--bad); }
   .toast.shown { animation: none; }   /* 入场结束后固定,容器重新 show 时不再重播入场动画 */

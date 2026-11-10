@@ -139,11 +139,18 @@ function toggleTheme() {
 
 /* ---- Toast 通知:操作结果的轻量反馈(错误仍由 api() 统一上报) ---- */
 // onClick:点击提示时先执行(如跳到对应频道)再关闭;不传则点击只关闭
-function toast(msg, type = "info", ms = 3200, onClick = null) {
+// label:可选的醒目标签(如通知所属项目名),独占提示的第一行
+function toast(msg, type = "info", ms = 3200, onClick = null, label = "") {
   const box = document.getElementById("toasts");
   const el = document.createElement("div");
   el.className = `toast ${type}`;
   el.textContent = msg;
+  if (label) {
+    const tag = document.createElement("span");
+    tag.className = "toast-label";
+    tag.textContent = label;
+    el.prepend(tag);
+  }
   el.addEventListener("animationend", () => el.classList.add("shown"), { once: true });
   const dismiss = () => {
     el.classList.add("out");

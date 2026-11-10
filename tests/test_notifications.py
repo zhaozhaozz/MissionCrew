@@ -35,7 +35,7 @@ class Notification {
   close() {}
 }
 Notification.permission = "granted";
-const toast = (msg, type, ms, onClick) => sent.toasts.push({ msg, type, onClick });
+const toast = (msg, type, ms, onClick, label) => sent.toasts.push({ msg, type, onClick, label });
 const updateDocumentTitle = () => {};
 let currentTab = "chat", currentChan = null, currentProject = "a";
 const overview = { projects: [{ id: "a" }, { id: "b" }] };
@@ -102,10 +102,11 @@ return {{
   burst: noticesFor([1, 2, 3, 4].map(root => ({{ ...{json.dumps(failed)}, root_id: root }}))),
 }};
 """)
-    assert result["done"]["title"] == "任务完成 · A · #dev"
+    assert result["done"]["title"] == "A · 任务完成 · #dev"
+    assert (result["done"]["project"], result["done"]["headline"]) == ("A", "任务完成 · #dev")
     assert result["done"]["body"] == "@dev：已修复"
     assert result["done"]["url"] == "/resources/a/channels/dev"
-    assert result["failed"]["title"] == "任务失败 · A · #dev"
+    assert result["failed"]["title"] == "A · 任务失败 · #dev"
     assert result["failed"]["body"] == "执行出错：exit 1"
     [summary] = result["burst"]
     assert summary["title"] == "4 个任务已结束（4 个失败）"
@@ -119,15 +120,16 @@ def test_delivery_skips_muted_stopped_and_watched_channel_then_uses_system_when_
 notifyPrefs = normalizeNotifyPrefs({{ enabled: true, projects: {{ b: false }} }});
 currentChan = 'a:watched';
 deliverCompletions({json.dumps(items)});
-const foreground = sent.toasts.map(t => t.msg);
+const foreground = sent.toasts.map(t => [t.label, t.msg]);
 page.visible = false; page.focused = false;
 deliverCompletions([{json.dumps(chain(root=5))}]);
 // 同一条链在另一个标签页已经提醒过:不重复
 deliverCompletions([{json.dumps(chain(root=5))}]);
 return {{ foreground, system: sent.system.map(n => n.title), unread: notifyUnread }};
 """)
-    assert result["foreground"] == ["任务完成 · A · #dev\n@dev：已修复"]
-    assert result["system"] == ["任务完成 · A · #dev"]
+    # 页内提示:项目名走醒目标签,正文不再重复;系统通知:项目名在标题最前
+    assert result["foreground"] == [["A", "任务完成 · #dev\n@dev：已修复"]]
+    assert result["system"] == ["A · 任务完成 · #dev"]
     assert result["unread"] == 1
 
 
@@ -143,7 +145,7 @@ onNotifyPageFocus();
 return {{ whileHidden, toasts: sent.toasts.map(t => t.msg), unread: notifyUnread }};
 """)
     assert result["whileHidden"] == {"toasts": 0, "unread": 1, "title": "(1) "}
-    assert result["toasts"] == ["任务完成 · A · #dev\n@dev：已修复"]
+    assert result["toasts"] == ["任务完成 · #dev\n@dev：已修复"]
     assert result["unread"] == 0
 
 

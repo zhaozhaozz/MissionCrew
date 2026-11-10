@@ -40,9 +40,12 @@ function completionNotice(item) {
   const detail = failed && item.error ? `执行出错：${item.error}`
     : item.reply ? `@${item.reply.author}：${item.reply.content}`
     : `@${(item.roles || []).join("、@")} 已结束`;
-  // 项目名放标题:页内提示与系统通知都一眼能看出是哪个项目的任务
+  // 项目名单独成字段:页内提示把它渲染成醒目的项目标签,系统通知把它放在标题最前
+  const project = item.project_name || item.project_id || "";
+  const headline = `${failed ? "任务失败" : "任务完成"} · #${item.channel_name || item.channel}`;
   return {
-    title: `${failed ? "任务失败" : "任务完成"} · ${item.project_name || item.project_id} · #${item.channel_name || item.channel}`,
+    project, headline,
+    title: `${project} · ${headline}`,
     body: detail,
     tag: `mc-chain-${item.channel}-${item.root_id}`,
     url: item.resource_url || "",
@@ -55,8 +58,10 @@ function summaryNotice(items) {
   const failed = items.filter(item => item.status === "failed").length;
   const names = [...new Set(items.map(item =>
     `${item.project_name || item.project_id} #${item.channel_name || item.channel}`))];
+  const headline = `${items.length} 个任务已结束${failed ? `（${failed} 个失败）` : ""}`;
   return {
-    title: `${items.length} 个任务已结束${failed ? `（${failed} 个失败）` : ""}`,
+    project: "", headline,
+    title: headline,
     body: names.join("、"),
     tag: "mc-chain-summary",
     url: "",
@@ -156,8 +161,8 @@ function deliverCompletions(items) {
 
 function toastNotices(notices) {
   for (const notice of notices)
-    toast(`${notice.title}\n${notice.body}`, notice.failed ? "error" : "success", 8000,
-      notice.url ? () => openNoticeTarget(notice.url, notice.projectId) : null);
+    toast(`${notice.headline}\n${notice.body}`, notice.failed ? "error" : "success", 8000,
+      notice.url ? () => openNoticeTarget(notice.url, notice.projectId) : null, notice.project);
 }
 
 function showSystemNotice(notice) {
@@ -228,7 +233,8 @@ function toggleProjectNotify() {
 }
 
 function sendTestNotice() {
-  const notice = { title: "MissionCrew 测试通知", body: "任务结束时会这样提醒你。",
+  const notice = { project: "", headline: "MissionCrew 测试通知",
+                   title: "MissionCrew 测试通知", body: "任务结束时会这样提醒你。",
                    tag: "mc-test", url: "", projectId: "", failed: false };
   if (notifySupport() === "granted") showSystemNotice(notice);
   else toastNotices([notice]);
