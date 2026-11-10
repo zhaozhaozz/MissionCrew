@@ -493,9 +493,29 @@
   .callback-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
   .callback-list li { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
   .callback-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-  .callback-head button { margin-left: auto; }
+  .callback-head > button { margin-left: auto; }
   .callback-role { color: var(--accent); }
   .callback-when { color: var(--text-2); font-size: 13px; }
+  /* 触发条件标签:所盯对象按类型着色(可点击跳转),时间标签带倒计时 */
+  .callback-conditions { margin-top: 6px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+                         font-size: 13px; }
+  .callback-chip { --chip: var(--muted); --chip-soft: var(--bg-soft);
+                   display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+                   padding: 2px 9px 2px 2px; border: 1px solid var(--chip); border-radius: 999px;
+                   background: var(--chip-soft); color: var(--text); font: inherit; font-size: 13px; }
+  .callback-chip .cb-kind { padding: 1px 8px; border-radius: 999px; background: var(--chip);
+                            color: #fff; font-size: 12px; white-space: nowrap; }
+  .callback-chip b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  button.callback-chip { cursor: pointer; margin: 0; }
+  button.callback-chip:hover { box-shadow: 0 0 0 2px var(--chip-soft); text-decoration: underline; }
+  .cb-channel { --chip: var(--accent); --chip-soft: var(--accent-soft); }
+  .cb-task { --chip: var(--ok); --chip-soft: var(--ok-soft); }
+  .cb-webhook { --chip: #7c4dbd; --chip-soft: rgba(124, 77, 189, .12); }
+  .cb-github { --chip: #57606a; --chip-soft: rgba(110, 118, 129, .16); }
+  .cb-alarm { --chip: var(--warn); --chip-soft: var(--warn-soft); }
+  .callback-remaining { color: var(--chip); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .cb-expire .callback-remaining { color: var(--muted); }
+  .callback-detail { flex-basis: 100%; font-size: 12px; }
   .callback-note { margin-top: 6px; white-space: pre-wrap; word-break: break-word; }
   .callback-meta { margin-top: 4px; font-size: 12px; }
   .channel-tasks-pop { position: fixed; z-index: 45; display: flex; flex-direction: column;

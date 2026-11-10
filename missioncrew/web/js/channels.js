@@ -400,7 +400,9 @@ document.addEventListener("keydown", event => {
 /* ---- 频道回调 ----
    角色经 callback.create 登记的一次性回调(到点、某频道有新消息或某 Task 有更新时,
    回到本频道重新启动该角色)。数据随频道消息轮询下发,标题行显示「⏰ N」,点开列出
-   等待中的回调,人可以逐个取消;停止频道 Agent 时平台会一并取消。 */
+   等待中的回调,人可以逐个取消;停止频道 Agent 时平台会一并取消。
+   列表里每条回调的条件拆成标签:所盯的对象(频道 / Task / Webhook 来源 / GitHub 来源)
+   按类型着色,点击跳到该对象(来源打开其配置);时间标签带实时倒计时。 */
 let channelCallbacks = { channelId: null, items: [] };
 
 function updateChannelCallbacks(channelId, items) {
@@ -424,11 +426,126 @@ function renderChannelCallbacksButton() {
   button.title = `${items.length} 个等待中的回调：到点或所盯的频道 / Task 有更新时重新启动登记的角色`;
 }
 
+let callbackRemainingTimer = null;
+
 function openChannelCallbacks(event) {
   event?.stopPropagation();   // 标题行本身的点击是展开/收起频道信息
   fdlg.dataset.view = "channel-callbacks";
-  fdlg.addEventListener("close", () => { delete fdlg.dataset.view; }, { once: true });
+  clearInterval(callbackRemainingTimer);
+  callbackRemainingTimer = setInterval(tickCallbackRemaining, 1000);
+  fdlg.addEventListener("close", () => {
+    delete fdlg.dataset.view;
+    clearInterval(callbackRemainingTimer);
+  }, { once: true });
   renderChannelCallbacksDialog(true);
+  // 盯事件的回调要知道来源是 Webhook 还是 GitHub 轮询:来源列表按需取一次,到手后重画
+  if (currentChannelCallbacks().some(item => item.watch?.kind === "event"))
+    loadWebhookSources().then(() => {
+      if (fdlg.open && fdlg.dataset.view === "channel-callbacks") renderChannelCallbacksDialog();
+    }).catch(() => {});
+}
+
+// 剩余时间只留两级单位,够判断"快到了没有";到点后返回空串(等轮询线程处理)
+function fmtRemaining(seconds) {
+  const s = Math.floor(seconds);
+  if (!(s > 0)) return "";
+  const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60);
+  if (d) return `${d} 天 ${h} 小时`;
+  if (h) return `${h} 小时 ${m} 分`;
+  if (m) return `${m} 分 ${s % 60} 秒`;
+  return `${s} 秒`;
+}
+
+function tickCallbackRemaining() {
+  const now = Date.now() / 1000;
+  document.querySelectorAll(".callback-remaining[data-until]").forEach(el => {
+    const left = fmtRemaining(Number(el.dataset.until) - now);
+    el.textContent = left ? `还剩 ${left}` : el.dataset.done;
+  });
+}
+
+const callbackWatchChannel = target => projChannels().find(
+  channel => channel.id === target || channel.id.endsWith(`:${target}`));
+
+// 所盯对象的标签:类型决定配色与点击去向
+function callbackWatchHtml(watch) {
+  if (!watch) return "";
+  const target = esc(watch.target);
+  if (watch.kind === "channel")
+    return `<button type="button" class="callback-chip cb-channel" data-target="${target}"
+      title="打开这个频道" onclick="openCallbackChannel(this.dataset.target)"><span
+      class="cb-kind">频道</span><b>#${esc(callbackWatchChannel(watch.target)?.name || watch.target)}</b>
+      <span>有新消息</span></button>`;
+  if (watch.kind === "task")
+    return `<button type="button" class="callback-chip cb-task" data-target="${target}"
+      title="打开这个 Task" onclick="openCallbackTask(this.dataset.target)"><span
+      class="cb-kind">Task</span><b>${target}</b> <span>有更新</span></button>`;
+  const source = webhookSourceById(watch.target);
+  const github = source?.kind === "github";
+  const what = [watch.event, watch.action].filter(Boolean).join(" ") || "任意";
+  return `<button type="button" class="callback-chip ${github ? "cb-github" : "cb-webhook"}"
+    data-target="${target}" title="打开这个来源的配置" onclick="openCallbackSource(this.dataset.target)"><span
+    class="cb-kind">${github ? "GitHub 来源" : source ? "Webhook 来源" : "事件来源"}</span><b>${
+    esc(source?.name || watch.target)}</b> <span>收到 ${esc(what)} 事件</span></button>`;
+}
+
+// 盯事件的补充条件与检查进度,跟在标签后面
+function callbackEventDetail(watch) {
+  if (watch?.kind !== "event") return "";
+  const parts = [];
+  if (watch.repository) parts.push(`仓库 ${watch.repository}`);
+  if (watch.has_filter) parts.push("且通过过滤脚本");
+  if (watch.progress?.checked) parts.push(`已检查 ${watch.progress.checked} 个事件`);
+  if (watch.progress?.errors) parts.push(`过滤脚本出错 ${watch.progress.errors} 次`);
+  return parts.join(" · ");
+}
+
+// 时间标签:fire_at 到点一定回调(同时盯着更新时它是"最晚");只有 expires_at 的回调
+// 到时仍无更新就过期,不再启动角色
+function callbackTimeHtml(item) {
+  const until = item.fire_at || item.expires_at;
+  if (!until) return "";
+  const expiring = !item.fire_at;
+  const waitingEvent = item.watch?.kind === "event";
+  const label = expiring ? "过期" : waitingEvent ? "最晚回调" : "到点回调";
+  const title = expiring ? "到这个时间仍没有更新，回调过期，不再启动角色"
+    : item.watch ? "到这个时间还没等到，也会回调" : "到这个时间回调";
+  return `<span class="callback-chip ${expiring ? "cb-expire" : "cb-alarm"}" title="${title}"><span
+    class="cb-kind">${expiring ? "⌛" : "⏰"} ${label}</span><b>${
+    esc(fmtMessageTime(new Date(until * 1000)))}</b>
+    <span class="callback-remaining" data-until="${Number(until)}"
+      data-done="${expiring ? "即将过期" : "即将触发"}"></span></span>`;
+}
+
+function callbackConditionsHtml(item) {
+  const watch = callbackWatchHtml(item.watch), time = callbackTimeHtml(item);
+  if (!watch && !time) return `<span class="callback-when">${esc(localizeUtcTimes(item.conditions))}</span>`;
+  // 频道 / Task 的更新与到点是"哪个先到算哪个"
+  const either = watch && time && item.fire_at && item.watch.kind !== "event";
+  const detail = callbackEventDetail(item.watch);
+  return `${watch}${either ? '<span class="muted">或</span>' : ""}${time}${
+    detail ? `<span class="callback-detail muted">${esc(detail)}</span>` : ""}`;
+}
+
+function openCallbackChannel(target) {
+  const channel = callbackWatchChannel(target);
+  if (!channel) { toast("这个频道已归档或已删除", "info"); return; }
+  fdlg.close();
+  selectChannel(channel.id);
+}
+
+function openCallbackTask(taskId) {
+  fdlg.close();
+  openTask(taskId, false).catch(() => {});
+}
+
+async function openCallbackSource(sourceId) {
+  try { await loadWebhookSources(); } catch (_) { /* 用已有缓存 */ }
+  if (!webhookSourceById(sourceId)) { toast("这个来源已删除", "info"); return; }
+  // 来源编辑框复用同一个对话框:先关掉列表(摘掉视图标记),轮询刷新才不会把编辑框盖掉
+  delete fdlg.dataset.view;
+  fdlg.close();
+  editWebhookSource(sourceId);
 }
 
 function renderChannelCallbacksDialog(opening = false) {
@@ -437,10 +554,10 @@ function renderChannelCallbacksDialog(opening = false) {
       <li>
         <div class="callback-head">
           <b>#${item.id}</b><span class="callback-role">@${esc(item.role_id)}</span>
-          <span class="callback-when">${esc(localizeUtcTimes(item.conditions))}</span>
           <button class="ghost compact danger" type="button"
             onclick="cancelChannelCallback(${item.id})">取消</button>
         </div>
+        <div class="callback-conditions">${callbackConditionsHtml(item)}</div>
         <div class="callback-note">${esc(item.note)}</div>
         <div class="callback-meta muted">登记于 ${esc(fmtMessageTime(new Date(item.created_at * 1000)))}</div>
       </li>`).join("")}</ul>`
@@ -451,6 +568,7 @@ function renderChannelCallbacksDialog(opening = false) {
   } else {
     document.getElementById("fdlg-body").innerHTML = body;
   }
+  tickCallbackRemaining();
 }
 
 // 确认框叠在回调列表之上(独立的 udlg),列表随本地状态原地刷新
