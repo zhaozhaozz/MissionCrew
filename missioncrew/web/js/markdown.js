@@ -2,8 +2,28 @@
    所有文档型预览共用安全正文渲染和 YAML front matter 属性表。 */
 const MISSIONCREW_RESOURCE_TYPES = new Set([
   "documents", "channels", "tasks", "dashboards", "guidelines", "skills",
-  "automations", "recycle-bin",
+  "automations", "recycle-bin", "settings",
 ]);
+
+/* 页面地址(地址栏里的 /<项目>/<页面>,如 /acme-shop/proj):没有 /resources 形式的页面
+   只有这种地址,人从地址栏复制、旧消息里也有。只按形状识别成站内页面链接,项目是否
+   存在留到点击时判断;不识别的话它会被当成文档库路径,点开只会报找不到文档。 */
+const MISSIONCREW_PAGE_LINK = /^\/([\w-]+)\/(proj|settings|runtime-status)\/?$/;
+
+function missionCrewPageReference(target) {
+  const raw = String(target || "").trim().split(/[?#]/, 1)[0];
+  let pathname = raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      if (parsed.origin !== location.origin) return null;
+      pathname = parsed.pathname;
+    } catch (_) { return null; }
+  }
+  const match = pathname.match(MISSIONCREW_PAGE_LINK);
+  return match ? { projectId: match[1], tab: match[2],
+                   url: `/${match[1]}/${match[2]}` } : null;
+}
 
 function canonicalMissionCrewResourceType(type) {
   return ({ boards: "dashboards", dashboard: "dashboards", panels: "dashboards" })[type]
@@ -138,6 +158,10 @@ function markdownInlineWithTokens(source, tokens) {
       if (resource)
         return hold(`<a href="${esc(resource.url)}" data-resource-link="${esc(resource.url)}" ` +
           `onclick="return openMissionCrewResourceLink(event,this.dataset.resourceLink)">${safeLabel}</a>`);
+      const page = missionCrewPageReference(href);
+      if (page)
+        return hold(`<a href="${esc(page.url)}" data-page-link="${esc(page.url)}" ` +
+          `onclick="return openMissionCrewPageLink(event,this.dataset.pageLink)">${safeLabel}</a>`);
       if (/^(https?:\/\/|mailto:)/i.test(href))
         return hold(`<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${safeLabel}</a>`);
       if (href.startsWith("#")) return hold(`<a href="${esc(href)}">${safeLabel}</a>`);

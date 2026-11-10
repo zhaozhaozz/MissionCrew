@@ -12,8 +12,10 @@ from urllib.parse import quote
 _PROJECT_ID_RE = re.compile(r"[\w-]+")
 RESOURCE_TYPES = frozenset({
     "documents", "channels", "tasks", "dashboards", "guidelines", "skills",
-    "automations", "recycle-bin",
+    "automations", "recycle-bin", "settings",
 })
+# 项目设置页里可以直达的分区(页面上对应 id 为 sec-proj-<分区> 的区块)
+SETTINGS_SECTIONS = frozenset({"info", "notify", "res", "roles", "credentials"})
 
 
 def missioncrew_project_url(project_id: str) -> str:
@@ -62,6 +64,15 @@ def dashboard_resource_url(project_id: str, board_id: str | None = None) -> str:
 def automation_resource_url(project_id: str, automation_id: str) -> str:
     return missioncrew_resource_url(
         project_id, "automations", _short_project_id(project_id, automation_id))
+
+
+def settings_resource_url(project_id: str, section: str | None = None) -> str:
+    """返回项目设置页的 URL;给出分区时打开后直接滚到该分区(如 ``credentials``)。"""
+    if section is None:
+        return missioncrew_resource_url(project_id, "settings")
+    if section not in SETTINGS_SECTIONS:
+        raise ValueError(f"未知项目设置分区: {section}")
+    return missioncrew_resource_url(project_id, "settings", section)
 
 
 def guideline_resource_url(project_id: str, guideline_name: str) -> str:

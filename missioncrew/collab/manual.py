@@ -61,7 +61,8 @@ An orchestrator's turn:
 - Project resource prefix `__PROJECT_URL__`: channel `/channels/<channel id>`, task `/tasks/<task id>`,
   dashboard `/dashboards/<dashboard id>` (the built-in task board id is `tasks`), guideline
   `/guidelines/<name>`, skill `/skills/<id>`, document `/documents/<path in the document library>`,
-  recycle bin `/recycle-bin`.
+  recycle bin `/recycle-bin`, project settings `/settings` (its credentials form
+  `/settings/credentials`).
 - These URLs are web identifiers, not file paths. Replies must reference platform resources with
   these links and documents as `[title](__DOCUMENTS_URL__/path)`; never output absolute workspace
   paths, the real `.missioncrew` path or `file://` links.
@@ -452,9 +453,11 @@ An orchestrator's turn:
   lacks that permission or repository, so report it instead of trying another account.
 - When the task needs a secret that is not in `index.json`, call `credential.request` with an
   upper-case `name` and a `description` of what it is for and the minimal permissions it
-  needs; the platform asks the human with a link to the form. Never ask humans to paste a
-  secret into chat. Then report in your final reply that the work is waiting for that
-  credential, and continue once the file exists.
+  needs; the platform asks the human with a link to the form. When you mention the form
+  yourself, link it as `__PROJECT_URL__/settings/credentials` (the result's `resource_url`),
+  not as a page address you made up. Never ask humans to paste a secret into chat. Then
+  report in your final reply that the work is waiting for that credential, and continue once
+  the file exists.
 - The platform replaces any saved credential value it finds in messages, run logs, Agent Tool
   arguments and published documents with `[credential:<NAME>]`. That is a safety net for
   mistakes, not a way to use secrets: a value written anywhere is still a leak to report.

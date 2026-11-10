@@ -19,7 +19,6 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import quote
 
 from . import board_sources
 from .callbacks import CallbackService, public_callback, resolve_fire_at
@@ -37,7 +36,8 @@ from .recycle_bin import (RecycleConflictError, list_recycle_items,
                           restore_recycle_item)
 from .resource_urls import (automation_resource_url, channel_resource_url,
                             dashboard_resource_url, guideline_resource_url,
-                            skill_resource_url, task_resource_url)
+                            settings_resource_url, skill_resource_url,
+                            task_resource_url)
 from .skill_versions import skill_version_library
 from .skills import (read_skill_version, save_project_skill, save_project_skill_markdown,
                      skill_history, skill_package, sync_project_skill_library)
@@ -582,7 +582,9 @@ ACTION_DEFINITIONS = {
             "link to the form, and once a human fills it in the value appears as the file "
             "$MISSIONCREW_CREDENTIALS_DIR/<name>, readable from your next command on. "
             "Credentials already saved for the project (including global ones) are listed in "
-            "index.json in that directory; asking for one of them returns already_exists"
+            "index.json in that directory; asking for one of them returns already_exists. "
+            "The result's resource_url is the link to that form; use it as is when you point "
+            "a human to it"
         ),
         "orchestrator_only": False,
         "automation_allowed": False,
@@ -2364,13 +2366,14 @@ class AgentActionService:
                 "already_exists",
                 f"凭据 {name} 已可用,直接读取 $MISSIONCREW_CREDENTIALS_DIR/{name}",
                 409) from exc
-        settings_url = f"/{quote(project.id, safe='')}/proj"
+        settings_url = settings_resource_url(project.id, "credentials")
         return {
             "summary": (f"请求凭据 `{credential.name}`({credential.description})。"
                         f"请在[项目设置 → 凭据]({settings_url})中填写,"
                         "不要把值直接发在聊天里"),
             "credential": {"name": credential.name, "description": credential.description,
                            "status": "pending"},
+            "resource_url": settings_url,
         }
 
     def _require_callbacks(self) -> CallbackService:

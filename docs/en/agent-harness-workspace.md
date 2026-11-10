@@ -77,6 +77,7 @@ Channels, tasks, dashboards, guidelines, skills, and documents use the same set 
 | Skill / file inside a skill | `/resources/<project>/skills/<skill-id>[/<relative-path>]` |
 | Project document | `/resources/<project>/documents/<relative-path>` |
 | Project recycle bin | `/resources/<project>/recycle-bin` |
+| Project settings (optionally a section, such as the credentials form `settings/credentials`) | `/resources/<project>/settings[/<section>]` |
 
 `channel-id` and `board-id` use short IDs within the project; the URL does not expose the `<project>:<id>` namespace used by the database. `dashboards` is the public resource type for dashboards; when the Web reads an old-style `boards`, `dashboard`, or `panels` address, it normalizes it to `dashboards`. Real directories are only for runtime tool calls and cannot be used in place of these Web URLs.
 

@@ -7,7 +7,7 @@ let routeApplying = false;
 function emptyRoute(project = null, tab = "chat") {
   return { project, tab, chan: null, doc: null, task: null, dashboard: null,
            guideline: undefined, skill: undefined, skillFile: null,
-           automation: undefined };
+           automation: undefined, section: null };
 }
 
 function parsePath() {
@@ -38,6 +38,9 @@ function parsePath() {
       route.tab = "automations"; route.automation = id || null;
     } else if (resource.type === "recycle-bin") {
       route.tab = "recycle-bin";
+    } else if (resource.type === "settings") {
+      // 项目设置页:/settings/<分区> 打开后滚到页面上 id 为 sec-proj-<分区> 的区块
+      route.tab = "proj"; route.section = id || null;
     }
     return route;
   }
@@ -138,6 +141,8 @@ function syncUrl(push = true) {
         ? [selectedAutomationId.replace(`${currentProject}:`, "")] : []));
   if (currentTab === "recycle-bin")
     path = missionCrewResourceUrl(currentProject, "recycle-bin");
+  if (currentTab === "proj")
+    path = missionCrewResourceUrl(currentProject, "settings");
   if (location.pathname === path && !location.hash) return;
   if (push) history.pushState(null, "", path);      // 用户操作:产生历史记录
   else history.replaceState(null, "", path);        // 规范化:不产生历史记录
@@ -243,6 +248,7 @@ async function applyRoute() {
       }
       if (task) await openTask(task.id, false);
     }
+    if (r.tab === "proj" && r.section) revealProjSection(r.section);
     }
   } finally {
     routeApplying = false;
@@ -269,6 +275,26 @@ function openMissionCrewResourceLink(event, target) {
   history.pushState(null, "", resource.url);
   void applyRoute();
   return false;
+}
+
+/* 页面地址链接(/<项目>/<页面>):与资源链接一样在当前页内跳转。 */
+function openMissionCrewPageLink(event, target) {
+  if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return true;
+  event.preventDefault();
+  const page = missionCrewPageReference(target);
+  // 第一段不是项目:它其实是文档库里从根写起的路径,照文档链接处理
+  if (!page || !overview.projects.some(project => project.id === page.projectId))
+    return openMarkdownDocumentLink(event, target);
+  history.pushState(null, "", page.url);
+  void applyRoute();
+  return false;
+}
+
+/* 项目设置页滚到指定分区。区块本身是静态的,但上方的表单和表格是异步填充的,
+   填完会把目标往下推,所以等一拍再滚(与侧栏的 gotoProjSection 同一做法)。 */
+function revealProjSection(section) {
+  if (!/^[\w-]+$/.test(section)) return;
+  setTimeout(() => scrollToSec(`sec-proj-${section}`), 300);
 }
 
 window.addEventListener("popstate", applyRoute);

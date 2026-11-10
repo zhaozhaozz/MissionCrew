@@ -36,6 +36,7 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 | Skill 内文件 | `/resources/<project>/skills/<skill-id>/<relative-path>` | Skill 目录内相对路径 | 文件树中的对应文件 |
 | 项目文档 | `/resources/<project>/documents/<relative-path>` | 文档库内相对路径 | 对应版本化文档页 |
 | 项目回收站 | `/resources/<project>/recycle-bin` | 项目 ID | 全部可恢复项目资源的统一列表 |
+| 项目设置 | `/resources/<project>/settings[/<section>]` | 项目 ID；可选分区 `info`、`notify`、`res`、`roles`、`credentials` | 项目设置页，带分区时滚到该分区（`settings/credentials` 是凭据表单，`credential.request` 的回执用它） |
 | 自动化 | `/resources/<project>/automations/<automation-id>` | 项目内自动化短 ID | 对应自动化详情页 |
 
 例如：
@@ -46,6 +47,7 @@ MissionCrew 资源分为两个互相关联但用途不同的层级：
 [任务看板](/resources/acme-shop/dashboards/tasks)
 [架构讨论频道](/resources/acme-shop/channels/architecture-doc)
 [项目回收站](/resources/acme-shop/recycle-bin)
+[项目设置 → 凭据](/resources/acme-shop/settings/credentials)
 ```
 
 ## 各类资源的存储与行为
@@ -241,7 +243,9 @@ Agent 最终回复应使用：
 
 ### Web
 
-统一 Markdown 组件识别同源资源 URL，并交给应用路由处理。路由会恢复项目、资源类型和具体条目；文档与 Skill 内文件按路径逐段解码。用户在应用内切换频道、任务、面板、准则、Skill、文档或回收站时，地址栏同步更新为规范资源 URL。
+统一 Markdown 组件识别同源资源 URL，并交给应用路由处理。路由会恢复项目、资源类型和具体条目；文档与 Skill 内文件按路径逐段解码。用户在应用内切换频道、任务、面板、准则、Skill、文档、回收站或项目设置时，地址栏同步更新为规范资源 URL。
+
+没有资源 URL 的页面（全局设置 `/<project>/settings`、运行状态 `/<project>/runtime-status`）只有页面地址。Markdown 里写这种地址，或写旧的项目设置地址 `/<project>/proj`，点击时同样按页面打开；第一段不是现有项目时才按文档库路径处理。
 
 服务端对资源地址返回单页应用入口，资源是否存在由前端结合总览/API 数据验证。资源已经删除或标识无效时，前端不会尝试读取同名本地路径，而是回到对应资源类型的有效页面或显示找不到资源。
 

@@ -36,6 +36,7 @@ Each resource type below has corresponding Agent Tool actions (see [Agent Tool A
 | File inside a skill | `/resources/<project>/skills/<skill-id>/<relative-path>` | Relative path within the skill directory | The corresponding file in the file tree |
 | Project document | `/resources/<project>/documents/<relative-path>` | Relative path within the document library | The corresponding versioned document page |
 | Project recycle bin | `/resources/<project>/recycle-bin` | Project ID | A unified list of all restorable project resources |
+| Project settings | `/resources/<project>/settings[/<section>]` | Project ID; optional section `info`, `notify`, `res`, `roles`, `credentials` | The project settings page, scrolled to the section when one is given (`settings/credentials` is the credentials form, used by the `credential.request` receipt) |
 | Automation | `/resources/<project>/automations/<automation-id>` | Short automation ID within the project | The corresponding automation detail page |
 
 For example:
@@ -46,6 +47,7 @@ For example:
 [Task board](/resources/acme-shop/dashboards/tasks)
 [Architecture discussion channel](/resources/acme-shop/channels/architecture-doc)
 [Project recycle bin](/resources/acme-shop/recycle-bin)
+[Project settings → Credentials](/resources/acme-shop/settings/credentials)
 ```
 
 ## Storage and behavior of each resource type
@@ -241,7 +243,9 @@ Do not output absolute `.missioncrew` paths, platform data directory paths, or `
 
 ### Web
 
-The unified Markdown component recognizes same-origin resource URLs and hands them to the app router. The router restores the project, the resource type, and the specific item; paths of documents and of files inside skills are decoded segment by segment. When the user switches between channels, tasks, dashboards, guidelines, skills, documents, or the recycle bin within the app, the address bar updates to the canonical resource URL in sync.
+The unified Markdown component recognizes same-origin resource URLs and hands them to the app router. The router restores the project, the resource type, and the specific item; paths of documents and of files inside skills are decoded segment by segment. When the user switches between channels, tasks, dashboards, guidelines, skills, documents, the recycle bin, or project settings within the app, the address bar updates to the canonical resource URL in sync.
+
+Pages without a resource URL (Global settings `/<project>/settings`, Runtime status `/<project>/runtime-status`) only have a page address. Such an address written in Markdown, or the old project settings address `/<project>/proj`, also opens as a page when clicked; it is treated as a document library path only when its first segment is not an existing project.
 
 The server returns the single-page app entry for resource addresses, and the frontend verifies whether the resource exists using overview/API data. When a resource has been deleted or its identifier is invalid, the frontend does not try to read a local path with the same name; instead it returns to a valid page of that resource type or shows that the resource was not found.
 

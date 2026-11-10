@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import base64
 import json
+import shutil
 import sqlite3
+import subprocess
 import time
 from pathlib import Path
 
@@ -185,7 +187,11 @@ def test_credential_request_registers_pending_entry_and_posts_link(seeded):
     pending = seeded.get_credential("webshop", "SENTRY_TOKEN")
     assert not pending.has_value and pending.requested_by == "role:dev"
     receipt = seeded.list_messages("general")[-1]
-    assert "`credential.request`" in receipt["content"] and "](/webshop/proj)" in receipt["content"]
+    # 回执里的表单链接是资源 URL(聊天里能点开),同一个地址也回给角色,供它转述时引用
+    form_url = "/resources/webshop/settings/credentials"
+    assert "`credential.request`" in receipt["content"]
+    assert f"[项目设置 → 凭据]({form_url})" in receipt["content"]
+    assert result["resource_url"] == form_url
     # 待填写的不下发文件;人填写后出现在目录里,请求方信息清空
     directory = Path(config.env["MISSIONCREW_CREDENTIALS_DIR"])
     assert not (directory / "SENTRY_TOKEN").exists()
@@ -316,3 +322,72 @@ def test_legacy_resource_table_and_project_field_are_dropped(tmp_path):
     assert "resources" not in tables and "credentials" in tables
     project = Project.from_dict({"id": "p", "name": "p", "resources": ["test-db"]})
     assert "resources" not in project.to_dict()
+
+
+WEB_JS = Path(__file__).resolve().parents[1] / "missioncrew" / "web" / "js"
+
+# 在 node 里装载 markdown.js 与 router.js:渲染一条聊天 Markdown 链接看它挂了哪个点击
+# 处理函数,再执行点击,观察是按页面跳转、按路由解析成哪个页签,还是被当成文档去打开
+_SETTINGS_LINK_SCRIPT = r"""
+const fs = require("fs");
+const vm = require("vm");
+const calls = [];
+const context = {
+  location: { origin: "http://localhost", pathname: "/webshop/chat", hash: "" },
+  window: { addEventListener() {} },
+  localStorage: { getItem: () => null },
+  history: { pushState: (_, __, url) => { calls.push(["push", url]);
+                                          context.location.pathname = url; } },
+  toast: message => calls.push(["toast", message]),
+  esc: value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+                             .replace(/"/g, "&quot;"),
+  overview: { projects: [{ id: "webshop" }] },
+  currentProject: "webshop",
+  currentTab: "chat",
+};
+vm.createContext(context);
+for (const name of ["markdown.js", "router.js"])
+  vm.runInContext(fs.readFileSync(process.argv[1] + "/" + name, "utf8"), context);
+context.applyRoute = async () => {
+  const route = context.parsePath();
+  calls.push(["route", route.project, route.tab, route.section]);
+};
+context.openMarkdownDocumentLink = (_, path) => { calls.push(["document", path]); return false; };
+const results = JSON.parse(fs.readFileSync(0, "utf8")).map(href => {
+  calls.length = 0;
+  const html = context.markdownInline(`[link](${href})`);
+  const handler = (html.match(/onclick="return (\w+)\(/) || [])[1] || "";
+  const target = (html.match(/data-[a-z]+-link="([^"]*)"/) || [])[1] || "";
+  const event = { preventDefault() {} };
+  if (handler) context[handler](event, target);
+  return { handler, calls: calls.slice() };
+});
+process.stdout.write(JSON.stringify(results));
+"""
+
+
+def test_settings_links_in_chat_open_the_settings_page_not_a_document():
+    """聊天里指向项目设置的链接:资源 URL 直达凭据分区;页面地址(旧回执与地址栏复制的
+    `/<项目>/proj`)也按页面打开,而不是被当成文档库路径报"找不到项目文档"。"""
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required to execute the browser router")
+    hrefs = ["/resources/webshop/settings/credentials", "/resources/webshop/settings",
+             "/webshop/proj", "/webshop/settings", "/notes/proj", "/webshop/proj/readme.md"]
+    result = subprocess.run(
+        [node, "-e", _SETTINGS_LINK_SCRIPT, str(WEB_JS)],
+        input=json.dumps(hrefs), text=True, capture_output=True, check=True)
+    section, page, legacy, global_settings, unknown_project, document = json.loads(result.stdout)
+
+    assert section == {"handler": "openMissionCrewResourceLink", "calls": [
+        ["push", "/resources/webshop/settings/credentials"],
+        ["route", "webshop", "proj", "credentials"]]}
+    assert page["calls"][-1] == ["route", "webshop", "proj", None]
+    assert legacy == {"handler": "openMissionCrewPageLink", "calls": [
+        ["push", "/webshop/proj"], ["route", "webshop", "proj", None]]}
+    assert global_settings["calls"][-1] == ["route", "webshop", "settings", None]
+    # 第一段不是项目,或后面还有路径:仍是文档库路径
+    assert unknown_project == {"handler": "openMissionCrewPageLink",
+                               "calls": [["document", "/notes/proj"]]}
+    assert document == {"handler": "openMarkdownDocumentLink",
+                        "calls": [["document", "/webshop/proj/readme.md"]]}

@@ -77,6 +77,7 @@ Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子
 | Skill / Skill 内文件 | `/resources/<project>/skills/<skill-id>[/<relative-path>]` |
 | 项目文档 | `/resources/<project>/documents/<relative-path>` |
 | 项目回收站 | `/resources/<project>/recycle-bin` |
+| 项目设置（可带分区，如凭据表单 `settings/credentials`） | `/resources/<project>/settings[/<section>]` |
 
 `channel-id` 和 `board-id` 使用项目内短 ID，URL 不暴露数据库使用的 `<project>:<id>` 命名空间。`dashboards` 是面板的公开资源类型；Web 读取旧式 `boards`、`dashboard` 或 `panels` 地址时会规范化为它。真实目录只用于 Runtime 工具调用，不能用来替代这些 Web URL。
 
