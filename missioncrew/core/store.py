@@ -62,7 +62,9 @@ CREATE TABLE IF NOT EXISTS chat_runs (
   model TEXT DEFAULT '', effort TEXT DEFAULT '',
   trigger_message_id INTEGER NOT NULL, root_id INTEGER NOT NULL,
   depth INTEGER DEFAULT 0, status TEXT NOT NULL DEFAULT 'queued',
-  error TEXT DEFAULT '', created_at REAL NOT NULL, finished_at REAL
+  error TEXT DEFAULT '', created_at REAL NOT NULL, finished_at REAL,
+  -- 排队期间被并入另一次运行(status='merged')时,指向实际执行的那次运行
+  merged_into INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_chat_runs_finished ON chat_runs(finished_at);
 CREATE INDEX IF NOT EXISTS idx_chat_runs_chain ON chat_runs(root_id, channel);
@@ -207,13 +209,20 @@ class Store:
         self._conn.commit()
 
     def _migrate_chat_runs(self) -> None:
-        """旧数据库补齐 chat_runs 的执行组合列(运行卡片展示模型与推理力度)。"""
+        """旧数据库补齐 chat_runs 的执行组合列(运行卡片展示模型与推理力度)
+        与排队合并的指向列。"""
         columns = {row["name"] for row in self._conn.execute(
             "PRAGMA table_info(chat_runs)").fetchall()}
         for name in ("model", "effort"):
             if name not in columns:
                 self._conn.execute(
                     f"ALTER TABLE chat_runs ADD COLUMN {name} TEXT DEFAULT ''")
+        if "merged_into" not in columns:
+            self._conn.execute(
+                "ALTER TABLE chat_runs ADD COLUMN merged_into INTEGER DEFAULT 0")
+        # 建在迁移里而不是建表脚本里:旧库要先补上列才能建索引
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_runs_merged ON chat_runs(merged_into)")
 
     def _migrate_automation_runs(self) -> None:
         """旧数据库补齐 automation_runs.trigger_detail(webhook 事件名与投递 id)。"""
@@ -1603,7 +1612,8 @@ class Store:
     def update_chat_run(self, run_id: int, status: str, backend_id: str = "",
                         error: str = "", model: str = "",
                         effort: str = "") -> bool:
-        """更新未被用户停止的运行，避免迟到结果覆盖 ``stopped`` 终态。
+        """更新未被用户停止、也未并入其他运行的运行，避免迟到结果覆盖
+        ``stopped`` / ``merged`` 终态。
 
         model/effort 只在传入非空时覆盖:转入 running 时盖章执行组合,
         终态更新不回传就保留原值。
@@ -1614,7 +1624,7 @@ class Store:
                 "UPDATE chat_runs SET status=?, backend_id=?, error=?, finished_at=?, "
                 "model=CASE WHEN ?='' THEN model ELSE ? END, "
                 "effort=CASE WHEN ?='' THEN effort ELSE ? END "
-                "WHERE id=? AND status!='stopped'",
+                "WHERE id=? AND status NOT IN ('stopped','merged')",
                 (status, backend_id, error, finished,
                  model, model, effort, effort, run_id),
             )
@@ -1690,6 +1700,23 @@ class Store:
             self._conn.commit()
             return dict(row)
 
+    def queued_chat_runs(self, channel: str, role_id: str) -> list[dict]:
+        """某角色在频道里还没开始执行的运行,按创建顺序。"""
+        return [dict(r) for r in self._query(
+            "SELECT * FROM chat_runs WHERE channel=? AND role_id=? "
+            "AND status='queued' ORDER BY id", (channel, role_id))]
+
+    def merge_queued_chat_runs(self, run_id: int, absorbed_ids: list[int]) -> None:
+        """把仍在排队的运行并入 ``run_id``:它们各自的触发消息改由那次运行一轮
+        处理,自己以 ``merged`` 终态结束、不再单独执行。"""
+        if not absorbed_ids:
+            return
+        marks = ",".join("?" * len(absorbed_ids))
+        self._execute(
+            "UPDATE chat_runs SET status='merged', merged_into=?, finished_at=? "
+            f"WHERE id IN ({marks}) AND status='queued'",
+            (run_id, time.time(), *absorbed_ids))
+
     def active_chat_runs(self, channel: str) -> list[dict]:
         return [dict(r) for r in self._query(
             "SELECT * FROM chat_runs WHERE channel=? "
@@ -1720,6 +1747,9 @@ class Store:
         root)。引擎先发布回复(可能顺带派发下一轮)再把本轮标成终态,所以链上
         只要还有排队/运行/等待用户的运行就没结束;最后一次结束时刻落在窗口内的
         链只会被报告一次。status/error 取链上最后结束的那次运行。
+
+        排队时并入其他运行(``merged``)的运行不计入 runs;一条链若以它收尾,说明
+        后续工作由承接的那次运行所在的链继续,这条链不单独报告。
         """
         rows = self._query(
             "SELECT r.channel, r.root_id, r.role_id, r.status, r.error, r.finished_at "
@@ -1736,13 +1766,18 @@ class Store:
             chain = chains.setdefault((row["channel"], row["root_id"]), {
                 "channel": row["channel"], "root_id": row["root_id"],
                 "roles": [], "runs": 0, "failed": 0})
+            if row["status"] == "merged":
+                chain.update(status="merged", error="",
+                             finished_at=row["finished_at"])
+                continue
             chain["runs"] += 1
             chain["failed"] += row["status"] == "failed"
             if row["role_id"] not in chain["roles"]:
                 chain["roles"].append(row["role_id"])
             chain.update(status=row["status"], error=row["error"] or "",
                          finished_at=row["finished_at"])
-        return [chain for chain in chains.values() if chain["finished_at"] <= until]
+        return [chain for chain in chains.values()
+                if chain["finished_at"] <= until and chain["status"] != "merged"]
 
     def last_chain_reply(self, channel: str, root_id: int) -> Optional[dict]:
         """协作链里最后一条 Agent 回复,作为"任务结束"通知的正文。"""
@@ -2075,11 +2110,14 @@ class Store:
         """频道最近的执行记录(含已结束)。
 
         events_size 是事件内容总长度:合并式追加不改行数,前端用它判断
-        过程输出是否有增量、要不要重新拉取事件。
+        过程输出是否有增量、要不要重新拉取事件。merged_count 是排队时并入
+        这次运行的其他运行数,运行卡片据此标出"合并处理了几条消息"。
         """
         rows = self._query(
             "SELECT r.*, (SELECT COALESCE(SUM(LENGTH(e.content)), 0) "
-            "FROM run_events e WHERE e.run_id = r.id) AS events_size "
+            "FROM run_events e WHERE e.run_id = r.id) AS events_size, "
+            "(SELECT COUNT(*) FROM chat_runs a WHERE a.merged_into = r.id) "
+            "AS merged_count "
             "FROM chat_runs r WHERE r.channel=? ORDER BY r.id DESC LIMIT ?",
             (channel, limit))
         return [dict(r) for r in reversed(rows)]

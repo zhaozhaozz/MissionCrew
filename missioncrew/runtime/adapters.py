@@ -1341,6 +1341,9 @@ def _trigger_from_prompt(prompt: str) -> str:
         return raw
     if isinstance(message, dict):
         return str(message.get("content", ""))
+    if isinstance(message, list):   # 排队合并的一轮:多条触发消息
+        return "\n".join(str(item.get("content", "")) for item in message
+                         if isinstance(item, dict))
     return raw
 
 

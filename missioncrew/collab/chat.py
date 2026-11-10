@@ -28,7 +28,7 @@ import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from ..runtime import runtime_manager
 from ..core.config import (chat_max_workers, context_reinject_bytes,
@@ -176,6 +176,15 @@ TURN_PROMPT = """\
 {resource_notice}{reply_hint}# This Turn's Trigger: {trigger_kind}
 # Trigger Message (JSON; your task brief is written by the sender)
 {trigger}
+"""
+
+# 角色忙碌期间排队的多条触发消息合并成一轮:逐条列出消息与各自的触发类型
+MERGED_TURN_PROMPT = """\
+{resource_notice}{reply_hint}# This Turn's Trigger: {count} messages that arrived while you were busy, merged into this one turn
+Handle every message below in this turn and cover each of them in your single final reply; a later message may refine or supersede an earlier one.
+{trigger_kinds}
+# Trigger Messages (JSON, one message per line, oldest first; each task brief is written by its sender)
+{triggers}
 """
 
 # 能调用 message.publish 的角色每轮都带:增量回合不重发公共上下文,长会话里
@@ -940,35 +949,90 @@ class ChatEngine:
             self._write_channel_history(channel)
             return
         try:
-            future = self._pool.submit(self._execute, run_id, channel, role_id,
-                                       msg_id, root_id, depth)
+            future = self._pool.submit(self._execute, run_id, channel, role_id)
         except RuntimeError as e:   # 执行池已关闭:运行不能停留在 queued
             self.store.update_chat_run(run_id, "failed", error=f"聊天引擎已关闭: {e}")
             return
         with self._futures_lock:
             self._futures.append(future)
 
-    def _execute(self, run_id: int, channel: Channel, role_id: str,
-                 msg_id: int, root_id: int, depth: int) -> None:
+    def _execute(self, run_id: int, channel: Channel, role_id: str) -> None:
+        """执行池里的一个工作线程:拿到 channel×role 的执行锁后,把该角色此刻
+        排队的运行合并成一轮执行。
+
+        ``run_id`` 是提交这个线程的那次运行,只用来判断还有没有事可做:它可能
+        已经被先拿到锁的线程并入别的运行(或作为承接运行执行完),这时直接返回。
+        每条排队运行都有一个在它之后才拿锁的线程,所以不会有运行无人执行。
+        """
         with self._run_state_lock:
             if not self.store.chat_run_is_active(run_id):
                 return
-        try:
-            self._execute_inner(run_id, channel, role_id, msg_id, root_id, depth)
-        except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
-            error = str(e)
+        with self._agent_execution_lock(channel.id, role_id):
+            claimed = self._claim_queued_runs(channel, role_id)
+            if claimed is None:
+                return
+            run, merged_ids = claimed
+            run_id, msg_id = int(run["id"]), int(run["trigger_message_id"])
+            root_id, depth = int(run["root_id"]), int(run["depth"])
+            try:
+                self._execute_inner_serialized(
+                    run_id, channel, role_id, msg_id, root_id, depth, merged_ids)
+            except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
+                error = str(e)
+                project = self.store.get_project(channel.project_id or "")
+                if project:
+                    error = normalize_document_resource_urls(
+                        error, project.id, [library_for(project.id).root])
+                with self._run_state_lock:
+                    if not self.store.chat_run_is_active(run_id):
+                        return
+                    try:
+                        self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                           f"@{role_id} 执行出错: {error}")
+                    finally:
+                        self.store.update_chat_run(run_id, "failed", error=error)
+            finally:
+                if channel.project_id:
+                    self.agent_tools.deactivate_run_token(
+                        channel.project_id, channel.id, role_id,
+                        chat_workspace_dir(channel.project_id, channel.id, role_id),
+                        run_id)
+
+    def _claim_queued_runs(self, channel: Channel,
+                           role_id: str) -> Optional[tuple[dict, list[int]]]:
+        """取出角色在本频道排队的全部运行,合并成一轮。
+
+        角色忙碌期间到达的每条触发消息各有一条排队运行;轮到它时不再一条条
+        执行,而是选一条作为「承接运行」实际执行,其余运行标成 ``merged`` 并指向
+        它。返回 (承接运行, 其余运行的触发消息 id);没有排队运行时返回 None。
+
+        承接运行的触发消息决定回复挂在哪条消息下、沿用哪条协作链,以及结果
+        是否交回主控,所以这样选:执行角色的排队消息里只要有需要把结果交回主控的
+        (主控派发的任务),就取其中最新一条,否则主控会等不到回报;其余情况取
+        最新一条。与停止共用运行状态锁:停止先赢时这里看不到排队运行。
+        """
+        with self._run_state_lock:
+            queued = self.store.queued_chat_runs(channel.id, role_id)
+            if not queued:
+                return None
+            run = queued[-1]
             project = self.store.get_project(channel.project_id or "")
-            if project:
-                error = normalize_document_resource_urls(
-                    error, project.id, [library_for(project.id).root])
-            with self._run_state_lock:
-                if not self.store.chat_run_is_active(run_id):
-                    return
-                try:
-                    self._post_failure(channel, role_id, msg_id, root_id, depth,
-                                       f"@{role_id} 执行出错: {error}")
-                finally:
-                    self.store.update_chat_run(run_id, "failed", error=error)
+            orchestrator = project.orchestrator_role_id if project else ""
+            if len(queued) > 1 and orchestrator and role_id != orchestrator:
+                returning = [
+                    item for item in queued if not self._is_direct_human_dispatch(
+                        int(item["trigger_message_id"]), role_id)]
+                if returning:
+                    run = returning[-1]
+            absorbed = [item for item in queued if item["id"] != run["id"]]
+            self.store.merge_queued_chat_runs(
+                int(run["id"]), [int(item["id"]) for item in absorbed])
+            if absorbed:
+                self.store.audit(
+                    "platform", "chat_runs_merged",
+                    detail=(f"channel={channel.id} role={role_id} run={run['id']} "
+                            f"merged={','.join(str(item['id']) for item in absorbed)}"))
+            return run, [int(item["trigger_message_id"]) for item in absorbed]
 
     def _post_failure(self, channel: Channel, role_id: str, msg_id: int,
                       root_id: int, depth: int, content: str) -> None:
@@ -1331,22 +1395,12 @@ class ChatEngine:
                          detail=f"channel={channel.id} role={role.id} "
                                 f"backend={backend_id} tasks={len(tasks)}")
 
-    def _execute_inner(self, run_id: int, channel: Channel, role_id: str,
-                       msg_id: int, root_id: int, depth: int) -> None:
-        with self._agent_execution_lock(channel.id, role_id):
-            try:
-                self._execute_inner_serialized(
-                    run_id, channel, role_id, msg_id, root_id, depth)
-            finally:
-                if channel.project_id:
-                    self.agent_tools.deactivate_run_token(
-                        channel.project_id, channel.id, role_id,
-                        chat_workspace_dir(channel.project_id, channel.id, role_id),
-                        run_id)
-
     def _execute_inner_serialized(self, run_id: int, channel: Channel,
                                   role_id: str, msg_id: int,
-                                  root_id: int, depth: int) -> None:
+                                  root_id: int, depth: int,
+                                  merged_ids: Sequence[int] = ()) -> None:
+        """在 channel×role 执行锁内执行一轮;``merged_ids`` 是排队时并入本轮的
+        其他触发消息,与 ``msg_id`` 一起写进本轮输入。"""
         role = self.store.get_role(channel.project_id or "", role_id)
         if role is None:
             with self._run_state_lock:
@@ -1380,7 +1434,8 @@ class ChatEngine:
                          detail=f"channel={channel.id} role={role_id} "
                                 f"backend={backend.id} depth={depth} {trace}")
 
-        cfg = self._assemble(channel, role, backend, msg_id, run_id=run_id)
+        cfg = self._assemble(channel, role, backend, msg_id, run_id=run_id,
+                             merged_ids=merged_ids)
         project = self.store.get_project(channel.project_id or "")
         library = library_for(channel.project_id or "")
         document_roots = [
@@ -1557,7 +1612,8 @@ class ChatEngine:
         return default, bound
 
     def _assemble(self, channel: Channel, role: Role, backend, msg_id: int,
-                  run_id: int = 0) -> ExecutionConfig:
+                  run_id: int = 0,
+                  merged_ids: Sequence[int] = ()) -> ExecutionConfig:
         workdir, missing_workdir = self._resolve_workdir(channel)
         workdir_section = WORKDIR_SECTION.format(workdir=workdir)
         if missing_workdir is not None:
@@ -1667,17 +1723,18 @@ class ChatEngine:
         manual_only = self._manual_only_role(project, role)
         known_roles = {r.id: r for r in self.store.list_roles(channel.project_id or "")}
 
+        # 本轮的触发消息:通常只有 msg_id 一条;排队合并时还有并入的其他消息
+        trigger_ids = sorted({msg_id, *merged_ids})
         history_records = []
-        trigger_message = self.store.get_message(msg_id)
         for m in self.store.recent_messages(
                 channel.id, HISTORY_WINDOW, channel.context_start_message_id):
-            if m["id"] != msg_id and is_orchestrator:
+            if m["id"] not in trigger_ids and is_orchestrator:
                 history_records.append(
                     self._message_record(m, role, project, known_roles))
 
-        trigger_record = (self._message_record(
-                              trigger_message, role, project, known_roles)
-                          if trigger_message else {})
+        trigger_records = [
+            self._message_record(m, role, project, known_roles)
+            for m in map(self.store.get_message, trigger_ids) if m]
         channel_history_path = self._write_channel_history(channel, role, project)
         history_parent = str(channel_history_path.parent.resolve())
         if history_parent not in allowed_dirs:
@@ -1782,12 +1839,23 @@ class ChatEngine:
             except (json.JSONDecodeError, TypeError):
                 seen = {}
             resource_notice = _change_notice(snapshot, seen)
-        turn_prompt = TURN_PROMPT.format(
-            resource_notice=resource_notice,
-            reply_hint=CONTROL_REPLY_HINT if is_orchestrator else "",
-            trigger_kind=_trigger_kind(trigger_record, orchestrator_id,
-                                       is_orchestrator, role.id),
-            trigger=json.dumps(trigger_record, ensure_ascii=False))
+        reply_hint = CONTROL_REPLY_HINT if is_orchestrator else ""
+        if len(trigger_records) > 1:
+            turn_prompt = MERGED_TURN_PROMPT.format(
+                resource_notice=resource_notice, reply_hint=reply_hint,
+                count=len(trigger_records),
+                trigger_kinds="\n".join(
+                    f"- Message {record['id']}: " + _trigger_kind(
+                        record, orchestrator_id, is_orchestrator, role.id)
+                    for record in trigger_records),
+                triggers=_compact_records(trigger_records))
+        else:
+            trigger_record = trigger_records[0] if trigger_records else {}
+            turn_prompt = TURN_PROMPT.format(
+                resource_notice=resource_notice, reply_hint=reply_hint,
+                trigger_kind=_trigger_kind(trigger_record, orchestrator_id,
+                                           is_orchestrator, role.id),
+                trigger=json.dumps(trigger_record, ensure_ascii=False))
         recovery_prompt = RECOVERY_PROMPT.format(
             history=_compact_records(history_records), turn_prompt=turn_prompt)
         prompt = common_prompt + "\n" + recovery_prompt

@@ -361,6 +361,12 @@
   .rc-dot.done { color: var(--ok); }
   .rc-dot.failed { color: var(--bad); }
   .rc-dot.stopped { color: var(--warn); }
+  .rc-dot.merged { color: var(--muted); }
+  .rc-jump { flex: none; border: 0; padding: 0; background: none; cursor: pointer;
+             font: inherit; color: var(--accent); }
+  .rc-jump:hover { text-decoration: underline; }
+  .run-card.rc-flash { animation: rcFlash 1.6s ease; }
+  @keyframes rcFlash { 0%, 60% { border-color: var(--accent); background: var(--accent-soft); } }
   .rc-err { color: var(--bad); font-size: 12px; }
   .rc-stop { margin-left: auto; flex: none; border: 1px solid var(--line);
              background: var(--card); color: var(--bad); font-size: 11px;

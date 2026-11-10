@@ -1680,3 +1680,118 @@ def test_run_completions_report_each_finished_chain_once(seeded):
     again = client.get("/api/chat/runs/completions",
                        params={"since": done["now"]}).json()
     assert again["completions"] == []
+
+
+def _blocking_first_start(monkeypatch):
+    """第一次 Runtime 启动阻塞到 release,期间到达的消息只能排队。"""
+    started, release = threading.Event(), threading.Event()
+    turns = []
+
+    def start(config):
+        turns.append(config)
+        if len(turns) == 1:
+            started.set()
+            assert release.wait(5)
+        return RunResult(True, "ok", output=f"第 {len(turns)} 轮完成")
+
+    monkeypatch.setattr(runtime_manager, "start", start)
+    return started, release, turns
+
+
+def _merged_triggers(turn_prompt: str) -> list[dict]:
+    raw = turn_prompt.split("# Trigger Messages (", 1)[1].split("\n", 1)[1]
+    return json.loads(raw.split("\n# ", 1)[0])
+
+
+def test_messages_queued_for_busy_role_run_as_one_merged_turn(seeded, monkeypatch):
+    """角色忙碌期间排队的多条消息合并成一轮:只执行一次,回复挂在最新一条下。"""
+    chat = ChatEngine(seeded, max_workers=4)
+    started, release, turns = _blocking_first_start(monkeypatch)
+
+    first = chat.post("general", "human", "@[dev] 第一件事")
+    assert started.wait(5)
+    second = chat.post("general", "human", "@[dev] 第二件事")
+    third = chat.post("general", "human", "@[dev] 第三件事")
+    release.set()
+    chat.wait_idle()
+
+    assert len(turns) == 2                       # 排队的两条没有各跑一轮
+    assert "# Trigger Message (JSON" in turns[0].turn_prompt
+    merged_prompt = turns[1].turn_prompt
+    assert "2 messages that arrived while you were busy" in merged_prompt
+    assert [item["id"] for item in _merged_triggers(merged_prompt)] == [second, third]
+    assert f"- Message {second}: human message" in merged_prompt
+    assert turns[1].trigger_message_id == third
+
+    runs = seeded.chat_runs_for_channel("general")
+    assert [run["status"] for run in runs] == ["done", "merged", "done"]
+    assert runs[1]["merged_into"] == runs[2]["id"] and runs[1]["finished_at"]
+    assert [run["merged_count"] for run in runs] == [0, 0, 1]
+    replies = [m for m in _log(seeded) if m["author_type"] == "agent"]
+    assert [m["reply_to"] for m in replies] == [first, third]
+
+
+def test_merged_turn_returns_to_orchestrator_when_any_message_was_dispatched(
+        seeded, monkeypatch):
+    """主控派发的任务与人类直接点名一起排队:合并后的结果仍要交回主控。"""
+    chat = ChatEngine(seeded, max_workers=4)
+    started, release, turns = _blocking_first_start(monkeypatch)
+
+    chat.post("general", "human", "@[dev] 先做这个")
+    assert started.wait(5)
+    dispatched = chat.post("general", "lead", "@dev 处理派发的任务", author_type="agent",
+                           mention_spans=[{"role_id": "dev", "start": 0, "end": 4}])
+    direct = chat.post("general", "human", "@[dev] 顺便看一下这个")
+    release.set()
+    chat.wait_idle()
+
+    # 承接运行取主控派发的那条(不是最新的人类点名),结果才会交回主控
+    assert [turn.role_id for turn in turns] == ["dev", "dev", "lead"]
+    assert turns[1].trigger_message_id == dispatched
+    assert [item["id"] for item in _merged_triggers(turns[1].turn_prompt)] \
+        == [dispatched, direct]
+    merged_reply = next(m for m in _log(seeded)
+                        if m["author"] == "dev" and m["reply_to"] == dispatched)
+    assert json.loads(merged_reply["mentions"]) == ["lead"]
+
+
+def test_stopped_queued_run_is_left_out_of_the_merged_turn(seeded, monkeypatch):
+    chat = ChatEngine(seeded, max_workers=4)
+    started, release, turns = _blocking_first_start(monkeypatch)
+
+    chat.post("general", "human", "@[dev] 第一件事")
+    assert started.wait(5)
+    cancelled = chat.post("general", "human", "@[dev] 这条不用做了")
+    kept = chat.post("general", "human", "@[dev] 这条照常")
+    [cancelled_run] = seeded.chat_runs_for_trigger(cancelled)
+    chat.stop_run(cancelled_run["id"])
+    release.set()
+    chat.wait_idle()
+
+    assert len(turns) == 2
+    assert "# Trigger Message (JSON" in turns[1].turn_prompt   # 只剩一条,不算合并
+    assert turns[1].trigger_message_id == kept
+    assert [run["status"] for run in seeded.chat_runs_for_channel("general")] \
+        == ["done", "stopped", "done"]
+
+
+def test_run_completions_skip_chain_merged_into_another_run(seeded):
+    """以 merged 收尾的链不单独通知,由承接运行所在的链报告。"""
+    client = TestClient(create_app())
+    cursor = client.get("/api/chat/runs/completions").json()["now"]
+    earlier = seeded.add_message("general", "human", "human", "@lead 第一条", [])
+    later = seeded.add_message("general", "human", "human", "@lead 第二条", [])
+    absorbed = seeded.add_chat_run("general", "lead", earlier, earlier, 0)
+    carrier = seeded.add_chat_run("general", "lead", later, later, 0)
+    seeded.merge_queued_chat_runs(carrier, [absorbed])
+    assert seeded.active_chat_runs("general")[0]["id"] == carrier
+    # 并入的运行已是终态,迟到的状态更新不能把它改回去
+    assert not seeded.update_chat_run(absorbed, "running")
+
+    pending = client.get("/api/chat/runs/completions", params={"since": cursor}).json()
+    assert pending["completions"] == []
+    seeded.update_chat_run(carrier, "done")
+    done = client.get("/api/chat/runs/completions",
+                      params={"since": pending["now"]}).json()
+    [chain] = done["completions"]
+    assert (chain["root_id"], chain["runs"], chain["status"]) == (later, 1, "done")
