@@ -284,11 +284,19 @@ def test_chat_api_lists_and_cancels_channel_callbacks(seeded):
     payload = client.get("/api/chat/general/messages?tail=true").json()
     assert [item["id"] for item in payload["callbacks"]] == [callback["id"]]
     assert payload["callbacks"][0]["conditions"].endswith("到点")
+
+    # 频道列表带等待中的回调数,侧栏据此给频道加等待标记
+    def waiting():
+        return {channel["id"]: channel["pending_callback_count"] for channel in
+                client.get("/api/projects/webshop/channels?scope=all").json()["channels"]}
+    _add_channel(seeded)
+    assert waiting() == {"general": 1, "webshop:ops": 0}
     response = client.post(f"/api/chat/callbacks/{callback['id']}/cancel")
     assert response.status_code == 200
     assert response.json()["callback"]["status"] == "cancelled"
     assert client.post(f"/api/chat/callbacks/{callback['id']}/cancel").status_code == 409
     assert client.get("/api/chat/general/messages?tail=true").json()["callbacks"] == []
+    assert waiting()["general"] == 0
 
 
 # ---- 盯 webhook 来源的事件 ----

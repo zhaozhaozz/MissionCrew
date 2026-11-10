@@ -1727,6 +1727,12 @@ class Store:
             f"SELECT * FROM chat_callbacks {where}ORDER BY id DESC LIMIT ?",
             (*params, max(1, min(int(limit), 1000))))]
 
+    def pending_chat_callback_counts(self) -> dict[str, int]:
+        """按频道汇总等待中的回调数;侧栏一次查询即可标记哪些频道在等回调。"""
+        return {row["channel"]: int(row["n"]) for row in self._query(
+            "SELECT channel, COUNT(*) AS n FROM chat_callbacks "
+            "WHERE status='pending' GROUP BY channel")}
+
     def finish_chat_callback(self, callback_id: int, status: str, reason: str = "",
                              message_id: int = 0) -> bool:
         """把仍在等待的回调记为 fired/cancelled/expired;已结束的不改,返回是否命中。"""

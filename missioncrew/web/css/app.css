@@ -215,6 +215,10 @@
   .channel-background-marker { flex: none; display: inline-flex; align-items: center; gap: 3px;
                                color: var(--warn); font-size: 10.5px; line-height: 1; }
   .channel-background-marker[hidden] { display: none; }
+  /* 有回调在等(到点或等事件)的频道:静态闹钟,不抢运行圆点的注意力 */
+  .channel-callback-marker { flex: none; display: inline-flex; align-items: center;
+                             font-size: 10.5px; line-height: 1; }
+  .channel-callback-marker[hidden] { display: none; }
   .channel-head-marker { padding: 0 8px; border-radius: 999px; background: var(--warn-soft);
                          font-size: 11px; font-weight: 600; line-height: 18px; }
   .channel-item-actions { position: relative; flex: none; margin-left: auto; }

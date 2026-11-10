@@ -63,9 +63,11 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             channels = [c for c in channels
                         if c.archived == (scope == "archived")]
         active_run_counts = store.active_chat_run_counts()
+        callback_counts = store.pending_chat_callback_counts()
         return etag_json_response(request, {
             "channels": [{**channel_data(c),
-                          "active_run_count": active_run_counts.get(c.id, 0)}
+                          "active_run_count": active_run_counts.get(c.id, 0),
+                          "pending_callback_count": callback_counts.get(c.id, 0)}
                          for c in channels],
             "counts": counts,
         })

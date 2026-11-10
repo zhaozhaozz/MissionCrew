@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import time
@@ -503,9 +505,14 @@ const rows = () => context.channelSidebarHtml(channels).split('<div class="side-
       marker ? !/\bhidden\b/.test(marker[1]) : null,
     ];
   });
-const collapsed = rows();
+// 等待回调标记亮着的条目(频道 id 或收起的分组名)
+const waiting = () => [...context.channelSidebarHtml(channels).matchAll(
+    /<span class="channel-callback-marker" data-channel-(?:id|group)="([^"]*)"([^>]*)>/g)]
+  .filter(match => !/\bhidden\b/.test(match[2])).map(match => match[1]);
+const collapsed = rows(), collapsedWaiting = waiting();
 context.expandChannelGroupOf("webshop:ops-deploy");
 process.stdout.write(JSON.stringify({ collapsed, expanded: rows(),
+                                      collapsedWaiting, expandedWaiting: waiting(),
                                       stored: stored["mc.channelGroupsCollapsed"] }));
 """
 
@@ -517,9 +524,10 @@ def test_sidebar_groups_channels_by_slash_in_name():
     channels = [
         {"id": "webshop:general", "name": "general"},
         {"id": "webshop:backend-api", "name": "backend/api"},
-        {"id": "webshop:misc", "name": "misc"},
+        {"id": "webshop:misc", "name": "misc", "pending_callback_count": 2},
         {"id": "webshop:backend-db", "name": " backend / db"},
-        {"id": "webshop:ops-deploy", "name": "ops/deploy", "active_run_count": 1},
+        {"id": "webshop:ops-deploy", "name": "ops/deploy", "active_run_count": 1,
+         "pending_callback_count": 1},
         {"id": "webshop:docs-x", "name": "文档 · design/arch.md",
          "content_kind": "docs", "content_key": "design/arch.md"},
         {"id": "webshop:edge", "name": "/edge"},
@@ -551,6 +559,43 @@ def test_sidebar_groups_channels_by_slash_in_name():
         ["webshop:ops-deploy", "deploy", ["channel-subitem", "selected"], None, True],
     ] + tail
     assert json.loads(data["stored"]) == []
+    # 有回调在等的频道带等待标记;收起的分组把组内的汇总到标题上
+    assert data["collapsedWaiting"] == ["webshop:misc", "ops"]
+    assert data["expandedWaiting"] == ["webshop:misc", "webshop:ops-deploy"]
+
+
+# 回调时间由服务端写成 UTC 文本,页面换成浏览器时区:从 sidebar.js 取出相关的三段定义单独执行
+_LOCAL_TIME_SCRIPT = r"""
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1] + "/sidebar.js", "utf8");
+const pick = pattern => source.match(pattern)[0];
+eval([pick(/function fmtMessageTime\(date\) \{[\s\S]*?\n\}/),
+      pick(/const UTC_TIME_TEXT = .*/).replace("const", "var"),
+      pick(/function localizeUtcTimes\(text\) \{[\s\S]*?\n\}/)].join("\n"));
+process.stdout.write(JSON.stringify({
+  text: localizeUtcTimes(process.argv[2]),
+  expected: [fmtMessageTime(new Date("2026-11-09T07:22:00Z")),
+             fmtMessageTime(new Date("2026-11-09T23:05:00Z"))],
+}));
+"""
+
+
+def test_callback_times_render_in_browser_timezone():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required to execute the browser renderers")
+    result = subprocess.run(
+        [node, "-e", _LOCAL_TIME_SCRIPT,
+         str(Path(__file__).resolve().parents[1] / "missioncrew" / "web" / "js"),
+         "频道 #ops 有新消息 或 2026-11-09 07:22 UTC 到点（最晚等到 2026-11-09 23:05 UTC），UTC 之外原样"],
+        env={**os.environ, "TZ": "Asia/Shanghai"},
+        text=True, capture_output=True, check=True)
+    data = json.loads(result.stdout)
+    first, second = data["expected"]
+    assert data["text"] == f"频道 #ops 有新消息 或 {first} 到点（最晚等到 {second}），UTC 之外原样"
+    # 东八区:07:22 UTC 是当天 15:22,23:05 UTC 跨到次日 07:05
+    assert re.search(r"(15|0?3):22", first) and "07:22" not in first
+    assert "10" in second and re.search(r"0?7:05", second)
 
 
 def test_document_history_lists_versions_and_reads_old_content(seeded):

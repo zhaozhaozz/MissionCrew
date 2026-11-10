@@ -511,6 +511,27 @@ function fmtMessageTime(date) {
   });
 }
 
+/* 回调的触发条件、回执与触发消息由服务端生成,时间写成 `YYYY-MM-DD HH:MM UTC`
+   (callbacks.py 的 _utc_text;这段文本也给 Agent 读,所以保持 UTC)。给人看时换成
+   浏览器时区,格式与消息时间一致。 */
+const UTC_TIME_TEXT = /\b(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}) UTC\b/g;
+
+function localizeUtcTimes(text) {
+  return String(text ?? "").replace(UTC_TIME_TEXT, (raw, day, clock) => {
+    const date = new Date(`${day}T${clock}:00Z`);
+    return Number.isNaN(date.getTime()) ? raw : fmtMessageTime(date);
+  });
+}
+
+// 已渲染的消息正文:只改文本节点,不动 Markdown 结构与提及高亮的位置
+function localizeUtcTimesIn(element) {
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = localizeUtcTimes(node.nodeValue);
+    if (text !== node.nodeValue) node.nodeValue = text;
+  }
+}
+
 function refreshAgentToolGroup(group) {
   const items = [...group.querySelectorAll(".agent-tool-item")];
   if (!items.length) return;
@@ -559,6 +580,7 @@ function appendAgentToolReceipt(message, pane, date) {
   item.innerHTML = `<div class="agent-tool-item-head">
       <code>${esc(meta.action)}</code><span class="time">${time}</span></div>
     <div class="body markdown-body">${fmtBody(content, true, message.mention_spans)}</div>`;
+  if (meta.action.startsWith("callback.")) localizeUtcTimesIn(item.querySelector(".body"));
   group.querySelector(".agent-tool-items").appendChild(item);
   refreshAgentToolGroup(group);
 }
@@ -645,6 +667,8 @@ function appendMessagesToSurface(list, surface) {
           aria-expanded="false" onclick="toggleMessageBody(this)">展开完整回复（${m.content.length} 字符）</button>` : ""}
       </div>`;
     if (isAgent) syncMessageCopyButton(div, m.content);
+    // 回调的触发消息与过期提示
+    if (m.kind === "callback") localizeUtcTimesIn(div.querySelector(".body"));
     pane.appendChild(div);
     surface.lastMsgId = Math.max(surface.lastMsgId, m.id);
   }

@@ -51,6 +51,8 @@ EVENT_SCAN_LIMIT = 20
 
 
 def _utc_text(timestamp: float) -> str:
+    """回调文本里的时间。Agent 也读这些文本,所以写 UTC;页面按这个格式识别并换成
+    浏览器时区(web/js/sidebar.js 的 localizeUtcTimes),改格式要两边一起改。"""
     return datetime.fromtimestamp(timestamp, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
