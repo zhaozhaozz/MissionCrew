@@ -99,7 +99,7 @@ The credential named `GITHUB_TOKEN` is the project's identity on GitHub: its val
 
 Both the gh configuration and the helper read the files on every call, so after the token is replaced the next command of a long-lived session already uses the new value. The environment variables are injected when a Runtime process starts: a long-lived session started before `GITHUB_TOKEN` was first saved does not have them and can read the credential file inline instead (`GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list`), while sessions started afterwards get them automatically. Without a `GITHUB_TOKEN` credential the platform injects nothing, and `gh` and git keep using the login of the user who started MissionCrew.
 
-The "GitHub 身份" row at the top of the credential section of the settings pages shows the result of a check: the platform calls GitHub's `GET /user` with the token and lists the account, the token type, its permissions (the scopes of a classic PAT; the permissions of a fine-grained PAT cannot be read from the API), the expiry time, and whether the notifications API is available. The result is cached in the service process for 10 minutes, and "重新核对" checks again immediately. `GET /api/github` (the global one) and `GET /api/projects/<project>/github` (the one in effect for the project) return the same content, without the token.
+The "GitHub identity" (GitHub 身份) row at the top of the credential section of the settings pages shows the result of a check: the platform calls GitHub's `GET /user` with the token and lists the account, the token type, its permissions (the scopes of a classic PAT; the permissions of a fine-grained PAT cannot be read from the API), the expiry time, and whether the notifications API is available. The result is cached in the service process for 10 minutes, and "Check again" (重新核对) checks again immediately. `GET /api/github` (the global one) and `GET /api/projects/<project>/github` (the one in effect for the project) return the same content, without the token.
 
 How the two kinds of PAT differ:
 
@@ -109,6 +109,8 @@ How the two kinds of PAT differ:
 | Reading and writing code, issues and PRs | `repo` (`public_repo` is enough for public repositories only) | Contents, Issues, Pull requests and other permissions set to read and write as needed |
 | Notifications API (`/notifications`) | Available, needs `notifications` or `repo` | Not available |
 | Repository events API (`/repos/<owner>/<repo>/events`) | Available | Available, needs Metadata read (included once repositories are selected) |
+
+The platform also uses this token to query GitHub's repository events and account notifications on a schedule and hands new events to the subscribed automation scripts; see "GitHub polling sources" in [Scheduled automation and automatic task handling](automation.md).
 
 ### `tasks/`
 

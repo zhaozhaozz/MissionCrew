@@ -36,6 +36,7 @@ def create_app(webhook_host: Optional[str] = None,
         runtime_manager.start_idle_reaper()
         ctx.role_usage_linkage.start()
         ctx.automation_scheduler.start()
+        ctx.github_poller.start()
         ctx.chat.callbacks.start()
         if ctx.webhook_listener:
             ctx.webhook_listener.start()
@@ -45,6 +46,8 @@ def create_app(webhook_host: Optional[str] = None,
             runtime_manager.set_usage_refresh_handler(None)
             if ctx.webhook_listener:
                 ctx.webhook_listener.stop()
+            # 先停轮询再停调度:调度器 stop 会关掉脚本执行池,轮询不能再往里投事件
+            ctx.github_poller.stop()
             ctx.automation_scheduler.stop()
             ctx.chat.callbacks.stop()
             ctx.role_usage_linkage.stop()

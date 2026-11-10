@@ -119,6 +119,9 @@ CREATE TABLE IF NOT EXISTS automation_runs (
 CREATE INDEX IF NOT EXISTS idx_automation_runs_automation
   ON automation_runs(automation_id, id DESC);
 CREATE TABLE IF NOT EXISTS webhook_sources (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+-- 轮询来源的进度(各事件流的游标、已见事件 id、最近一次轮询结果);与来源定义分开存,
+-- 每次轮询都写,不改动来源本身的 updated_at
+CREATE TABLE IF NOT EXISTS webhook_source_state (id TEXT PRIMARY KEY, data TEXT NOT NULL);
 -- 凭据:data 是不含值的元数据 JSON,值单独一列,通用的 _get/_list 只读 data 列
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY, data TEXT NOT NULL, value TEXT NOT NULL DEFAULT ''
@@ -1184,6 +1187,16 @@ class Store:
 
     def delete_webhook_source(self, id: str) -> None:
         self._delete("webhook_sources", id)
+        self._delete("webhook_source_state", id)
+
+    def get_webhook_source_state(self, id: str) -> dict:
+        return self._get("webhook_source_state", id) or {}
+
+    def put_webhook_source_state(self, id: str, state: dict) -> None:
+        self._put("webhook_source_state", id, state)
+
+    def delete_webhook_source_state(self, id: str) -> None:
+        self._delete("webhook_source_state", id)
 
     # ---- 凭据(全局 + 项目;值与元数据分列存放) ----
     def put_credential(self, credential: Credential,

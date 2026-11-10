@@ -110,6 +110,8 @@ gh 配置和 helper 都在每次调用时读文件，替换 token 后长驻会�
 | 通知接口（`/notifications`） | 可用，需要 `notifications` 或 `repo` | 不可用 |
 | 仓库事件接口（`/repos/<owner>/<repo>/events`） | 可用 | 可用，需要 Metadata 读权限（选了仓库就自带） |
 
+平台还用这个 token 定时查询 GitHub 的仓库事件与账号通知，把新事件交给订阅的自动化脚本，见 [定时自动化与任务自动处理](automation.md) 的「GitHub 轮询来源」。
+
 ### `tasks/`
 
 `tasks/` 只存放平台生成的项目 Task 快照，不是协作草稿或报告目录。快照只读；Agent 创建、编辑、追加简报或删除 Task 时必须显式调用 Agent Tool，文件修改不会同步回 Task。Task 包含 `title`、`summary`、正文、`labels`（状态是 `status: 文本` 标签）和可选 `channel_ids`；属于自定义数据源的任务在快照里另有 `source`；带了 `external_id`、`url`（原始条目链接）或 `meta` 的任务（同步来的，或创建时写了这些字段的）快照里也有对应字段。快照在每次装配工作区时刷新，调用角色自己的 `task.*` 动作成功后也会立即刷新。聊天角色新建 Task 使用 `task.create`，修改 Task 使用带 `snapshot_updated_at` 的 `task.update`；工具会立即报告版本冲突。追加状态简报使用 `task.brief`；项目主控删除 Task 使用 `task.delete`，Task 与简报会进入项目回收站。快照 frontmatter 中的 `status_briefs` 是只读历史。协作草稿和报告应通过 `document.publish` 放到文档库下合适的目录。

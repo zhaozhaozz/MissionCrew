@@ -35,7 +35,8 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             automation.project_id, automation.id)
         source = (store.get_webhook_source(automation.webhook_source)
                   if automation.webhook_source else None)
-        data["webhook_path"] = webhook_path(source) if source else ""
+        data["webhook_path"] = (webhook_path(source)
+                                if source and source.kind == "webhook" else "")
         data["running"] = automation.id in ctx.automations.running_ids()
         data["next_run_at"] = None
         if automation.enabled and automation.cron.strip():

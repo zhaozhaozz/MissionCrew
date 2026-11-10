@@ -1007,12 +1007,18 @@ class Automation:
         return cls(**d)
 
 
+WEBHOOK_SOURCE_KINDS = ("webhook", "github")
+
+
 @dataclass
 class WebhookSource:
-    """全局 webhook 来源:一个投递入口(地址 + 验签密钥 + 启停)。
+    """全局 webhook 来源:一个投递入口,订阅它的自动化脚本收到它的每一次投递。
 
-    外部系统按来源配置一次;各项目的自动化脚本用 webhook_source 订阅来源,
-    来源收到的每次投递都会触发所有订阅它的脚本,由脚本自己过滤事件。
+    投递从哪来由 kind 决定:`webhook` 是外部系统 POST 到投递地址(地址 + 验签
+    密钥),按来源在外部系统配置一次;`github` 是平台用 GitHub token 定时查询
+    通知与仓库事件,把新事件整理成同样形状的投递(配置在 github 字段,见
+    collab/github_events.py),不需要公网地址。各项目的自动化脚本用
+    webhook_source 订阅来源,由脚本自己过滤事件。
     """
 
     id: str
@@ -1020,9 +1026,15 @@ class WebhookSource:
     description: str = ""
     path: str = ""                 # 投递地址中 /hooks/ 之后的部分,全局唯一;默认同 id
     secret: str = ""               # 验签密钥;只经人类页面的密钥端点读取
-    enabled: bool = True           # 停用后投递一律 404,订阅关系保留
+    enabled: bool = True           # 停用后投递一律 404(轮询来源则停止轮询),订阅关系保留
+    kind: str = "webhook"          # webhook | github;创建后不可改
+    github: dict = field(default_factory=dict)   # kind=github 的轮询配置
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
+
+    def __post_init__(self):
+        if self.kind not in WEBHOOK_SOURCE_KINDS:
+            raise ValueError("来源类型只能是 webhook 或 github")
 
     def to_dict(self) -> dict:
         return asdict(self)

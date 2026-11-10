@@ -81,6 +81,23 @@ function automationWebhookHtml(automation) {
   const id = esc(automation.webhook_source);
   const others = (source?.automations || []).filter(item => item.id !== automation.id);
   const url = source ? webhookSourceUrl(source) : automation.webhook_path;
+  // GitHub 轮询来源没有投递地址与端口:改为展示查询对象与轮询状态
+  if (source?.kind === "github")
+    return `<section class="automation-detail-section automation-webhook-section">
+      <h3>Webhook</h3>
+      <dl class="automation-config">
+        <div><dt>来源</dt><dd class="automation-webhook-value">
+          <span>${esc(source.name || source.id)}</span> <span class="muted">${id}</span>
+          <button class="ghost compact" type="button" data-id="${id}"
+            onclick="editWebhookSource(this.dataset.id)">管理来源</button></dd></div>
+        <div><dt>轮询对象</dt><dd>${githubSourceSummaryHtml(source)}</dd></div>
+        <div><dt>状态</dt><dd>${githubPollStateHtml(source)}</dd></div>
+        <div><dt>共用此来源</dt><dd>${others.length
+          ? others.map(item => `<span class="pill" title="${esc(item.id)}">${esc(item.project_id)} / ${esc(item.name || item.id)}</span>`).join(" ")
+          : '<span class="muted">无其他脚本</span>'}</dd></div>
+      </dl>
+      <p class="muted automation-webhook-hint">平台定时向 GitHub 查询这个来源的新事件，每个事件触发一次所有选择它的脚本，与 Webhook 投递同形：<code>$MISSIONCREW_TRIGGER</code> 为 <code>webhook</code>，事件内容在 <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code>，由脚本决定处理哪些事件。</p>
+    </section>`;
   return `<section class="automation-detail-section automation-webhook-section">
       <h3>Webhook</h3>
       <dl class="automation-config">
@@ -189,7 +206,7 @@ function automationWebhookSourceFieldHtml(automation) {
   const sources = webhookSources.sources || [];
   let options = sources.map(source => `<option value="${esc(source.id)}"
       ${source.id === current ? "selected" : ""}>${esc(source.name || source.id)}（${
-      esc(source.webhook_path)}）${source.enabled ? "" : " · 已停用"}</option>`).join("");
+      esc(source.kind === "github" ? "GitHub 轮询" : source.webhook_path)}）${source.enabled ? "" : " · 已停用"}</option>`).join("");
   // 来源列表没读到时保留现值,避免保存时悄悄取消订阅
   if (current && !sources.some(source => source.id === current))
     options += `<option value="${esc(current)}" selected>${esc(current)}</option>`;
@@ -198,7 +215,7 @@ function automationWebhookSourceFieldHtml(automation) {
       <select id="af-webhook-source" aria-label="Webhook 来源">
         <option value="">不接受 Webhook 触发</option>${options}
       </select>
-      <span class="muted">来源（投递地址与密钥）在<a onclick="switchTab('settings')">全局设置 → Webhook 来源 ↗</a>中创建，同一来源可被多个脚本共用</span>
+      <span class="muted">来源（Webhook 的投递地址与密钥，或 GitHub 轮询的仓库与事件）在<a onclick="switchTab('settings')">全局设置 → Webhook 来源 ↗</a>中创建，同一来源可被多个脚本共用</span>
     </label>`;
 }
 

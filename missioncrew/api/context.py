@@ -14,6 +14,7 @@ from fastapi import HTTPException, Request, Response
 from ..collab.automations import AutomationScheduler, AutomationService
 from ..collab.chat import ChatEngine
 from ..collab.content_channels import content_channel
+from ..collab.github_events import GitHubEventPoller
 from ..collab.guidelines import sync_all_guideline_libraries
 from ..collab.recycle_bin import migrate_legacy_skill_trash
 from ..collab.skills import (sync_all_project_skill_libraries,
@@ -54,6 +55,8 @@ class ApiContext:
     role_usage_linkage: RoleUsageLinkage | None = None
     automations: AutomationService | None = None
     automation_scheduler: AutomationScheduler | None = None
+    # GitHub 轮询来源的后台轮询器;新事件经 automations 触发订阅脚本
+    github_poller: GitHubEventPoller | None = None
     # 专用 webhook 端口的监听器(api/webhooks.py);mc serve 启用时才有
     webhook_listener: Optional["WebhookListener"] = None
     # 更新互斥与"更新中"标记:与 ChatEngine 共享同一集合,更新期间不派发该后端
@@ -102,6 +105,7 @@ class ApiContext:
         ctx.automations = AutomationService(store, ctx.chat.agent_tools)
         ctx.chat.agent_tools.bind_automation_trigger(ctx.automations.trigger)
         ctx.automation_scheduler = AutomationScheduler(store, ctx.automations)
+        ctx.github_poller = GitHubEventPoller(store, ctx.automations)
         # 长时间没再运行的脚本也要按期清理运行记录
         ctx.automation_scheduler.register_system_job(
             "automation-runs-prune", "0 * * * *", ctx.automations.prune_runs)

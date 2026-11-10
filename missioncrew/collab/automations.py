@@ -199,6 +199,12 @@ class AutomationService:
                 self._running.discard(automation.id)
             raise
 
+    def webhook_room(self, automation_id: str) -> int:
+        """该脚本的 webhook 排队还能再放几条。轮询来源据此控制一次交出多少事件:
+        排不下的留到下一轮再取,不像外部投递那样只能丢弃。"""
+        with self._guard:
+            return max(0, WEBHOOK_QUEUE_LIMIT - len(self._pending.get(automation_id, ())))
+
     def _launch(self, automation: Automation, trigger: str,
                 event: Optional[dict]) -> int:
         """建运行记录并提交执行;调用方已把脚本登记为运行中。"""

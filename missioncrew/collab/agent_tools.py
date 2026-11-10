@@ -507,10 +507,11 @@ ACTION_DEFINITIONS = {
             "cron": "five-field crontab; an empty string means no schedule",
             "enabled": "whether scheduled (cron) triggering is enabled",
             "webhook_source": ("id of an existing global webhook source to subscribe to "
-                               "(automation.list lists them; can be combined with cron); every "
-                               "delivery to that source runs this script; an empty string "
-                               "removes the webhook trigger. Sources and their secrets are "
-                               "managed only by humans in global settings"),
+                               "(automation.list lists them: webhook endpoints and GitHub "
+                               "polling sources; can be combined with cron); every delivery "
+                               "to that source runs this script; an empty string removes "
+                               "the webhook trigger. Sources and their secrets are managed "
+                               "only by humans in global settings"),
             "actions": "allowlist array of actions it may call; omit it to keep the current value",
             "timeout_seconds": "timeout of a single run in seconds",
         },
@@ -523,7 +524,9 @@ ACTION_DEFINITIONS = {
     "automation.list": {
         "description": ("On demand, list project automation scripts (schedule, enabled, webhook "
                         "source, actions allowlist, last run) and the global webhook sources "
-                        "they can subscribe to; pass id to get the full script and its recent "
+                        "they can subscribe to (kind github = the platform polls GitHub for "
+                        "the listed repositories, events and notifications); pass id to get "
+                        "the full script and its recent "
                         "runs with the tail of their output, e.g. to fix a failing script; "
                         "page back with before_id through all kept runs (run_count)"),
         "orchestrator_only": True,
@@ -2151,7 +2154,8 @@ class AgentActionService:
     def _automation_webhook_path(self, automation) -> str:
         source = (self.store.get_webhook_source(automation.webhook_source)
                   if automation.webhook_source else None)
-        return webhook_path(source) if source else ""
+        # GitHub 轮询来源没有投递地址
+        return webhook_path(source) if source and source.kind == "webhook" else ""
 
     def _list_automations(self, project: Project, _identity: AgentIdentity,
                           arguments: dict, _context: AgentRunContext) -> dict:
@@ -2195,9 +2199,16 @@ class AgentActionService:
                     "run_count": self.store.count_automation_runs(automation.id),
                     "runs": runs}
         rows = [summary_row(item) for item in self.store.list_automations(project.id)]
-        sources = [{"id": item.id, "name": item.name, "description": item.description,
-                    "enabled": item.enabled, "webhook_path": webhook_path(item)}
-                   for item in self.store.list_webhook_sources()]
+        sources = []
+        for item in self.store.list_webhook_sources():
+            row = {"id": item.id, "name": item.name, "description": item.description,
+                   "enabled": item.enabled, "kind": item.kind,
+                   "webhook_path": webhook_path(item) if item.kind == "webhook" else ""}
+            if item.kind == "github":
+                # 轮询来源能送来什么由配置决定,脚本据此写过滤条件;token 不在其中
+                row["github"] = {key: item.github.get(key) for key in (
+                    "repos", "events", "notifications", "participating")}
+            sources.append(row)
         return {"summary": (f"项目 {project.id} 共 {len(rows)} 个自动化脚本,"
                             f"平台共 {len(sources)} 个 webhook 来源"),
                 "automations": rows, "webhook_sources": sources}

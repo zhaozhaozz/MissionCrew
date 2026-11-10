@@ -1,9 +1,11 @@
 /* ---------------- 全局设置:Webhook 来源 ----------------
-   来源是全局的投递入口(地址 + 密钥 + 启停),外部系统按来源配置一次;各项目的
-   自动化脚本选择来源订阅它,来源收到的每次投递触发所有订阅它的脚本。
-   列表不带密钥,密钥只经 /secret 端点按需读取。自动化页也复用这里的缓存与对话框。 */
+   来源是全局的投递入口,各项目的自动化脚本选择来源订阅它,来源的每次投递触发所有
+   订阅它的脚本。来源有两类(kind):webhook 由外部系统 POST 到投递地址(地址 + 密钥,
+   按来源在外部系统配置一次);github 由平台用 GITHUB_TOKEN 凭据定时查询 GitHub 的
+   通知与仓库事件,不需要公网地址。列表不带密钥,密钥只经 /secret 端点按需读取。
+   自动化页也复用这里的缓存与对话框。 */
 
-let webhookSources = { sources: [], listener: { enabled: false } };
+let webhookSources = { sources: [], listener: { enabled: false }, github_events: [] };
 // 当前对话框里的来源密钥({sourceId, secret, visible});关闭对话框即作废
 let webhookSecretState = null;
 
@@ -38,6 +40,30 @@ function webhookSubscribersHtml(source) {
     esc(item.project_id)} / ${esc(item.name || item.id)}</span>`).join(" ");
 }
 
+// GitHub 轮询来源查什么:仓库列表、事件白名单、是否含账号通知
+function githubSourceSummaryHtml(source) {
+  const config = source.github || {};
+  const parts = (config.repos || []).map(repo => `<code>${esc(repo)}</code>`);
+  if (config.notifications)
+    parts.push(`<span class="pill">${config.participating ? "通知（仅直接参与）" : "账号通知"}</span>`);
+  const events = (config.events || []).length
+    ? `<div class="muted">仓库事件：${esc(config.events.join("、"))}</div>` : "";
+  return `<div><span class="pill">GitHub 轮询</span> ${parts.join(" ")}</div>${events}`;
+}
+
+function githubPollStateHtml(source) {
+  if (!source.enabled) return '<span class="pill">已停用</span>';
+  const poll = source.poll || {};
+  if (!poll.last_poll_at) return '<span class="pill">等待首次轮询</span>';
+  const when = `<span class="muted">${esc(fmtTs(poll.last_poll_at))} 查询` +
+    `${poll.delivered_total ? `，累计 ${poll.delivered_total} 个事件` : ""}</span>`;
+  if (poll.last_error)
+    return `<span class="pill automation-st-failed">出错</span> ${when}
+      <div class="automation-error">${esc(poll.last_error)}</div>`;
+  return `<span class="pill automation-st-succeeded">轮询中</span> ${when}${
+    poll.pending ? ' <span class="pill" title="订阅脚本排队已满，剩余事件下一轮再投">有事件待投</span>' : ""}`;
+}
+
 async function renderWebhookSources() {
   const table = document.getElementById("webhook-source-table");
   if (!table) return;
@@ -51,19 +77,22 @@ async function renderWebhookSources() {
   if (state) state.innerHTML = `Webhook 端口：${webhookListenerStateHtml()}`;
   const rows = webhookSources.sources.map(source => {
     const url = webhookSourceUrl(source);
+    const github = source.kind === "github";
     return `<tr>
       <td><b>${esc(source.name || source.id)}</b><div class="muted">${esc(source.id)}</div></td>
-      <td><span class="automation-webhook-value"><code>${esc(url)}</code>
+      <td>${github ? githubSourceSummaryHtml(source)
+        : `<span class="automation-webhook-value"><code>${esc(url)}</code>
         <button class="ghost compact" type="button" data-copy="${esc(url)}"
-          onclick="copyWebhookValue(this.dataset.copy, '投递地址')">复制</button></span></td>
-      <td>${source.enabled ? '<span class="pill automation-st-succeeded">启用</span>'
+          onclick="copyWebhookValue(this.dataset.copy, '投递地址')">复制</button></span>`}</td>
+      <td>${github ? githubPollStateHtml(source)
+        : source.enabled ? '<span class="pill automation-st-succeeded">启用</span>'
         : '<span class="pill">已停用</span>'}</td>
       <td>${webhookSubscribersHtml(source)}</td>
       <td><button class="ghost" data-id="${esc(source.id)}"
         onclick="editWebhookSource(this.dataset.id)">编辑</button></td></tr>`;
   }).join("");
   table.innerHTML =
-    `<tr><th>来源</th><th>投递地址</th><th>状态</th><th>使用的自动化脚本</th><th></th></tr>` +
+    `<tr><th>来源</th><th>投递地址 / 轮询对象</th><th>状态</th><th>使用的自动化脚本</th><th></th></tr>` +
     (rows || `<tr><td colspan="5" class="empty">还没有 Webhook 来源</td></tr>`);
 }
 
@@ -86,10 +115,87 @@ function rerenderWebhookSecret() {
   if (source && row) row.outerHTML = webhookSecretRowHtml(source);
 }
 
-// id 为空 = 新建;revealSecret 用于刚创建后直接显示密钥,方便复制到外部系统
-async function editWebhookSource(id, { revealSecret = false } = {}) {
+/* GitHub 轮询来源的表单:查哪些仓库的哪些事件、要不要账号通知、用哪份 token。 */
+function editGithubSource(source) {
+  const config = source?.github || {};
+  const users = source?.automations || [];
+  const chosen = new Set(config.events || []);
+  const eventBoxes = (webhookSources.github_events || []).map(name => `<label class="automation-toggle">
+      <input type="checkbox" class="ws-gh-event" value="${esc(name)}" ${chosen.has(name) ? "checked" : ""}>
+      <code>${esc(name)}</code></label>`).join(" ");
+  const projectOptions = (overview.projects || []).map(project => `<option value="${esc(project.id)}"
+      ${project.id === config.project_id ? "selected" : ""}>项目「${esc(project.name || project.id)}」生效的 GITHUB_TOKEN</option>`).join("");
+  openFormDialog(source ? `编辑 GitHub 轮询来源 ${source.id}` : "新建 GitHub 轮询来源", `
+    <p class="muted">平台用 <code>GITHUB_TOKEN</code> 凭据定时向 GitHub 查询新事件，交给订阅这个来源的自动化脚本，
+      脚本拿到的事件与 Webhook 投递同形。不需要公网地址，也不用在 GitHub 上配置 webhook；最快每 60 秒查询一次。</p>
+    <div class="row">
+      <div><label>来源 id</label>
+        <input type="text" id="ws-id" value="${esc(source?.id || "")}" ${source ? "disabled" : ""}
+          placeholder="例如 github-watch"></div>
+      <div><label>名称</label>
+        <input type="text" id="ws-name" value="${esc(source?.name || "")}" placeholder="webshop 仓库动态"></div>
+    </div>
+    <label>描述</label>
+    <textarea id="ws-desc" rows="2" placeholder="例如:webshop 的 Issue 与 PR 动态,给同步脚本和评审脚本用">${
+      esc(source?.description || "")}</textarea>
+    <label>仓库(每行一个 <code>owner/repo</code>;classic 与 fine-grained PAT 都可以,私有仓库需要 token 有读权限)</label>
+    <textarea id="ws-gh-repos" rows="3" spellcheck="false" placeholder="acme/webshop">${
+      esc((config.repos || []).join("\n"))}</textarea>
+    <label>仓库事件(不勾 = 全部;<code>pull_request</code> 的合并以 action <code>merged</code> 送达)</label>
+    <div class="ws-gh-events">${eventBoxes}</div>
+    <label class="automation-toggle"><input type="checkbox" id="ws-gh-notifications"
+      ${config.notifications ? "checked" : ""}> 账号通知(被 @、被指派、被请求评审、关注的仓库有动态;只有 classic PAT 可用)</label>
+    <label class="automation-toggle"><input type="checkbox" id="ws-gh-participating"
+      ${config.participating ? "checked" : ""}> 通知只要直接参与或被 @ 的</label>
+    <div class="row">
+      <div><label>使用的 token</label>
+        <select id="ws-gh-project">
+          <option value="">全局凭据 GITHUB_TOKEN</option>${projectOptions}
+        </select></div>
+      <div><label>轮询间隔(秒,60 ~ 3600)</label>
+        <input type="number" id="ws-gh-interval" min="60" max="3600" step="10"
+          value="${esc(config.interval_seconds || 60)}"></div>
+    </div>
+    <label class="automation-toggle"><input type="checkbox" id="ws-enabled"
+      ${source ? (source.enabled ? "checked" : "") : "checked"}> 启用轮询(停用后不再查询,订阅关系与进度保留)</label>
+    ${source ? `<label>轮询状态</label><div id="ws-gh-state">${githubPollStateHtml(source)}</div>
+      <label>使用的自动化脚本</label><div>${webhookSubscribersHtml(source)}</div>` : ""}
+    <p class="muted automation-webhook-hint">新建或新加的仓库从保存那一刻开始计，之前已有的事件不会投递。脚本用
+      <code>$MISSIONCREW_WEBHOOK_EVENT</code>（如 <code>issues</code>、<code>pull_request</code>、<code>notification</code>）和
+      <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code> 里的 <code>payload.action</code>、<code>payload.repository.full_name</code> 过滤事件。</p>`,
+    `<button class="action" data-id="${esc(source?.id || "")}"
+       onclick="saveWebhookSource(this.dataset.id || null, 'github')">${source ? "保存" : "创建"}</button>
+     ${source ? `<button class="ghost" data-id="${esc(source.id)}"
+       onclick="pollGithubSource(this.dataset.id)">立即检查</button>` : ""}
+     <button class="ghost" onclick="fdlg.close()">取消</button>
+     ${source ? `<button class="danger" data-id="${esc(source.id)}" ${users.length ? "disabled" : ""}
+       title="${users.length ? "仍有自动化脚本使用该来源,先在脚本里改选其他来源" : ""}"
+       onclick="deleteWebhookSource(this.dataset.id)">删除来源</button>` : ""}`);
+}
+
+async function pollGithubSource(id) {
+  const box = document.getElementById("ws-gh-state");
+  if (box) box.innerHTML = '<span class="muted">查询中…</span>';
+  try {
+    const source = await api("POST", `/api/webhook-sources/${encodeURIComponent(id)}/poll`);
+    await renderWebhookSources();
+    const state = document.getElementById("ws-gh-state");
+    if (state) state.innerHTML = githubPollStateHtml(source);
+  } catch (e) {
+    const state = document.getElementById("ws-gh-state");
+    if (state) state.innerHTML = `<span class="automation-error">${esc(e.message || "检查失败")}</span>`;
+  }
+}
+
+// id 为空 = 新建(kind 决定建哪类);revealSecret 用于刚创建后直接显示密钥,方便复制到外部系统
+async function editWebhookSource(id, { revealSecret = false, kind = "webhook" } = {}) {
   const source = id ? webhookSourceById(id) : null;
   if (id && !source) { uiAlert("来源不存在,请刷新后重试"); return; }
+  if ((source?.kind || kind) === "github") {
+    webhookSecretState = null;
+    editGithubSource(source);
+    return;
+  }
   webhookSecretState = source ? { sourceId: source.id, secret: "", visible: revealSecret } : null;
   const users = source?.automations || [];
   openFormDialog(source ? `编辑 Webhook 来源 ${source.id}` : "新建 Webhook 来源", `
@@ -137,24 +243,42 @@ async function refreshWebhookSourceViews() {
     renderAutomationPage(true);
 }
 
-async function saveWebhookSource(existingId) {
+async function saveWebhookSource(existingId, kind = "webhook") {
   const id = existingId || document.getElementById("ws-id").value.trim();
   if (!/^[\w-]+$/.test(id)) { uiAlert("来源 id 只能使用字母、数字、下划线和连字符"); return; }
-  const saved = await api("POST", "/api/webhook-sources", {
-    id,
+  const body = {
+    id, kind,
     name: document.getElementById("ws-name").value.trim(),
     description: document.getElementById("ws-desc").value.trim(),
-    path: document.getElementById("ws-path").value.trim(),
     enabled: document.getElementById("ws-enabled").checked,
-  });
+  };
+  if (kind === "github") {
+    body.github = {
+      repos: document.getElementById("ws-gh-repos").value.split(/[\s,]+/).filter(Boolean),
+      events: [...document.querySelectorAll(".ws-gh-event:checked")].map(box => box.value),
+      notifications: document.getElementById("ws-gh-notifications").checked,
+      participating: document.getElementById("ws-gh-participating").checked,
+      project_id: document.getElementById("ws-gh-project").value,
+      interval_seconds: Number(document.getElementById("ws-gh-interval").value) || 60,
+    };
+  } else {
+    body.path = document.getElementById("ws-path").value.trim();
+  }
+  const saved = await api("POST", "/api/webhook-sources", body);
   fdlg.close();
   await refreshWebhookSourceViews();
+  if (kind === "github") {
+    toast(`来源 ${saved.id} 已${existingId ? "保存" : "创建"}，从现在起的新事件会触发订阅它的脚本`, "success");
+    return;
+  }
   toast(existingId ? `来源 ${saved.id} 已保存` : `来源 ${saved.id} 已创建，复制密钥配置到外部系统`, "success");
   if (!existingId) editWebhookSource(saved.id, { revealSecret: true });
 }
 
 async function deleteWebhookSource(id) {
-  if (!await uiConfirm(`删除 Webhook 来源 ${id}？外部系统再向它投递会收到 404。`, "删除来源")) return;
+  const note = webhookSourceById(id)?.kind === "github"
+    ? "平台不再向 GitHub 查询它的事件。" : "外部系统再向它投递会收到 404。";
+  if (!await uiConfirm(`删除 Webhook 来源 ${id}？${note}`, "删除来源")) return;
   await api("DELETE", `/api/webhook-sources/${encodeURIComponent(id)}`);
   fdlg.close();
   await refreshWebhookSourceViews();

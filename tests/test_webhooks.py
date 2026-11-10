@@ -530,7 +530,7 @@ def test_orchestrator_subscribes_to_source_without_seeing_secret(seeded):
     assert row["webhook_source"] == "gh" and row["webhook_path"] == "/hooks/org/github"
     assert listed["webhook_sources"] == [{
         "id": "gh", "name": "GitHub org", "description": "", "enabled": True,
-        "webhook_path": "/hooks/org/github"}]
+        "kind": "webhook", "webhook_path": "/hooks/org/github"}]
     assert source.secret not in json.dumps(listed) + json.dumps(result)
     # 旧参数 webhook 已不再接受;不存在的来源返回参数错误
     for arguments in ({"id": "gh-sync", "webhook": True},

@@ -76,6 +76,10 @@ class WebhookSourceInput(BaseModel):
     description: Optional[str] = Field(None, max_length=2000)
     path: Optional[str] = Field(None, max_length=210)   # /hooks/ 之后的部分;空 = 同 id
     enabled: Optional[bool] = None
+    kind: Optional[str] = Field(None, max_length=20)    # webhook(默认)| github;只在新建时生效
+    # kind=github 的轮询配置(repos/events/notifications/participating/project_id/
+    # interval_seconds),整份替换;None = 保留现值
+    github: Optional[dict] = None
 
 
 class CredentialInput(BaseModel):

@@ -9,6 +9,9 @@ webhook 来源(WebhookSource)是全局的投递入口:外部系统(GitHub、GitC
 整理成事件,交给所有订阅该来源的自动化脚本(各项目都可以订阅同一个来源),由
 脚本自己决定处理哪些事件;平台只代答 GitHub 的 ping。HTTP 监听本身在
 api/webhooks.py,这里不依赖任何 Web 框架,便于单测。
+
+来源还有一种类型 kind=github:不接收外部投递,由 github_events.py 用 GitHub token
+轮询生成同形的事件,同样经 fan_out_event 交给订阅脚本。
 """
 from __future__ import annotations
 
@@ -95,15 +98,30 @@ def save_webhook_source(store: Store, *, id: str, name: Optional[str] = None,
                         description: Optional[str] = None,
                         path: Optional[str] = None,
                         enabled: Optional[bool] = None,
+                        kind: Optional[str] = None,
+                        github: Optional[dict] = None,
                         actor: str = "human") -> tuple[WebhookSource, bool]:
-    """新建或按字段合并更新来源;新建时生成密钥。返回 (source, 是否新建)。"""
+    """新建或按字段合并更新来源;新建时生成密钥。返回 (source, 是否新建)。
+
+    kind 只在新建时指定(默认 webhook),之后不可改:两类来源的投递方式不同,
+    改类型等于换了一个来源。kind=github 的轮询配置经 github 传入并整份替换。
+    """
     source_id = str(id or "").strip()
     if not SOURCE_ID_RE.fullmatch(source_id):
         raise ValueError("来源 id 只能包含字母、数字、下划线、连字符")
     existing = store.get_webhook_source(source_id)
     created = existing is None
-    source = existing or WebhookSource(id=source_id, path=source_id,
+    wanted_kind = str(kind or "").strip() or (existing.kind if existing else "webhook")
+    if existing is not None and wanted_kind != existing.kind:
+        raise ValueError("来源类型创建后不能修改;请新建一个来源")
+    source = existing or WebhookSource(id=source_id, path=source_id, kind=wanted_kind,
                                        secret=new_webhook_secret())
+    if source.kind == "github":
+        from .github_events import normalize_github_config   # 延迟导入,避免环形依赖
+        if github is not None or created:
+            source.github = normalize_github_config(store, github or {})
+    elif github:
+        raise ValueError("只有 GitHub 轮询来源可以带 github 配置")
     if name is not None:
         source.name = str(name).strip()
     if not source.name:
@@ -121,7 +139,8 @@ def save_webhook_source(store: Store, *, id: str, name: Optional[str] = None,
         raise ValueError(f"投递路径 /hooks/{source.path} 已被来源 {owner.id} 使用")
     store.put_webhook_source(source)
     store.audit(actor, "webhook_source_saved",
-                detail=f"source={source.id} path={source.path} enabled={source.enabled}")
+                detail=f"source={source.id} kind={source.kind} path={source.path} "
+                       f"enabled={source.enabled}")
     return source, created
 
 
@@ -273,6 +292,7 @@ def webhook_event(headers: dict[str, str], body: bytes, source: str = "") -> dic
         raise WebhookRejected(400, "invalid JSON body") from exc
     return {
         "source": source, "provider": provider, "event": event, "delivery": delivery,
+        "transport": "webhook",
         "received_at": time.time(), "content_type": content_type,
         "headers": {key: value for key, value in headers.items()
                     if key not in SECRET_HEADERS},
@@ -291,7 +311,8 @@ def accept_webhook(store: Store, service, path: str,
     """
     source = (store.find_webhook_source_by_path(path)
               if len(path) <= SOURCE_PATH_MAX and SOURCE_PATH_RE.fullmatch(path) else None)
-    if source is None or not source.enabled:
+    # 轮询来源的投递由平台自己生成,不接受外部 POST
+    if source is None or not source.enabled or source.kind != "webhook":
         raise WebhookRejected(404, "not found")
     try:
         mode = verify_webhook(source.secret, headers, body)
@@ -302,6 +323,23 @@ def accept_webhook(store: Store, service, path: str,
     event = webhook_event(headers, body, source=source.id)
     if event["provider"] == "github" and event["event"] == "ping":
         return 200, {"ok": True, "pong": True}
+    result = fan_out_event(store, service, source, event, auth=mode)
+    if result["targets"] and result["dropped"] == result["targets"]:
+        raise WebhookRejected(503, "webhook queue full, retry later")
+    response = {"ok": True, "run_ids": result["run_ids"], "queued": result["queued"]}
+    if result["dropped"]:
+        response["dropped"] = result["dropped"]
+    return 202, response
+
+
+def fan_out_event(store: Store, service, source: WebhookSource, event: dict,
+                  auth: str) -> dict:
+    """把一份事件交给订阅该来源的全部脚本,返回 {targets, run_ids, queued, dropped}。
+
+    外部投递(accept_webhook)与平台轮询生成的投递(github_events.py)共用:空闲的
+    脚本立即运行,正在运行的排队,排队已满的只丢弃给它的这一份并记审计。auth 记
+    进审计,说明这份投递凭什么被接受(验签方式,或轮询来源的 poll)。
+    """
     targets = source_subscribers(store, source.id)
     run_ids: list[int] = []
     queued = dropped = 0
@@ -323,13 +361,9 @@ def accept_webhook(store: Store, service, path: str,
             run_ids.append(run_id)
             outcomes.append(f"{automation.id}=#{run_id}")
     store.audit("platform", "webhook_delivery_accepted",
-                detail=f"source={source.id} auth={mode} "
+                detail=f"source={source.id} auth={auth} "
                        f"event={event['provider']}:{event['event']} "
                        f"delivery={event['delivery']} "
                        f"targets={','.join(outcomes) or '(none)'}")
-    if targets and dropped == len(targets):
-        raise WebhookRejected(503, "webhook queue full, retry later")
-    response = {"ok": True, "run_ids": run_ids, "queued": queued}
-    if dropped:
-        response["dropped"] = dropped
-    return 202, response
+    return {"targets": len(targets), "run_ids": run_ids, "queued": queued,
+            "dropped": dropped}

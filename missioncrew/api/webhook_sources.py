@@ -1,12 +1,14 @@
-"""全局 webhook 来源端点:来源维护、订阅脚本一览与密钥读取/轮换。
+"""全局 webhook 来源端点:来源维护、订阅脚本一览、密钥读取/轮换与 GitHub 轮询状态。
 
 来源是平台级资源(不属于某个项目),只由人在全局设置页维护;Agent 只能在
 automation.save 里引用已有来源。密钥只经 /secret 端点给人看,列表里不带。
+GitHub 轮询来源(kind=github)没有投递地址与密钥可配,列表里带它的轮询状态。
 """
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
+from ..collab.github_events import REPO_EVENT_NAMES, poll_status
 from ..collab.webhooks import (delete_webhook_source, rotate_webhook_source_secret,
                                save_webhook_source, source_subscribers, webhook_path)
 from ..core.models import WebhookSource
@@ -26,7 +28,10 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     def _source_data(source: WebhookSource) -> dict:
         data = source.public_dict()
-        data["webhook_path"] = webhook_path(source)
+        # 轮询来源没有投递地址:投递由平台查询 GitHub 生成,改为带上轮询状态
+        data["webhook_path"] = webhook_path(source) if source.kind == "webhook" else ""
+        if source.kind == "github":
+            data["poll"] = poll_status(store, source)
         data["automations"] = [
             {"id": item.id, "project_id": item.project_id, "name": item.name}
             for item in source_subscribers(store, source.id)]
@@ -35,16 +40,31 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
     @app.get("/api/webhook-sources")
     def list_sources():
         return {"sources": [_source_data(item) for item in store.list_webhook_sources()],
-                "listener": webhook_listener_status(ctx)}
+                "listener": webhook_listener_status(ctx),
+                "github_events": list(REPO_EVENT_NAMES)}
 
     @app.post("/api/webhook-sources")
     def save(body: WebhookSourceInput):
         try:
             source, _created = save_webhook_source(
                 store, id=body.id, name=body.name, description=body.description,
-                path=body.path, enabled=body.enabled)
+                path=body.path, enabled=body.enabled, kind=body.kind,
+                github=body.github)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+        if source.kind == "github":
+            ctx.github_poller.poke()   # 新来源或改过的配置马上建立基线,不等下一个 tick
+        return _source_data(source)
+
+    @app.post("/api/webhook-sources/{source_id}/poll")
+    def poll(source_id: str):
+        """立即轮询一个 GitHub 来源(不等到点),返回带最新轮询状态的来源。"""
+        source = _must_source(source_id)
+        if source.kind != "github":
+            raise HTTPException(400, "只有 GitHub 轮询来源可以立即检查")
+        if not source.enabled:
+            raise HTTPException(409, "来源已停用,启用后才会轮询")
+        ctx.github_poller.poll(source.id)
         return _source_data(source)
 
     @app.delete("/api/webhook-sources/{source_id}")
