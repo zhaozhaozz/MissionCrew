@@ -17,6 +17,7 @@ const store = {};
 const localStorage = {
   getItem: key => (key in store ? store[key] : null),
   setItem: (key, value) => { store[key] = String(value); },
+  removeItem: key => { delete store[key]; },
 };
 const sent = { toasts: [], system: [] };
 const page = { visible: true, focused: true };
@@ -168,3 +169,58 @@ return {{ normal, blocked, noProject, routed }};
                                 "routed": ["/resources/a/channels/dev"]}
     assert (result["blocked"], result["noProject"]) == (False, False)
     assert result["routed"][1:] == ["/resources/b/channels/ops", "/resources/b/channels/x"]
+
+
+def test_background_tab_leaves_notice_to_a_foreground_tab():
+    """另一个标签页在前台时,后台标签页不发系统通知;那个标签页没认领就离开,再补发。"""
+    watched, toasted, orphan = chain(root=1), chain(root=2), chain(root=3)
+    result = evaluate(f"""
+notifyPrefs = normalizeNotifyPrefs({{ enabled: true }});
+const other = at => localStorage.setItem(NOTIFY_FOREGROUND_KEY,
+  JSON.stringify({{ id: 'other-tab', at, since: 50 }}));
+page.visible = false; page.focused = false;
+other(Date.now());
+deliverCompletions({json.dumps([watched, toasted, orphan])});
+const whileOtherFocused = {{ system: sent.system.length, unread: notifyUnread,
+                            deferred: notifyDeferred.length }};
+// 前台标签页处理了前两条(页内提示,或正盯着那个频道):都会认领
+for (const item of {json.dumps([watched, toasted])})
+  claimNotice(`${{item.channel}}#${{item.root_id}}#${{item.finished_at}}`);
+// 第三条还没认领,那个标签页就离开了前台:心跳被清掉,由本页补发系统通知
+localStorage.removeItem(NOTIFY_FOREGROUND_KEY);
+deliverCompletions([]);
+const afterOtherLeft = {{ system: sent.system.map(n => n.tag), unread: notifyUnread,
+                         deferred: notifyDeferred.length }};
+// 心跳过期(标签页崩溃没来得及清)同样不再拦;它领游标之前结束的链它拉不到,也不拦
+other(Date.now() - NOTIFY_FOREGROUND_TTL_MS - 1);
+deliverCompletions([{json.dumps(chain(root=4))}]);
+other(Date.now());
+deliverCompletions([{json.dumps(chain(root=5, finished_at=40.0))}]);
+return {{ whileOtherFocused, afterOtherLeft, system: sent.system.length }};
+""")
+    assert result["whileOtherFocused"] == {"system": 0, "unread": 0, "deferred": 3}
+    assert result["afterOtherLeft"] == {
+        "system": ["mc-chain-a:dev-3"], "unread": 1, "deferred": 0}
+    assert result["system"] == 3
+
+
+def test_foreground_tab_heartbeat_and_watched_channel_claim():
+    result = evaluate(f"""
+notifyPrefs = normalizeNotifyPrefs({{ enabled: true }});
+markForeground();
+const beforeCursor = readForeground();      // 还没领到游标:不登记
+notifySince = 60;
+markForeground();
+const mark = readForeground();
+// 正盯着这个频道:不提示,但认领掉,后台标签页之后也不会再发系统通知
+currentChan = 'a:dev';
+deliverCompletions([{json.dumps(chain())}]);
+page.focused = false;                       // 整个浏览器退到后台,标签页仍可见
+markForeground();
+const afterBlur = readForeground();
+deliverCompletions([{json.dumps(chain())}]);
+return {{ beforeCursor, own: mark.id === notifyTabId, since: mark.since, afterBlur,
+         toasts: sent.toasts.length, system: sent.system.length }};
+""")
+    assert result == {"beforeCursor": None, "own": True, "since": 60, "afterBlur": None,
+                      "toasts": 0, "system": 0}

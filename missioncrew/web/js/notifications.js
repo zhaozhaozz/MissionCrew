@@ -3,12 +3,17 @@
    关闭名单,项目默认跟随总开关。开启后轮询 /api/chat/runs/completions 的增量:
    页面在前台时页内提示;在后台时发系统通知,系统通知不可用(如局域网 http 不是
    安全上下文)时先在标签标题上计数,回到页面再补页内提示。
+   「前台」= 标签页可见且浏览器窗口有焦点:切到别的标签页、最小化、整个浏览器被
+   其他应用挡在后面都算后台。同开多个标签页时,只要有一个在前台,后台的标签页就
+   不发系统通知,留给前台那个页内提示(前台标签页经共享存储里的心跳让其他页知道)。
    本文件顶层只定义函数,DOM 监听在 initNotifications() 里挂,便于无 DOM 测试纯函数。 */
 
 const NOTIFY_PREFS_KEY = "mc.notify";
 const NOTIFY_CLAIMS_KEY = "mc.notify.claims";   // 多个标签页同开时,同一条链只提醒一次
 const NOTIFY_CLAIM_TTL_MS = 3600e3;
 const NOTIFY_MAX_SEPARATE = 3;                 // 一次到达更多条时合并成一条汇总
+const NOTIFY_FOREGROUND_KEY = "mc.notify.foreground";   // 正在前台的标签页的心跳
+const NOTIFY_FOREGROUND_TTL_MS = 15e3;         // 三个轮询周期没续上,视为那个标签页已离开
 
 /* ---- 纯函数:偏好与通知文案 ---- */
 function normalizeNotifyPrefs(raw) {
@@ -80,6 +85,9 @@ let notifyCursor = null;     // 服务端时间游标;null = 下一轮只领游�
 let notifyPolling = false;
 let notifyUnread = 0;        // 页面不在前台期间到达的提醒数,显示在标签标题上
 let notifyPending = [];      // 后台且没有系统通知可用时攒着,回到页面再页内提示
+let notifyDeferred = [];     // 别的标签页在前台时留给它提示;它没认领就离开了,再由本页补发
+let notifySince = null;      // 本页开始接收增量的服务端时间:此后结束的链本页一定拉得到
+const notifyTabId = Math.random().toString(36).slice(2);
 
 function loadNotifyPrefs() {
   try { notifyPrefs = normalizeNotifyPrefs(localStorage.getItem(NOTIFY_PREFS_KEY)); }
@@ -117,15 +125,44 @@ function claimNotice(key, peek = false) {
   return true;
 }
 
+function pageInForeground() {
+  return document.visibilityState === "visible" && document.hasFocus();
+}
+
+function readForeground() {
+  try { return JSON.parse(localStorage.getItem(NOTIFY_FOREGROUND_KEY) || "null"); }
+  catch (_) { return null; }
+}
+
+// 前台标签页续心跳;离开前台时立刻清掉自己的记录,让后台标签页接手发系统通知。
+// 还没领到游标(notifySince 为空)时不登记:这之前结束的链本页拉不到,不能替别的页兜底
+function markForeground() {
+  try {
+    if (pageInForeground() && notifySince !== null)
+      localStorage.setItem(NOTIFY_FOREGROUND_KEY, JSON.stringify(
+        { id: notifyTabId, at: Date.now(), since: notifySince }));
+    else if (readForeground()?.id === notifyTabId)
+      localStorage.removeItem(NOTIFY_FOREGROUND_KEY);
+  } catch (_) {}
+}
+
+// 另一个标签页正在前台时,返回它开始接收增量的服务端时间;没有则返回 null
+function foregroundElsewhereSince() {
+  const mark = readForeground();
+  if (!mark || mark.id === notifyTabId || typeof mark.since !== "number") return null;
+  return Date.now() - mark.at < NOTIFY_FOREGROUND_TTL_MS ? mark.since : null;
+}
+
 function notifyTitlePrefix() {
   return notifyUnread ? `(${notifyUnread}) ` : "";
 }
 
 /* ---- 轮询与投递 ---- */
 async function pollRunCompletions() {
-  if (!notifyActive()) { notifyCursor = null; return; }
+  if (!notifyActive()) { notifyCursor = notifySince = null; markForeground(); return; }
   if (notifyPolling) return;
   notifyPolling = true;
+  markForeground();
   try {
     const query = notifyCursor === null ? "" : `?since=${encodeURIComponent(notifyCursor)}`;
     const r = await fetch(`/api/chat/runs/completions${query}`);
@@ -133,7 +170,8 @@ async function pollRunCompletions() {
     const data = await r.json();
     const first = notifyCursor === null;
     notifyCursor = data.now;
-    if (!first) deliverCompletions(data.completions || []);
+    if (first) { notifySince = data.now; markForeground(); }
+    else deliverCompletions(data.completions || []);
   } catch (_) {
     // 服务重启间隙静默跳过,游标不动,恢复后补报
   } finally {
@@ -142,13 +180,23 @@ async function pollRunCompletions() {
 }
 
 function deliverCompletions(items) {
-  const focused = document.visibilityState === "visible" && document.hasFocus();
+  const focused = pageInForeground();
   const system = !focused && notifySupport() === "granted";
-  const fresh = items.filter(item => {
-    // 自己点的停止不用再提醒;正盯着这个频道时回复已经在眼前
+  // 另一个标签页正在前台:用户在那里看得到页内提示(或正盯着那个频道),本页不发系统通知
+  const elsewhere = focused ? null : foregroundElsewhereSince();
+  const fresh = notifyDeferred.splice(0).concat(items).filter(item => {
+    // 自己点的停止不用再提醒
     if (item.status === "stopped" || !notifyEnabledFor(notifyPrefs, item.project_id)) return false;
-    if (focused && currentTab === "chat" && currentChan === item.channel) return false;
     const key = `${item.channel}#${item.root_id}#${item.finished_at}`;
+    if (focused && currentTab === "chat" && currentChan === item.channel) {
+      claimNotice(key);   // 正盯着这个频道,回复已经在眼前:认领掉,别的标签页也不用再提醒
+      return false;
+    }
+    if (elsewhere !== null && item.finished_at > elsewhere) {
+      // 留给前台标签页;下一轮再看:它认领了就丢弃,它已离开前台就由本页补发
+      if (claimNotice(key, true)) notifyDeferred.push(item);
+      return false;
+    }
     return claimNotice(key, !focused && !system);
   });
   if (!fresh.length) return;
@@ -190,6 +238,7 @@ function openNoticeTarget(url, projectId = "") {
 }
 
 function onNotifyPageFocus() {
+  markForeground();
   if (notifyUnread) { notifyUnread = 0; updateDocumentTitle(); }
   const pending = notifyPending.splice(0);
   if (pending.length) toastNotices(noticesFor(pending));
@@ -254,7 +303,7 @@ function notifySwitchHtml(on, onclick, title, hint) {
 
 function notifySupportHint() {
   switch (notifySupport()) {
-    case "granted": return "已授权系统通知：页面不在前台时弹出系统通知，点击直达频道。";
+    case "granted": return "已授权系统通知：页面在前台时只在页内提示；切到其他标签页或整个浏览器在后台时弹出系统通知，点击直达频道。";
     case "default": return "尚未授权系统通知：打开开关或点「授权系统通知」时浏览器会询问。";
     case "denied": return "浏览器已拒绝本站的通知权限，只在页面内提示；如需系统通知，请在地址栏的站点设置里改为允许。";
     case "unsupported": return "这个浏览器不支持系统通知，只在页面内提示。";
@@ -320,8 +369,15 @@ function renderNotifyControls() {
 function initNotifications() {
   loadNotifyPrefs();
   window.addEventListener("focus", onNotifyPageFocus);
+  window.addEventListener("blur", markForeground);
+  window.addEventListener("pagehide", () => {
+    try {
+      if (readForeground()?.id === notifyTabId) localStorage.removeItem(NOTIFY_FOREGROUND_KEY);
+    } catch (_) {}
+  });
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && document.hasFocus()) onNotifyPageFocus();
+    if (pageInForeground()) onNotifyPageFocus();
+    else markForeground();
   });
   // 其他标签页改了偏好:同步过来,开关显示与是否轮询保持一致
   window.addEventListener("storage", event => {
