@@ -90,13 +90,17 @@ function automationWebhookHtml(automation) {
           <span>${esc(source.name || source.id)}</span> <span class="muted">${id}</span>
           <button class="ghost compact" type="button" data-id="${id}"
             onclick="editWebhookSource(this.dataset.id)">管理来源</button></dd></div>
-        <div><dt>轮询对象</dt><dd>${githubSourceSummaryHtml(source)}</dd></div>
+        <div><dt>订阅的仓库</dt><dd>${automationGithubReposHtml(automation, source)}</dd></div>
+        <div><dt>事件</dt><dd>${(automation.github_events || []).length
+          ? automation.github_events.map(name => `<code>${esc(name)}</code>`).join(" ")
+          : '<span class="muted">全部</span>'}${source.github?.notifications
+          ? ' <span class="pill">来源含账号通知</span>' : ""}</dd></div>
         <div><dt>状态</dt><dd>${githubPollStateHtml(source)}</dd></div>
         <div><dt>共用此来源</dt><dd>${others.length
           ? others.map(item => `<span class="pill" title="${esc(item.id)}">${esc(item.project_id)} / ${esc(item.name || item.id)}</span>`).join(" ")
           : '<span class="muted">无其他脚本</span>'}</dd></div>
       </dl>
-      <p class="muted automation-webhook-hint">平台定时向 GitHub 查询这个来源的新事件，每个事件触发一次所有选择它的脚本，与 Webhook 投递同形：<code>$MISSIONCREW_TRIGGER</code> 为 <code>webhook</code>，事件内容在 <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code>，由脚本决定处理哪些事件。</p>
+      <p class="muted automation-webhook-hint">平台定时向 GitHub 查询这个脚本订阅的仓库，每个新事件触发一次脚本，与 Webhook 投递同形：<code>$MISSIONCREW_TRIGGER</code> 为 <code>webhook</code>，事件内容在 <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code>，由脚本决定处理哪些事件。</p>
     </section>`;
   return `<section class="automation-detail-section automation-webhook-section">
       <h3>Webhook</h3>
@@ -200,6 +204,25 @@ function automationActionGroups(names) {
   return [...groups].sort(([a], [b]) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
+// 本脚本订阅的仓库;平台轮询不到的(不存在或 token 无权访问)在仓库名后标出原因
+function automationGithubReposHtml(automation, source) {
+  const repos = automation.github_repos || [];
+  if (!repos.length) return '<span class="muted">未订阅仓库</span>';
+  const streams = new Map((source.poll?.streams || []).map(item => [item.key, item]));
+  return repos.map(repo => {
+    const error = streams.get(`repo:${repo.toLowerCase()}`)?.error;
+    return `<code>${esc(repo)}</code>${error ? ` <span class="automation-error">${esc(error)}</span>` : ""}`;
+  }).join(" ");
+}
+
+// 选中的来源是 GitHub 轮询来源时才显示仓库与事件两栏
+function toggleAutomationGithubFields() {
+  const box = document.getElementById("af-github-fields");
+  if (!box) return;
+  const source = webhookSourceById(document.getElementById("af-webhook-source").value);
+  box.hidden = source?.kind !== "github";
+}
+
 // 选择订阅的全局 webhook 来源;来源在全局设置里创建,可被多个脚本共用
 function automationWebhookSourceFieldHtml(automation) {
   const current = automation?.webhook_source || "";
@@ -212,11 +235,25 @@ function automationWebhookSourceFieldHtml(automation) {
     options += `<option value="${esc(current)}" selected>${esc(current)}</option>`;
   return `<label class="automation-cron-field">
       <span class="automation-cron-label">Webhook 来源（可与定时同时使用）</span>
-      <select id="af-webhook-source" aria-label="Webhook 来源">
+      <select id="af-webhook-source" aria-label="Webhook 来源" onchange="toggleAutomationGithubFields()">
         <option value="">不接受 Webhook 触发</option>${options}
       </select>
-      <span class="muted">来源（Webhook 的投递地址与密钥，或 GitHub 轮询的仓库与事件）在<a onclick="switchTab('settings')">全局设置 → Webhook 来源 ↗</a>中创建，同一来源可被多个脚本共用</span>
-    </label>`;
+      <span class="muted">来源（Webhook 的投递地址与密钥，或 GitHub 轮询的身份与间隔）在<a onclick="switchTab('settings')">全局设置 → Webhook 来源 ↗</a>中创建，同一来源可被多个脚本共用</span>
+    </label>
+    <div id="af-github-fields" ${sources.find(source => source.id === current)?.kind === "github" ? "" : "hidden"}>
+      <label class="automation-cron-field">
+        <span class="automation-cron-label">订阅的 GitHub 仓库（每行一个 <code>owner/repo</code>）</span>
+        <textarea id="af-github-repos" rows="2" spellcheck="false" placeholder="acme/webshop">${
+          esc((automation?.github_repos || []).join("\n"))}</textarea>
+        <span class="muted">平台只把这些仓库的事件交给本脚本；新加的仓库从保存那一刻起算，之前的事件不投递</span>
+      </label>
+      <label class="automation-cron-field">
+        <span class="automation-cron-label">只要这些事件（逗号分隔，留空 = 全部）</span>
+        <input type="text" id="af-github-events" spellcheck="false" placeholder="issues, pull_request"
+          value="${esc((automation?.github_events || []).join(", "))}">
+        <span class="muted">事件名同 webhook：<code>issues</code>、<code>pull_request</code>（合并是 action <code>merged</code>）、<code>issue_comment</code>、<code>push</code>、<code>release</code> 等；来源开启账号通知时另有 <code>notification</code></span>
+      </label>
+    </div>`;
 }
 
 function automationEditorHtml(automation, runsSection = "") {
@@ -300,6 +337,8 @@ function automationFormSnapshot() {
     cron: field("af-cron")?.value || "",
     enabled: Boolean(field("af-enabled")?.checked),
     webhook_source: field("af-webhook-source")?.value || "",
+    github_repos: field("af-github-repos")?.value || "",
+    github_events: field("af-github-events")?.value || "",
     timeout: field("af-timeout")?.value || "",
     actions: [...document.querySelectorAll(".automation-actions-grid input:checked")]
       .map(input => input.value).sort(),
@@ -411,6 +450,11 @@ async function saveAutomationForm(existingId) {
   const actions = [...document.querySelectorAll(
     ".automation-actions-grid input:checked")].map(input => input.value);
   if (!actions.length) { uiAlert("至少勾选一个允许的动作"); return; }
+  // 仓库与事件只对 GitHub 轮询来源有意义;换成别的来源时一并清空
+  const sourceId = document.getElementById("af-webhook-source").value;
+  const githubSource = webhookSourceById(sourceId)?.kind === "github";
+  const listOf = id => githubSource
+    ? document.getElementById(id).value.split(/[\s,]+/).filter(Boolean) : [];
   const saved = await api("POST", `/api/projects/${encodeURIComponent(currentProject)}/automations`, {
     id: shortId,
     name: document.getElementById("af-name").value.trim(),
@@ -418,7 +462,9 @@ async function saveAutomationForm(existingId) {
     script,
     cron: document.getElementById("af-cron").value.trim(),
     enabled: document.getElementById("af-enabled").checked,
-    webhook_source: document.getElementById("af-webhook-source").value,
+    webhook_source: sourceId,
+    github_repos: listOf("af-github-repos"),
+    github_events: listOf("af-github-events"),
     actions,
     timeout_seconds: Number(document.getElementById("af-timeout").value) || 600,
   });

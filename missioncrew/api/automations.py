@@ -62,11 +62,13 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
                 description=body.description, script=body.script,
                 cron=body.cron, enabled=body.enabled,
                 webhook_source=body.webhook_source,
+                github_repos=body.github_repos, github_events=body.github_events,
                 actions=body.actions, timeout_seconds=body.timeout_seconds,
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         ctx.automation_scheduler.poke()
+        ctx.github_poller.poke()   # 新订阅的仓库马上建立基线
         return _automation_data(automation)
 
     @app.delete("/api/projects/{project_id}/automations/{automation_id}")

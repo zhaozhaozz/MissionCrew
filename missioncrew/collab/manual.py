@@ -375,18 +375,28 @@ An orchestrator's turn:
   `MISSIONCREW_WEBHOOK_EVENT_FILE`, and filters the events it cares about itself, because every
   script on a shared source receives all of its deliveries.
 - A source listed with `kind: github` is a GitHub polling source: no external system posts to
-  it; the platform queries GitHub with the `GITHUB_TOKEN` credential for new events of the
-  repositories in `github.repos` (limited to `github.events` when that list is not empty) and,
-  when `github.notifications` is true, for the account's notifications. Subscribe to it with
-  `webhook_source` like any other source. Each new event runs the script once with
-  `MISSIONCREW_TRIGGER=webhook`, `MISSIONCREW_WEBHOOK_PROVIDER=github` and the event name in
-  `MISSIONCREW_WEBHOOK_EVENT` (`issues`, `pull_request`, `issue_comment`, `push`, ... or
-  `notification`); the event file has `transport: poll`. Payloads follow GitHub's Events API,
-  which differs from webhook payloads: a merged pull request arrives as `pull_request` with
-  action `merged`, and `payload.pull_request` only has number, url, head and base, so fetch
-  details with `gh api` when the script needs them. Events can be about a minute late, so do
-  not use polling where seconds matter. If no source covers the repository or events you need,
-  ask the human to add a GitHub polling source in Global settings → Webhook sources.
+  it; the platform queries GitHub with the `GITHUB_TOKEN` credential and delivers new events to
+  scripts as webhook-shaped events. A human creates the source once (identity, polling interval,
+  whether the account's notifications are included) and it is not tied to repositories: you
+  choose them yourself. Subscribe with `webhook_source` plus `github_repos` (an array of
+  `owner/repo`), and optionally `github_events` to receive only some event names; adding a
+  repository to `github_repos` later is all it takes to watch a new one. Polling of a newly
+  listed repository starts at once and only events from then on are delivered. Each event runs
+  the script once with `MISSIONCREW_TRIGGER=webhook`, `MISSIONCREW_WEBHOOK_PROVIDER=github` and
+  the event name in `MISSIONCREW_WEBHOOK_EVENT` (`issues`, `pull_request`, `issue_comment`,
+  `push`, ... or `notification`); the event file has `transport: poll`. Payloads follow GitHub's
+  Events API, which differs from webhook payloads: a merged pull request arrives as
+  `pull_request` with action `merged`, and `payload.pull_request` only has number, url, head and
+  base, so fetch details with `gh api` when the script needs them. Events can be about a minute
+  late. After saving, check `automation.list`: `github_errors` on the script names repositories
+  the platform cannot poll (missing, or the token has no access); fix the name or tell the human
+  which access the token lacks. Ask the human only when no polling source exists yet.
+- The platform only reads GitHub for you: it never registers webhooks on repositories and
+  never changes notifications. When you need something the polling source does not deliver
+  (state the Events API omits, your own comparison of issue or pull request lists, a tighter
+  check), write a cron script that queries GitHub itself with `gh api` and keeps what it saw
+  last time in its working directory; do not create webhooks or other settings on GitHub
+  unless a human asks for exactly that.
 - Scripts are not in your workspace: `automation.list` lists them, and with `id` returns the full
   script and its recent runs (status, exit code, the tail of stdout/stderr; `before_id` pages
   back through all kept runs), so read it before changing or fixing a script. `automation.run` starts a manual run in the background (scripts

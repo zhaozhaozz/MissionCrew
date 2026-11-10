@@ -980,6 +980,11 @@ class Automation:
     enabled: bool = True           # 只管定时触发;webhook 由 webhook_source 单独决定
     # 订阅的全局 webhook 来源 id;空 = 不接受 webhook 触发(可与 cron 并用)
     webhook_source: str = ""
+    # 仅当订阅的是 GitHub 轮询来源:本脚本要哪些仓库(owner/repo)的事件,以及只要
+    # 哪些事件名(空 = 全部,含来源开启的账号通知 notification)。来源本身不绑定
+    # 仓库,平台轮询的是全部订阅脚本的仓库并集,事件只交给订阅了该仓库的脚本
+    github_repos: list[str] = field(default_factory=list)
+    github_events: list[str] = field(default_factory=list)
     actions: list[str] = field(
         default_factory=lambda: list(AUTOMATION_DEFAULT_ACTIONS))
     timeout_seconds: int = AUTOMATION_DEFAULT_TIMEOUT
@@ -1004,6 +1009,8 @@ class Automation:
         d = dict(d)
         d["actions"] = [str(item) for item in d.get("actions", [])
                         if isinstance(item, str)]
+        for key in ("github_repos", "github_events"):
+            d[key] = [str(item) for item in d.get(key) or [] if isinstance(item, str)]
         return cls(**d)
 
 
@@ -1016,9 +1023,10 @@ class WebhookSource:
 
     投递从哪来由 kind 决定:`webhook` 是外部系统 POST 到投递地址(地址 + 验签
     密钥),按来源在外部系统配置一次;`github` 是平台用 GitHub token 定时查询
-    通知与仓库事件,把新事件整理成同样形状的投递(配置在 github 字段,见
-    collab/github_events.py),不需要公网地址。各项目的自动化脚本用
-    webhook_source 订阅来源,由脚本自己过滤事件。
+    通知与仓库事件,把新事件整理成同样形状的投递(用哪份 token、多久查一次、
+    是否含账号通知在 github 字段,见 collab/github_events.py),不需要公网地址。
+    各项目的自动化脚本用 webhook_source 订阅来源,由脚本自己过滤事件;GitHub
+    来源不绑定仓库,要哪些仓库由订阅它的脚本各自声明(Automation.github_repos)。
     """
 
     id: str

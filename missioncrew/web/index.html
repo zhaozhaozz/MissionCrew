@@ -390,7 +390,7 @@
         <h2>Webhook 来源(全局共享)
           <button class="ghost" style="margin-left:8px" onclick="editWebhookSource(null)">＋ 新建来源</button>
           <button class="ghost" onclick="editWebhookSource(null, { kind: 'github' })">＋ 新建 GitHub 轮询来源</button></h2>
-        <p class="muted">每个来源有自己的投递地址与密钥，外部系统（GitHub、GitCode、GitLab 或自建服务）按来源配置一次。各项目的自动化脚本选择来源后，来源收到的每次投递都会触发所有选择它的脚本，由脚本自己过滤事件。没有公网地址或没有仓库管理权限时，用 GitHub 轮询来源：平台用 <code>GITHUB_TOKEN</code> 凭据定时查询仓库事件与账号通知，新事件同样触发订阅它的脚本。</p>
+        <p class="muted">每个来源有自己的投递地址与密钥，外部系统（GitHub、GitCode、GitLab 或自建服务）按来源配置一次。各项目的自动化脚本选择来源后，来源收到的每次投递都会触发所有选择它的脚本，由脚本自己过滤事件。没有公网地址或没有仓库管理权限时，用 GitHub 轮询来源：平台用 <code>GITHUB_TOKEN</code> 凭据定时查询（只读，不改 GitHub 上的任何设置），来源只定义身份与轮询间隔，仓库由订阅它的脚本各自声明，新事件同样触发脚本。</p>
         <p class="muted" id="webhook-listener-state"></p>
         <div class="runtime-table-wrap"><table class="mgr" id="webhook-source-table"></table></div>
       </div>

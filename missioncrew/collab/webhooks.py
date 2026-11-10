@@ -333,14 +333,16 @@ def accept_webhook(store: Store, service, path: str,
 
 
 def fan_out_event(store: Store, service, source: WebhookSource, event: dict,
-                  auth: str) -> dict:
-    """把一份事件交给订阅该来源的全部脚本,返回 {targets, run_ids, queued, dropped}。
+                  auth: str, targets: Optional[list] = None) -> dict:
+    """把一份事件交给订阅该来源的脚本,返回 {targets, run_ids, queued, dropped}。
 
     外部投递(accept_webhook)与平台轮询生成的投递(github_events.py)共用:空闲的
     脚本立即运行,正在运行的排队,排队已满的只丢弃给它的这一份并记审计。auth 记
-    进审计,说明这份投递凭什么被接受(验签方式,或轮询来源的 poll)。
+    进审计,说明这份投递凭什么被接受(验签方式,或轮询来源的 poll)。targets 缺省
+    是该来源的全部订阅脚本;轮询来源按各脚本订阅的仓库与事件传入其中一部分。
     """
-    targets = source_subscribers(store, source.id)
+    if targets is None:
+        targets = source_subscribers(store, source.id)
     run_ids: list[int] = []
     queued = dropped = 0
     outcomes = []

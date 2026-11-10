@@ -2,10 +2,11 @@
    来源是全局的投递入口,各项目的自动化脚本选择来源订阅它,来源的每次投递触发所有
    订阅它的脚本。来源有两类(kind):webhook 由外部系统 POST 到投递地址(地址 + 密钥,
    按来源在外部系统配置一次);github 由平台用 GITHUB_TOKEN 凭据定时查询 GitHub 的
-   通知与仓库事件,不需要公网地址。列表不带密钥,密钥只经 /secret 端点按需读取。
+   通知与仓库事件,不需要公网地址,来源不绑定仓库,仓库由订阅脚本各自声明。
+   列表不带密钥,密钥只经 /secret 端点按需读取。
    自动化页也复用这里的缓存与对话框。 */
 
-let webhookSources = { sources: [], listener: { enabled: false }, github_events: [] };
+let webhookSources = { sources: [], listener: { enabled: false } };
 // 当前对话框里的来源密钥({sourceId, secret, visible});关闭对话框即作废
 let webhookSecretState = null;
 
@@ -36,19 +37,37 @@ function webhookListenerStateHtml() {
 function webhookSubscribersHtml(source) {
   const users = source.automations || [];
   if (!users.length) return '<span class="muted">未被使用</span>';
+  // GitHub 轮询来源:脚本名后面带上它订阅的仓库
   return users.map(item => `<span class="pill" title="${esc(item.id)}">${
-    esc(item.project_id)} / ${esc(item.name || item.id)}</span>`).join(" ");
+    esc(item.project_id)} / ${esc(item.name || item.id)}${
+    (item.github_repos || []).length ? ` · ${esc(item.github_repos.join(", "))}` : ""}</span>`).join(" ");
 }
 
-// GitHub 轮询来源查什么:仓库列表、事件白名单、是否含账号通知
+// GitHub 轮询来源不绑定仓库:轮询的是各订阅脚本声明的仓库并集(大小写不敏感去重)
+function githubSourceRepos(source) {
+  const repos = new Map();
+  for (const item of source.automations || [])
+    for (const repo of item.github_repos || [])
+      if (!repos.has(repo.toLowerCase())) repos.set(repo.toLowerCase(), repo);
+  return [...repos.values()].sort();
+}
+
+function githubIntervalText(seconds) {
+  const value = Number(seconds) || 60;
+  if (value % 3600 === 0) return `${value / 3600} 小时`;
+  return value % 60 === 0 ? `${value / 60} 分钟` : `${value} 秒`;
+}
+
+// GitHub 轮询来源在查什么:多久查一次、已被订阅的仓库、是否含账号通知
 function githubSourceSummaryHtml(source) {
   const config = source.github || {};
-  const parts = (config.repos || []).map(repo => `<code>${esc(repo)}</code>`);
+  const repos = githubSourceRepos(source);
+  const parts = repos.map(repo => `<code>${esc(repo)}</code>`);
   if (config.notifications)
     parts.push(`<span class="pill">${config.participating ? "通知（仅直接参与）" : "账号通知"}</span>`);
-  const events = (config.events || []).length
-    ? `<div class="muted">仓库事件：${esc(config.events.join("、"))}</div>` : "";
-  return `<div><span class="pill">GitHub 轮询</span> ${parts.join(" ")}</div>${events}`;
+  return `<div><span class="pill">GitHub 轮询</span> <span class="muted">每 ${
+    esc(githubIntervalText(config.interval_seconds))}</span> ${parts.join(" ")
+    || '<span class="muted">还没有脚本订阅仓库</span>'}</div>`;
 }
 
 function githubPollStateHtml(source) {
@@ -115,52 +134,45 @@ function rerenderWebhookSecret() {
   if (source && row) row.outerHTML = webhookSecretRowHtml(source);
 }
 
-/* GitHub 轮询来源的表单:查哪些仓库的哪些事件、要不要账号通知、用哪份 token。 */
+/* GitHub 轮询来源的表单:以谁的身份、多久查一次、要不要账号通知。来源不绑定仓库,
+   仓库由订阅它的自动化脚本各自声明(主控用 automation.save 的 github_repos)。 */
 function editGithubSource(source) {
   const config = source?.github || {};
   const users = source?.automations || [];
-  const chosen = new Set(config.events || []);
-  const eventBoxes = (webhookSources.github_events || []).map(name => `<label class="automation-toggle">
-      <input type="checkbox" class="ws-gh-event" value="${esc(name)}" ${chosen.has(name) ? "checked" : ""}>
-      <code>${esc(name)}</code></label>`).join(" ");
   const projectOptions = (overview.projects || []).map(project => `<option value="${esc(project.id)}"
       ${project.id === config.project_id ? "selected" : ""}>项目「${esc(project.name || project.id)}」生效的 GITHUB_TOKEN</option>`).join("");
   openFormDialog(source ? `编辑 GitHub 轮询来源 ${source.id}` : "新建 GitHub 轮询来源", `
     <p class="muted">平台用 <code>GITHUB_TOKEN</code> 凭据定时向 GitHub 查询新事件，交给订阅这个来源的自动化脚本，
-      脚本拿到的事件与 Webhook 投递同形。不需要公网地址，也不用在 GitHub 上配置 webhook；最快每 60 秒查询一次。</p>
+      脚本拿到的事件与 Webhook 投递同形。只读取，不在 GitHub 上注册 webhook，也不改通知的已读状态；不需要公网地址。
+      来源不绑定仓库：要哪些仓库由订阅它的脚本各自声明，Agent 可以自己订阅新仓库。</p>
     <div class="row">
       <div><label>来源 id</label>
         <input type="text" id="ws-id" value="${esc(source?.id || "")}" ${source ? "disabled" : ""}
-          placeholder="例如 github-watch"></div>
+          placeholder="例如 github"></div>
       <div><label>名称</label>
-        <input type="text" id="ws-name" value="${esc(source?.name || "")}" placeholder="webshop 仓库动态"></div>
+        <input type="text" id="ws-name" value="${esc(source?.name || "")}" placeholder="GitHub 事件"></div>
     </div>
     <label>描述</label>
-    <textarea id="ws-desc" rows="2" placeholder="例如:webshop 的 Issue 与 PR 动态,给同步脚本和评审脚本用">${
+    <textarea id="ws-desc" rows="2" placeholder="例如:团队机器人账号 crew-bot 的身份,脚本按需订阅仓库">${
       esc(source?.description || "")}</textarea>
-    <label>仓库(每行一个 <code>owner/repo</code>;classic 与 fine-grained PAT 都可以,私有仓库需要 token 有读权限)</label>
-    <textarea id="ws-gh-repos" rows="3" spellcheck="false" placeholder="acme/webshop">${
-      esc((config.repos || []).join("\n"))}</textarea>
-    <label>仓库事件(不勾 = 全部;<code>pull_request</code> 的合并以 action <code>merged</code> 送达)</label>
-    <div class="ws-gh-events">${eventBoxes}</div>
-    <label class="automation-toggle"><input type="checkbox" id="ws-gh-notifications"
-      ${config.notifications ? "checked" : ""}> 账号通知(被 @、被指派、被请求评审、关注的仓库有动态;只有 classic PAT 可用)</label>
-    <label class="automation-toggle"><input type="checkbox" id="ws-gh-participating"
-      ${config.participating ? "checked" : ""}> 通知只要直接参与或被 @ 的</label>
     <div class="row">
       <div><label>使用的 token</label>
         <select id="ws-gh-project">
           <option value="">全局凭据 GITHUB_TOKEN</option>${projectOptions}
         </select></div>
-      <div><label>轮询间隔(秒,60 ~ 3600)</label>
-        <input type="number" id="ws-gh-interval" min="60" max="3600" step="10"
+      <div><label>轮询间隔(秒,60 ~ 86400;GitHub 要求不低于 60)</label>
+        <input type="number" id="ws-gh-interval" min="60" max="86400" step="10"
           value="${esc(config.interval_seconds || 60)}"></div>
     </div>
-    <label class="automation-toggle"><input type="checkbox" id="ws-enabled"
-      ${source ? (source.enabled ? "checked" : "") : "checked"}> 启用轮询(停用后不再查询,订阅关系与进度保留)</label>
+    <div><label class="automation-toggle"><input type="checkbox" id="ws-gh-notifications"
+      ${config.notifications ? "checked" : ""}> 账号通知(被 @、被指派、被请求评审、关注的仓库有动态;只有 classic PAT 可用)</label></div>
+    <div><label class="automation-toggle"><input type="checkbox" id="ws-gh-participating"
+      ${config.participating ? "checked" : ""}> 通知只要直接参与或被 @ 的</label></div>
+    <div><label class="automation-toggle"><input type="checkbox" id="ws-enabled"
+      ${source ? (source.enabled ? "checked" : "") : "checked"}> 启用轮询(停用后不再查询,订阅关系与进度保留)</label></div>
     ${source ? `<label>轮询状态</label><div id="ws-gh-state">${githubPollStateHtml(source)}</div>
-      <label>使用的自动化脚本</label><div>${webhookSubscribersHtml(source)}</div>` : ""}
-    <p class="muted automation-webhook-hint">新建或新加的仓库从保存那一刻开始计，之前已有的事件不会投递。脚本用
+      <label>订阅的脚本与仓库</label><div>${webhookSubscribersHtml(source)}</div>` : ""}
+    <p class="muted automation-webhook-hint">脚本订阅仓库后，从那一刻起的新事件才会投递。脚本用
       <code>$MISSIONCREW_WEBHOOK_EVENT</code>（如 <code>issues</code>、<code>pull_request</code>、<code>notification</code>）和
       <code>$MISSIONCREW_WEBHOOK_EVENT_FILE</code> 里的 <code>payload.action</code>、<code>payload.repository.full_name</code> 过滤事件。</p>`,
     `<button class="action" data-id="${esc(source?.id || "")}"
@@ -254,8 +266,6 @@ async function saveWebhookSource(existingId, kind = "webhook") {
   };
   if (kind === "github") {
     body.github = {
-      repos: document.getElementById("ws-gh-repos").value.split(/[\s,]+/).filter(Boolean),
-      events: [...document.querySelectorAll(".ws-gh-event:checked")].map(box => box.value),
       notifications: document.getElementById("ws-gh-notifications").checked,
       participating: document.getElementById("ws-gh-participating").checked,
       project_id: document.getElementById("ws-gh-project").value,
@@ -268,7 +278,7 @@ async function saveWebhookSource(existingId, kind = "webhook") {
   fdlg.close();
   await refreshWebhookSourceViews();
   if (kind === "github") {
-    toast(`来源 ${saved.id} 已${existingId ? "保存" : "创建"}，从现在起的新事件会触发订阅它的脚本`, "success");
+    toast(`来源 ${saved.id} 已${existingId ? "保存" : "创建"}，让脚本订阅它并声明要哪些仓库`, "success");
     return;
   }
   toast(existingId ? `来源 ${saved.id} 已保存` : `来源 ${saved.id} 已创建，复制密钥配置到外部系统`, "success");

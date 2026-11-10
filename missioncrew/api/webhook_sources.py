@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from ..collab.github_events import REPO_EVENT_NAMES, poll_status
+from ..collab.github_events import poll_status
 from ..collab.webhooks import (delete_webhook_source, rotate_webhook_source_secret,
                                save_webhook_source, source_subscribers, webhook_path)
 from ..core.models import WebhookSource
@@ -33,15 +33,17 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         if source.kind == "github":
             data["poll"] = poll_status(store, source)
         data["automations"] = [
-            {"id": item.id, "project_id": item.project_id, "name": item.name}
+            {"id": item.id, "project_id": item.project_id, "name": item.name,
+             # GitHub 轮询来源:各脚本订阅的仓库与事件,来源轮询的是它们的并集
+             **({"github_repos": item.github_repos, "github_events": item.github_events}
+                if source.kind == "github" else {})}
             for item in source_subscribers(store, source.id)]
         return data
 
     @app.get("/api/webhook-sources")
     def list_sources():
         return {"sources": [_source_data(item) for item in store.list_webhook_sources()],
-                "listener": webhook_listener_status(ctx),
-                "github_events": list(REPO_EVENT_NAMES)}
+                "listener": webhook_listener_status(ctx)}
 
     @app.post("/api/webhook-sources")
     def save(body: WebhookSourceInput):

@@ -9,7 +9,7 @@
 
 ## 自动化脚本
 
-- **创建**：Web 侧栏「自动化」的 ＋，或让主控在聊天里用 `automation.save` 建；主控改脚本前用 `automation.list`（带 `id`）读取当前全文，改完可用 `automation.run` 立即试跑。字段：`id`、`name`、`description`、`script`（带 shebang 时按可执行文件运行，否则交给 bash）、`cron`（五段 crontab，空 = 不定时）、`enabled`（只管定时触发）、`webhook_source`（订阅的全局 webhook 来源 id，空 = 不接受 webhook；可与 cron 同时使用，见下文「Webhook 触发」）、`actions`、`timeout_seconds`。手动触发始终可用。
+- **创建**：Web 侧栏「自动化」的 ＋，或让主控在聊天里用 `automation.save` 建；主控改脚本前用 `automation.list`（带 `id`）读取当前全文，改完可用 `automation.run` 立即试跑。字段：`id`、`name`、`description`、`script`（带 shebang 时按可执行文件运行，否则交给 bash）、`cron`（五段 crontab，空 = 不定时）、`enabled`（只管定时触发）、`webhook_source`（订阅的全局 webhook 来源 id，空 = 不接受 webhook；可与 cron 同时使用，见下文「Webhook 触发」）、`github_repos` 与 `github_events`（仅当订阅的是 GitHub 轮询来源：要哪些仓库的哪些事件，见下文「GitHub 轮询来源」）、`actions`、`timeout_seconds`。手动触发始终可用。
 - **调度**：所有 cron 触发都走统一定时入口；同一脚本同时只运行一次，上一次还没跑完时定时与手动触发直接跳过，webhook 投递排队；停机期间错过的定时触发不补跑。
 - **权限**：脚本身份的可用动作以自身 `actions` 白名单为事实源，默认 `task.create`、`task.update`、`task.brief`、`message.publish`、`document.publish`、`dashboard.save`、`board_source.save`；审计 actor 记为 `automation:<项目>:<脚本>`。
 - **运行记录**：自动化详情页可查看每次运行的触发方式（定时 / Webhook / 手动，webhook 另记 webhook 来源、发送平台、事件名与投递 id）、退出码与 stdout/stderr。退出码非零记为失败。运行记录保留 7 天，不限条数；每个脚本最近一次的记录始终保留。主控用 `automation.list` 带 `id` 读取最近几次运行（输出只回传末尾），需要更早的记录时用 `before_id` 向前翻页，据此排查失败的脚本。
@@ -112,24 +112,29 @@ fi
 
 外部 webhook 需要一个 GitHub 访问得到的公网地址，还要有仓库或组织的管理权限去配置。手里只有一个个人访问令牌（PAT）时，改用 **GitHub 轮询来源**：它是 webhook 来源的另一种类型（`kind: github`），投递不是外部系统送来的，而是平台用 `GITHUB_TOKEN` 凭据定时向 GitHub 查询新事件后自己生成的。订阅方式、扇出、排队和脚本拿到的事件形状都与外部 webhook 相同，同一个脚本可以不加区分地处理两类来源。
 
-- **创建**：先保存 `GITHUB_TOKEN` 凭据（见 [harness 工作区边界](agent-harness-workspace.md) 的「GitHub 身份」），再到「全局设置 → Webhook 来源 → ＋ 新建 GitHub 轮询来源」填写：
+平台对 GitHub **只读**：只调用查询接口，不在仓库或组织上注册 webhook，不把通知标为已读，不改 GitHub 上的任何设置。
+
+分工是「人建入口，脚本订阅仓库」：
+
+- **来源由人创建，不绑定仓库**。先保存 `GITHUB_TOKEN` 凭据（见 [harness 工作区边界](agent-harness-workspace.md) 的「GitHub 身份」），再到「全局设置 → Webhook 来源 → ＋ 新建 GitHub 轮询来源」填写：
 
   | 字段 | 含义 |
   | --- | --- |
-  | 仓库（`repos`） | 要查询的仓库，写成 `owner/repo`，最多 50 个；每个仓库是一条仓库事件流 |
-  | 仓库事件（`events`） | 仓库事件的白名单，用 webhook 的事件名（`issues`、`pull_request` 等）；不选表示全部。它不影响通知流 |
+  | 使用的 token（`project_id`） | 全局凭据里的 `GITHUB_TOKEN`，或某个项目生效的那份（项目自己的，没有时沿用全局的） |
+  | 轮询间隔（`interval_seconds`） | 多久向 GitHub 查询一次，60 ~ 86400 秒，默认 60；对这个来源下的所有仓库和通知统一生效 |
   | 账号通知（`notifications`） | 开启后增加一条通知流，内容是 token 所属账号的通知收件箱 |
   | 通知只要直接参与的（`participating`） | 通知流只含账号直接参与或被 @ 的通知 |
-  | 使用的 token（`project_id`） | 全局凭据里的 `GITHUB_TOKEN`，或某个项目生效的那份（项目自己的，没有时沿用全局的） |
-  | 轮询间隔（`interval_seconds`） | 60 ~ 3600 秒，默认 60 |
 
-  仓库和通知至少要有一样。来源类型创建后不能修改。它和其他来源一样只由人在页面上维护；主控用 `automation.list` 能看到每个轮询来源的仓库、事件白名单和是否含通知，没有合适的来源时应请人新建。
+  来源类型创建后不能修改。它和其他来源一样只由人在页面上维护，一个身份建一个来源即可。
+- **仓库由订阅它的脚本各自声明**。脚本除了用 `webhook_source` 选这个来源，还要用 `github_repos` 列出要哪些仓库（`owner/repo`，一个脚本最多 50 个），并可以用 `github_events` 只要其中某些事件名（空表示全部，来源开启通知时包括 `notification`）。在脚本编辑页选中 GitHub 轮询来源后会出现这两栏；主控用 `automation.save` 传同名参数，所以 **Agent 可以自己订阅新仓库**，不需要人改来源。平台轮询的是该来源下全部脚本的仓库并集（合计最多 200 个），每个仓库的事件只交给订阅了它的脚本；没有脚本订阅的仓库不查询。
+- **订阅立即生效**：脚本新加的仓库在保存后十秒内建立基线，从那一刻起的新事件才会投递，不必等到下一次轮询时间；这次补查只针对新仓库，不会让其他仓库超出轮询间隔。仓库写错或 token 无权访问时保存仍然成功，原因显示在来源状态里，主控在 `automation.list` 里该脚本的 `github_errors` 中也能看到。
 - **两种事件流**：
 
   | | 仓库事件流 | 通知流 |
   | --- | --- | --- |
   | GitHub 接口 | `GET /repos/<owner>/<repo>/events` | `GET /notifications` |
-  | 能看到什么 | 指定仓库里发生的事，与账号是否参与无关 | 账号的收件箱：被 @、被指派、被请求评审，自己创建或参与的 Issue/PR 有新动静，关注（watch）的仓库有动态；不用逐个列出仓库 |
+  | 能看到什么 | 脚本订阅的仓库里发生的事，与账号是否参与无关 | 账号的收件箱：被 @、被指派、被请求评审，自己创建或参与的 Issue/PR 有新动静，关注（watch）的仓库有动态 |
+  | 交给谁 | 订阅了该仓库、且事件名没被 `github_events` 排除的脚本 | 来源下事件名没排除 `notification` 的全部脚本 |
   | 可用的 token | classic 与 fine-grained PAT 都可以；私有仓库需要 token 对它有读权限 | 只有 classic PAT，并且带 `notifications` 或 `repo` scope；fine-grained PAT 不能用 |
   | 事件名（`MISSIONCREW_WEBHOOK_EVENT`） | 与 webhook 相同：`issues`、`issue_comment`、`pull_request`、`pull_request_review`、`pull_request_review_comment`、`push`、`create`、`delete`、`release`、`commit_comment`、`discussion`、`fork`、`watch`、`member`、`public`、`gollum` | `notification` |
   | 发生了什么 | `payload.action` 是动作 | `payload.reason` 是收到通知的原因，具体内容要再查询 |
@@ -140,15 +145,16 @@ fi
   - `push` 只有 `ref`、`head`、`before`，没有提交列表。
 - **通知的正文**：`payload.reason` 是原因（`mention`、`team_mention`、`assign`、`review_requested`、`author`、`comment`、`state_change`、`subscribed`、`ci_activity` 等）；`payload.subject` 是通知指向的对象，含 `title`、`type`（`Issue`、`PullRequest`、`Release` 等）、对象的 API 地址 `url` 和最新评论的 API 地址 `latest_comment_url`；`payload.repository` 是所在仓库；`payload.notification` 是通知自身的 `id`、`updated_at`、`last_read_at`。同一个对象每有新动静就再投递一次。平台查询时包含已读通知，人在网页上先读掉也不会漏；平台不会把通知标为已读。
 - **与外部 webhook 的差别**：
-  - 一条事件流第一次轮询只记录基线，此前已有的事件不投递；之后新加进来的仓库同样从加入那一刻算起。
+  - 一条事件流第一次轮询只记录基线，此前已有的事件不投递。
   - 轮询进度保存在数据库里，服务重启后接着获取停机期间的事件。仓库事件接口只保留每个仓库最近 300 条事件，停机很久而仓库又很活跃时，更早的事件取不回来。
-  - 订阅脚本的排队放不下时，剩下的事件留到下一轮再取，不会丢弃；这时来源状态显示「有事件待投」。
-  - 没有脚本订阅期间出现的事件不会留给后来的订阅者，这一点与外部 webhook 一致。
+  - 订阅脚本的排队放不下时，这条流剩下的事件留到下一轮再取，不会丢弃；这时来源状态显示「有事件待投」。同一仓库被多个脚本订阅时，其中一个排满会让这个仓库的后续事件一起等待，以保持先后顺序。
+  - 没有脚本订阅的仓库不查询，期间的事件不会留给后来的订阅者；退订后重新订阅从新的基线开始。
   - 事件文件里 `transport` 为 `poll`（外部投递是 `webhook`）；`delivery` 是 `poll-<GitHub 事件 id>` 或 `poll-notification-<通知 id>-<更新时间>`，同一个事件不会重复投递。脚本环境里 `MISSIONCREW_TRIGGER` 仍是 `webhook`，`MISSIONCREW_WEBHOOK_PROVIDER` 是 `github`。
-- **延迟与额度**：GitHub 要求两次查询至少间隔 60 秒（响应头 `X-Poll-Interval`），平台遵守这个下限。仓库事件接口本身不是实时的：实测事件通常在发生后一分钟内可以查到，GitHub 文档说明繁忙时可能延迟到数小时；通知接口没有这层延迟。需要秒级响应时使用外部 webhook。没有新事件时 GitHub 返回 304，不消耗调用额度（每个 token 每小时 5000 次）；触发限流时平台按 GitHub 给出的时间推迟下一次查询。
-- **状态与排错**：来源列表和编辑框显示最近一次查询时间、累计投递数和出错原因，「立即检查」马上查询一次。常见原因：没有保存 `GITHUB_TOKEN`；token 失效（401）；仓库不存在或 token 无权访问（404，无权访问的私有仓库 GitHub 也返回 404）；通知流使用了 fine-grained PAT。一条流出错不影响同一来源的其他流；出错原因变化时记一条审计（`github_poll_failed`）。
+- **延迟与额度**：轮询间隔在来源上配置，默认 60 秒，这也是 GitHub 要求的下限（响应头 `X-Poll-Interval`，GitHub 要求更长时平台以它为准）。仓库事件接口本身不是实时的：实测事件通常在发生后一分钟内可以查到，GitHub 文档说明繁忙时可能延迟到数小时；通知接口没有这层延迟。需要秒级响应时使用外部 webhook。每个被订阅的仓库每轮一次请求，没有新事件时 GitHub 返回 304，不消耗调用额度（每个 token 每小时 5000 次）；触发限流时平台按 GitHub 给出的时间推迟下一次查询。
+- **状态与排错**：来源列表和编辑框显示轮询间隔、已被订阅的仓库、最近一次查询时间、累计投递数和出错原因，「立即检查」马上查询一次。常见原因：没有保存 `GITHUB_TOKEN`；token 失效（401）；仓库不存在或 token 无权访问（404，无权访问的私有仓库 GitHub 也返回 404）；通知流使用了 fine-grained PAT。一条流出错不影响其他流；出错原因变化时记一条审计（`github_poll_failed`）。
+- **平台不做的事**：不替你在 GitHub 上注册 webhook，也不做「逐个列表对比状态」这类更细的监控。轮询来源给不出的信息（事件接口省略的字段、更权威的 Issue/PR 状态、更短的检查周期），由脚本或 Agent 自己用 `gh api` 查询并对比：写一个 cron 脚本，把上次看到的结果存在脚本工作目录里，本次查询后自行比较。脚本里的 `gh` 已经是项目的 GitHub 身份。
 
-示例：`acme/webshop` 有新 Issue 时在频道里交给 dev 处理，PR 合并时告知主控。来源只勾选 `issues` 和 `pull_request`，脚本再按动作过滤（脚本的 `actions` 要包含 `message.publish`，默认就有）：
+示例：`acme/webshop` 有新 Issue 时在频道里交给 dev 处理，PR 合并时告知主控。脚本订阅来源 `github`，`github_repos` 为 `["acme/webshop"]`，`github_events` 为 `["issues", "pull_request"]`，再按动作过滤（脚本的 `actions` 要包含 `message.publish`，默认就有）：
 
 ```bash
 #!/usr/bin/env bash

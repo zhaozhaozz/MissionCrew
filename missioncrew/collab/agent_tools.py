@@ -512,6 +512,15 @@ ACTION_DEFINITIONS = {
                                "to that source runs this script; an empty string removes "
                                "the webhook trigger. Sources and their secrets are managed "
                                "only by humans in global settings"),
+            "github_repos": ("only with a GitHub polling source (kind github): array of "
+                             "`owner/repo` whose events this script receives; the platform "
+                             "starts polling a newly listed repository at once and delivers "
+                             "only events that happen from then on; omit it to keep the "
+                             "current value, pass [] to stop receiving repository events"),
+            "github_events": ("only with a GitHub polling source: array of event names this "
+                              "script receives (issues, pull_request, issue_comment, push, "
+                              "release, ..., and notification for the account inbox when "
+                              "the source has it on); [] means all"),
             "actions": "allowlist array of actions it may call; omit it to keep the current value",
             "timeout_seconds": "timeout of a single run in seconds",
         },
@@ -524,9 +533,10 @@ ACTION_DEFINITIONS = {
     "automation.list": {
         "description": ("On demand, list project automation scripts (schedule, enabled, webhook "
                         "source, actions allowlist, last run) and the global webhook sources "
-                        "they can subscribe to (kind github = the platform polls GitHub for "
-                        "the listed repositories, events and notifications); pass id to get "
-                        "the full script and its recent "
+                        "they can subscribe to (kind github = a GitHub polling source: a "
+                        "script subscribes with webhook_source plus its own github_repos; "
+                        "github_errors on a script names repositories the platform could "
+                        "not poll); pass id to get the full script and its recent "
                         "runs with the tail of their output, e.g. to fix a failing script; "
                         "page back with before_id through all kept runs (run_count)"),
         "orchestrator_only": True,
@@ -741,6 +751,7 @@ ACTION_ARGUMENTS = {
     "skill.history": {"id", "revision", "file", "limit"},
     "automation.save": {
         "id", "name", "description", "script", "cron", "enabled", "webhook_source",
+        "github_repos", "github_events",
         "actions", "timeout_seconds",
     },
     "automation.delete": {"id"},
@@ -2105,6 +2116,8 @@ class AgentActionService:
                 cron=arguments.get("cron"),
                 enabled=arguments.get("enabled"),
                 webhook_source=arguments.get("webhook_source"),
+                github_repos=arguments.get("github_repos"),
+                github_events=arguments.get("github_events"),
                 actions=arguments.get("actions"),
                 timeout_seconds=arguments.get("timeout_seconds"),
                 actor=identity.actor,
@@ -2114,7 +2127,9 @@ class AgentActionService:
             raise AgentToolError("invalid_arguments", str(exc), 400) from exc
         triggers = [f"cron `{automation.cron}`"] if automation.cron else []
         if automation.webhook_source:
-            triggers.append(f"webhook 来源 {automation.webhook_source}")
+            triggers.append(f"webhook 来源 {automation.webhook_source}"
+                            + (f"(仓库 {', '.join(automation.github_repos)})"
+                               if automation.github_repos else ""))
         return {
             "summary": (f"已{'创建' if created else '更新'}自动化脚本 "
                         f"{automation.name}({' + '.join(triggers) or '仅手动触发'})"),
@@ -2157,6 +2172,20 @@ class AgentActionService:
         # GitHub 轮询来源没有投递地址
         return webhook_path(source) if source and source.kind == "webhook" else ""
 
+    def _github_subscription(self, automation) -> dict:
+        """脚本对 GitHub 轮询来源的订阅:仓库、事件白名单,以及平台轮询这些仓库时
+        遇到的错误(仓库不存在、token 无权访问),便于 Agent 自己发现并改正。"""
+        if not automation.github_repos and not automation.github_events:
+            return {}
+        streams = (self.store.get_webhook_source_state(automation.webhook_source)
+                   .get("streams") or {})
+        errors = {repo: streams[f"repo:{repo.lower()}"]["error"]
+                  for repo in automation.github_repos
+                  if (streams.get(f"repo:{repo.lower()}") or {}).get("error")}
+        return {"github_repos": automation.github_repos,
+                "github_events": automation.github_events,
+                **({"github_errors": errors} if errors else {})}
+
     def _list_automations(self, project: Project, _identity: AgentIdentity,
                           arguments: dict, _context: AgentRunContext) -> dict:
         """不带 id 列出摘要与可订阅的 webhook 来源;带 id 返回脚本全文与最近运行
@@ -2168,6 +2197,7 @@ class AgentActionService:
                 "cron": automation.cron, "enabled": automation.enabled,
                 "webhook_source": automation.webhook_source,
                 "webhook_path": self._automation_webhook_path(automation),
+                **self._github_subscription(automation),
                 "actions": automation.actions,
                 "timeout_seconds": automation.timeout_seconds,
                 "last_run_at": automation.last_run_at,
@@ -2205,9 +2235,9 @@ class AgentActionService:
                    "enabled": item.enabled, "kind": item.kind,
                    "webhook_path": webhook_path(item) if item.kind == "webhook" else ""}
             if item.kind == "github":
-                # 轮询来源能送来什么由配置决定,脚本据此写过滤条件;token 不在其中
+                # 轮询来源不绑定仓库(脚本用 github_repos 自己订阅);token 不在其中
                 row["github"] = {key: item.github.get(key) for key in (
-                    "repos", "events", "notifications", "participating")}
+                    "notifications", "participating", "interval_seconds")}
             sources.append(row)
         return {"summary": (f"项目 {project.id} 共 {len(rows)} 个自动化脚本,"
                             f"平台共 {len(sources)} 个 webhook 来源"),

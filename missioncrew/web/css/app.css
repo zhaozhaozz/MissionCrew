@@ -115,7 +115,6 @@
   .github-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px;
     margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; }
   .github-identity.loading { opacity: .6; }
-  .ws-gh-events { display: flex; flex-wrap: wrap; gap: 4px 14px; }
   .notify-support { margin: 8px 0 0; }
   .notify-project-table { margin-top: 12px; }
   .side-nav { display: flex; align-items: center; padding: 7px 10px; border-radius: 8px;

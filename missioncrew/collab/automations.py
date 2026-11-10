@@ -22,6 +22,8 @@ from .agent_tools import (AUTOMATION_ACTIONS, AgentActionService,
                           CONTROL_ID_RE, default_agent_tool_url)
 from .credentials import write_credential_context
 from .github import github_env
+from .github_events import (check_source_repo_limit, normalize_event_names,
+                            normalize_repos)
 from ..core.config import mc_home
 from ..core.cron import next_cron_time, validate_cron
 from ..core.models import Automation
@@ -58,11 +60,18 @@ def save_automation(store: Store, project_id: str, *, id: str,
                     cron: Optional[str] = None,
                     enabled: Optional[bool] = None,
                     webhook_source: Optional[str] = None,
+                    github_repos: Optional[list] = None,
+                    github_events: Optional[list] = None,
                     actions: Optional[list] = None,
                     timeout_seconds: Optional[int] = None,
                     actor: str = "human",
                     created_by_role_id: str = "") -> tuple[Automation, bool]:
-    """新建或按字段合并更新自动化脚本;返回 (automation, 是否新建)。"""
+    """新建或按字段合并更新自动化脚本;返回 (automation, 是否新建)。
+
+    github_repos / github_events 只在订阅 GitHub 轮询来源时有意义:脚本声明要哪些
+    仓库的哪些事件,平台据此轮询并只把这些事件交给它。改订别的来源或取消 webhook
+    触发时两者自动清空。
+    """
     if store.get_project(project_id) is None:
         raise ValueError("项目不存在")
     full_id = normalize_automation_id(project_id, id)
@@ -101,6 +110,20 @@ def save_automation(store: Store, project_id: str, *, id: str,
         if source_id and store.get_webhook_source(source_id) is None:
             raise ValueError(f"webhook 来源不存在: {source_id}")
         automation.webhook_source = source_id
+    if github_repos is not None:
+        automation.github_repos = normalize_repos(github_repos)
+    if github_events is not None:
+        automation.github_events = normalize_event_names(github_events)
+    source = (store.get_webhook_source(automation.webhook_source)
+              if automation.webhook_source else None)
+    if source is not None and source.kind == "github":
+        check_source_repo_limit(store, automation)
+    else:
+        # 这次明确给了仓库或事件,订阅的却不是 GitHub 轮询来源:多半是填错了来源
+        if github_repos or github_events:
+            raise ValueError("github_repos / github_events 只在 webhook_source 是 "
+                             "GitHub 轮询来源时有效")
+        automation.github_repos, automation.github_events = [], []
     if actions is not None:
         if (not isinstance(actions, list)
                 or not all(isinstance(item, str) for item in actions)):
@@ -120,7 +143,9 @@ def save_automation(store: Store, project_id: str, *, id: str,
                 detail=f"project={project_id} automation={automation.id} "
                        f"cron={automation.cron or '(manual)'} "
                        f"enabled={automation.enabled} "
-                       f"webhook_source={automation.webhook_source or '(none)'}")
+                       f"webhook_source={automation.webhook_source or '(none)'}"
+                       + (f" github_repos={','.join(automation.github_repos)}"
+                          if automation.github_repos else ""))
     return automation, created
 
 

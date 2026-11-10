@@ -1,17 +1,25 @@
 """GitHub 轮询来源:用 GitHub token 定时查询事件,整理成与 webhook 同形的投递。
 
 外部 webhook 需要一个 GitHub 够得着的公网地址,还要有仓库或组织的管理权限去配置;
-只有一个个人访问令牌(PAT)时,平台改为自己去问 GitHub"有什么新事件"。一个
-kind=github 的 webhook 来源描述要问什么(`WebhookSource.github`):
+只有一个个人访问令牌(PAT)时,平台改为自己去问 GitHub"有什么新事件"。平台对
+GitHub 只读:不注册 webhook、不把通知标为已读,不改 GitHub 上的任何东西。
 
-- 仓库事件流(每个仓库一条):`GET /repos/<owner>/<repo>/events`。事件类型与 webhook
-  基本一一对应(issues、pull_request、issue_comment、push、release……),classic 与
-  fine-grained PAT 都能用,私有仓库也可以。
-- 通知流:`GET /notifications`,即 token 所属账号的通知收件箱(被 @、被指派、被请求
-  评审、关注的仓库有动态……)。只有按 scope 授权的令牌(classic PAT)能用。
+分工:
+- 来源(kind=github 的 WebhookSource)由人创建,只定义"以谁的身份、多久查一次、
+  要不要账号通知"(`WebhookSource.github`),不绑定仓库。
+- 仓库由订阅它的自动化脚本各自声明(`Automation.github_repos`,可再用
+  `github_events` 限定事件名),主控用 automation.save 就能订阅新仓库。平台轮询的是
+  全部订阅脚本的仓库并集,每个仓库的事件只交给订阅了它的脚本。
 
-新事件经 webhooks.fan_out_event 交给订阅该来源的自动化脚本,脚本侧与外部 webhook
-完全一样(`MISSIONCREW_TRIGGER=webhook`、事件文件),事件里 `transport` 为 `poll`。
+两种事件流:
+- 仓库事件流(每个被订阅的仓库一条):`GET /repos/<owner>/<repo>/events`。事件类型与
+  webhook 基本一一对应(issues、pull_request、issue_comment、push、release……),
+  classic 与 fine-grained PAT 都能用,私有仓库也可以。
+- 通知流(来源开启时):`GET /notifications`,即 token 所属账号的通知收件箱(被 @、
+  被指派、被请求评审、关注的仓库有动态……)。只有按 scope 授权的令牌(classic PAT)能用。
+
+新事件经 webhooks.fan_out_event 交给脚本,脚本侧与外部 webhook 完全一样
+(`MISSIONCREW_TRIGGER=webhook`、事件文件),事件里 `transport` 为 `poll`。
 
 与外部投递不同的三点:
 - 不丢事件:进度(各流的已见事件与游标)存库,服务重启后接着取停机期间的事件;
@@ -30,7 +38,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Callable, Optional
 
-from ..core.models import WebhookSource
+from ..core.models import Automation, WebhookSource
 from ..core.store import Store
 from .github import (GitHubError, GitHubResponse, Transport, github_request,
                      github_token, token_kind)
@@ -38,9 +46,10 @@ from .webhooks import fan_out_event, source_subscribers
 
 REPO_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+")
 EVENT_NAME_RE = re.compile(r"[a-z][a-z0-9_]*")
-MAX_REPOS = 50
+MAX_SCRIPT_REPOS = 50              # 一个脚本最多订阅的仓库数
+MAX_SOURCE_REPOS = 200             # 一个来源下全部脚本的仓库并集上限(每个仓库每轮一次请求)
 MIN_INTERVAL_SECONDS = 60          # GitHub 的 X-Poll-Interval 下限,再短会被要求退避
-MAX_INTERVAL_SECONDS = 3600
+MAX_INTERVAL_SECONDS = 24 * 3600
 EVENTS_PAGE_SIZE = 100
 EVENTS_MAX_PAGES = 3               # 事件接口最多保留 300 条
 NOTIFICATIONS_PAGE_SIZE = 50
@@ -48,12 +57,6 @@ NOTIFICATIONS_MAX_PAGES = 5
 SEEN_LIMIT = 1000                  # 每条仓库流记住的事件 id 数,远多于接口保留的 300 条
 NOTIFICATIONS_STREAM = "notifications"
 NOTIFICATION_EVENT = "notification"
-# 仓库事件流能产生的事件名(同 webhook 的事件名),供页面勾选;白名单不限于此表
-REPO_EVENT_NAMES = (
-    "issues", "issue_comment", "pull_request", "pull_request_review",
-    "pull_request_review_comment", "push", "create", "delete", "release",
-    "commit_comment", "discussion", "fork", "watch", "member", "public", "gollum",
-)
 # 这些令牌不按 scope 授权,GitHub 的通知接口不接受
 UNSCOPED_TOKEN_KINDS = {"fine_grained": "fine-grained PAT", "app_user": "GitHub App 令牌",
                         "app_installation": "GitHub App 令牌"}
@@ -71,37 +74,25 @@ def _string_list(raw, field: str) -> list[str]:
 
 
 def normalize_github_config(store: Store, raw: dict) -> dict:
-    """校验并规整轮询配置;不合法抛 ValueError。
+    """校验并规整来源的轮询配置;不合法抛 ValueError。
 
-    repos 是要看的仓库(`owner/repo`);events 是仓库事件的白名单(webhook 事件名,
-    空 = 全部),不影响通知流;notifications 开启通知流,participating 让它只含
-    直接参与或被 @ 的通知;project_id 决定用哪份 GITHUB_TOKEN(空 = 全局凭据,
-    否则是该项目生效的那份);interval_seconds 是轮询间隔。
+    notifications 开启通知流,participating 让它只含直接参与或被 @ 的通知;
+    project_id 决定用哪份 GITHUB_TOKEN(空 = 全局凭据,否则是该项目生效的那份);
+    interval_seconds 是轮询间隔。仓库不在这里:由订阅脚本声明。
     """
     if not isinstance(raw, dict):
         raise ValueError("github 配置必须是对象")
-    unknown = sorted(set(raw) - {"repos", "events", "notifications", "participating",
+    unknown = sorted(set(raw) - {"notifications", "participating",
                                  "project_id", "interval_seconds"})
     if unknown:
-        raise ValueError(f"github 配置含未知字段: {', '.join(unknown)}")
-    repos = _string_list(raw.get("repos"), "repos")
-    for repo in repos:
-        if not REPO_RE.fullmatch(repo):
-            raise ValueError(f"仓库要写成 owner/repo: {repo}")
-    if len(repos) > MAX_REPOS:
-        raise ValueError(f"一个来源最多 {MAX_REPOS} 个仓库")
-    events = [item.lower() for item in _string_list(raw.get("events"), "events")]
-    for name in events:
-        if not EVENT_NAME_RE.fullmatch(name):
-            raise ValueError(f"事件名只含小写字母、数字、下划线: {name}")
+        raise ValueError(f"github 配置含未知字段: {', '.join(unknown)}"
+                         "(仓库与事件由订阅脚本的 github_repos / github_events 声明)")
     flags = {}
     for key in ("notifications", "participating"):
         value = raw.get(key, False)
         if not isinstance(value, bool):
             raise ValueError(f"{key} 必须是布尔值")
         flags[key] = value
-    if not repos and not flags["notifications"]:
-        raise ValueError("至少填一个仓库,或开启通知")
     project_id = str(raw.get("project_id") or "").strip()
     if project_id and store.get_project(project_id) is None:
         raise ValueError(f"项目不存在: {project_id}")
@@ -110,8 +101,51 @@ def normalize_github_config(store: Store, raw: dict) -> dict:
             or not MIN_INTERVAL_SECONDS <= interval <= MAX_INTERVAL_SECONDS):
         raise ValueError(
             f"interval_seconds 必须是 {MIN_INTERVAL_SECONDS}..{MAX_INTERVAL_SECONDS} 的整数")
-    return {"repos": repos, "events": events, **flags,
-            "project_id": project_id, "interval_seconds": interval}
+    return {**flags, "project_id": project_id, "interval_seconds": interval}
+
+
+def normalize_repos(raw) -> list[str]:
+    """脚本订阅的仓库列表:`owner/repo`,按不区分大小写去重(GitHub 的仓库名不分大小写)。"""
+    repos: dict[str, str] = {}
+    for repo in _string_list(raw, "github_repos"):
+        if not REPO_RE.fullmatch(repo):
+            raise ValueError(f"仓库要写成 owner/repo: {repo}")
+        repos.setdefault(repo.lower(), repo)
+    if len(repos) > MAX_SCRIPT_REPOS:
+        raise ValueError(f"一个脚本最多订阅 {MAX_SCRIPT_REPOS} 个仓库")
+    return list(repos.values())
+
+
+def normalize_event_names(raw) -> list[str]:
+    """脚本的事件白名单:webhook 事件名(`issues`、`pull_request`……)或 `notification`。"""
+    names = [item.lower() for item in _string_list(raw, "github_events")]
+    for name in names:
+        if not EVENT_NAME_RE.fullmatch(name):
+            raise ValueError(f"事件名只含小写字母、数字、下划线: {name}")
+    return list(dict.fromkeys(names))
+
+
+def repo_subscribers(subscribers: list[Automation]) -> dict[str, list[Automation]]:
+    """小写仓库名 → 订阅它的脚本。平台按这张表决定轮询哪些仓库、事件交给谁。"""
+    table: dict[str, list[Automation]] = {}
+    for automation in subscribers:
+        for repo in automation.github_repos:
+            table.setdefault(repo.lower(), []).append(automation)
+    return table
+
+
+def check_source_repo_limit(store: Store, automation: Automation) -> None:
+    """保存脚本前检查:它的仓库并入来源后,并集不能超过上限。"""
+    others = [item for item in source_subscribers(store, automation.webhook_source)
+              if item.id != automation.id]
+    total = len(repo_subscribers([*others, automation]))
+    if total > MAX_SOURCE_REPOS:
+        raise ValueError(f"来源 {automation.webhook_source} 下订阅的仓库合计 {total} 个,"
+                         f"超过上限 {MAX_SOURCE_REPOS}")
+
+
+def _wants(automation: Automation, name: str) -> bool:
+    return not automation.github_events or name in automation.github_events
 
 
 def event_name(event_type: object) -> str:
@@ -208,6 +242,7 @@ def poll_status(store: Store, source: WebhookSource) -> dict:
         "last_event_at": state.get("last_event_at", 0.0),
         "delivered_total": state.get("delivered_total", 0),
         "pending": bool(state.get("pending")),
+        # 每个被订阅的仓库一条流(键 `repo:<小写 owner/repo>`),外加开启时的通知流;
         # ready = 已建立基线,之后的新事件才会投递
         "streams": [{"key": key, "ready": "since" in item, "error": item.get("error", "")}
                     for key, item in streams.items()],
@@ -259,24 +294,45 @@ class GitHubEventPoller:
             self._wake.clear()
 
     def poll_due(self, now: float) -> list[str]:
-        """轮询所有到点的来源,返回本次轮询过的来源 id。"""
+        """轮询所有到点的来源,返回本次轮询过的来源 id。
+
+        没到点的来源如果出现了还没建过基线的流(脚本刚订阅了新仓库),只为这些流
+        补一次轮询:订阅即刻生效,又不让已有的流超出 GitHub 要求的轮询间隔。
+        """
         polled = []
         for source in self.store.list_webhook_sources():
             if source.kind != "github" or not source.enabled:
                 continue
             state = self.store.get_webhook_source_state(source.id)
-            if state.get("next_poll_at", 0.0) > now:
-                continue
+            due = state.get("next_poll_at", 0.0) <= now
+            if not due:
+                known = state.get("streams") or {}
+                # blocked = 上次连 token 都没有,补轮询也是白跑,等到点再试
+                if state.get("blocked") or all(known.get(key) for key in self._wanted(source)):
+                    continue
             try:
-                self.poll(source.id, now)
+                self.poll(source.id, now, only_new=not due)
             except LookupError:   # 刚被删除
                 continue
             polled.append(source.id)
         return polled
 
+    def _wanted(self, source: WebhookSource) -> list[str]:
+        """这个来源现在该有哪些流:订阅脚本的仓库并集,加上来源开启的通知流。"""
+        repos = repo_subscribers(source_subscribers(self.store, source.id))
+        wanted = [f"repo:{repo}" for repo in sorted(repos)]
+        if source.github.get("notifications"):
+            wanted.append(NOTIFICATIONS_STREAM)
+        return wanted
+
     # ---- 一次轮询 ----
-    def poll(self, source_id: str, now: Optional[float] = None) -> dict:
-        """轮询一个来源的全部事件流并投递新事件,返回 poll_status。"""
+    def poll(self, source_id: str, now: Optional[float] = None,
+             only_new: bool = False) -> dict:
+        """轮询一个来源的事件流并投递新事件,返回 poll_status。
+
+        only_new 只处理还没轮询过的流(新订阅的仓库),不动其他流,也不改下一次
+        轮询时间。
+        """
         with self._lock:
             source = self.store.get_webhook_source(source_id)
             if source is None or source.kind != "github":
@@ -284,76 +340,88 @@ class GitHubEventPoller:
             now = time.time() if now is None else now
             config = source.github
             previous = self.store.get_webhook_source_state(source.id)
-            wanted = [f"repo:{repo}" for repo in config.get("repos", [])]
-            if config.get("notifications"):
-                wanted.append(NOTIFICATIONS_STREAM)
-            # 只保留配置里还在的流:去掉的仓库连同进度一起丢弃,重新加回时从新基线开始
+            subscribers = source_subscribers(self.store, source.id)
+            by_repo = repo_subscribers(subscribers)
+            wanted = self._wanted(source)
+            # 只保留还有人订阅的流:没人要的仓库连同进度一起丢弃,再订阅时从新基线开始
             old_streams = previous.get("streams") or {}
             streams = {key: dict(old_streams.get(key) or {}) for key in wanted}
-            errors: list[str] = []
             delivered = 0
             pending = False
             retry_at = 0.0
             interval = float(config.get("interval_seconds", MIN_INTERVAL_SECONDS))
+            room: dict[str, int] = {}     # 脚本 id → 这一轮它的排队还能放几份
 
             token, _scope = github_token(self.store, config.get("project_id", ""))
+            token_error = ""
             if not token:
                 where = (f"项目 {config['project_id']}" if config.get("project_id")
                          else "全局凭据")
-                errors.append(f"{where}里没有 GITHUB_TOKEN")
-            else:
-                # None = 没有脚本订阅:事件照常记为已见,但无处可投
-                room = self._room(source)
-                for key in wanted:
-                    stream = streams[key]
-                    label = "通知" if key == NOTIFICATIONS_STREAM else key.removeprefix("repo:")
+                token_error = f"{where}里没有 GITHUB_TOKEN"
+            for key in wanted if token else []:
+                stream = streams[key]
+                if only_new and stream:
+                    continue
+                repo = key.removeprefix("repo:")
+                try:
+                    if key == NOTIFICATIONS_STREAM:
+                        candidates = subscribers
+                        items, finish, hint = self._notifications(
+                            token, source.id, config, stream, now)
+                    else:
+                        candidates = by_repo[repo]
+                        items, finish, hint = self._repo_events(
+                            token, source.id, repo, stream, now)
+                    interval = max(interval, hint)
+                    sent = 0
                     try:
-                        if key == NOTIFICATIONS_STREAM:
-                            items, finish, hint = self._notifications(
-                                token, source.id, config, stream, now)
-                        else:
-                            items, finish, hint = self._repo_events(
-                                token, source.id, key.removeprefix("repo:"),
-                                config, stream, now)
-                        interval = max(interval, hint)
-                        sent = 0
-                        try:
-                            for item in items:
-                                if room is not None:
-                                    if room <= 0:
-                                        break
-                                    fan_out_event(self.store, self.service, source,
-                                                  item.event, auth="poll")
-                                    room -= 1
-                                    delivered += 1
-                                item.mark()
-                                sent += 1
-                        finally:
-                            # 投递中途出错也要把已投的记为已见,否则下一轮会重复投递
-                            complete = sent == len(items)
-                            pending = pending or not complete
-                            finish(complete)
-                        stream["error"] = ""
-                    except _StreamError as exc:
-                        stream["error"] = exc.message
-                        errors.append(f"{label}: {exc.message}")
-                        retry_at = max(retry_at, exc.retry_at)
-                    except GitHubError as exc:
-                        stream["error"] = str(exc)
-                        errors.append(f"{label}: {exc}")
-                    except Exception as exc:   # 响应结构出乎意料等:记下原因,不影响其他流
-                        stream["error"] = f"处理失败: {exc}"
-                        errors.append(f"{label}: 处理失败: {exc}")
+                        for item in items:
+                            targets = [automation for automation in candidates
+                                       if _wants(automation, item.event["event"])]
+                            for automation in targets:
+                                room.setdefault(
+                                    automation.id, self.service.webhook_room(automation.id))
+                            # 有订阅者放不下就停在这里:这条流余下的事件下一轮再取,保持先后
+                            if any(room[automation.id] <= 0 for automation in targets):
+                                break
+                            if targets:
+                                fan_out_event(self.store, self.service, source,
+                                              item.event, auth="poll", targets=targets)
+                                for automation in targets:
+                                    room[automation.id] -= 1
+                                delivered += 1
+                            item.mark()     # 没人要的事件同样记为已见
+                            sent += 1
+                    finally:
+                        # 投递中途出错也要把已投的记为已见,否则下一轮会重复投递
+                        complete = sent == len(items)
+                        pending = pending or not complete
+                        finish(complete)
+                    stream["error"] = ""
+                except _StreamError as exc:
+                    stream["error"] = exc.message
+                    retry_at = max(retry_at, exc.retry_at)
+                except GitHubError as exc:
+                    stream["error"] = str(exc)
+                except Exception as exc:   # 响应结构出乎意料等:记下原因,不影响其他流
+                    stream["error"] = f"处理失败: {exc}"
 
+            errors = [token_error] if token_error else []
+            for key, stream in streams.items():
+                if stream.get("error"):
+                    label = "通知" if key == NOTIFICATIONS_STREAM else key.removeprefix("repo:")
+                    errors.append(f"{label}: {stream['error']}")
             error = "; ".join(errors)
             state = {
                 "streams": streams,
-                "last_poll_at": now,
-                "next_poll_at": max(now + interval, retry_at),
+                "blocked": bool(token_error),
+                "last_poll_at": previous.get("last_poll_at", 0.0) if only_new else now,
+                "next_poll_at": (previous.get("next_poll_at", 0.0) if only_new
+                                 else max(now + interval, retry_at)),
                 "last_error": error,
                 "last_event_at": now if delivered else previous.get("last_event_at", 0.0),
                 "delivered_total": previous.get("delivered_total", 0) + delivered,
-                "pending": pending,
+                "pending": pending or (only_new and bool(previous.get("pending"))),
             }
             self.store.put_webhook_source_state(source.id, state)
             # 同一个错误每分钟都会重现,只在错误内容变化时记审计
@@ -361,14 +429,6 @@ class GitHubEventPoller:
                 self.store.audit("platform", "github_poll_failed",
                                  detail=f"source={source.id} error={error}")
             return poll_status(self.store, source)
-
-    def _room(self, source: WebhookSource) -> Optional[int]:
-        """这一轮最多能投几份:取各订阅脚本排队余量的最小值,保证每份事件对所有
-        订阅者都放得下。一个脚本只订阅一个来源,轮询又是单线程,余量不会被别处占掉。"""
-        subscribers = source_subscribers(self.store, source.id)
-        if not subscribers:
-            return None
-        return min(self.service.webhook_room(item.id) for item in subscribers)
 
     # ---- 访问 GitHub ----
     def _get(self, token: str, path: str, params: dict,
@@ -410,7 +470,7 @@ class GitHubEventPoller:
             raise _StreamError("GitHub 返回的不是列表")
         return [item for item in data if isinstance(item, dict)]
 
-    def _repo_events(self, token: str, source_id: str, repo: str, config: dict,
+    def _repo_events(self, token: str, source_id: str, repo: str,
                      stream: dict, now: float):
         """取一个仓库的新事件,返回 (待投递事件, 收尾函数, 轮询间隔下限)。
 
@@ -443,16 +503,14 @@ class GitHubEventPoller:
                           seen=[str(row.get("id")) for row in rows][-SEEN_LIMIT:])
             return [], lambda complete: None, hint
 
-        allow = set(config.get("events") or [])
         # 接口把新事件排在前面:先倒过来再按时间做稳定排序,同一秒内的事件也保持先后
         fresh = {str(row.get("id")): row for row in reversed(rows)
                  if str(row.get("id")) not in seen}
         items: list[_Item] = []
         for event_id, row in sorted(fresh.items(),
                                     key=lambda pair: str(pair[1].get("created_at") or "")):
-            # 基线之前发生、现在才露面的旧事件,以及白名单之外的事件:只记已见,不投递
-            if (str(row.get("created_at") or "") < stream["since"]
-                    or (allow and event_name(row.get("type")) not in allow)):
+            # 基线之前发生、现在才露面的旧事件:只记已见,不投递
+            if str(row.get("created_at") or "") < stream["since"]:
                 seen_order.append(event_id)
                 continue
             items.append(_Item(repo_event(source_id, row),

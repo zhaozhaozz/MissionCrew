@@ -66,6 +66,9 @@ class AutomationInput(BaseModel):
     enabled: Optional[bool] = None       # 只管定时触发
     # 订阅的全局 webhook 来源 id;空字符串 = 不接受 webhook,None = 保留现值
     webhook_source: Optional[str] = None
+    # 订阅 GitHub 轮询来源时:要哪些仓库(owner/repo)的事件、只要哪些事件名;None = 保留现值
+    github_repos: Optional[list[str]] = None
+    github_events: Optional[list[str]] = None
     actions: Optional[list[str]] = None  # None = 保留现值
     timeout_seconds: Optional[int] = Field(None, ge=1)
 
@@ -77,8 +80,8 @@ class WebhookSourceInput(BaseModel):
     path: Optional[str] = Field(None, max_length=210)   # /hooks/ 之后的部分;空 = 同 id
     enabled: Optional[bool] = None
     kind: Optional[str] = Field(None, max_length=20)    # webhook(默认)| github;只在新建时生效
-    # kind=github 的轮询配置(repos/events/notifications/participating/project_id/
-    # interval_seconds),整份替换;None = 保留现值
+    # kind=github 的轮询配置(notifications/participating/project_id/interval_seconds),
+    # 整份替换;None = 保留现值。仓库由订阅脚本的 github_repos 声明
     github: Optional[dict] = None
 
 
