@@ -42,6 +42,7 @@ from ..core.models import Automation, WebhookSource
 from ..core.store import Store
 from .github import (GitHubError, GitHubResponse, Transport, github_request,
                      github_token, token_kind)
+from .callbacks import event_callback_repos
 from .webhooks import fan_out_event, record_delivery, source_subscribers
 
 REPO_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+")
@@ -318,8 +319,11 @@ class GitHubEventPoller:
         return polled
 
     def _wanted(self, source: WebhookSource) -> list[str]:
-        """这个来源现在该有哪些流:订阅脚本的仓库并集,加上来源开启的通知流。"""
-        repos = repo_subscribers(source_subscribers(self.store, source.id))
+        """这个来源现在该有哪些流:订阅脚本与等待中的事件回调的仓库并集,加上来源
+        开启的通知流。"""
+        repos = set(repo_subscribers(source_subscribers(self.store, source.id)))
+        # 角色的一次性事件回调指定的仓库也要查,哪怕没有脚本订阅它
+        repos |= event_callback_repos(self.store, source.id)
         wanted = [f"repo:{repo}" for repo in sorted(repos)]
         if source.github.get("notifications"):
             wanted.append(NOTIFICATIONS_STREAM)
@@ -369,7 +373,7 @@ class GitHubEventPoller:
                         items, finish, hint = self._notifications(
                             token, source.id, config, stream, now)
                     else:
-                        candidates = by_repo[repo]
+                        candidates = by_repo.get(repo, [])   # 只有回调在等的仓库没有脚本
                         items, finish, hint = self._repo_events(
                             token, source.id, repo, stream, now)
                     interval = max(interval, hint)

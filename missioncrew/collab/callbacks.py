@@ -1,4 +1,5 @@
-"""角色登记的一次性回调:到点,或所盯的频道/Task 有更新时,回到登记的频道重新启动该角色。
+"""角色登记的一次性回调:到点,或所盯的频道/Task 有更新、所盯的 webhook 来源收到匹配的
+事件时,回到登记的频道重新启动该角色。
 
 回调由角色经 Agent Tool `callback.create` 登记,归属登记那一轮的 频道 × 角色;人可以在
 聊天页查看和取消。触发时平台在登记的频道发一条 kind=callback 的平台消息并照常启动该
@@ -10,6 +11,13 @@
 与通知不算,登记者自己的消息也不算);Task "有更新"指内容指纹变化(标题、摘要、正文、
 标签、频道、链接、附注、归档、外部更新时间或新简报),数据源同步原样重写不算。登记者
 自己经 Agent Tool 改这个 Task 时顺延基线,不会被自己的改动唤醒。
+
+盯事件(watch_kind=event)是对一个 webhook 来源的一次性订阅:来源可以是接收外部投递的
+webhook,也可以是 GitHub 轮询来源。每轮从来源的投递记录里取登记之后的新事件,先按事件名、
+动作、仓库筛,再交给角色自带的过滤脚本(event_filters.py,只能判断、不能调用平台动作),
+第一个命中的事件触发回调。这类回调必须给超时时间:到时还没等到,同样启动角色并说明
+检查过多少事件、脚本出过什么错,不会悄悄过期。盯 GitHub 轮询来源并指定了仓库时,
+轮询器把这个仓库也纳入查询(github_events.py 读 event_callback_repos)。
 
 一次登记只回调一次:要继续等就在被回调的那一轮里再登记,两个角色互相盯也不会无限循环。
 """
@@ -25,6 +33,7 @@ from datetime import datetime, timezone
 from typing import Callable, Generator, Optional
 
 from ..core.store import Store
+from .event_filters import run_event_filter
 
 LOGGER = logging.getLogger(__name__)
 
@@ -36,7 +45,9 @@ WATCH_TTL_SECONDS = 7 * 86400
 # 同一 频道 × 角色 同时等待中的回调上限,防止循环登记失控
 MAX_PENDING_PER_OWNER = 10
 NOTE_MAX_CHARS = 2000
-WATCH_KINDS = ("channel", "task")
+WATCH_KINDS = ("channel", "task", "event")
+# 盯事件的回调每轮最多检查这么多条候选事件:每条可能要起一次过滤脚本
+EVENT_SCAN_LIMIT = 20
 
 
 def _utc_text(timestamp: float) -> str:
@@ -85,8 +96,55 @@ def _short_channel(channel_id: str) -> str:
     return channel_id.split(":", 1)[-1]
 
 
+def event_spec(row: dict) -> dict:
+    """盯事件的回调的匹配条件:{event, action, repository, filter},缺的为空串。"""
+    try:
+        spec = json.loads(row.get("spec") or "{}")
+    except json.JSONDecodeError:
+        spec = {}
+    return {key: str(spec.get(key) or "") for key in ("event", "action", "repository", "filter")}
+
+
+def event_progress(row: dict) -> dict:
+    """盯事件的回调已经检查过多少候选事件、过滤脚本出错几次及最近一次的原因。"""
+    try:
+        progress = json.loads(row.get("progress") or "{}")
+    except json.JSONDecodeError:
+        progress = {}
+    return {"checked": int(progress.get("checked") or 0),
+            "errors": int(progress.get("errors") or 0),
+            "last_error": str(progress.get("last_error") or "")}
+
+
+def event_callback_repos(store: Store, source_id: str) -> set[str]:
+    """等待中的事件回调在这个来源上指定的仓库(小写)。GitHub 轮询来源据此把它们
+    纳入查询,即使没有自动化脚本订阅这些仓库。"""
+    repos = set()
+    for row in store.list_chat_callbacks(status="pending", limit=1000):
+        if row["watch_kind"] == "event" and row["watch_target"] == source_id:
+            repository = event_spec(row)["repository"]
+            if repository:
+                repos.add(repository.lower())
+    return repos
+
+
+def _describe_event(row: dict) -> str:
+    spec = event_spec(row)
+    what = " ".join(part for part in (spec["event"], spec["action"]) if part) or "任意"
+    extras = [f"仓库 {spec['repository']}"] if spec["repository"] else []
+    if spec["filter"]:
+        extras.append("且通过过滤脚本")
+    return (f"来源 {row['watch_target']} 收到 {what} 事件"
+            + (f"（{'，'.join(extras)}）" if extras else ""))
+
+
 def describe_conditions(row: dict) -> str:
     """人类可读的触发条件,用于回执、列表与触发消息。"""
+    if row["watch_kind"] == "event":
+        text = _describe_event(row)
+        if row["fire_at"]:
+            text += f"，最晚等到 {_utc_text(row['fire_at'])}（到时没等到也会回调）"
+        return text
     parts = []
     if row["watch_kind"] == "channel":
         parts.append(f"频道 #{_short_channel(row['watch_target'])} 有新消息")
@@ -112,7 +170,13 @@ def public_callback(row: dict) -> dict:
         "expires_at": row["expires_at"] or None,
         "watch": ({"kind": row["watch_kind"],
                    "target": (_short_channel(row["watch_target"])
-                              if row["watch_kind"] == "channel" else row["watch_target"])}
+                              if row["watch_kind"] == "channel" else row["watch_target"]),
+                   # 盯事件:匹配条件(过滤脚本原文不回传,只说有没有)与检查进度
+                   **({**{key: value for key, value in event_spec(row).items()
+                          if key != "filter"},
+                       "has_filter": bool(event_spec(row)["filter"]),
+                       "progress": event_progress(row)}
+                      if row["watch_kind"] == "event" else {})}
                   if row["watch_kind"] else None),
         "status": row["status"],
         "reason": row.get("reason") or "",
@@ -143,6 +207,7 @@ class CallbackService:
     # ---- 登记 / 取消 ----
     def create(self, *, project_id: str, channel_id: str, role_id: str, note: str,
                fire_at: float = 0.0, watch_kind: str = "", watch_target: str = "",
+               spec: Optional[dict] = None,
                origin_run_id: int = 0, origin_trigger: int = 0,
                now: Optional[float] = None) -> dict:
         now = time.time() if now is None else now
@@ -154,7 +219,11 @@ class CallbackService:
         if watch_kind and watch_kind not in WATCH_KINDS:
             raise ValueError(f"不支持的监听对象: {watch_kind}")
         if not fire_at and not watch_kind:
-            raise ValueError("至少给出 delay_seconds/at,或要盯的 channel/task 之一")
+            raise ValueError(
+                "至少给出 delay_seconds/at,或要盯的 channel/task/webhook_source 之一")
+        if watch_kind == "event" and not fire_at:
+            raise ValueError("盯事件必须用 delay_seconds 或 at 给出超时时间:"
+                             "到时还没等到匹配的事件也会回调你")
         with self._lock:
             pending = self.store.list_chat_callbacks(
                 channel=channel_id, role_id=role_id, status="pending")
@@ -167,11 +236,15 @@ class CallbackService:
                 baseline = str(self.store.last_message_id(watch_target))
             elif watch_kind == "task":
                 baseline = task_fingerprint(self.store, watch_target)
+            elif watch_kind == "event":
+                # 游标:只看登记之后进入投递记录的事件
+                baseline = str(self.store.last_webhook_delivery_id(watch_target))
             expires_at = fire_at or (now + WATCH_TTL_SECONDS)
             callback_id = self.store.add_chat_callback(
                 project_id=project_id, channel=channel_id, role_id=role_id,
                 note=note, fire_at=fire_at, expires_at=expires_at,
                 watch_kind=watch_kind, watch_target=watch_target, baseline=baseline,
+                spec=json.dumps(spec, ensure_ascii=False) if spec else "",
                 origin_run_id=origin_run_id, origin_trigger=origin_trigger)
         row = self.store.get_chat_callback(callback_id)
         assert row is not None
@@ -215,12 +288,48 @@ class CallbackService:
         now = time.time() if now is None else now
         for row in self.store.list_chat_callbacks(status="pending", limit=1000):
             try:
+                # 过滤脚本可能要跑几秒,放在锁外:锁还管着"登记者自己改 Task"的顺延
+                hit = self._scan_events(row) if row["watch_kind"] == "event" else None
                 with self._lock:
-                    self._check(row, now)
+                    self._check(row, now, hit)
             except Exception:
                 LOGGER.exception("Chat callback check failed: %s", row.get("id"))
 
-    def _check(self, row: dict, now: float) -> None:
+    def _scan_events(self, row: dict) -> Optional[dict]:
+        """从游标往后检查来源的新投递,返回第一个命中的投递摘要;没有命中返回 None。
+
+        先用投递记录的摘要列筛事件名、动作、仓库,剩下的再逐个交给过滤脚本。看过的
+        推进游标并累计进度;命中时游标停在它前面一条,万一这一轮没能触发(频道正在
+        停止),下一轮还能再找到它。
+        """
+        spec = event_spec(row)
+        cursor = int(row["baseline"] or 0)
+        candidates = self.store.list_webhook_deliveries(
+            row["watch_target"], limit=EVENT_SCAN_LIMIT, after_id=cursor,
+            event=spec["event"], action=spec["action"], repository=spec["repository"])
+        if not candidates:
+            return None
+        progress = event_progress(row)
+        hit = None
+        for delivery in candidates:
+            if spec["filter"]:
+                full = self.store.get_webhook_delivery(int(delivery["id"]))
+                result = run_event_filter(spec["filter"], (full or {}).get("event_data") or {})
+                if result.error:
+                    progress["errors"] += 1
+                    progress["last_error"] = result.error
+                if not result.matched:
+                    cursor = int(delivery["id"])
+                    progress["checked"] += 1
+                    continue
+            hit = delivery
+            cursor = int(delivery["id"]) - 1
+            break
+        self.store.advance_chat_callback(
+            int(row["id"]), str(cursor), json.dumps(progress, ensure_ascii=False))
+        return hit
+
+    def _check(self, row: dict, now: float, event_hit: Optional[dict] = None) -> None:
         current = self.store.get_chat_callback(int(row["id"]))
         if current is None or current["status"] != "pending":
             return   # 刚被取消
@@ -253,10 +362,37 @@ class CallbackService:
                     if task.archived:
                         detail += "，已归档"
                 extra = {"task_id": row["watch_target"]}
+        elif row["watch_kind"] == "event":
+            if event_hit is not None:
+                cause = "event"
+                what = " ".join(part for part in (
+                    event_hit["event"], event_hit["action"]) if part) or "事件"
+                where = "，".join(part for part in (
+                    event_hit["repository"],
+                    f"投递 {event_hit['delivery']}" if event_hit["delivery"] else "") if part)
+                detail = (f"来源 {row['watch_target']} 收到 {what}"
+                          + (f"（{where}）" if where else "")
+                          + f"；事件全文用 webhook.history 读取（source="
+                            f"{row['watch_target']}，id={event_hit['id']}）")
+                extra = {"source": row["watch_target"], "delivery_id": int(event_hit["id"]),
+                         "event": event_hit["event"], "action": event_hit["action"],
+                         "repository": event_hit["repository"]}
+            elif self.store.get_webhook_source(row["watch_target"]) is None:
+                cause, detail = "event", f"所盯的 webhook 来源 {row['watch_target']} 已删除"
         if not cause and row["fire_at"] and now >= row["fire_at"]:
             cause = "time"
             detail = f"{_utc_text(row['fire_at'])} 到点"
-            if row["watch_kind"]:
+            if row["watch_kind"] == "event":
+                # 超时同样回调:带上检查进度,角色据此判断是事件没来还是过滤条件写错了
+                cause = "timeout"
+                progress = event_progress(row)
+                detail = (f"等到 {_utc_text(row['fire_at'])} 超时，"
+                          f"{_describe_event(row)}仍未发生；期间检查了 "
+                          f"{progress['checked']} 个候选事件")
+                if progress["errors"]:
+                    detail += (f"，过滤脚本出错 {progress['errors']} 次"
+                               f"（最近一次：{progress['last_error']}）")
+            elif row["watch_kind"]:
                 detail += f"，{describe_conditions({**row, 'fire_at': 0, 'expires_at': 0})}仍未发生"
         if not cause:
             if not row["fire_at"] and row["expires_at"] and now >= row["expires_at"]:

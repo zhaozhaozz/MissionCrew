@@ -555,7 +555,8 @@ ACTION_DEFINITIONS = {
                         "Use it to see which events a source really emits before writing or "
                         "fixing a script's filter; pass id to get one delivery's full event, "
                         "the same JSON a script reads from MISSIONCREW_WEBHOOK_EVENT_FILE"),
-        "orchestrator_only": True,
+        # 执行角色登记事件回调前也要对照历史写过滤条件,回调触发后还要读事件全文
+        "orchestrator_only": False,
         "arguments": {
             "source": "id of the webhook source (automation.list lists them)",
             "id": "optional delivery record id; returns that delivery with its full event",
@@ -596,9 +597,14 @@ ACTION_DEFINITIONS = {
         "description": (
             "Register a one-shot callback that starts you again in the current channel later: "
             "at a time (delay_seconds or at), when a channel gets a new message from someone "
-            "else (channel), or when a Task changes (task). Give at most one of channel/task; "
-            "with a time as well, whichever happens first fires it, so the time works as a "
-            "deadline. A watch without a time expires after 7 days. When it fires, the platform "
+            "else (channel), when a Task changes (task), or when a webhook source receives a "
+            "matching event (webhook_source: an external webhook delivery or a polled GitHub "
+            "event, narrowed with event/action/repository and an optional filter script). "
+            "Give at most one of channel/task/webhook_source; with a time as well, whichever "
+            "happens first fires it, so the time works as a deadline. A channel or Task watch "
+            "without a time expires after 7 days; an event watch must have a time, which is "
+            "its timeout: if no event matched by then you are started anyway and told so. "
+            "When it fires, the platform "
             "posts a callback message here that says what happened and repeats your note, and "
             "starts a normal run of you with its own Agent Tool token; your reply follows the "
             "same hand-back rules as the turn that registered it. It fires once; register again "
@@ -618,6 +624,22 @@ ACTION_DEFINITIONS = {
             "task": ("id of a project Task to watch; any change of its title, summary, body, "
                      "labels/status, channels, link, archive state or a new brief fires it; "
                      "your own changes through this tool do not"),
+            "webhook_source": ("id of a global webhook source to watch (automation.list lists "
+                               "them); the first event it receives after now that matches "
+                               "event/action/repository and the filter fires the callback; "
+                               "requires delay_seconds or at as the timeout"),
+            "event": "with webhook_source: exact event name, e.g. pull_request or issues",
+            "action": "with webhook_source: exact action, e.g. merged or opened",
+            "repository": ("with webhook_source: owner/repo; on a GitHub polling source the "
+                           "platform also starts polling that repository for you"),
+            "filter": ("with webhook_source: script text that decides whether one event "
+                       "matches (run as an executable when it has a shebang, otherwise with "
+                       "bash). It gets the event JSON on stdin and in "
+                       "MISSIONCREW_WEBHOOK_EVENT_FILE, the same file an automation script "
+                       "reads; exit 0 = match, 1 = ignore, anything else counts as an error "
+                       "and is ignored. It can only decide: it has no Agent Tool token, no "
+                       "credentials and no network. Example: "
+                       "jq -e '.payload.number == 12 and .payload.action == \"merged\"'"),
         },
     },
     "callback.list": {
@@ -779,7 +801,8 @@ ACTION_ARGUMENTS = {
                         "before_id"},
     "automation.run": {"id"},
     "credential.request": {"name", "description"},
-    "callback.create": {"note", "delay_seconds", "at", "channel", "task"},
+    "callback.create": {"note", "delay_seconds", "at", "channel", "task",
+                        "webhook_source", "event", "action", "repository", "filter"},
     "callback.list": set(),
     "callback.cancel": {"id"},
     "recycle.list": set(),
@@ -2363,10 +2386,22 @@ class AgentActionService:
             arguments.get("delay_seconds"), arguments.get("at"), time.time())
         raw_channel = str(arguments.get("channel") or "").strip()
         raw_task = str(arguments.get("task") or "").strip()
-        if raw_channel and raw_task:
-            raise AgentToolError("invalid_arguments", "channel 与 task 只能盯一个")
+        raw_source = str(arguments.get("webhook_source") or "").strip()
+        if sum(map(bool, (raw_channel, raw_task, raw_source))) > 1:
+            raise AgentToolError("invalid_arguments",
+                                 "channel、task、webhook_source 只能盯一个")
+        event_fields = [name for name in ("event", "action", "repository", "filter")
+                        if arguments.get(name) not in (None, "")]
+        if event_fields and not raw_source:
+            raise AgentToolError(
+                "invalid_arguments",
+                f"{', '.join(event_fields)} 只在给出 webhook_source 时有效")
         watch_kind = watch_target = ""
-        if raw_channel:
+        spec = filter_check = None
+        if raw_source:
+            watch_kind, watch_target = "event", raw_source
+            spec, filter_check = self._event_watch_spec(raw_source, arguments)
+        elif raw_channel:
             watch_kind, watch_target = "channel", self._project_channel(project, raw_channel).id
         elif raw_task:
             task = self.store.get_task(raw_task)
@@ -2377,12 +2412,65 @@ class AgentActionService:
         row = service.create(
             project_id=project.id, channel_id=identity.channel_id,
             role_id=identity.role_id, note=str(arguments.get("note") or ""),
-            fire_at=fire_at, watch_kind=watch_kind, watch_target=watch_target,
+            fire_at=fire_at, watch_kind=watch_kind, watch_target=watch_target, spec=spec,
             origin_run_id=context.run_id,
             origin_trigger=int(run["trigger_message_id"]) if run else 0)
         view = public_callback(row)
-        return {"callback": view,
-                "summary": f"登记回调 #{view['id']}：{view['conditions']}时回到本频道"}
+        result = {"callback": view,
+                  "summary": (f"登记回调 #{view['id']}：{view['conditions']}"
+                              + ("" if watch_kind == "event" else "时") + "回到本频道")}
+        if filter_check is not None:
+            result["filter_check"] = filter_check
+        return result
+
+    def _event_watch_spec(self, source_id: str, arguments: dict) -> tuple[dict, Optional[dict]]:
+        """校验盯事件的条件,返回 (匹配条件, 过滤脚本的试跑结果)。
+
+        有过滤脚本时拿它试跑一次:优先用来源历史里符合事件名/动作/仓库的最近一条
+        投递,没有就用只含这些字段的空事件。试跑只为尽早暴露写坏的脚本(起不来、
+        超时就拒绝登记),命中与否如实回给角色,由它判断条件是否写对。
+        """
+        from .event_filters import filter_sandbox, run_event_filter, validate_filter
+        from .github_events import normalize_repos
+
+        source = self.store.get_webhook_source(source_id)
+        if source is None:
+            raise AgentToolError("not_found", f"webhook 来源不存在: {source_id}", 404)
+        spec = {}
+        for name in ("event", "action"):
+            value = arguments.get(name, "")
+            if not isinstance(value, str):
+                raise AgentToolError("invalid_arguments", f"{name} 必须是字符串")
+            spec[name] = value.strip()
+        try:
+            repos = normalize_repos(arguments.get("repository") or [])
+            spec["filter"] = validate_filter(arguments.get("filter") or "")
+        except ValueError as exc:
+            raise AgentToolError("invalid_arguments", str(exc)) from exc
+        if len(repos) > 1:
+            raise AgentToolError("invalid_arguments", "repository 只能给一个仓库")
+        spec["repository"] = repos[0] if repos else ""
+        if not spec["filter"]:
+            return spec, None
+        recent = self.store.list_webhook_deliveries(
+            source.id, limit=1, event=spec["event"], action=spec["action"],
+            repository=spec["repository"])
+        if recent:
+            sample = (self.store.get_webhook_delivery(int(recent[0]["id"])) or {}).get(
+                "event_data") or {}
+        else:
+            sample = {"source": source.id, "provider": "", "event": spec["event"],
+                      "delivery": "", "payload": {}}
+        outcome = run_event_filter(spec["filter"], sample)
+        if outcome.exit_code in (None, 126, 127):
+            raise AgentToolError(
+                "invalid_arguments", f"过滤脚本无法使用: {outcome.error}")
+        return spec, {
+            "tested_on": (f"delivery #{recent[0]['id']}" if recent
+                          else "an empty sample event (the source has no matching history yet)"),
+            "matched": outcome.matched, "exit_code": outcome.exit_code,
+            "error": outcome.error, "sandbox": filter_sandbox(),
+        }
 
     def _list_callbacks(self, project: Project, identity: AgentIdentity,
                         _arguments: dict, _context: AgentRunContext) -> dict:

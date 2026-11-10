@@ -1,13 +1,18 @@
 """角色登记的一次性回调:登记校验、三类触发条件、回到原频道启动原角色、取消与过期。"""
 from __future__ import annotations
 
+import json
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from missioncrew.api import create_app
 from missioncrew.collab import callbacks as callbacks_mod
+from missioncrew.collab import event_filters
+from missioncrew.collab.webhooks import (delete_webhook_source, record_delivery,
+                                         save_webhook_source, webhook_event)
 from missioncrew.collab.agent_tools import AgentToolError
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.core.models import Channel, Task
@@ -284,3 +289,207 @@ def test_chat_api_lists_and_cancels_channel_callbacks(seeded):
     assert response.json()["callback"]["status"] == "cancelled"
     assert client.post(f"/api/chat/callbacks/{callback['id']}/cancel").status_code == 409
     assert client.get("/api/chat/general/messages?tail=true").json()["callbacks"] == []
+
+
+# ---- 盯 webhook 来源的事件 ----
+
+def _deliver(store, source_id, event, payload, delivery=""):
+    """往来源的投递记录里放一个事件(等同于收到一次外部投递或轮询到一个事件)。"""
+    data = webhook_event(
+        {"content-type": "application/json", "x-github-event": event,
+         "x-github-delivery": delivery or f"d-{time.time_ns()}"},
+        json.dumps(payload).encode(), source=source_id)
+    return record_delivery(store, store.get_webhook_source(source_id), data,
+                           auth="hmac", outcomes=[])
+
+
+def _pr(number, action="merged", repo="acme/webshop"):
+    return {"action": action, "number": number, "repository": {"full_name": repo}}
+
+
+# 只用 bash 内建和 grep,不依赖 jq:事件从标准输入读,退出码 0 = 命中
+NUMBER_12 = 'grep -q \'"number": 12\'\n'
+
+
+def test_event_callback_fires_on_the_first_matching_delivery(chat, seeded):
+    save_webhook_source(seeded, id="gh")
+    _deliver(seeded, "gh", "pull_request", _pr(12))          # 登记之前的事件不算
+    identity, run_id, _config = _start_run(seeded, chat, "dev")
+    result = _call(chat, identity, "callback.create", {
+        "note": "PR #12 合并后删除特性分支", "webhook_source": "gh",
+        "event": "pull_request", "action": "merged", "repository": "Acme/WebShop",
+        "delay_seconds": 3600})
+    callback = result["callback"]
+    assert callback["watch"]["kind"] == "event" and callback["watch"]["target"] == "gh"
+    assert callback["watch"]["repository"] == "Acme/WebShop"
+    assert callback["watch"]["has_filter"] is False and "filter_check" not in result
+    assert "来源 gh 收到 pull_request merged 事件（仓库 Acme/WebShop）" in callback["conditions"]
+    assert "到时没等到也会回调" in callback["conditions"]
+    _finish(seeded, run_id)
+
+    _deliver(seeded, "gh", "issues", {"action": "opened",
+                                      "repository": {"full_name": "acme/webshop"}})
+    _deliver(seeded, "gh", "pull_request", _pr(3, action="opened"))
+    _deliver(seeded, "gh", "pull_request", _pr(4, repo="acme/api"))
+    chat.callbacks.tick()
+    assert _callback_messages(seeded) == []
+    hit = _deliver(seeded, "gh", "pull_request", _pr(12), delivery="merge-12")
+    _deliver(seeded, "gh", "pull_request", _pr(13))          # 只取第一个命中的
+    chat.callbacks.tick()
+    chat.wait_idle()
+
+    [fired] = _callback_messages(seeded)
+    assert f"回调 #{callback['id']} 已触发：来源 gh 收到 pull_request merged" in fired["content"]
+    assert "acme/webshop，投递 merge-12" in fired["content"]
+    assert f"webhook.history 读取（source=gh，id={hit}）" in fired["content"]
+    assert "PR #12 合并后删除特性分支" in fired["content"]
+    info = json.loads(fired["context"])["callback"]
+    assert info["cause"] == "event" and info["delivery_id"] == hit
+    assert (info["event"], info["action"], info["repository"]) == (
+        "pull_request", "merged", "acme/webshop")
+    [run] = seeded.chat_runs_for_trigger(fired["id"])
+    assert run["role_id"] == "dev" and run["status"] == "done"
+    chat.callbacks.tick()
+    assert len(_callback_messages(seeded)) == 1              # 一次性
+
+
+def test_event_callback_filter_script_decides_and_times_out_with_progress(chat, seeded):
+    save_webhook_source(seeded, id="gh")
+    identity, run_id, _config = _start_run(seeded, chat, "dev")
+    matching = _call(chat, identity, "callback.create", {
+        "note": "等 #12", "webhook_source": "gh", "event": "pull_request",
+        "filter": NUMBER_12, "delay_seconds": 600})
+    # 试跑结果随回执返回:来源还没有历史,拿空事件试,没命中、也没出错
+    check = matching["filter_check"]
+    assert check["matched"] is False and check["exit_code"] == 1 and check["error"] == ""
+    assert "empty sample event" in check["tested_on"]
+    assert check["sandbox"] == event_filters.filter_sandbox()
+    broken = _call(chat, identity, "callback.create", {
+        "note": "脚本写坏了", "webhook_source": "gh",
+        "filter": 'echo "boom: bad field" >&2\nexit 3\n', "delay_seconds": 600})
+    _finish(seeded, run_id)
+
+    _deliver(seeded, "gh", "pull_request", _pr(11))
+    chat.callbacks.tick()
+    assert _callback_messages(seeded) == []
+    listed = {int(row["id"]): callbacks_mod.public_callback(row)
+              for row in seeded.list_chat_callbacks(status="pending")}
+    progress = listed[matching["callback"]["id"]]["watch"]["progress"]
+    assert progress == {"checked": 1, "errors": 0, "last_error": ""}
+    failing = listed[broken["callback"]["id"]]["watch"]
+    assert failing["progress"]["errors"] == 1 and failing["has_filter"] is True
+    assert "退出码 3: boom: bad field" in failing["progress"]["last_error"]
+    assert "exit 3" not in json.dumps(listed)                # 脚本原文不回传
+
+    _deliver(seeded, "gh", "pull_request", _pr(12))
+    chat.callbacks.tick()
+    chat.wait_idle()
+    [fired] = _callback_messages(seeded)
+    assert f"回调 #{matching['callback']['id']} 已触发" in fired["content"]
+
+    # 超时:写坏脚本的那个回调同样启动角色,并说明检查过几个事件、脚本错在哪
+    chat.callbacks.tick(now=time.time() + 601)
+    chat.wait_idle()
+    timed_out = _callback_messages(seeded)[-1]
+    assert f"回调 #{broken['callback']['id']} 已触发：等到" in timed_out["content"]
+    assert "超时，来源 gh 收到 任意 事件（且通过过滤脚本）仍未发生" in timed_out["content"]
+    assert "期间检查了 2 个候选事件，过滤脚本出错 2 次" in timed_out["content"]
+    assert "boom: bad field" in timed_out["content"]
+    assert json.loads(timed_out["context"])["callback"]["cause"] == "timeout"
+    [run] = seeded.chat_runs_for_trigger(timed_out["id"])
+    assert run["role_id"] == "dev"                           # 超时也通知角色,不是悄悄过期
+    assert seeded.get_chat_callback(broken["callback"]["id"])["status"] == "fired"
+
+
+def test_filter_script_gets_the_event_but_no_platform_capability(seeded, tmp_path):
+    event = {"source": "gh", "provider": "github", "event": "issues", "delivery": "d-1",
+             "payload": {"action": "opened", "issue": {"number": 7}}}
+    # 事件在标准输入和事件文件里都有,事件名等摘要在环境变量里
+    reads = event_filters.run_event_filter(
+        'test "$MISSIONCREW_WEBHOOK_EVENT" = issues || exit 1\n'
+        'grep -q \'"number": 7\' "$MISSIONCREW_WEBHOOK_EVENT_FILE" && grep -q opened\n', event)
+    assert reads.matched and reads.exit_code == 0 and reads.error == ""
+    # 环境里没有令牌、平台地址、凭据目录、GitHub 身份:脚本调不了任何平台动作
+    bare = event_filters.run_event_filter(
+        'test -z "$MISSIONCREW_AGENT_TOOL_URL$MISSIONCREW_AGENT_TOKEN_FILE'
+        '$MISSIONCREW_CREDENTIALS_DIR$GH_CONFIG_DIR$GH_TOKEN$MISSIONCREW_HOME"\n', event)
+    assert bare.matched
+    assert event_filters.run_event_filter("exit 1\n", event).matched is False
+    slow = event_filters.run_event_filter("#!/usr/bin/env bash\nexit 7\n", event)
+    assert not slow.matched and slow.exit_code == 7 and "退出码 7" in slow.error
+    # 没留下任何临时文件
+    assert list((tmp_path / "mc_home" / "tmp" / "event-filters").glob("*")) == []
+
+
+@pytest.mark.skipif(event_filters.filter_sandbox() != "bwrap", reason="需要可用的 bubblewrap")
+def test_filter_script_is_sandboxed_without_network_or_writable_files(seeded, tmp_path):
+    secret = tmp_path / "mc_home" / "db.sqlite3"
+    assert secret.exists()
+    outside = Path("/var/tmp") / f"mc-filter-probe-{time.time_ns()}"
+    probe = (
+        f'touch {outside} 2>/dev/null && exit 3\n'             # 工作目录之外只读
+        f'test -e {secret} && exit 4\n'                        # 平台数据目录不可见
+        '(exec 3<>/dev/tcp/127.0.0.1/8321) 2>/dev/null && exit 5\n'   # 没有网络
+        'touch "$TMPDIR/scratch" || exit 6\n'                  # 自己的临时目录可写
+        'exit 0\n')
+    result = event_filters.run_event_filter(probe, {"event": "x"})
+    assert result.matched, result
+    assert not outside.exists()
+
+
+def test_filter_script_timeout_is_an_error_not_a_match(seeded, monkeypatch):
+    monkeypatch.setattr(event_filters, "FILTER_TIMEOUT_SECONDS", 1)
+    result = event_filters.run_event_filter("sleep 30\n", {"event": "x"})
+    assert not result.matched and result.exit_code is None and "未结束" in result.error
+
+
+@pytest.mark.parametrize("arguments,fragment", [
+    ({"webhook_source": "gh"}, "必须用 delay_seconds 或 at 给出超时时间"),
+    ({"webhook_source": "missing", "delay_seconds": 60}, "webhook 来源不存在"),
+    ({"webhook_source": "gh", "channel": "general", "delay_seconds": 60}, "只能盯一个"),
+    ({"event": "issues", "filter": "exit 0", "delay_seconds": 60},
+     "event, filter 只在给出 webhook_source 时有效"),
+    ({"webhook_source": "gh", "repository": "not a repo", "delay_seconds": 60}, "owner/repo"),
+    ({"webhook_source": "gh", "filter": "x" * 9000, "delay_seconds": 60}, "最多 8000"),
+    ({"webhook_source": "gh", "filter": "#!/nonexistent/interpreter\n", "delay_seconds": 60},
+     "过滤脚本无法使用"),
+])
+def test_event_callback_create_validates_arguments(chat, seeded, arguments, fragment):
+    save_webhook_source(seeded, id="gh")
+    identity, _run_id, _config = _start_run(seeded, chat, "dev")
+    with pytest.raises(AgentToolError) as error:
+        _call(chat, identity, "callback.create", {"note": "x", **arguments})
+    assert fragment in error.value.message
+    assert seeded.list_chat_callbacks(status="pending") == []
+
+
+def test_executor_checks_history_and_filter_is_tried_on_a_real_delivery(chat, seeded):
+    save_webhook_source(seeded, id="gh")
+    _deliver(seeded, "gh", "pull_request", _pr(12), delivery="old-12")
+    identity, _run_id, config = _start_run(seeded, chat, "dev")
+    # 执行角色也能查投递记录:写过滤条件前先看来源实际送来过什么
+    history = _call(chat, identity, "webhook.history", {"source": "gh"})
+    assert history["deliveries"][0]["delivery"] == "old-12"
+    result = _call(chat, identity, "callback.create", {
+        "note": "等下一次 #12", "webhook_source": "gh", "event": "pull_request",
+        "filter": NUMBER_12, "delay_seconds": 600})
+    check = result["filter_check"]
+    assert check["matched"] is True and check["tested_on"].startswith("delivery #")
+    # 试跑用的是历史事件,它发生在登记之前,不会触发回调
+    chat.callbacks.tick()
+    assert _callback_messages(seeded) == []
+    manual = open(config.env["MISSIONCREW_MANUAL"], encoding="utf-8").read()
+    assert "`webhook_source`" in manual and "exit 0" in manual
+
+
+def test_event_callback_fires_when_its_source_is_deleted(chat, seeded):
+    save_webhook_source(seeded, id="gh")
+    identity, run_id, _config = _start_run(seeded, chat, "dev")
+    _call(chat, identity, "callback.create",
+          {"note": "等事件", "webhook_source": "gh", "delay_seconds": 600})
+    _finish(seeded, run_id)
+    delete_webhook_source(seeded, "gh")
+    chat.callbacks.tick()
+    chat.wait_idle()
+    [fired] = _callback_messages(seeded)
+    assert "所盯的 webhook 来源 gh 已删除" in fired["content"]

@@ -485,12 +485,33 @@ An orchestrator's turn:
 - When work has to continue later, register a one-shot callback with `callback.create` and end
   the turn, instead of `sleep`, polling or a runtime's own scheduler: the platform starts you
   again in the current channel at a time (`delay_seconds` or `at`), when a channel gets a new
-  message from a human, another role or an automation script (`channel`), or when a Task
-  changes (`task`). Typical uses: retry after a quota resets, follow up when a human replies,
-  continue when another channel's work lands, review when a Task's status changes.
-- Watch at most one channel or Task; adding a time makes it a deadline, so whichever happens
-  first fires it. A watch without a time expires after 7 days. Your own messages and your own
-  Task changes through this tool never fire your callbacks.
+  message from a human, another role or an automation script (`channel`), when a Task
+  changes (`task`), or when a webhook source receives a matching event (`webhook_source`).
+  Typical uses: retry after a quota resets, follow up when a human replies, continue when
+  another channel's work lands, review when a Task's status changes, continue when your pull
+  request is merged or its CI finishes.
+- Watch at most one channel, Task or webhook source; adding a time makes it a deadline, so
+  whichever happens first fires it. A channel or Task watch without a time expires after 7
+  days. Your own messages and your own Task changes through this tool never fire your
+  callbacks.
+- Waiting for an external event: pass `webhook_source` (the id of a global webhook source;
+  it can be an external webhook or a GitHub polling source) and narrow it with `event`,
+  `action` and `repository`. On a GitHub polling source the platform starts polling the
+  `repository` you name, so you can wait on a repository nobody subscribed to yet. The first
+  event received after you register that matches fires the callback; the callback message
+  names the event and the delivery record, and `webhook.history` with that `id` returns the
+  full event. An event watch must have a timeout (`delay_seconds` or `at`): if nothing
+  matched by then you are started anyway and told how many events were checked, so decide
+  there whether to keep waiting, check GitHub yourself with `gh`, or report.
+- When event, action and repository are not precise enough, add `filter`: a script that
+  receives one event as JSON on stdin (also in `MISSIONCREW_WEBHOOK_EVENT_FILE`) and answers
+  with its exit code, `exit 0` for a match and 1 to ignore, for example
+  `jq -e '.payload.number == 12'`. Any other exit code or running longer than 10 seconds
+  counts as an error and the event is ignored. The script can only decide: it runs without an
+  Agent Tool token, credentials or network, so do the actual work in the callback run, not in
+  the filter. Look at real events first with `webhook.history`; `callback.create` tries the
+  filter once and returns the outcome as `filter_check`, and `callback.list` shows how many
+  events were checked and the last filter error.
 - `note` is repeated in the callback message, so make it self-contained: the task, branch or
   document, and the next step. The callback run is a normal run with its own Agent Tool token;
   its reply follows the hand-back rules of the turn that registered it.

@@ -76,6 +76,9 @@ CREATE TABLE IF NOT EXISTS chat_callbacks (
   expires_at REAL NOT NULL DEFAULT 0,
   watch_kind TEXT NOT NULL DEFAULT '', watch_target TEXT NOT NULL DEFAULT '',
   baseline TEXT NOT NULL DEFAULT '',
+  -- 盯 webhook 来源事件(watch_kind=event)的回调:spec 是匹配条件 JSON(事件名、动作、
+  -- 仓库、过滤脚本),progress 是检查进度 JSON(看过几条、脚本出错几次及最近的原因)
+  spec TEXT NOT NULL DEFAULT '', progress TEXT NOT NULL DEFAULT '',
   origin_run_id INTEGER NOT NULL DEFAULT 0, origin_trigger INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'pending', reason TEXT NOT NULL DEFAULT '',
   message_id INTEGER NOT NULL DEFAULT 0,
@@ -184,6 +187,7 @@ class Store:
         self._migrate_runtime_usage()
         self._migrate_chat_sessions()
         self._migrate_agent_tokens()
+        self._migrate_chat_callbacks()
         self._migrate_source_cards_to_tasks()
         self._migrate_tasks_to_issues()
         self._migrate_board_status_filters()
@@ -541,6 +545,15 @@ class Store:
         if "resource_state" not in columns:   # 会话已看到的准则/Skill 正文版本表
             self._conn.execute(
                 "ALTER TABLE chat_sessions ADD COLUMN resource_state TEXT DEFAULT ''")
+
+    def _migrate_chat_callbacks(self) -> None:
+        """事件回调上线前建的库没有 spec / progress 两列。"""
+        columns = {row["name"] for row in self._conn.execute(
+            "PRAGMA table_info(chat_callbacks)").fetchall()}
+        for column in ("spec", "progress"):
+            if column not in columns:
+                self._conn.execute(
+                    f"ALTER TABLE chat_callbacks ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
 
     def _execute(self, sql: str, params: tuple = ()) -> int:
         """写操作,返回 lastrowid。"""
@@ -1236,13 +1249,17 @@ class Store:
 
     def list_webhook_deliveries(self, source_id: str, limit: int = 50, before_id: int = 0,
                                 event: str = "", action: str = "",
-                                repository: str = "") -> list[dict]:
+                                repository: str = "", after_id: int = -1) -> list[dict]:
         """按 id 倒序列出投递摘要(不含事件正文);event/action 精确匹配,repository
-        不区分大小写,before_id>0 时只取更早的,用于向前翻页。"""
+        不区分大小写,before_id>0 时只取更早的,用于向前翻页。给了 after_id(>=0)
+        则改为只取更新的并按 id 正序,供事件回调从游标往后逐条检查。"""
         conditions, params = ["source_id=?"], [source_id]
         if before_id > 0:
             conditions.append("id<?")
             params.append(before_id)
+        if after_id >= 0:
+            conditions.append("id>?")
+            params.append(after_id)
         for column, value in (("event", event), ("action", action)):
             if value:
                 conditions.append(f"{column}=?")
@@ -1253,8 +1270,14 @@ class Store:
         params.append(max(1, min(int(limit), 200)))
         rows = self._query(
             f"SELECT {self._DELIVERY_COLUMNS} FROM webhook_deliveries "
-            f"WHERE {' AND '.join(conditions)} ORDER BY id DESC LIMIT ?", tuple(params))
+            f"WHERE {' AND '.join(conditions)} "
+            f"ORDER BY id {'ASC' if after_id >= 0 else 'DESC'} LIMIT ?", tuple(params))
         return [self._delivery_row(row) for row in rows]
+
+    def last_webhook_delivery_id(self, source_id: str) -> int:
+        rows = self._query(
+            "SELECT MAX(id) AS last FROM webhook_deliveries WHERE source_id=?", (source_id,))
+        return int(rows[0]["last"] or 0)
 
     def get_webhook_delivery(self, delivery_id: int) -> Optional[dict]:
         """单条记录,`event_data` 是事件全文(正文过大没存时其中 payload 为 null)。"""
@@ -1643,15 +1666,16 @@ class Store:
     def add_chat_callback(self, *, project_id: str, channel: str, role_id: str,
                           note: str, fire_at: float = 0.0, expires_at: float = 0.0,
                           watch_kind: str = "", watch_target: str = "",
-                          baseline: str = "", origin_run_id: int = 0,
+                          baseline: str = "", spec: str = "", origin_run_id: int = 0,
                           origin_trigger: int = 0) -> int:
         note = self.redact_credentials(note)
         return self._execute(
             "INSERT INTO chat_callbacks(project_id,channel,role_id,note,fire_at,"
-            "expires_at,watch_kind,watch_target,baseline,origin_run_id,"
-            "origin_trigger,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,'pending',?)",
+            "expires_at,watch_kind,watch_target,baseline,spec,origin_run_id,"
+            "origin_trigger,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)",
             (project_id, channel, role_id, note, fire_at, expires_at, watch_kind,
-             watch_target, baseline, origin_run_id, origin_trigger, time.time()))
+             watch_target, baseline, self.redact_credentials(spec), origin_run_id,
+             origin_trigger, time.time()))
 
     def get_chat_callback(self, callback_id: int) -> Optional[dict]:
         rows = self._query("SELECT * FROM chat_callbacks WHERE id=?", (callback_id,))
@@ -1712,6 +1736,12 @@ class Store:
         self._execute(
             "UPDATE chat_callbacks SET baseline=? WHERE id=? AND status='pending'",
             (baseline, callback_id))
+
+    def advance_chat_callback(self, callback_id: int, baseline: str, progress: str) -> None:
+        """事件回调看完一批投递后推进游标并记下检查进度。"""
+        self._execute(
+            "UPDATE chat_callbacks SET baseline=?, progress=? WHERE id=? AND status='pending'",
+            (baseline, self.redact_credentials(progress), callback_id))
 
     def last_message_id(self, channel: str) -> int:
         rows = self._query("SELECT MAX(id) AS last FROM messages WHERE channel=?", (channel,))

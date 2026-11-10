@@ -572,3 +572,37 @@ def test_settings_page_offers_polling_sources(seeded):
     assert "function editGithubSource" in js and "/poll`" in js
     assert "ws-gh-repos" not in js                       # 来源表单不再填仓库
     assert 'id="af-github-repos"' in automations and "githubPollStateHtml(source)" in automations
+
+
+def test_role_callback_makes_the_poller_watch_a_repository_nobody_subscribed(watch):
+    """角色的一次性事件回调指定了仓库:轮询器把它纳入查询,事件进投递记录后触发回调。"""
+    chat = ChatEngine(watch.store, max_workers=2)
+    try:
+        watch.poller.poll("watch", now=1000.0)
+        watch.github.events["acme/api"] = []
+        row = chat.callbacks.create(
+            project_id="webshop", channel_id="general", role_id="dev",
+            note="acme/api 的 PR 合并后更新依赖", fire_at=time.time() + 3600,
+            watch_kind="event", watch_target="watch",
+            spec={"event": "pull_request", "action": "merged", "repository": "Acme/API"})
+        # 没有脚本订阅 acme/api,但回调在等它:下一个 tick 就为它单独建立基线
+        watch.github.calls.clear()
+        assert watch.poller.poll_due(now=1010.0) == ["watch"]
+        assert [call.path for call in watch.github.calls] == ["/repos/acme/api/events"]
+
+        watch.github.add_event("acme/api", "PullRequestEvent", {"action": "merged", "number": 5})
+        status = watch.poller.poll("watch", now=1060.0)
+        assert status["delivered_total"] == 0             # 没有脚本要,只进投递记录
+        [recorded] = watch.store.list_webhook_deliveries("watch", repository="acme/api")
+        assert recorded["action"] == "merged" and recorded["outcomes"] == []
+
+        chat.callbacks.tick()
+        chat.wait_idle()
+        [fired] = [m for m in watch.store.list_messages("general") if m["kind"] == "callback"]
+        assert "来源 watch 收到 pull_request merged（acme/api" in fired["content"]
+        assert watch.store.get_chat_callback(int(row["id"]))["status"] == "fired"
+        # 回调结束后没人再要这个仓库,轮询器不再查它
+        watch.poller.poll("watch", now=1120.0)
+        assert "repo:acme/api" not in watch.store.get_webhook_source_state("watch")["streams"]
+    finally:
+        chat.shutdown()
