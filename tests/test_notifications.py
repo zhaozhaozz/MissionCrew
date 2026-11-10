@@ -24,15 +24,20 @@ const document = {
   get visibilityState() { return page.visible ? "visible" : "hidden"; },
   hasFocus: () => page.focused,
 };
-const window = { isSecureContext: true };
+const opened = [], routed = [];
+const window = { isSecureContext: true, focus() {},
+                 open: url => { opened.push(url); return {}; } };
+const location = { pathname: "/" };
+const history = { pushState: (state, title, url) => { location.pathname = url; } };
+const applyRoute = async () => { routed.push(location.pathname); };
 class Notification {
   constructor(title, options) { sent.system.push({ title, ...options }); }
   close() {}
 }
 Notification.permission = "granted";
-const toast = (msg, type) => sent.toasts.push({ msg, type });
+const toast = (msg, type, ms, onClick) => sent.toasts.push({ msg, type, onClick });
 const updateDocumentTitle = () => {};
-let currentTab = "chat", currentChan = null;
+let currentTab = "chat", currentChan = null, currentProject = "a";
 const overview = { projects: [{ id: "a" }, { id: "b" }] };
 """
 
@@ -97,14 +102,14 @@ return {{
   burst: noticesFor([1, 2, 3, 4].map(root => ({{ ...{json.dumps(failed)}, root_id: root }}))),
 }};
 """)
-    assert result["done"]["title"] == "任务完成 · #dev"
-    assert result["done"]["body"] == "A · @dev：已修复"
+    assert result["done"]["title"] == "任务完成 · A · #dev"
+    assert result["done"]["body"] == "@dev：已修复"
     assert result["done"]["url"] == "/resources/a/channels/dev"
-    assert result["failed"]["title"] == "任务失败 · #dev"
-    assert result["failed"]["body"] == "A · 执行出错：exit 1"
+    assert result["failed"]["title"] == "任务失败 · A · #dev"
+    assert result["failed"]["body"] == "执行出错：exit 1"
     [summary] = result["burst"]
     assert summary["title"] == "4 个任务已结束（4 个失败）"
-    assert summary["body"] == "#dev"
+    assert summary["body"] == "A #dev"
 
 
 def test_delivery_skips_muted_stopped_and_watched_channel_then_uses_system_when_hidden():
@@ -121,8 +126,8 @@ deliverCompletions([{json.dumps(chain(root=5))}]);
 deliverCompletions([{json.dumps(chain(root=5))}]);
 return {{ foreground, system: sent.system.map(n => n.title), unread: notifyUnread }};
 """)
-    assert result["foreground"] == ["任务完成 · #dev\nA · @dev：已修复"]
-    assert result["system"] == ["任务完成 · #dev"]
+    assert result["foreground"] == ["任务完成 · A · #dev\n@dev：已修复"]
+    assert result["system"] == ["任务完成 · A · #dev"]
     assert result["unread"] == 1
 
 
@@ -138,5 +143,26 @@ onNotifyPageFocus();
 return {{ whileHidden, toasts: sent.toasts.map(t => t.msg), unread: notifyUnread }};
 """)
     assert result["whileHidden"] == {"toasts": 0, "unread": 1, "title": "(1) "}
-    assert result["toasts"] == ["任务完成 · #dev\nA · @dev：已修复"]
+    assert result["toasts"] == ["任务完成 · A · #dev\n@dev：已修复"]
     assert result["unread"] == 0
+
+
+def test_click_opens_other_project_in_new_tab_and_jumps_in_place_otherwise():
+    items = [chain(), chain(project="b", channel="b:ops", root=2)]
+    result = evaluate(f"""
+notifyPrefs = normalizeNotifyPrefs({{ enabled: true }});
+deliverCompletions({json.dumps(items)});
+sent.toasts.forEach(t => t.onClick());
+const normal = {{ opened: [...opened], routed: [...routed] }};
+// 新标签页被拦截:退回原地跳转,不能点了没反应
+window.open = () => null;
+const blocked = openNoticeTarget('/resources/b/channels/ops', 'b');
+// 还没选项目:无所谓"切走",原地跳转
+currentProject = null;
+const noProject = openNoticeTarget('/resources/b/channels/x', 'b');
+return {{ normal, blocked, noProject, routed }};
+""")
+    assert result["normal"] == {"opened": ["/resources/b/channels/ops"],
+                                "routed": ["/resources/a/channels/dev"]}
+    assert (result["blocked"], result["noProject"]) == (False, False)
+    assert result["routed"][1:] == ["/resources/b/channels/ops", "/resources/b/channels/x"]

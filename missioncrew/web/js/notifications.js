@@ -40,23 +40,27 @@ function completionNotice(item) {
   const detail = failed && item.error ? `执行出错：${item.error}`
     : item.reply ? `@${item.reply.author}：${item.reply.content}`
     : `@${(item.roles || []).join("、@")} 已结束`;
+  // 项目名放标题:页内提示与系统通知都一眼能看出是哪个项目的任务
   return {
-    title: `${failed ? "任务失败" : "任务完成"} · #${item.channel_name || item.channel}`,
-    body: `${item.project_name || item.project_id} · ${detail}`,
+    title: `${failed ? "任务失败" : "任务完成"} · ${item.project_name || item.project_id} · #${item.channel_name || item.channel}`,
+    body: detail,
     tag: `mc-chain-${item.channel}-${item.root_id}`,
     url: item.resource_url || "",
+    projectId: item.project_id || "",
     failed,
   };
 }
 
 function summaryNotice(items) {
   const failed = items.filter(item => item.status === "failed").length;
-  const names = [...new Set(items.map(item => `#${item.channel_name || item.channel}`))];
+  const names = [...new Set(items.map(item =>
+    `${item.project_name || item.project_id} #${item.channel_name || item.channel}`))];
   return {
     title: `${items.length} 个任务已结束${failed ? `（${failed} 个失败）` : ""}`,
     body: names.join("、"),
     tag: "mc-chain-summary",
     url: "",
+    projectId: "",
     failed: failed > 0,
   };
 }
@@ -153,16 +157,16 @@ function deliverCompletions(items) {
 function toastNotices(notices) {
   for (const notice of notices)
     toast(`${notice.title}\n${notice.body}`, notice.failed ? "error" : "success", 8000,
-      notice.url ? () => openNoticeTarget(notice.url) : null);
+      notice.url ? () => openNoticeTarget(notice.url, notice.projectId) : null);
 }
 
 function showSystemNotice(notice) {
   try {
     const n = new Notification(notice.title, { body: notice.body, tag: notice.tag, lang: "zh-CN" });
     n.onclick = () => {
-      window.focus();
       n.close();
-      if (notice.url) openNoticeTarget(notice.url);
+      // 新标签页自己会到前台;只有留在本页(原地跳转或无目标)才需要把本页拉回来
+      if (!notice.url || !openNoticeTarget(notice.url, notice.projectId)) window.focus();
     };
   } catch (_) {
     // 移动端 Chrome 只允许经 Service Worker 发通知,构造函数直接抛错:退回页内提示
@@ -170,9 +174,14 @@ function showSystemNotice(notice) {
   }
 }
 
-function openNoticeTarget(url) {
+// 通知来自别的项目时开新标签页,不把当前项目正在看的页面切走;返回是否开了新标签页。
+// 没有当前项目(还没选项目)或新标签页被浏览器拦截时退回原地跳转
+function openNoticeTarget(url, projectId = "") {
+  if (projectId && currentProject && projectId !== currentProject && window.open(url, "_blank"))
+    return true;
   if (location.pathname !== url) history.pushState(null, "", url);
   void applyRoute();
+  return false;
 }
 
 function onNotifyPageFocus() {
@@ -220,7 +229,7 @@ function toggleProjectNotify() {
 
 function sendTestNotice() {
   const notice = { title: "MissionCrew 测试通知", body: "任务结束时会这样提醒你。",
-                   tag: "mc-test", url: "", failed: false };
+                   tag: "mc-test", url: "", projectId: "", failed: false };
   if (notifySupport() === "granted") showSystemNotice(notice);
   else toastNotices([notice]);
 }
