@@ -37,7 +37,7 @@ from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
                           DispatchInactiveError, default_agent_tool_url)
 from .callbacks import CallbackService
 from .credentials import effective_credentials
-from .github import GITHUB_TOKEN_NAME, github_env
+from .github import github_env
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls)
 from .resource_urls import (channel_resource_url, dashboard_resource_url,
@@ -46,7 +46,8 @@ from .resource_urls import (channel_resource_url, dashboard_resource_url,
 from .workspace import (channel_page_context_dir, channel_uploads_dir,
                         chat_workspace_dir, platform_history_dir,
                         prepare_agent_workspace, write_task_files)
-from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, INJECTION_FULL_MODES,
+from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, GITHUB_ENVIRONMENT,
+                           GITHUB_TOKEN_VARIABLE, INJECTION_FULL_MODES,
                            Backend, Channel, ExecutionConfig, Role,
                            RuntimePolicy)
 from .project_context import (project_allowed_dirs, project_resource_versions,
@@ -1095,28 +1096,28 @@ class ChatEngine:
         self._write_channel_history(channel)
 
     def _credentials_line(self, project_id: str) -> str:
-        """公共上下文里的凭据提示:只列名字,值在工作区 credentials/ 的文件里。
-        环境(一组变量)写成带斜杠的目录名,只要有一个变量有值就列出。"""
-        available = [item for item in effective_credentials(self.store, project_id)
-                     if (any(variable.has_value for variable in item.variables)
-                         if item.is_environment else item.has_value)]
-        names = [item.name for item in available if not item.is_environment]
-        saved = ", ".join(f"`{item.name}/`" if item.is_environment else f"`{item.name}`"
-                          for item in available) if available else "none yet"
+        """公共上下文里的凭据提示:只列环境和变量的名字,值在工作区 credentials/ 的
+        文件里。只要有一个变量有值的环境就列出,没值的变量不列。"""
+        environments = {
+            item.name: [variable.name for variable in item.variables if variable.has_value]
+            for item in effective_credentials(self.store, project_id)}
+        saved = "; ".join(f"`{name}` ({', '.join(variables)})"
+                          for name, variables in environments.items() if variables) or "none yet"
         github = (
-            f" `{GITHUB_TOKEN_NAME}` is also the project's GitHub identity: when "
-            "`$GH_CONFIG_DIR` is set, `gh` and git over HTTPS to github.com are already "
-            "signed in with it, so run them directly without passing the token."
-            if GITHUB_TOKEN_NAME in names else "")
+            f" `{GITHUB_ENVIRONMENT}/{GITHUB_TOKEN_VARIABLE}` is also the project's GitHub "
+            "identity: when `$GH_CONFIG_DIR` is set, `gh` and git over HTTPS to github.com "
+            "are already signed in with it, so run them directly without passing the token."
+            if GITHUB_TOKEN_VARIABLE in environments.get(GITHUB_ENVIRONMENT, []) else "")
         return (
-            f"Credentials humans saved for this project: {saved} (files in "
-            "`$MISSIONCREW_CREDENTIALS_DIR`, purposes in `index.json` there; a name ending "
-            "in `/` is an environment, a directory with one file per variable). Use one only "
-            "inline in the command that needs it, such as "
-            "`TOKEN=\"$(cat \"$MISSIONCREW_CREDENTIALS_DIR/<NAME>\")\" <command>`; never "
-            "print it or write it into files, messages or documents, and never ask for a "
-            "secret in chat: call `credential.request` when one is missing (manual.md "
-            "section 12)." + github
+            "Credentials humans saved for this project, as environments (a group of "
+            f"variables, one file each): {saved}. They are files "
+            "`$MISSIONCREW_CREDENTIALS_DIR/<ENVIRONMENT>/<VARIABLE>`; `index.json` there "
+            "gives purposes and which variables are secret. Use a secret only inline in the "
+            "command that needs it, such as "
+            "`TOKEN=\"$(cat \"$MISSIONCREW_CREDENTIALS_DIR/<ENVIRONMENT>/<VARIABLE>\")\" "
+            "<command>`; never print it or write it into files, messages or documents, and "
+            "never ask for a secret in chat: call `credential.request` when one is missing "
+            "(manual.md section 12)." + github
         )
 
     def _run_event_emitter(self, run_id: int, project, document_roots: list):
@@ -1597,7 +1598,7 @@ class ChatEngine:
                 env["MISSIONCREW_MANUAL"] = str(workspace.manual)
                 env["MISSIONCREW_PLATFORM_DOCS_DIR"] = str(workspace.platform_docs)
                 env["MISSIONCREW_CREDENTIALS_DIR"] = str(workspace.credentials)
-                # 项目有 GITHUB_TOKEN 凭据时,gh 与 git 直接以这个身份工作
+                # 项目有 GitHub 身份(GITHUB 环境的 TOKEN)时,gh 与 git 直接以它工作
                 env.update(github_env(project.id, workspace.credentials))
                 manual_path = str(workspace.manual)
                 project_line = project.name + (

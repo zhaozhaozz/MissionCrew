@@ -1,7 +1,7 @@
-"""GitHub 身份:项目的 `GITHUB_TOKEN` 凭据即它在 GitHub 上的身份。
+"""GitHub 身份:项目的 `GITHUB` 环境里的 secret 变量 `TOKEN` 即它在 GitHub 上的身份。
 
-名为 `GITHUB_TOKEN` 的凭据(项目凭据覆盖全局)保存的是个人访问令牌(PAT,classic 或
-fine-grained 均可)。有了它,平台做三件事:
+环境 `GITHUB`(项目里的整份覆盖全局的)的变量 `TOKEN` 保存的是个人访问令牌(PAT,
+classic 或 fine-grained 均可)。有了它,平台做三件事:
 
 1. 登录状态:在项目的 `runtime-context/github-cli/` 写一份 gh 配置(`hosts.yml`),
    派发 Agent 与运行自动化脚本时用 `GH_CONFIG_DIR` 指过去,并经 `GIT_CONFIG_*` 给
@@ -11,7 +11,7 @@ fine-grained 均可)。有了它,平台做三件事:
 2. 身份核对:用 token 调 `GET /user`,给设置页显示账号、token 类型、权限与到期时间。
 3. 事件轮询:github_events.py 用同一个 token 查询通知与仓库事件。
 
-没有 `GITHUB_TOKEN` 凭据时什么都不注入,`gh` 与 git 沿用启动服务的用户自己的登录状态。
+没有这个变量时什么都不注入,`gh` 与 git 沿用启动服务的用户自己的登录状态。
 """
 from __future__ import annotations
 
@@ -30,9 +30,9 @@ from typing import Callable, Mapping, Optional
 from urllib.parse import urlencode
 
 from ..core.config import projects_dir
+from ..core.models import GITHUB_ENVIRONMENT, GITHUB_TOKEN_VARIABLE
 from ..core.store import Store
 
-GITHUB_TOKEN_NAME = "GITHUB_TOKEN"
 API_ROOT = "https://api.github.com"
 API_VERSION = "2022-11-28"
 HOSTS_FILE = "hosts.yml"
@@ -192,13 +192,16 @@ def cached_identity(token: str, *, refresh: bool = False,
 
 def github_token(store: Store, project_id: str) -> tuple[str, str]:
     """项目生效的 GitHub token 及其来源:("", "") 表示没配;来源是 "project" 或
-    "global"。project_id 为空时只看全局凭据。"""
-    if project_id:
-        value = store.credential_value(project_id, GITHUB_TOKEN_NAME)
-        if value:
-            return value, "project"
-    value = store.credential_value("", GITHUB_TOKEN_NAME)
-    return (value, "global") if value else ("", "")
+    "global"。project_id 为空时只看全局环境。
+
+    与凭据目录同一口径:项目自己有 `GITHUB` 环境时整份覆盖全局那个,哪怕它里面
+    没有 TOKEN——否则 gh 用的身份会和 Agent 在 `credentials/GITHUB/` 看到的对不上。"""
+    scope = "project" if project_id and store.get_credential(
+        project_id, GITHUB_ENVIRONMENT) is not None else "global"
+    value = store.credential_secrets(
+        project_id if scope == "project" else "", GITHUB_ENVIRONMENT
+    ).get(GITHUB_TOKEN_VARIABLE, "")
+    return (value, scope) if value else ("", "")
 
 
 def github_status(store: Store, project_id: str, *, refresh: bool = False,
@@ -253,7 +256,8 @@ def github_env(project_id: str, credentials_dir: Path,
     if not (directory / HOSTS_FILE).is_file():
         return {}
     base = os.environ if base is None else base
-    token_file = shlex.quote(str(Path(credentials_dir) / GITHUB_TOKEN_NAME))
+    token_file = shlex.quote(
+        str(Path(credentials_dir) / GITHUB_ENVIRONMENT / GITHUB_TOKEN_VARIABLE))
     # PAT 走 HTTPS 时用户名任意,x-access-token 是 GitHub 文档里的惯用写法
     helper = ("!f() { test \"$1\" = get && printf 'username=x-access-token\\npassword=%s\\n' "
               f"\"$(cat {token_file})\"; }}; f")

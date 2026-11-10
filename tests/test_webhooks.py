@@ -576,11 +576,12 @@ def test_every_verified_delivery_is_recorded_with_its_outcome(hook):
 
 def test_delivery_history_filters_pages_and_bounds_what_it_keeps(hook, monkeypatch):
     from missioncrew.collab import webhooks as webhooks_mod
-    from missioncrew.collab.credentials import save_credential
+    from missioncrew.collab.credentials import save_environment
 
     save_automation(hook.store, "webshop", id="on-issue", webhook_source="")   # 只看记录
     token = "ghp_" + "a1B2c3D4e5" * 4
-    save_credential(hook.store, project_id="", name="GITHUB_TOKEN", value=token)
+    save_environment(hook.store, project_id="", name="GITHUB",
+                     variables=[{"name": "TOKEN", "value": token}])
     _issue(hook, "a-1")
     _issue(hook, "a-2", action="closed")
     _issue(hook, "a-3", repo="Acme/API", event="pull_request", action="merged")
@@ -596,7 +597,7 @@ def test_delivery_history_filters_pages_and_bounds_what_it_keeps(hook, monkeypat
     assert [row["delivery"] for row in listed("gh", before_id=newest[-1]["id"])] == ["a-2", "a-1"]
     # 正文里出现已保存的凭据时,落库前同样脱敏
     comment = hook.store.get_webhook_delivery(newest[0]["id"])["event_data"]
-    assert comment["payload"]["comment"]["body"] == "token is [credential:GITHUB_TOKEN]"
+    assert comment["payload"]["comment"]["body"] == "token is [credential:GITHUB.TOKEN]"
 
     # 过大的事件只留摘要与请求头
     monkeypatch.setattr(webhooks_mod, "DELIVERY_MAX_BYTES", 600)

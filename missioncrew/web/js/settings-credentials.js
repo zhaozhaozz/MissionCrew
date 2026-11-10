@@ -1,19 +1,18 @@
-/* ---------------- 凭据:全局共享 + 项目独有(项目同名覆盖全局) ----------------
-   值只写不读:页面只提交新值,接口从不返回值,列表只显示末 4 位指纹,要改就整份替换。
-   Agent 从工作区 credentials/ 的文件读取;Agent 缺凭据时经 credential.request 登记成
-   "待填写"条目,人在这里填。聊天发送前检测疑似密钥,引导存成凭据而不是发进聊天。
-   环境(kind = environment)是同一张表里的另一种条目:一组变量,每个变量各自标记是否
-   secret。secret 变量与单值凭据同样只写不读;普通变量的值随列表返回、直接显示。 */
+/* ---------------- 凭据:以环境为单位,全局共享 + 项目独有(项目同名整份覆盖全局) ----------------
+   一个环境是一组配套使用的变量(地址 + 用户名 + 密码,或只有一个 token),每个变量各自
+   标记是否 secret。secret 变量只写不读:页面只提交新值,接口从不返回值,列表只显示末 4 位
+   指纹;普通变量的值不保密,随列表返回、直接显示可改。Agent 从工作区
+   credentials/<环境>/<变量> 文件读取;Agent 缺变量时经 credential.request 登记成"待填写",
+   人在这里填。聊天发送前检测疑似密钥,引导存进环境而不是发进聊天。 */
 
 let globalCredentials = [];
 let projectCredentials = { credentials: [], inherited: [] };
 
 const credentialApiBase = scope => scope === "global" ? "/api/credentials"
   : `/api/projects/${encodeURIComponent(currentProject)}/credentials`;
+const CREDENTIAL_NAME_PATTERN = /^[A-Z][A-Z0-9_]{0,63}$/;
 
-const isEnvironment = item => item?.kind === "environment";
-
-// 环境的状态列:逐个变量列出;普通变量直接显示值,secret 只显示末 4 位,没值的标待填写
+// 变量列:逐个变量列出;普通变量直接显示值,secret 只显示末 4 位,没值的标待填写
 function environmentStateHtml(item) {
   const variables = (item.variables || []).map(variable => {
     const detail = !variable.has_value ? `<span class="pill st-in_progress">待填写</span>`
@@ -28,35 +27,24 @@ function environmentStateHtml(item) {
   return `${pending}<span class="env-var-chips">${variables}</span>`;
 }
 
-function credentialStateHtml(item) {
-  if (isEnvironment(item)) return environmentStateHtml(item);
-  if (!item.has_value)
-    return `<span class="pill st-in_progress" title="${esc(item.requested_by
-      ? `${item.requested_by} 请求,填写后 Agent 即可读取` : "填写后 Agent 即可读取")}">待填写</span>`;
-  return `<span class="pill st-done">已保存</span> <span class="muted">${esc(item.fingerprint)}</span>`;
-}
-
 function credentialRowsHtml(items, scope, { inherited = false } = {}) {
   return items.map(item => {
     const note = inherited && item.overridden
-      ? `<span class="pill" title="本项目有同名凭据,Agent 读到的是项目那份">已被项目覆盖</span>` : "";
+      ? `<span class="pill" title="本项目有同名环境,Agent 读到的是项目那个">已被项目覆盖</span>` : "";
     const actions = inherited
       ? (item.overridden ? "" : `<button class="ghost" data-name="${esc(item.name)}"
-          onclick="editCredential('project', null, this.dataset.name)">在本项目覆盖</button>`)
+          onclick="overrideEnvironment(this.dataset.name)">在本项目覆盖</button>`)
       : `<button class="ghost" data-name="${esc(item.name)}"
-          onclick="editCredential('${scope}', this.dataset.name)">${
-          !item.has_value ? "填写" : isEnvironment(item) ? "编辑" : "替换"}</button>
+          onclick="editEnvironment('${scope}', this.dataset.name)">${item.has_value ? "编辑" : "填写"}</button>
          <button class="danger" data-name="${esc(item.name)}"
           onclick="deleteCredential('${scope}', this.dataset.name)">删除</button>`;
-    const kind = isEnvironment(item)
-      ? ` <span class="pill" title="一组配套使用的变量,Agent 从 credentials/${esc(item.name)}/ 目录按变量名读取">环境</span>` : "";
-    return `<tr><td><code>${esc(item.name)}</code>${kind} ${note}</td>
+    return `<tr><td><code>${esc(item.name)}</code> ${note}</td>
       <td class="muted">${esc(item.description || "—")}</td>
-      <td>${credentialStateHtml(item)}</td><td>${actions}</td></tr>`;
+      <td>${environmentStateHtml(item)}</td><td>${actions}</td></tr>`;
   }).join("");
 }
 
-const CREDENTIAL_TABLE_HEAD = "<tr><th>名称</th><th>用途</th><th>值</th><th></th></tr>";
+const CREDENTIAL_TABLE_HEAD = "<tr><th>环境</th><th>用途</th><th>变量</th><th></th></tr>";
 
 async function renderGlobalCredentials() {
   const table = document.getElementById("global-credential-table");
@@ -68,7 +56,7 @@ async function renderGlobalCredentials() {
     return;
   }
   table.innerHTML = CREDENTIAL_TABLE_HEAD + (credentialRowsHtml(globalCredentials, "global")
-    || `<tr><td colspan="4" class="empty">还没有全局凭据</td></tr>`);
+    || `<tr><td colspan="4" class="empty">还没有全局环境</td></tr>`);
   renderGithubIdentity("global");   // 核对要访问 GitHub,不阻塞列表
 }
 
@@ -85,32 +73,32 @@ async function renderProjectCredentials() {
   // 待填写(Agent 请求的)排在最前,打开页面先看到要处理的
   const own = [...projectCredentials.credentials].sort((a, b) => a.has_value - b.has_value);
   table.innerHTML = CREDENTIAL_TABLE_HEAD + (credentialRowsHtml(own, "project")
-    || `<tr><td colspan="4" class="empty">本项目还没有自己的凭据</td></tr>`);
+    || `<tr><td colspan="4" class="empty">本项目还没有自己的环境</td></tr>`);
   if (inheritedTable)
     inheritedTable.innerHTML = CREDENTIAL_TABLE_HEAD + (
       credentialRowsHtml(projectCredentials.inherited, "global", { inherited: true })
-      || `<tr><td colspan="4" class="empty">没有全局凭据</td></tr>`);
+      || `<tr><td colspan="4" class="empty">没有全局环境</td></tr>`);
   renderGithubIdentity("project");
 }
 
-/* ---- GitHub 身份:名为 GITHUB_TOKEN 的凭据(个人访问令牌)就是项目在 GitHub 上的身份 ----
+/* ---- GitHub 身份:环境 GITHUB 的 secret 变量 TOKEN(个人访问令牌)就是项目在 GitHub 上的身份 ----
    保存后平台让 Agent 与自动化脚本里的 gh、git 直接以它登录;这里显示核对结果
-   (账号、令牌类型、权限、到期时间),token 本身仍走凭据表单,只写不读。 */
-const GITHUB_TOKEN_NAME = "GITHUB_TOKEN";
+   (账号、令牌类型、权限、到期时间),token 本身仍走环境表单,只写不读。 */
+const GITHUB_ENVIRONMENT = "GITHUB";
+const GITHUB_TOKEN_VARIABLE = "TOKEN";
 const GITHUB_TOKEN_KINDS = {
   classic: "classic PAT", fine_grained: "fine-grained PAT", oauth: "OAuth 令牌",
   app_user: "GitHub App 用户令牌", app_installation: "GitHub App 安装令牌", unknown: "未知类型",
 };
 
 function githubIdentityHtml(scope, status) {
-  const own = scope === "global" ? globalCredentials : projectCredentials.credentials;
-  const hasOwn = own.some(item => item.name === GITHUB_TOKEN_NAME);
   const setButton = label => `<button class="ghost compact" type="button"
-    onclick="editCredential('${scope}', ${hasOwn ? `'${GITHUB_TOKEN_NAME}'` : "null"}, '${GITHUB_TOKEN_NAME}')">${label}</button>`;
+    onclick="editGithubEnvironment('${scope}')">${label}</button>`;
   if (!status.configured)
-    return `<strong>GitHub 身份</strong> <span class="muted">未设置。保存名为
-      <code>${GITHUB_TOKEN_NAME}</code> 的凭据(个人访问令牌,classic 或 fine-grained 均可)后,Agent
-      与自动化脚本里的 <code>gh</code>、<code>git</code> 直接使用这个身份,GitHub 轮询来源也用它查询事件。</span>
+    return `<strong>GitHub 身份</strong> <span class="muted">未设置。在名为
+      <code>${GITHUB_ENVIRONMENT}</code> 的环境里保存 secret 变量 <code>${GITHUB_TOKEN_VARIABLE}</code>
+      (个人访问令牌,classic 或 fine-grained 均可)后,Agent 与自动化脚本里的 <code>gh</code>、<code>git</code>
+      直接使用这个身份,GitHub 轮询来源也用它查询事件。</span>
       ${setButton("设置 GitHub token")}`;
   const identity = status.identity || {};
   const inherited = scope === "project" && status.scope === "global";
@@ -151,117 +139,54 @@ async function renderGithubIdentity(scope, { refresh = false } = {}) {
   }
 }
 
+/* 打开 GITHUB 环境的表单并保证里面有 TOKEN 这一行:这一层已有 GITHUB 环境就编辑它;
+   没有时新建,项目里沿用全局 GITHUB 环境的其他变量(项目这个会整份覆盖全局那个)。 */
+function editGithubEnvironment(scope) {
+  if (credentialByName(scope, GITHUB_ENVIRONMENT)) {
+    editEnvironment(scope, GITHUB_ENVIRONMENT, { ensureVariable: GITHUB_TOKEN_VARIABLE });
+    return;
+  }
+  const inherited = scope === "project"
+    ? (projectCredentials.inherited || []).find(item => item.name === GITHUB_ENVIRONMENT) : null;
+  editEnvironment(scope, null, {
+    template: inherited || { name: GITHUB_ENVIRONMENT, description: "GitHub 身份(个人访问令牌)" },
+    ensureVariable: GITHUB_TOKEN_VARIABLE,
+  });
+}
+
 function credentialByName(scope, name) {
   const items = scope === "global" ? globalCredentials : projectCredentials.credentials;
   return items.find(item => item.name === name);
 }
 
-// 多行值(PEM 私钥等)改用文本框;单行默认密码框,输入时不露出明文
-function credentialValueInputHtml(multiline, placeholder) {
-  return multiline
-    ? `<textarea id="cred-value" rows="6" autocomplete="off" spellcheck="false"
-         placeholder="${esc(placeholder)}"></textarea>`
-    : `<input type="password" id="cred-value" autocomplete="new-password" spellcheck="false"
-         placeholder="${esc(placeholder)}">`;
-}
-
-function toggleCredentialMultiline() {
-  const current = document.getElementById("cred-value");
-  const multiline = current.tagName !== "TEXTAREA";
-  const value = current.value;
-  current.outerHTML = credentialValueInputHtml(multiline, current.placeholder);
-  document.getElementById("cred-value").value = value;
-  document.getElementById("cred-multiline").textContent = multiline ? "改为单行密码框" : "改为多行输入";
-}
-
-/* name 为空 = 新建;presetName 用于"在本项目覆盖"预填同名;presetValue 用于聊天里
-   检测到密钥后直接存。onSaved 收到保存后的条目。 */
-function editCredential(scope, name, presetName = "", { presetValue = "", onSaved = null } = {}) {
-  const existing = name ? credentialByName(scope, name) : null;
-  if (name && !existing) { uiAlert("凭据不存在,请刷新后重试"); return; }
-  if (isEnvironment(existing)) { editEnvironment(scope, name); return; }
-  // "在本项目覆盖"一个全局环境:带着它的变量名和普通变量的值打开环境表单
-  const inherited = !name && presetName && scope === "project"
-    ? (projectCredentials.inherited || []).find(item => item.name === presetName) : null;
-  if (isEnvironment(inherited)) { editEnvironment(scope, null, inherited); return; }
-  const where = scope === "global" ? "全局凭据(所有项目可用)" : `项目「${currentProject}」的凭据`;
-  const multiline = presetValue.includes("\n");
-  const placeholder = existing?.has_value ? "留空 = 保留原值" : "粘贴凭据值";
-  const requested = existing && !existing.has_value && existing.requested_by
-    ? `<p class="muted">${esc(existing.requested_by)} 请求了这份凭据。</p>` : "";
-  openFormDialog(existing ? `${existing.has_value ? "替换" : "填写"}凭据 ${existing.name}` : `新建${where}`, `
-    ${requested}
-    <label>名称(大写字母、数字、下划线;Agent 读取的文件名)</label>
-    <input type="text" id="cred-name" value="${esc(existing?.name || presetName)}"
-      ${existing ? "disabled" : ""} placeholder="例如 GITHUB_TOKEN">
-    <label>用途(写给 Agent 看:做什么用、权限范围)</label>
-    <textarea id="cred-desc" rows="2" placeholder="例如:webshop 仓库的细粒度 PAT,只有 Issues/PR 读写">${
-      esc(existing?.description || "")}</textarea>
-    ${(existing?.name || presetName) === GITHUB_TOKEN_NAME ? `<p class="muted">这份凭据是 GitHub 身份:填个人访问令牌。
-      classic(<code>ghp_…</code>)按 scope 授权,读写仓库勾 <code>repo</code>,要用通知接口勾 <code>notifications</code>
-      或 <code>repo</code>;fine-grained(<code>github_pat_…</code>)按仓库与权限项授权,不能用通知接口。</p>` : ""}
-    <label class="label-with-action">值 <button class="ghost compact" type="button"
-      id="cred-multiline" onclick="toggleCredentialMultiline()">${
-      multiline ? "改为单行密码框" : "改为多行输入"}</button></label>
-    ${credentialValueInputHtml(multiline, placeholder)}
-    <p class="muted">值保存后不再显示,只留末 4 位供辨认。Agent 经工作区
-      <code>credentials/${esc(existing?.name || presetName || "<名称>")}</code> 文件读取,
-      平台会把消息、运行日志里出现的值替换成 <code>[credential:名称]</code>。${
-      scope === "project" ? "与全局凭据同名时,本项目使用这一份。" : "项目里有同名凭据时,该项目使用项目那份。"}</p>`,
-    `<button class="action" data-scope="${scope}" data-name="${esc(existing?.name || "")}"
-       onclick="saveCredential(this.dataset.scope, this.dataset.name || null)">保存</button>
-     <button class="ghost" onclick="fdlg.close()">取消</button>`);
-  if (presetValue) document.getElementById("cred-value").value = presetValue;
-  credentialSaveCallback = onSaved;
-}
-
-let credentialSaveCallback = null;
-
-async function saveCredential(scope, existingName) {
-  const name = existingName || document.getElementById("cred-name").value.trim();
-  if (!/^[A-Z][A-Z0-9_]{0,63}$/.test(name)) {
-    uiAlert("名称只能使用大写字母、数字和下划线,以字母开头,例如 GITHUB_TOKEN");
-    return;
-  }
-  const value = document.getElementById("cred-value").value;
-  const existing = existingName ? credentialByName(scope, existingName) : null;
-  if (!value.trim() && !existing?.has_value) { uiAlert("请填写凭据值"); return; }
-  const saved = await api("POST", credentialApiBase(scope), {
-    name, description: document.getElementById("cred-desc").value.trim(),
-    ...(value.trim() ? { value } : {}),
-  });
-  fdlg.close();
-  const callback = credentialSaveCallback;
-  credentialSaveCallback = null;
-  await refreshCredentialViews();
-  toast(`凭据 ${saved.name} 已保存,Agent 下一条命令即可读取`, "success");
-  if (callback) callback(saved);
-}
-
 async function deleteCredential(scope, name) {
-  const label = isEnvironment(credentialByName(scope, name)) ? "环境" : "凭据";
   const inheritedNote = scope === "project"
     && (projectCredentials.inherited || []).some(item => item.name === name)
-    ? `删除后本项目改用同名的全局${label}。` : `删除后 Agent 读不到这份${label}。`;
-  if (!await uiConfirm(`删除${label} ${name}?${inheritedNote}`, `删除${label}`)) return;
+    ? "删除后本项目改用同名的全局环境。" : "删除后 Agent 读不到这个环境的变量。";
+  if (!await uiConfirm(`删除环境 ${name}?${inheritedNote}`, "删除环境")) return;
   await api("DELETE", `${credentialApiBase(scope)}/${encodeURIComponent(name)}`);
   await refreshCredentialViews();
-  toast(`${label} ${name} 已删除`, "success");
+  toast(`环境 ${name} 已删除`, "success");
 }
 
-/* ---- 环境:一组配套使用的变量(地址 + 用户名 + 密码),每个变量各自标记是否 secret ----
-   表单里一行一个变量。secret 变量已有值时输入框留空表示保留原值;普通变量的值直接
-   显示、可改。把已保存的 secret 改成普通变量必须重新填值——保留原值等于把保密值显示出来。 */
+async function refreshCredentialViews() {
+  await renderGlobalCredentials();
+  await renderProjectCredentials();
+}
+
+/* ---- 环境表单:一行一个变量 ----
+   secret 变量已有值时输入框留空表示保留原值;普通变量的值直接显示、可改。把已保存的
+   secret 改成普通变量必须重新填值——保留原值等于把保密值显示出来。 */
 function environmentVariableRowHtml(variable = {}) {
   const secret = variable.secret !== false;
   const kept = Boolean(variable.has_value && variable.secret);   // 已保存、页面看不到的 secret 值
   return `<div class="env-var-row" data-kept="${kept ? "1" : ""}">
     <input type="text" class="env-var-name" value="${esc(variable.name || "")}"
-      placeholder="变量名,如 USERNAME" spellcheck="false" autocomplete="off">
+      placeholder="变量名,如 TOKEN" spellcheck="false" autocomplete="off">
     ${environmentValueInputHtml(secret, false, kept)}
     <label class="env-var-secret" title="secret:保存后不再显示,出现在消息和日志里会被脱敏"><input
       type="checkbox" ${secret ? "checked" : ""} onchange="toggleEnvironmentSecret(this)"> secret</label>
-    <button class="ghost compact" type="button" title="切换单行 / 多行输入(PEM 证书等)"
+    <button class="ghost compact" type="button" title="切换单行 / 多行输入(PEM 私钥等)"
       onclick="toggleEnvironmentMultiline(this)">多行</button>
     <button class="ghost compact" type="button" title="删除这个变量"
       onclick="this.closest('.env-var-row').remove()">✕</button>
@@ -298,32 +223,52 @@ function toggleEnvironmentMultiline(button) {
     row, { multiline: row.querySelector(".env-var-value-input").tagName !== "TEXTAREA" });
 }
 
-function addEnvironmentVariableRow(variable) {
+// value 只用于预填看得见的内容:普通变量的现值,或聊天里检测到的密钥原文
+function addEnvironmentVariableRow(variable = {}, value = "") {
   const box = document.getElementById("env-vars");
   box.insertAdjacentHTML("beforeend", environmentVariableRowHtml(variable));
   const row = box.lastElementChild;
-  if (variable && !variable.secret && variable.value)
-    row.querySelector(".env-var-value-input").value = variable.value;
+  const preset = value || (variable.secret === false ? variable.value || "" : "");
+  if (preset.includes("\n")) redrawEnvironmentValueInput(row, { multiline: true });
+  if (preset) row.querySelector(".env-var-value-input").value = preset;
   return row;
 }
 
-/* name 为空 = 新建;template 是"在本项目覆盖"时带过来的全局环境:沿用它的变量名和普通
-   变量的值,secret 变量要重新填(项目这份是独立的一份,读不到全局那份的保密值)。 */
-function editEnvironment(scope, name, template = null) {
+// "在本项目覆盖"一个全局环境:沿用它的变量名和普通变量的值,secret 要重新填
+// (项目这个是独立的一份,读不到全局那个的保密值)
+function overrideEnvironment(name) {
+  const template = (projectCredentials.inherited || []).find(item => item.name === name);
+  if (!template) { uiAlert("环境不存在,请刷新后重试"); return; }
+  editEnvironment("project", null, { template });
+}
+
+let environmentSaveCallback = null;
+
+/* name 为空 = 新建。template 给新建的环境预置名字、用途和变量(覆盖全局环境、设置
+   GitHub token);ensureVariable 保证表单里有这个 secret 变量并聚焦到它的值;presetSecret
+   是聊天里检测到的密钥({variable, value}),预填成一个 secret 变量;onSaved 收到保存
+   后的环境。 */
+function editEnvironment(scope, name, { template = null, ensureVariable = "",
+                                        presetSecret = null, onSaved = null } = {}) {
   const existing = name ? credentialByName(scope, name) : null;
   if (name && !existing) { uiAlert("环境不存在,请刷新后重试"); return; }
   const where = scope === "global" ? "全局环境(所有项目可用)" : `项目「${currentProject}」的环境`;
   const requested = existing && !existing.has_value && existing.requested_by
     ? `<p class="muted">${esc(existing.requested_by)} 请求了这个环境,请把标着“待填写”的变量补上。</p>` : "";
   const fixedName = existing?.name || template?.name || "";
+  const githubHint = fixedName === GITHUB_ENVIRONMENT ? `<p class="muted">这个环境的 secret 变量
+    <code>${GITHUB_TOKEN_VARIABLE}</code> 是 GitHub 身份:填个人访问令牌。classic(<code>ghp_…</code>)按 scope 授权,
+    读写仓库勾 <code>repo</code>,要用通知接口勾 <code>notifications</code> 或 <code>repo</code>;
+    fine-grained(<code>github_pat_…</code>)按仓库与权限项授权,不能用通知接口。</p>` : "";
   openFormDialog(existing ? `${existing.has_value ? "编辑" : "填写"}环境 ${existing.name}` : `新建${where}`, `
     ${requested}
     <label>名称(大写字母、数字、下划线;Agent 读取的目录名)</label>
     <input type="text" id="env-name" value="${esc(fixedName)}" ${existing ? "disabled" : ""}
-      placeholder="例如 STAGING_ADMIN">
-    <label>用途(写给 Agent 看:这组变量对应哪个系统、能做什么)</label>
+      placeholder="例如 STAGING_ADMIN、SENTRY">
+    <label>用途(写给 Agent 看:这组变量对应哪个系统、能做什么、权限范围)</label>
     <textarea id="env-desc" rows="2" placeholder="例如:预发环境管理后台,只读账号">${
       esc(existing?.description || template?.description || "")}</textarea>
+    ${githubHint}
     <label class="label-with-action">变量 <button class="ghost compact" type="button"
       onclick="addEnvironmentVariableRow().querySelector('.env-var-name').focus()">+ 添加变量</button></label>
     <div id="env-vars" class="env-vars"></div>
@@ -336,14 +281,25 @@ function editEnvironment(scope, name, template = null) {
      <button class="ghost" onclick="fdlg.close()">取消</button>`, { size: "wide" });
   const variables = existing?.variables
     || (template?.variables || []).map(item => ({ ...item, has_value: false }));
-  if (variables.length) variables.forEach(addEnvironmentVariableRow);
-  else addEnvironmentVariableRow();
+  variables.forEach(variable => addEnvironmentVariableRow(variable));
+  let focusRow = null;
+  if (ensureVariable)
+    focusRow = [...document.querySelectorAll("#env-vars .env-var-row")].find(
+      row => row.querySelector(".env-var-name").value === ensureVariable)
+      || addEnvironmentVariableRow({ name: ensureVariable, secret: true });
+  if (presetSecret)
+    focusRow = addEnvironmentVariableRow(
+      { name: presetSecret.variable, secret: true }, presetSecret.value);
+  if (!document.querySelector("#env-vars .env-var-row")) addEnvironmentVariableRow();
+  // openFormDialog 默认聚焦第一个输入框;要人填的是这一行的值时改聚焦到它
+  if (focusRow && !presetSecret)
+    setTimeout(() => focusRow.querySelector(".env-var-value-input").focus(), 80);
+  environmentSaveCallback = onSaved;
 }
 
 async function saveEnvironment(scope, existingName) {
   const name = existingName || document.getElementById("env-name").value.trim();
-  const namePattern = /^[A-Z][A-Z0-9_]{0,63}$/;
-  if (!namePattern.test(name)) {
+  if (!CREDENTIAL_NAME_PATTERN.test(name)) {
     uiAlert("名称只能使用大写字母、数字和下划线,以字母开头,例如 STAGING_ADMIN");
     return;
   }
@@ -353,44 +309,49 @@ async function saveEnvironment(scope, existingName) {
     const value = row.querySelector(".env-var-value-input").value;
     const secret = row.querySelector(".env-var-secret input").checked;
     if (!key && !value.trim()) continue;                // 没填的空行直接忽略
-    if (!namePattern.test(key)) {
+    if (!CREDENTIAL_NAME_PATTERN.test(key)) {
       uiAlert(`变量名「${key}」不合法:只能使用大写字母、数字和下划线,以字母开头,例如 USERNAME`);
       return;
     }
     if (variables.some(item => item.name === key)) { uiAlert(`变量 ${key} 重复`); return; }
+    if (name === GITHUB_ENVIRONMENT && key === GITHUB_TOKEN_VARIABLE && !secret) {
+      uiAlert(`${GITHUB_ENVIRONMENT} 环境的 ${GITHUB_TOKEN_VARIABLE} 是 GitHub 身份,必须是 secret`);
+      return;
+    }
     if (!value.trim() && row.dataset.kept !== "1") { uiAlert(`请填写变量 ${key} 的值`); return; }
     if (!value.trim() && !secret) { uiAlert(`变量 ${key} 从 secret 改为普通变量,要重新填写值`); return; }
     variables.push({ name: key, secret, ...(value.trim() ? { value } : {}) });
   }
   if (!variables.length) { uiAlert("环境至少要有一个变量"); return; }
+  // create:新建时名字已被占用就报错,而不是把已有环境的变量整份换掉
   const saved = await api("POST", credentialApiBase(scope), {
     name, description: document.getElementById("env-desc").value.trim(), variables,
+    create: !existingName,
   });
   fdlg.close();
+  const callback = environmentSaveCallback;
+  environmentSaveCallback = null;
   await refreshCredentialViews();
   toast(`环境 ${saved.name} 已保存,Agent 下一条命令即可读取`, "success");
-}
-
-async function refreshCredentialViews() {
-  await renderGlobalCredentials();
-  await renderProjectCredentials();
+  if (callback) callback(saved);
 }
 
 /* ---- 聊天发送前的密钥检测:只认格式特征明显的常见密钥,避免误拦普通文本 ---- */
+// 第三项是存成环境时预填的变量名
 const SECRET_PATTERNS = [
-  ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/],
-  ["GitLab token", /\bglpat-[A-Za-z0-9_-]{20,}\b/],
-  ["API key", /\bsk-[A-Za-z0-9_-]{20,}/],
-  ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/],
-  ["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/],
-  ["Slack token", /\bxox[abprs]-[A-Za-z0-9-]{10,}/],
-  ["私钥", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/],
+  ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,})\b/, "TOKEN"],
+  ["GitLab token", /\bglpat-[A-Za-z0-9_-]{20,}\b/, "TOKEN"],
+  ["API key", /\bsk-[A-Za-z0-9_-]{20,}/, "API_KEY"],
+  ["AWS access key", /\bAKIA[0-9A-Z]{16}\b/, "ACCESS_KEY_ID"],
+  ["Google API key", /\bAIza[0-9A-Za-z_-]{35}\b/, "API_KEY"],
+  ["Slack token", /\bxox[abprs]-[A-Za-z0-9-]{10,}/, "TOKEN"],
+  ["私钥", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/, "PRIVATE_KEY"],
 ];
 
 function detectSecret(text) {
-  for (const [label, pattern] of SECRET_PATTERNS) {
+  for (const [label, pattern, variable] of SECRET_PATTERNS) {
     const match = String(text || "").match(pattern);
-    if (match) return { label, value: match[0] };
+    if (match) return { label, value: match[0], variable };
   }
   return null;
 }
@@ -408,7 +369,7 @@ function replaceSecretInComposer(box, secret, replacement) {
   return replaced;
 }
 
-/* 消息含疑似密钥时询问:返回 true = 照常发送;false = 不发(改为存凭据或返回修改)。 */
+/* 消息含疑似密钥时询问:返回 true = 照常发送;false = 不发(改为存进环境或返回修改)。 */
 function confirmSecretInMessage(content, box) {
   const hit = detectSecret(content);
   if (!hit) return Promise.resolve(true);
@@ -416,18 +377,21 @@ function confirmSecretInMessage(content, box) {
     _udlgResolve = resolve;
     _udlgOpen("消息里像是有密钥", `<div style="white-space:pre-wrap">${esc(
       `检测到疑似 ${hit.label}。发进聊天的内容会进入消息记录和 Agent 上下文。\n` +
-      "建议存为项目凭据:Agent 从凭据文件读取,消息里只留引用。")}</div>`,
+      "建议存进项目的环境(一组变量,这个值作为其中的 secret):Agent 从凭据文件读取,消息里只留引用。")}</div>`,
       `<button class="action" onclick="_udlgClose('store')">存为凭据</button>
        <button class="ghost" onclick="_udlgClose(true)">仍然发送</button>
        <button class="ghost" onclick="_udlgClose(false)">返回修改</button>`);
   }).then(choice => {
     if (choice !== "store") return choice === true;
-    editCredential("project", null, "", {
-      presetValue: hit.value,
+    editEnvironment("project", null, {
+      presetSecret: { variable: hit.variable, value: hit.value },
       onSaved: saved => {
-        const placeholder = `[credential:${saved.name}]`;
+        // 人可能在表单里改了变量名:优先找预填的那个,否则取第一个 secret 变量
+        const variable = saved.variables.find(item => item.name === hit.variable)
+          || saved.variables.find(item => item.secret);
+        const placeholder = `[credential:${saved.name}.${variable.name}]`;
         if (!replaceSecretInComposer(box, hit.value, placeholder))
-          uiAlert(`已保存为凭据 ${saved.name},请手动删除输入框里的原文后再发送。`);
+          uiAlert(`已保存到环境 ${saved.name},请手动删除输入框里的原文后再发送。`);
         else toast(`已替换为 ${placeholder},确认后再发送`, "success");
         box.focus();
       },

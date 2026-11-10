@@ -1,4 +1,4 @@
-"""GitHub 身份端点:核对全局或项目生效的 `GITHUB_TOKEN` 凭据是谁、有什么权限。
+"""GitHub 身份端点:核对全局或项目生效的 GitHub token(`GITHUB` 环境的 `TOKEN`)是谁、有什么权限。
 
 token 本身经凭据端点保存(只写不读);这里只返回核对结果,不含 token。核对要
 访问 api.github.com,结果在进程内缓存,`refresh=true` 强制重新核对。

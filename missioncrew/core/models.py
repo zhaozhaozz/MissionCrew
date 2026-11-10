@@ -578,8 +578,17 @@ class Project:
             self.has_orchestrator and target_id == self.orchestrator_role_id)
 
 
-# 凭据名即 Agent 读取的文件名,也是习惯上的环境变量名(如 GITHUB_TOKEN)
+# 环境名是 Agent 读取的目录名,变量名是其中的文件名;两者同一套命名规则
 CREDENTIAL_NAME_RE = _re.compile(r"[A-Z][A-Z0-9_]{0,63}")
+
+
+# GitHub 身份:环境 GITHUB 的 secret 变量 TOKEN(个人访问令牌)
+GITHUB_ENVIRONMENT = "GITHUB"
+GITHUB_TOKEN_VARIABLE = "TOKEN"
+# 旧版单值凭据迁成环境时,原来的值放进这个变量;旧版的 GitHub 身份是名为
+# GITHUB_TOKEN 的单值凭据,迁成上面的 GITHUB / TOKEN
+LEGACY_VALUE_VARIABLE = "VALUE"
+LEGACY_GITHUB_TOKEN = "GITHUB_TOKEN"
 
 
 def credential_fingerprint(value: str) -> str:
@@ -587,13 +596,10 @@ def credential_fingerprint(value: str) -> str:
     return f"…{value[-4:]}" if len(value) >= 12 else ""
 
 
-CREDENTIAL_KINDS = ("secret", "environment")
-
-
 @dataclass
 class CredentialVariable:
-    """环境里的一个变量。secret 变量的值与单值凭据一样只存在 credentials 表的 value
-    列,本对象的 value 恒为空;普通变量的值就放在这里,页面与 Agent 都能直接看到。"""
+    """环境里的一个变量。secret 变量的值只存在 credentials 表的 value 列,本对象的
+    value 恒为空;普通变量的值就放在这里,页面与 Agent 都能直接看到。"""
 
     name: str
     secret: bool = True
@@ -614,39 +620,29 @@ class CredentialVariable:
 
 @dataclass
 class Credential:
-    """人类保存给 Agent 使用的凭据,本对象只含元数据。
+    """人类保存给 Agent 使用的凭据,以环境为单位:一个环境是一组配套使用的变量
+    (地址 + 用户名 + 密码,或只有一个 token),每个变量各自标记是否 secret。
 
-    值存在 credentials 表的独立列里,不进入本对象的任何序列化,因此总览、
-    Agent Tool 结果、回收站与审计都不可能顺带带出它。project_id 为空是全局
-    凭据,对所有项目可见;项目凭据只属于本项目,与全局同名时覆盖全局。
-
-    kind 有两种:`secret` 是单个保密值;`environment`(环境)是一组变量,每个变量
-    各自标记是否 secret,用来放需要配套使用的值(地址 + 用户名 + 密码)。
+    secret 变量的值存在 credentials 表的独立列里,不进入本对象的任何序列化,因此
+    总览、Agent Tool 结果、回收站与审计都不可能顺带带出它。project_id 为空是全局
+    环境,对所有项目可见;项目环境只属于本项目,与全局同名时整份覆盖全局。
     """
 
     name: str
     project_id: str = ""
-    description: str = ""          # 用途说明,Agent 据此判断该用哪一份
-    has_value: bool = False        # False = 待人填写;环境 = 还有变量没有值
-    fingerprint: str = ""
-    requested_by: str = ""         # 登记该待填写凭据的角色,如 role:dev;人保存值后清空
+    description: str = ""          # 用途说明,Agent 据此判断该用哪一个
+    has_value: bool = False        # False = 还有变量没有值(Agent 登记、待人填写)
+    requested_by: str = ""         # 登记待填写变量的角色,如 role:dev;人保存后清空
     created_at: float = field(default_factory=now)
     updated_at: float = field(default_factory=now)
-    kind: str = "secret"
-    variables: list[CredentialVariable] = field(default_factory=list)   # 仅环境
+    variables: list[CredentialVariable] = field(default_factory=list)
 
     def __post_init__(self):
         if not CREDENTIAL_NAME_RE.fullmatch(self.name or ""):
             raise ValueError(
-                "凭据名只能使用大写字母、数字和下划线,以字母开头,最长 64 个字符")
-        if self.kind not in CREDENTIAL_KINDS:
-            raise ValueError(f"未知凭据类型: {self.kind}")
+                "环境名只能使用大写字母、数字和下划线,以字母开头,最长 64 个字符")
         self.variables = [item if isinstance(item, CredentialVariable)
                           else CredentialVariable(**item) for item in self.variables]
-
-    @property
-    def is_environment(self) -> bool:
-        return self.kind == "environment"
 
     def variable(self, name: str) -> Optional["CredentialVariable"]:
         return next((item for item in self.variables if item.name == name), None)
@@ -668,7 +664,7 @@ class Credential:
 
 
 def credential_id(project_id: str, name: str) -> str:
-    """存储主键:全局凭据就是名字,项目凭据是 `<项目>:<名字>`(同频道 id 的约定)。"""
+    """存储主键:全局环境就是名字,项目环境是 `<项目>:<名字>`(同频道 id 的约定)。"""
     return f"{project_id}:{name}" if project_id else name
 
 

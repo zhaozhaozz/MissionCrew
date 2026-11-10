@@ -19,7 +19,7 @@ from missioncrew.collab import automations as automation_mod
 from missioncrew.collab import github as github_mod
 from missioncrew.collab.automations import AutomationService, save_automation
 from missioncrew.collab.chat import ChatEngine
-from missioncrew.collab.credentials import save_credential
+from missioncrew.collab.credentials import save_environment
 from missioncrew.collab.github import GitHubResponse
 from missioncrew.collab.github_events import (GitHubEventPoller, event_name,
                                               normalize_github_config, normalize_repos)
@@ -30,6 +30,13 @@ PROJECT_TOKEN = "ghp_" + "Z9y8X7w6V5" * 4
 FINE = "github_pat_" + "Q1w2E3r4T5" * 6
 SERVER_DATE = "Tue, 10 Nov 2026 03:30:00 GMT"       # 假 GitHub 的时钟,基线取它
 BEFORE, AFTER = "2026-11-10T03:00:00Z", "2026-11-10T03:31:00Z"
+
+
+def save_github_token(store, project_id: str, value: str):
+    """把 token 存成 GitHub 身份:环境 GITHUB 的 secret 变量 TOKEN。"""
+    return save_environment(store, project_id=project_id, name="GITHUB",
+                            variables=[{"name": "TOKEN", "value": value}])
+
 
 
 class FakeGitHub:
@@ -112,7 +119,7 @@ SCRIPT = ('echo "trigger=$MISSIONCREW_TRIGGER provider=$MISSIONCREW_WEBHOOK_PROV
 @pytest.fixture()
 def watch(seeded):
     """全局 token + 不绑定仓库的轮询来源 + 订阅 acme/webshop 的脚本 + 假 GitHub。"""
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     github = FakeGitHub()
     chat = ChatEngine(seeded, max_workers=2)
     service = AutomationService(seeded, chat.agent_tools)
@@ -333,7 +340,7 @@ def test_notifications_deliver_each_update_once(watch):
 
 
 def test_notifications_need_a_scoped_token_but_other_streams_keep_working(watch):
-    save_credential(watch.store, project_id="", name="GITHUB_TOKEN", value=FINE)
+    save_github_token(watch.store, "", FINE)
     save_webhook_source(watch.store, id="watch", github={
         "notifications": True, "participating": True})
     status = watch.poller.poll("watch", now=1000.0)
@@ -345,7 +352,7 @@ def test_notifications_need_a_scoped_token_but_other_streams_keep_working(watch)
     watch.github.add_event("acme/webshop", "PushEvent", {"ref": "refs/heads/main"})
     assert watch.poller.poll("watch", now=1060.0)["delivered_total"] == 1
 
-    save_credential(watch.store, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(watch.store, "", CLASSIC)
     assert watch.poller.poll("watch", now=1120.0)["last_error"] == ""
     assert watch.github.calls[-1].params["participating"] == "true"
 
@@ -423,7 +430,7 @@ def test_poll_due_skips_disabled_sources_and_unsubscribed_repositories_restart_f
 # ---- 身份与出错 ----
 
 def test_source_uses_the_chosen_project_token(watch):
-    save_credential(watch.store, project_id="webshop", name="GITHUB_TOKEN", value=PROJECT_TOKEN)
+    save_github_token(watch.store, "webshop", PROJECT_TOKEN)
     watch.poller.poll("watch", now=1000.0)
     assert watch.github.calls[-1].token == CLASSIC       # 默认用全局凭据
     save_webhook_source(watch.store, id="watch", github={"project_id": "webshop"})
@@ -455,8 +462,8 @@ def test_errors_are_reported_per_stream_and_audited_once(watch):
     assert "限流" in limited["last_error"] and limited["next_poll_at"] == 99999.0
 
     from missioncrew.collab.credentials import delete_credential
-    delete_credential(watch.store, project_id="", name="GITHUB_TOKEN")
-    assert "全局凭据里没有 GITHUB_TOKEN" in watch.poller.poll("watch", now=1180.0)["last_error"]
+    delete_credential(watch.store, project_id="", name="GITHUB")
+    assert "全局的 GITHUB 环境里没有 TOKEN" in watch.poller.poll("watch", now=1180.0)["last_error"]
     save_automation(watch.store, "webshop", id="on-event",
                     github_repos=["acme/webshop", "acme/gone", "acme/new"])
     assert watch.poller.poll_due(now=1190.0) == []       # 没有 token 时不为新仓库空转
@@ -467,7 +474,7 @@ def test_errors_are_reported_per_stream_and_audited_once(watch):
 def test_source_api_creates_polls_and_never_accepts_external_posts(seeded, monkeypatch):
     github = FakeGitHub()
     monkeypatch.setattr(github_mod, "http_transport", github)
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     with TestClient(create_app()) as client:
         assert client.post("/api/webhook-sources", json={      # 来源不收仓库
             "id": "watch", "kind": "github",

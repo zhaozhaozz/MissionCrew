@@ -9,9 +9,10 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .models import (Automation, Backend, Board, BoardDataSource, Channel,
-                     Credential, Project, Role, Task, WebhookSource, credential_id,
-                     new_id, normalize_labels, with_status)
+from .models import (GITHUB_ENVIRONMENT, GITHUB_TOKEN_VARIABLE, LEGACY_GITHUB_TOKEN,
+                     LEGACY_VALUE_VARIABLE, Automation, Backend, Board, BoardDataSource,
+                     Channel, Credential, Project, Role, Task, WebhookSource,
+                     credential_id, new_id, normalize_labels, with_status)
 from .redaction import redact_text, redaction_pairs
 
 _SCHEMA = """
@@ -138,8 +139,8 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 );
 CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_source
   ON webhook_deliveries(source_id, id DESC);
--- 凭据:data 是不含保密值的元数据 JSON,保密值单独一列(单值凭据是原文,环境是
--- "变量名 -> 值"的 JSON,只含 secret 变量),通用的 _get/_list 只读 data 列
+-- 凭据(环境):data 是不含保密值的元数据 JSON,保密值单独一列("变量名 -> 值"的
+-- JSON,只含 secret 变量),通用的 _get/_list 只读 data 列
 CREATE TABLE IF NOT EXISTS credentials (
   id TEXT PRIMARY KEY, data TEXT NOT NULL, value TEXT NOT NULL DEFAULT ''
 );
@@ -202,6 +203,7 @@ class Store:
         self._migrate_source_cards_to_tasks()
         self._migrate_tasks_to_issues()
         self._migrate_board_status_filters()
+        self._migrate_credentials_to_environments()
         self._conn.commit()
 
     def _migrate_chat_runs(self) -> None:
@@ -257,6 +259,75 @@ class Store:
                                (json.dumps(data, ensure_ascii=False), row["id"]))
             changed += 1
         return changed
+
+    def _migrate_credentials_to_environments(self) -> int:
+        """旧版一份凭据是单个保密值,现在一律是环境(一组变量):把旧行改成只有一个
+        secret 变量的环境。返回改写的行数,已经迁过的库返回 0。
+
+        - 普通凭据 `NAME` 变成环境 `NAME`,值放进变量 `VALUE`,名字、作用域、用途、
+          待填写状态都不变,所以"项目同名覆盖全局"的结果和迁移前一样。
+        - `GITHUB_TOKEN` 是 GitHub 身份,变成环境 `GITHUB` 的变量 `TOKEN`。同一作用域
+          已经有人建了 `GITHUB` 环境时把 TOKEN 并进去;那个环境自己已有 TOKEN 时保留
+          它,旧凭据按普通规则迁成 `GITHUB_TOKEN` / `VALUE`,不丢值。
+        - 上一版已经是环境的行只去掉不再使用的字段。
+        """
+        rows = self._conn.execute("SELECT id, data, value FROM credentials").fetchall()
+        environments: dict[str, tuple[dict, dict]] = {}     # id -> (元数据, secret 值)
+        legacy: list[tuple[str, dict, str]] = []
+        dirty: set[str] = set()
+        for row in rows:
+            data, value = json.loads(row["data"]), str(row["value"] or "")
+            if "kind" not in data and "variables" in data:
+                environments[row["id"]] = (data, _environment_secrets(value))
+            elif data.get("kind") == "environment":
+                data.pop("kind", None)
+                data.pop("fingerprint", None)
+                environments[row["id"]] = (data, _environment_secrets(value))
+                dirty.add(row["id"])
+            else:
+                legacy.append((row["id"], data, value))
+        if not legacy and not dirty:
+            return 0
+        removed: set[str] = set()
+        for old_id, data, value in legacy:
+            project_id, name = str(data.get("project_id") or ""), str(data["name"])
+            environment, key = ((GITHUB_ENVIRONMENT, GITHUB_TOKEN_VARIABLE)
+                                if name == LEGACY_GITHUB_TOKEN else (name, LEGACY_VALUE_VARIABLE))
+            target = environments.get(credential_id(project_id, environment))
+            if target is not None and any(item["name"] == key
+                                          for item in target[0]["variables"]):
+                environment, key, target = name, LEGACY_VALUE_VARIABLE, None
+            variable = {"name": key, "secret": True, "has_value": bool(value),
+                        "fingerprint": str(data.get("fingerprint") or "") if value else "",
+                        "value": ""}
+            if target is None:
+                target = ({"name": environment, "project_id": project_id,
+                           "description": str(data.get("description") or ""),
+                           "has_value": True, "requested_by": "",
+                           "created_at": data.get("created_at") or time.time(),
+                           "updated_at": data.get("updated_at") or time.time(),
+                           "variables": []}, {})
+                environments[credential_id(project_id, environment)] = target
+            meta, secrets = target
+            meta["variables"].append(variable)
+            meta["has_value"] = all(item["has_value"] for item in meta["variables"])
+            if not value:
+                meta["requested_by"] = (meta.get("requested_by")
+                                        or str(data.get("requested_by") or ""))
+            else:
+                secrets[key] = value
+            removed.add(old_id)
+            dirty.add(credential_id(project_id, environment))
+        for old_id in removed - dirty:
+            self._conn.execute("DELETE FROM credentials WHERE id=?", (old_id,))
+        for id in dirty:
+            meta, secrets = environments[id]
+            self._conn.execute(
+                "INSERT INTO credentials(id, data, value) VALUES(?, ?, ?) "
+                "ON CONFLICT(id) DO UPDATE SET data=excluded.data, value=excluded.value",
+                (id, json.dumps(meta, ensure_ascii=False),
+                 json.dumps(secrets, ensure_ascii=False) if secrets else ""))
+        return len(dirty)
 
     def _migrate_backend_commands(self) -> int:
         """删除旧 Backend 记录中的命令覆盖，统一回到内置 Runtime 启动方式。"""
@@ -1318,14 +1389,14 @@ class Store:
     def delete_webhook_source_state(self, id: str) -> None:
         self._delete("webhook_source_state", id)
 
-    # ---- 凭据(全局 + 项目;值与元数据分列存放) ----
+    # ---- 凭据(环境;全局 + 项目,保密值与元数据分列存放) ----
     def put_credential(self, credential: Credential,
-                       value: Optional[str | dict] = None) -> None:
-        """保存元数据;value 不为 None 时一并替换保密值(空串 = 清空,回到待填写)。
-        环境传"secret 变量名 -> 值"的字典,整份替换。"""
+                       secrets: Optional[dict[str, str]] = None) -> None:
+        """保存元数据;secrets 不为 None 时一并整份替换保密值("secret 变量名 -> 值",
+        空字典 = 清空)。"""
         credential.updated_at = time.time()
-        if isinstance(value, dict):
-            value = json.dumps(value, ensure_ascii=False) if value else ""
+        value = None if secrets is None else (
+            json.dumps(secrets, ensure_ascii=False) if secrets else "")
         with self._lock:
             if value is None:
                 self._execute(
@@ -1351,21 +1422,11 @@ class Store:
             items = [item for item in items if item.project_id == project_id]
         return sorted(items, key=lambda item: (item.project_id, item.name))
 
-    def credential_value(self, project_id: str, name: str) -> str:
-        """单值凭据的值;没有这份凭据、还没填写或它是环境时返回空串。"""
-        rows = self._query("SELECT data, value FROM credentials WHERE id=?",
-                           (credential_id(project_id, name),))
-        if not rows or json.loads(rows[0]["data"]).get("kind") == "environment":
-            return ""
-        return str(rows[0]["value"])
-
     def credential_secrets(self, project_id: str, name: str) -> dict[str, str]:
-        """环境里 secret 变量的值(变量名 -> 值);不是环境时返回空字典。"""
-        rows = self._query("SELECT data, value FROM credentials WHERE id=?",
+        """环境里 secret 变量的值(变量名 -> 值);环境不存在时返回空字典。"""
+        rows = self._query("SELECT value FROM credentials WHERE id=?",
                            (credential_id(project_id, name),))
-        if not rows or json.loads(rows[0]["data"]).get("kind") != "environment":
-            return {}
-        return _environment_secrets(rows[0]["value"])
+        return _environment_secrets(rows[0]["value"]) if rows else {}
 
     def delete_credential(self, id: str) -> None:
         with self._lock:
@@ -1377,20 +1438,16 @@ class Store:
             if self._redaction is None:
                 rows = self._query(
                     "SELECT data, value FROM credentials WHERE value != ''")
-                named: list[tuple[str, str]] = []
-                for row in rows:
-                    data = json.loads(row["data"])
-                    if data.get("kind") == "environment":
-                        # 环境只有 secret 变量的值在这一列,占位符写成 <环境>.<变量>
-                        named += [(f"{data['name']}.{variable}", value) for variable, value
-                                  in _environment_secrets(row["value"]).items()]
-                    else:
-                        named.append((data["name"], str(row["value"])))
-                self._redaction = redaction_pairs(named)
+                # 只有 secret 变量的值在这一列,占位符写成 <环境>.<变量>
+                self._redaction = redaction_pairs(
+                    (f"{json.loads(row['data'])['name']}.{variable}", value)
+                    for row in rows
+                    for variable, value in _environment_secrets(row["value"]).items())
             return self._redaction
 
     def redact_credentials(self, text: str) -> str:
-        """把文本里出现的凭据原文换成 [credential:<名字>],供各写入口落库前调用。"""
+        """把文本里出现的 secret 变量原文换成 [credential:<环境>.<变量>],供各写入口
+        落库前调用。"""
         pairs = self._redaction_pairs()
         return redact_text(text, pairs) if pairs and text else text
 

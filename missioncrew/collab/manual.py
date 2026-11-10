@@ -52,7 +52,7 @@ An orchestrator's turn:
   the platform regenerates both views every turn; `project.md` project summary and repositories; `channel-history.json` full channel history
   (executors get a redacted view); `temp/` temporary directory when the project has no convention;
   `manual.md` this manual; `platform-docs/` read-only copy of MissionCrew's own documentation
-  (`README.md` there lists every document); `credentials/` secrets humans saved for the project
+  (`README.md` there lists every document); `credentials/` secrets and settings humans saved for the project
   (section 12).
 - Do not read or print `.agent-tool-token`; the Agent Tool CLI reads the token file itself.
 
@@ -376,7 +376,7 @@ An orchestrator's turn:
   `MISSIONCREW_WEBHOOK_EVENT_FILE`, and filters the events it cares about itself, because every
   script on a shared source receives all of its deliveries.
 - A source listed with `kind: github` is a GitHub polling source: no external system posts to
-  it; the platform queries GitHub with the `GITHUB_TOKEN` credential and delivers new events to
+  it; the platform queries GitHub with the `GITHUB` environment's `TOKEN` and delivers new events to
   scripts as webhook-shaped events. A human creates the source once (identity, polling interval,
   whether the account's notifications are included) and it is not tied to repositories: you
   choose them yourself. Subscribe with `webhook_source` plus `github_repos` (an array of
@@ -429,52 +429,52 @@ An orchestrator's turn:
 
 ## 12. Credentials (credential.*)
 
-- Humans save secrets (tokens, passwords, keys) in project settings or global settings; you
-  never receive them in chat. Each one available to this project is a file named after it
-  (such as `GITHUB_TOKEN`) in `$MISSIONCREW_CREDENTIALS_DIR`, the workspace's `credentials/`;
-  `index.json` there lists every credential with its purpose and scope (a project credential
-  replaces a global one with the same name). Files change as soon as a human edits a
-  credential, so read the file at the moment you use it.
-- Read a credential only inline in the command that needs it, for example
-  `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM_TOKEN")" npm publish` or a tool's own
-  `--password-file`/`--token-file` option pointing at the file. Never print it (a bare `cat` of
-  the file, `echo`, `env`, `set -x`, verbose HTTP logs), copy it into other files, repositories,
-  git remote URLs, scripts, Tasks, documents or messages, or quote it in your reply. Automation
-  scripts get the same directory through the same variable.
-- `GITHUB_TOKEN` is the project's GitHub identity. While it is saved the platform signs `gh`
-  and git in with it: `GH_CONFIG_DIR` points at a generated gh configuration and git gets a
-  credential helper for HTTPS remotes on github.com. Run `gh pr list`, `gh api ...` or
-  `git push` directly; do not pass the token yourself and do not run `gh auth login`. SSH
-  remotes keep using the machine's own keys. If `GH_CONFIG_DIR` is not set in your session
-  (the token was saved after the session started), read the file inline instead:
-  `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB_TOKEN")" gh pr list`. Without a
-  `GITHUB_TOKEN` credential `gh` and git use the login of the user running MissionCrew.
-  `gh api user` shows which account you are; a 403 or 404 from GitHub usually means the token
-  lacks that permission or repository, so report it instead of trying another account.
-- An environment is a group of values that are used together (address, user name, password):
-  a directory `$MISSIONCREW_CREDENTIALS_DIR/<NAME>/` with one file per variable, for example
-  `curl -u "$(cat "$E/USERNAME"):$(cat "$E/PASSWORD")" "$(cat "$E/URL")/api"` after
-  `E="$MISSIONCREW_CREDENTIALS_DIR/STAGING_ADMIN"`. In `index.json` its entry has
-  `"type": "environment"` and a `variables` list: each variable says whether it is `secret`
-  and whether it is `available` (already has a value). Variables with `secret: false` are plain
-  configuration whose value is also in `index.json`; you may quote those. Treat `secret: true`
-  variables exactly like any other credential.
-- When the task needs a secret that is not in `index.json`, call `credential.request` with an
-  upper-case `name` and a `description` of what it is for and the minimal permissions it
-  needs; the platform asks the human with a link to the form. When you mention the form
-  yourself, link it as `__PROJECT_URL__/settings/credentials` (the result's `resource_url`),
-  not as a page address you made up. Never ask humans to paste a secret into chat. Then
-  report in your final reply that the work is waiting for that credential, and continue once
-  the file exists. When you need several values that go together, request one environment
-  instead of several credentials: add `variables`, a list of `{name, secret, value}`. Mark
-  everything that must stay private as `secret: true` and leave its value out (a human fills
-  it in); for `secret: false` variables pass the value if you already know it (a user name
-  from the repository's docs, a base URL). Requesting variables an environment of this
-  project lacks adds them to it.
-- The platform replaces any saved credential value it finds in messages, run logs, Agent Tool
-  arguments and published documents with `[credential:<NAME>]` (`[credential:<ENV>.<VAR>]` for
-  an environment's secret variable). That is a safety net for mistakes, not a way to use
-  secrets: a value written anywhere is still a leak to report.
+- Humans save secrets and settings (tokens, passwords, keys, addresses, user names) in project
+  settings or global settings; you never receive secrets in chat. They are kept as
+  environments: a named group of variables that are used together. Each environment available
+  to this project is a directory `$MISSIONCREW_CREDENTIALS_DIR/<ENVIRONMENT>/` (the workspace's
+  `credentials/`) with one file per variable, such as `STAGING_ADMIN/URL`,
+  `STAGING_ADMIN/USERNAME`, `STAGING_ADMIN/PASSWORD`, or just `SENTRY/TOKEN`. `index.json`
+  there lists every environment with its purpose, scope (a project environment replaces a
+  global one with the same name as a whole) and `variables`: each variable says whether it is
+  `secret` and whether it is `available` (already has a value). Files change as soon as a
+  human edits an environment, so read the file at the moment you use it.
+- Variables with `secret: false` are plain configuration: the value is also in `index.json`
+  and you may quote it. Read a `secret: true` variable only inline in the command that needs
+  it, for example `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM/TOKEN")" npm publish`,
+  `E="$MISSIONCREW_CREDENTIALS_DIR/STAGING_ADMIN"; curl -u "$(cat "$E/USERNAME"):$(cat
+  "$E/PASSWORD")" "$(cat "$E/URL")/api"`, or a tool's own `--password-file`/`--token-file`
+  option pointing at the file. Never print it (a bare `cat` of the file, `echo`, `env`,
+  `set -x`, verbose HTTP logs), copy it into other files, repositories, git remote URLs,
+  scripts, Tasks, documents or messages, or quote it in your reply. Automation scripts get the
+  same directory through the same variable.
+- The `GITHUB` environment's `TOKEN` is the project's GitHub identity. While it is saved the
+  platform signs `gh` and git in with it: `GH_CONFIG_DIR` points at a generated gh
+  configuration and git gets a credential helper for HTTPS remotes on github.com. Run
+  `gh pr list`, `gh api ...` or `git push` directly; do not pass the token yourself and do not
+  run `gh auth login`. SSH remotes keep using the machine's own keys. If `GH_CONFIG_DIR` is
+  not set in your session (the token was saved after the session started), read the file
+  inline instead: `GH_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/GITHUB/TOKEN")" gh pr list`.
+  Without it `gh` and git use the login of the user running MissionCrew. `gh api user` shows
+  which account you are; a 403 or 404 from GitHub usually means the token lacks that
+  permission or repository, so report it instead of trying another account.
+- When the task needs a value that is not in `index.json`, call `credential.request` with an
+  upper-case environment `name`, a `description` of what it is for and the minimal
+  permissions it needs, and `variables`: a list of `{name, secret, value}`, required even for
+  a single value (`[{"name": "TOKEN"}]`). Group values that go together into one environment
+  instead of requesting them separately. Mark everything that must stay private as
+  `secret: true` (the default) and leave its value out, a human fills it in; for
+  `secret: false` variables pass the value if you already know it (a user name from the
+  repository's docs, a base URL). Requesting variables an environment of this project lacks
+  adds them to it. The platform asks the human with a link to the form. When you mention the
+  form yourself, link it as `__PROJECT_URL__/settings/credentials` (the result's
+  `resource_url`), not as a page address you made up. Never ask humans to paste a secret into
+  chat. Then report in your final reply that the work is waiting for those variables, and
+  continue once their files exist.
+- The platform replaces any saved secret value it finds in messages, run logs, Agent Tool
+  arguments and published documents with `[credential:<ENVIRONMENT>.<VARIABLE>]`. That is a
+  safety net for mistakes, not a way to use secrets: a value written anywhere is still a leak
+  to report.
 
 ## 13. Recycle Bin (recycle.*)
 

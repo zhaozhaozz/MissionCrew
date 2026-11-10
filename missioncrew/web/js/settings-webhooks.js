@@ -1,7 +1,7 @@
 /* ---------------- 全局设置:Webhook 来源 ----------------
    来源是全局的投递入口,各项目的自动化脚本选择来源订阅它,来源的每次投递触发所有
    订阅它的脚本。来源有两类(kind):webhook 由外部系统 POST 到投递地址(地址 + 密钥,
-   按来源在外部系统配置一次);github 由平台用 GITHUB_TOKEN 凭据定时查询 GitHub 的
+   按来源在外部系统配置一次);github 由平台用 GitHub 身份(GITHUB 环境的 TOKEN)定时查询 GitHub 的
    通知与仓库事件,不需要公网地址,来源不绑定仓库,仓库由订阅脚本各自声明。
    列表不带密钥,密钥只经 /secret 端点按需读取。
    自动化页也复用这里的缓存与对话框。 */
@@ -143,9 +143,9 @@ function editGithubSource(source) {
   const config = source?.github || {};
   const users = source?.automations || [];
   const projectOptions = (overview.projects || []).map(project => `<option value="${esc(project.id)}"
-      ${project.id === config.project_id ? "selected" : ""}>项目「${esc(project.name || project.id)}」生效的 GITHUB_TOKEN</option>`).join("");
+      ${project.id === config.project_id ? "selected" : ""}>项目「${esc(project.name || project.id)}」生效的 GitHub token</option>`).join("");
   openFormDialog(source ? `编辑 GitHub 轮询来源 ${source.id}` : "新建 GitHub 轮询来源", `
-    <p class="muted">平台用 <code>GITHUB_TOKEN</code> 凭据定时向 GitHub 查询新事件，交给订阅这个来源的自动化脚本，
+    <p class="muted">平台用 GitHub 身份(<code>GITHUB</code> 环境的 <code>TOKEN</code>)定时向 GitHub 查询新事件，交给订阅这个来源的自动化脚本，
       脚本拿到的事件与 Webhook 投递同形。只读取，不在 GitHub 上注册 webhook，也不改通知的已读状态；不需要公网地址。
       来源不绑定仓库：要哪些仓库由订阅它的脚本各自声明，Agent 可以自己订阅新仓库。</p>
     <div class="row">
@@ -161,7 +161,7 @@ function editGithubSource(source) {
     <div class="row">
       <div><label>使用的 token</label>
         <select id="ws-gh-project">
-          <option value="">全局凭据 GITHUB_TOKEN</option>${projectOptions}
+          <option value="">全局 GitHub token</option>${projectOptions}
         </select></div>
       <div><label>轮询间隔(秒,60 ~ 86400;GitHub 要求不低于 60)</label>
         <input type="number" id="ws-gh-interval" min="60" max="86400" step="10"

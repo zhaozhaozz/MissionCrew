@@ -1,4 +1,4 @@
-"""GitHub 身份:GITHUB_TOKEN 凭据变成 gh / git 的登录状态,以及 token 核对。"""
+"""GitHub 身份:GITHUB 环境的 TOKEN 变成 gh / git 的登录状态,以及 token 核对。"""
 from __future__ import annotations
 
 import json
@@ -15,13 +15,20 @@ from missioncrew.collab import github as github_mod
 from missioncrew.collab.automations import AutomationService, save_automation
 from missioncrew.collab.chat import ChatEngine
 from missioncrew.collab.credentials import (credential_context_dir, delete_credential,
-                                            save_credential, write_credential_context)
+                                            save_environment, write_credential_context)
 from missioncrew.collab.github import (GitHubError, GitHubResponse, github_cli_dir,
                                        github_env, github_status, github_token,
                                        inspect_token, token_kind)
 
 CLASSIC = "ghp_" + "a1B2c3D4e5" * 4
 FINE = "github_pat_" + "Z9y8X7w6V5" * 6
+
+
+def save_github_token(store, project_id: str, value: str):
+    """把 token 存成 GitHub 身份:环境 GITHUB 的 secret 变量 TOKEN。"""
+    return save_environment(store, project_id=project_id, name="GITHUB",
+                            variables=[{"name": "TOKEN", "value": value}])
+
 
 
 def _user_transport(scopes="repo, notifications", status=200, calls=None):
@@ -103,7 +110,7 @@ def test_inspect_reports_rejected_token_and_network_failure():
 def test_status_follows_project_override_and_caches_by_token(seeded):
     assert github_status(seeded, "webshop") == {
         "configured": False, "scope": "", "identity": None}
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     assert github_token(seeded, "webshop") == (CLASSIC, "global")
     calls: list = []
     transport = _user_transport(calls=calls)
@@ -114,7 +121,7 @@ def test_status_follows_project_override_and_caches_by_token(seeded):
     github_status(seeded, "webshop", refresh=True, transport=transport)
     assert len(calls) == 2
 
-    save_credential(seeded, project_id="webshop", name="GITHUB_TOKEN", value=FINE)
+    save_github_token(seeded, "webshop", FINE)
     overridden = github_status(seeded, "webshop", transport=transport)
     assert overridden["scope"] == "project" and overridden["identity"]["kind"] == "fine_grained"
     assert github_token(seeded, "") == (CLASSIC, "global")   # 全局视角不受项目覆盖影响
@@ -128,21 +135,21 @@ def test_cli_config_tracks_the_effective_token(seeded):
     assert not directory.exists()
     assert github_env("webshop", credential_context_dir("webshop")) == {}
 
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     hosts = directory / "hosts.yml"
     assert f'oauth_token: "{CLASSIC}"' in hosts.read_text()
     assert directory.stat().st_mode & 0o777 == 0o700 and hosts.stat().st_mode & 0o777 == 0o600
 
-    save_credential(seeded, project_id="webshop", name="GITHUB_TOKEN", value=FINE)
+    save_github_token(seeded, "webshop", FINE)
     assert FINE in hosts.read_text() and CLASSIC not in hosts.read_text()
-    delete_credential(seeded, project_id="webshop", name="GITHUB_TOKEN")
+    delete_credential(seeded, project_id="webshop", name="GITHUB")
     assert CLASSIC in hosts.read_text()                  # 退回全局那份
-    delete_credential(seeded, project_id="", name="GITHUB_TOKEN")
+    delete_credential(seeded, project_id="", name="GITHUB")
     assert not directory.exists()                        # 没有 token 就不留登录状态
 
 
 def test_env_adds_git_helper_after_existing_git_config_and_blanks_host_tokens(seeded):
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     credentials = credential_context_dir("webshop")
     env = github_env("webshop", credentials, base={
         "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "user.name", "GIT_CONFIG_VALUE_0": "x",
@@ -151,7 +158,7 @@ def test_env_adds_git_helper_after_existing_git_config_and_blanks_host_tokens(se
     assert env["GIT_CONFIG_COUNT"] == "5" and "GIT_CONFIG_KEY_0" not in env   # 接在已有配置之后
     assert env["GIT_CONFIG_KEY_1"] == "credential.https://github.com.helper"
     assert env["GIT_CONFIG_VALUE_1"] == ""               # 先清掉宿主的 helper
-    assert str(credentials / "GITHUB_TOKEN") in env["GIT_CONFIG_VALUE_2"]
+    assert str(credentials / "GITHUB" / "TOKEN") in env["GIT_CONFIG_VALUE_2"]
     assert env["GIT_CONFIG_KEY_3"] == "credential.https://gist.github.com.helper"
     assert env["GH_TOKEN"] == "" and "GITHUB_TOKEN" not in env
     assert CLASSIC not in json.dumps(env)                # 环境变量里只有文件路径
@@ -159,7 +166,7 @@ def test_env_adds_git_helper_after_existing_git_config_and_blanks_host_tokens(se
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="需要 git")
 def test_git_reads_the_token_through_the_helper_at_call_time(seeded, tmp_path):
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     credentials = credential_context_dir("webshop")
     base = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(tmp_path),
             "GIT_TERMINAL_PROMPT": "0"}
@@ -174,7 +181,7 @@ def test_git_reads_the_token_through_the_helper_at_call_time(seeded, tmp_path):
     assert filled.returncode == 0, filled.stderr
     assert f"password={CLASSIC}" in filled.stdout and "username=x-access-token" in filled.stdout
     # 替换 token 后不用重建环境:helper 每次调用都重新读文件
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=FINE)
+    save_github_token(seeded, "", FINE)
     assert f"password={FINE}" in fill("github.com").stdout
     assert f"password={FINE}" in fill("gist.github.com").stdout
     assert fill("example.com").returncode != 0           # 其他主机不受影响,也拿不到 token
@@ -182,7 +189,7 @@ def test_git_reads_the_token_through_the_helper_at_call_time(seeded, tmp_path):
 
 @pytest.mark.skipif(shutil.which("gh") is None, reason="需要 gh")
 def test_gh_treats_the_generated_config_as_logged_in(seeded, tmp_path):
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(tmp_path),
            **github_env("webshop", credential_context_dir("webshop"), base={})}
     shown = subprocess.run(["gh", "auth", "token"], env=env, cwd=tmp_path,
@@ -200,23 +207,23 @@ def test_agent_run_gets_the_identity_without_the_token_in_prompt(seeded):
     plain = _run(seeded, chat)
     assert "GH_CONFIG_DIR" not in plain.env and "GitHub identity" not in plain.common_prompt
 
-    save_credential(seeded, project_id="", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "", CLASSIC)
     config = _run(seeded, chat)
     assert config.env["GH_CONFIG_DIR"] == str(github_cli_dir("webshop"))
     assert str(github_cli_dir("webshop")) in config.allowed_dirs
     helper = config.env[f"GIT_CONFIG_VALUE_{int(config.env['GIT_CONFIG_COUNT']) - 1}"]
-    assert str(Path(config.env["MISSIONCREW_CREDENTIALS_DIR"]) / "GITHUB_TOKEN") in helper
-    assert "`GITHUB_TOKEN` is also the project's GitHub identity" in config.common_prompt
+    assert str(Path(config.env["MISSIONCREW_CREDENTIALS_DIR"]) / "GITHUB" / "TOKEN") in helper
+    assert "`GITHUB/TOKEN` is also the project's GitHub identity" in config.common_prompt
     everything = (config.prompt + config.common_prompt + config.turn_prompt
                   + json.dumps(config.env))
     assert CLASSIC not in everything
     manual = Path(config.env["MISSIONCREW_MANUAL"]).read_text()
-    assert "`GITHUB_TOKEN` is the project's GitHub identity" in manual
+    assert "The `GITHUB` environment's `TOKEN` is the project's GitHub identity" in manual
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="需要 git")
 def test_automation_script_runs_git_as_the_project_identity(seeded):
-    save_credential(seeded, project_id="webshop", name="GITHUB_TOKEN", value=CLASSIC)
+    save_github_token(seeded, "webshop", CLASSIC)
     chat = ChatEngine(seeded, max_workers=2)
     service = AutomationService(seeded, chat.agent_tools)
     automation, _ = save_automation(seeded, "webshop", id="gh-auth", script=(
@@ -226,7 +233,7 @@ def test_automation_script_runs_git_as_the_project_identity(seeded):
     run = _wait_run(seeded, automation.id)
     assert run["status"] == "succeeded", run
     # helper 交出了 token,落库的输出照常脱敏
-    assert run["stdout"].splitlines() == ["config-ok", "password=[credential:GITHUB_TOKEN]"]
+    assert run["stdout"].splitlines() == ["config-ok", "password=[credential:GITHUB.TOKEN]"]
 
 
 # ---- HTTP API 与页面 ----
@@ -237,7 +244,8 @@ def test_identity_api_never_returns_the_token(seeded, monkeypatch):
         assert client.get("/api/github").json() == {
             "configured": False, "scope": "", "identity": None}
         assert client.get("/api/projects/missing/github").status_code == 404
-        client.post("/api/credentials", json={"name": "GITHUB_TOKEN", "value": CLASSIC})
+        client.post("/api/credentials", json={
+            "name": "GITHUB", "variables": [{"name": "TOKEN", "value": CLASSIC}]})
         global_status = client.get("/api/github").json()
         project_status = client.get("/api/projects/webshop/github?refresh=true").json()
         assert global_status["identity"]["login"] == "crew-bot"
@@ -254,7 +262,7 @@ def test_identity_api_never_returns_the_token(seeded, monkeypatch):
 def test_deleting_project_removes_its_cli_config(seeded):
     with TestClient(create_app()) as client:
         client.post("/api/projects", json={"id": "tmp", "name": "Tmp"})
-        save_credential(seeded, project_id="tmp", name="GITHUB_TOKEN", value=CLASSIC)
+        save_github_token(seeded, "tmp", CLASSIC)
         assert (github_cli_dir("tmp") / "hosts.yml").exists()
         assert client.delete("/api/projects/tmp").status_code == 200
     assert not github_cli_dir("tmp").exists()

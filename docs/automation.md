@@ -17,7 +17,7 @@
 ### 运行环境
 
 - **工作目录**：`<数据目录>/automations/<项目 id>/<脚本短 id>/`，跨次运行保留，可以存放状态文件（例如上次同步的时间）。每次运行前平台把脚本正文写成该目录下的 `script`，不要用这个文件名保存别的内容。
-- **环境变量**：脚本继承 MissionCrew 服务进程的环境，`PATH` 以及 `gh`、`gitcode` 等 CLI 的登录状态都来自启动服务的用户；项目有 `GITHUB_TOKEN` 凭据时，脚本里的 `gh` 与 git 改用这个 GitHub 身份，不用自己传 token（机制见 [harness 工作区边界](agent-harness-workspace.md) 的「GitHub 身份」）。平台另外注入：
+- **环境变量**：脚本继承 MissionCrew 服务进程的环境，`PATH` 以及 `gh`、`gitcode` 等 CLI 的登录状态都来自启动服务的用户；项目有 GitHub 身份（`GITHUB` 环境的 `TOKEN`）时，脚本里的 `gh` 与 git 改用这个身份，不用自己传 token（机制见 [harness 工作区边界](agent-harness-workspace.md) 的「GitHub 身份」）。平台另外注入：
 
   | 变量 | 含义 |
   | --- | --- |
@@ -26,7 +26,7 @@
   | `MISSIONCREW_AGENT_TOKEN_FILE` | 本次运行的一次性令牌文件（工作目录下的 `.agent-tool-token`）；CLI 自行读取，脚本不需要读取，也不要打印 |
   | `MISSIONCREW_PROJECT_ID` | 项目 id |
   | `MISSIONCREW_AUTOMATION_ID` | 脚本 id，格式 `<项目 id>:<脚本短 id>` |
-  | `MISSIONCREW_CREDENTIALS_DIR` | 项目可用凭据的目录（全局凭据加本项目凭据，同名时项目覆盖全局），每份凭据一个文件；在需要的命令里内联读取，如 `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM_TOKEN")" npm publish`，不要打印。stdout/stderr 落库前同样会把凭据原文替换成 `[credential:<名称>]` |
+  | `MISSIONCREW_CREDENTIALS_DIR` | 项目可用凭据的目录（全局环境加本项目环境，同名时项目的整份覆盖全局），每个环境一个子目录、每个变量一个文件；在需要的命令里内联读取，如 `NPM_TOKEN="$(cat "$MISSIONCREW_CREDENTIALS_DIR/NPM/TOKEN")" npm publish`，secret 不要打印。stdout/stderr 落库前同样会把 secret 原文替换成 `[credential:<环境>.<变量>]` |
   | `MISSIONCREW_TRIGGER` | 本次运行的触发来源：`cron`、`webhook` 或 `manual`（人在页面点「立即运行」或主控 `automation.run`） |
   | `MISSIONCREW_WEBHOOK_EVENT_FILE` | 仅 webhook 触发：本次事件文件的路径，格式见下文「Webhook 触发」 |
   | `MISSIONCREW_WEBHOOK_SOURCE` | 仅 webhook 触发：收到这次投递的 webhook 来源 id |
@@ -112,17 +112,17 @@ fi
 
 ## GitHub 轮询来源
 
-外部 webhook 需要一个 GitHub 访问得到的公网地址，还要有仓库或组织的管理权限去配置。手里只有一个个人访问令牌（PAT）时，改用 **GitHub 轮询来源**：它是 webhook 来源的另一种类型（`kind: github`），投递不是外部系统送来的，而是平台用 `GITHUB_TOKEN` 凭据定时向 GitHub 查询新事件后自己生成的。订阅方式、扇出、排队和脚本拿到的事件形状都与外部 webhook 相同，同一个脚本可以不加区分地处理两类来源。
+外部 webhook 需要一个 GitHub 访问得到的公网地址，还要有仓库或组织的管理权限去配置。手里只有一个个人访问令牌（PAT）时，改用 **GitHub 轮询来源**：它是 webhook 来源的另一种类型（`kind: github`），投递不是外部系统送来的，而是平台用 GitHub 身份（`GITHUB` 环境的 `TOKEN`）定时向 GitHub 查询新事件后自己生成的。订阅方式、扇出、排队和脚本拿到的事件形状都与外部 webhook 相同，同一个脚本可以不加区分地处理两类来源。
 
 平台对 GitHub **只读**：只调用查询接口，不在仓库或组织上注册 webhook，不把通知标为已读，不改 GitHub 上的任何设置。
 
 分工是「人建入口，脚本订阅仓库」：
 
-- **来源由人创建，不绑定仓库**。先保存 `GITHUB_TOKEN` 凭据（见 [harness 工作区边界](agent-harness-workspace.md) 的「GitHub 身份」），再到「全局设置 → Webhook 来源 → ＋ 新建 GitHub 轮询来源」填写：
+- **来源由人创建，不绑定仓库**。先保存 GitHub token，即 `GITHUB` 环境的 `TOKEN`（见 [harness 工作区边界](agent-harness-workspace.md) 的「GitHub 身份」），再到「全局设置 → Webhook 来源 → ＋ 新建 GitHub 轮询来源」填写：
 
   | 字段 | 含义 |
   | --- | --- |
-  | 使用的 token（`project_id`） | 全局凭据里的 `GITHUB_TOKEN`，或某个项目生效的那份（项目自己的，没有时沿用全局的） |
+  | 使用的 token（`project_id`） | 全局 `GITHUB` 环境里的 `TOKEN`，或某个项目生效的那个（项目自己有 `GITHUB` 环境时用它的，没有时沿用全局的） |
   | 轮询间隔（`interval_seconds`） | 多久向 GitHub 查询一次，60 ~ 86400 秒，默认 60；对这个来源下的所有仓库和通知统一生效 |
   | 账号通知（`notifications`） | 开启后增加一条通知流，内容是 token 所属账号的通知收件箱 |
   | 通知只要直接参与的（`participating`） | 通知流只含账号直接参与或被 @ 的通知 |
@@ -153,7 +153,7 @@ fi
   - 没有脚本订阅的仓库不查询，期间的事件不会留给后来的订阅者；退订后重新订阅从新的基线开始。
   - 事件文件里 `transport` 为 `poll`（外部投递是 `webhook`）；`delivery` 是 `poll-<GitHub 事件 id>` 或 `poll-notification-<通知 id>-<更新时间>`，同一个事件不会重复投递。脚本环境里 `MISSIONCREW_TRIGGER` 仍是 `webhook`，`MISSIONCREW_WEBHOOK_PROVIDER` 是 `github`。
 - **延迟与额度**：轮询间隔在来源上配置，默认 60 秒，这也是 GitHub 要求的下限（响应头 `X-Poll-Interval`，GitHub 要求更长时平台以它为准）。仓库事件接口本身不是实时的：实测事件通常在发生后一分钟内可以查到，GitHub 文档说明繁忙时可能延迟到数小时；通知接口没有这层延迟。需要秒级响应时使用外部 webhook。每个被订阅的仓库每轮一次请求，没有新事件时 GitHub 返回 304，不消耗调用额度（每个 token 每小时 5000 次）；触发限流时平台按 GitHub 给出的时间推迟下一次查询。
-- **状态与排错**：来源列表和编辑框显示轮询间隔、已被订阅的仓库、最近一次查询时间、累计投递数和出错原因，「立即检查」马上查询一次。常见原因：没有保存 `GITHUB_TOKEN`；token 失效（401）；仓库不存在或 token 无权访问（404，无权访问的私有仓库 GitHub 也返回 404）；通知流使用了 fine-grained PAT。一条流出错不影响其他流；出错原因变化时记一条审计（`github_poll_failed`）。
+- **状态与排错**：来源列表和编辑框显示轮询间隔、已被订阅的仓库、最近一次查询时间、累计投递数和出错原因，「立即检查」马上查询一次。常见原因：`GITHUB` 环境里没有 `TOKEN`；token 失效（401）；仓库不存在或 token 无权访问（404，无权访问的私有仓库 GitHub 也返回 404）；通知流使用了 fine-grained PAT。一条流出错不影响其他流；出错原因变化时记一条审计（`github_poll_failed`）。
 - **平台不做的事**：不替你在 GitHub 上注册 webhook，也不做「逐个列表对比状态」这类更细的监控。轮询来源给不出的信息（事件接口省略的字段、更权威的 Issue/PR 状态、更短的检查周期），由脚本或 Agent 自己用 `gh api` 查询并对比：写一个 cron 脚本，把上次看到的结果存在脚本工作目录里，本次查询后自行比较。脚本里的 `gh` 已经是项目的 GitHub 身份。
 
 示例：`acme/webshop` 有新 Issue 时在频道里交给 dev 处理，PR 合并时告知主控。脚本订阅来源 `github`，`github_repos` 为 `["acme/webshop"]`，`github_events` 为 `["issues", "pull_request"]`，再按动作过滤（脚本的 `actions` 要包含 `message.publish`，默认就有）：

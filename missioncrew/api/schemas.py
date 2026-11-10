@@ -88,15 +88,15 @@ class WebhookSourceInput(BaseModel):
 class CredentialVariableInput(BaseModel):
     name: str = Field(max_length=64)
     secret: bool = True
-    value: Optional[str] = Field(None, max_length=70000)   # None = 保留原值
+    value: Optional[str] = Field(None, max_length=70000)   # None = 保留原值;secret 只写不读
 
 
 class CredentialInput(BaseModel):
+    """一个环境:variables 是保存后的完整变量列表,不在其中的旧变量被删除。"""
     name: str = Field(max_length=64)
     description: Optional[str] = Field(None, max_length=2000)
-    value: Optional[str] = Field(None, max_length=70000)   # None = 保留原值;只写不读
-    # 给出 variables 即保存环境(一组变量):它是保存后的完整变量列表
-    variables: Optional[list[CredentialVariableInput]] = Field(None, max_length=50)
+    variables: list[CredentialVariableInput] = Field(max_length=50)
+    create: bool = False     # True = 只新建:同名环境已存在时拒绝,不整份覆盖它
 
 
 class MessageInput(BaseModel):

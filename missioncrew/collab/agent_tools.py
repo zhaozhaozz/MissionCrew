@@ -24,7 +24,7 @@ from . import board_sources
 from .callbacks import CallbackService, public_callback, resolve_fire_at
 from . import channels as channel_ops
 from .content_channels import content_channel, rebind_content_channel
-from .credentials import request_credential, request_environment
+from .credentials import request_environment
 from .documents import (document_resource_url, library_for,
                         normalize_document_resource_urls, safe_relative_path)
 from .guidelines import (guideline_history, read_guideline_version, save_guideline,
@@ -577,34 +577,34 @@ ACTION_DEFINITIONS = {
     },
     "credential.request": {
         "description": (
-            "Ask a human to save a secret (token, password, key) the task needs instead of "
-            "asking for it in chat: the platform posts a notice in the current channel with a "
-            "link to the form, and once a human fills it in the value appears as the file "
-            "$MISSIONCREW_CREDENTIALS_DIR/<name>, readable from your next command on. "
-            "When several values belong together (address + user name + password), pass "
-            "variables to request an environment instead: a directory "
-            "$MISSIONCREW_CREDENTIALS_DIR/<name>/ with one file per variable. "
-            "Credentials already saved for the project (including global ones) are listed in "
-            "index.json in that directory; asking for one of them returns already_exists. "
-            "The result's resource_url is the link to that form; use it as is when you point "
-            "a human to it"
+            "Ask a human to save secrets and settings (token, password, key, address, user "
+            "name) the task needs instead of asking for them in chat. Credentials are kept "
+            "as environments: a named group of variables that are used together, each one "
+            "either a secret or plain configuration. The platform posts a notice in the "
+            "current channel with a link to the form, and once a human fills it in each "
+            "variable appears as the file $MISSIONCREW_CREDENTIALS_DIR/<name>/<VARIABLE>, "
+            "readable from your next command on. Environments the project already has "
+            "(including global ones) are listed in index.json in that directory; asking "
+            "for variables that all have values returns already_exists. The result's "
+            "resource_url is the link to that form; use it as is when you point a human to "
+            "it"
         ),
         "orchestrator_only": False,
         "automation_allowed": False,
         "arguments": {
-            "name": ("credential or environment name in upper case letters, digits and "
-                     "underscores, e.g. GITHUB_TOKEN or STAGING_ADMIN; it becomes the file "
-                     "or directory name"),
+            "name": ("environment name in upper case letters, digits and underscores, e.g. "
+                     "STAGING_ADMIN or SENTRY; it becomes the directory name. GITHUB is "
+                     "reserved for the project's GitHub identity (variable TOKEN)"),
             "description": ("what it is for and the minimal permissions it needs, shown to "
                             "the human who fills it in"),
-            "variables": ("optional, makes it an environment: a list of {name, secret, "
-                          "value}. name is upper case like URL, USERNAME, PASSWORD. secret "
-                          "defaults to true: a human fills the value and the platform "
-                          "redacts it; never pass a secret value here. With secret false "
-                          "the value is plain configuration, visible to everyone: give the "
-                          "value when you already know it, or leave it for the human. For "
-                          "an environment this project already has, only the variables it "
-                          "lacks are added"),
+            "variables": ("required: a list of {name, secret, value}, even when you need a "
+                          "single value, e.g. [{\"name\": \"TOKEN\"}]. name is upper case "
+                          "like URL, USERNAME, PASSWORD, TOKEN. secret defaults to true: a "
+                          "human fills the value and the platform redacts it; never pass a "
+                          "secret value here. With secret false the value is plain "
+                          "configuration, visible to everyone: give the value when you "
+                          "already know it, or leave it for the human. For an environment "
+                          "this project already has, only the variables it lacks are added"),
         },
     },
     "callback.create": {
@@ -2368,37 +2368,17 @@ class AgentActionService:
         description = str(arguments.get("description") or "").strip()
         if not description:
             raise AgentToolError(
-                "invalid_arguments", "description 必填:说明凭据用途和所需的最小权限")
-        settings_url = settings_resource_url(project.id, "credentials")
-        if arguments.get("variables") is not None:
-            return self._request_environment(
-                project, identity, name, description, arguments["variables"], settings_url)
-        try:
-            credential, _created = request_credential(
-                self.store, project_id=project.id, name=name,
-                description=description, actor=identity.actor)
-        except FileExistsError as exc:
+                "invalid_arguments", "description 必填:说明这组变量的用途和所需的最小权限")
+        if arguments.get("variables") is None:
             raise AgentToolError(
-                "already_exists",
-                f"凭据 {name} 已可用,直接读取 $MISSIONCREW_CREDENTIALS_DIR/{name}",
-                409) from exc
-        except ValueError as exc:
-            raise AgentToolError("invalid_arguments", str(exc)) from exc
-        return {
-            "summary": (f"请求凭据 `{credential.name}`({credential.description})。"
-                        f"请在[项目设置 → 凭据]({settings_url})中填写,"
-                        "不要把值直接发在聊天里"),
-            "credential": {"name": credential.name, "description": credential.description,
-                           "status": "pending"},
-            "resource_url": settings_url,
-        }
-
-    def _request_environment(self, project: Project, identity: AgentIdentity, name: str,
-                             description: str, variables, settings_url: str) -> dict:
+                "invalid_arguments",
+                "variables 必填:列出需要的变量,如 [{\"name\": \"TOKEN\"}];"
+                "凭据以环境为单位,一个环境是一组变量")
+        settings_url = settings_resource_url(project.id, "credentials")
         try:
             credential, _created = request_environment(
                 self.store, project_id=project.id, name=name, description=description,
-                variables=variables, actor=identity.actor)
+                variables=arguments["variables"], actor=identity.actor)
         except FileExistsError as exc:
             raise AgentToolError(
                 "already_exists",
@@ -2415,8 +2395,7 @@ class AgentActionService:
                    if pending else "变量都已有值,无需填写")
         return {
             "summary": f"请求环境 `{credential.name}`({credential.description})。{waiting}",
-            "credential": {"name": credential.name, "type": "environment",
-                           "description": credential.description,
+            "credential": {"name": credential.name, "description": credential.description,
                            "status": "pending" if pending else "available",
                            "variables": listed},
             "resource_url": settings_url,

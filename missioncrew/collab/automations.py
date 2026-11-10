@@ -341,7 +341,7 @@ class AutomationService:
             # 与聊天角色读同一个项目凭据目录;输出落库前同样脱敏
             "MISSIONCREW_CREDENTIALS_DIR": str(credentials_dir),
         })
-        # 项目有 GITHUB_TOKEN 凭据时,脚本里的 gh 与 git 直接是这个身份
+        # 项目有 GitHub 身份(GITHUB 环境的 TOKEN)时,脚本里的 gh 与 git 直接是这个身份
         env.update(github_env(automation.project_id, credentials_dir))
         for key in ("MISSIONCREW_WEBHOOK_EVENT_FILE", "MISSIONCREW_WEBHOOK_SOURCE",
                     "MISSIONCREW_WEBHOOK_PROVIDER", "MISSIONCREW_WEBHOOK_EVENT",

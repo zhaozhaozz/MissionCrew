@@ -1,16 +1,15 @@
-"""凭据端点:全局凭据与项目凭据的维护,只由人在设置页操作。
+"""凭据端点:全局环境与项目环境的维护,只由人在设置页操作。
 
-值只写不读:保存时可以提交新值,任何端点都不返回值,页面只显示末 4 位指纹;
-要改就整份替换。项目列表同时带上继承来的全局凭据,并标出被项目同名覆盖的。
-环境(一组变量)走同一组端点,请求体带 variables;其中普通变量的值不保密,随
-列表返回,secret 变量与单值凭据一样只写不读。
+凭据以环境为单位:一个环境是一组变量,每个变量各自标记是否 secret。secret 变量
+只写不读:保存时可以提交新值,任何端点都不返回它,页面只显示末 4 位指纹;普通
+变量的值不保密,随列表返回。项目列表同时带上继承来的全局环境,并标出被项目同名
+覆盖的。
 """
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 
-from ..collab.credentials import (delete_credential, save_credential,
-                                  save_environment)
+from ..collab.credentials import delete_credential, save_environment
 from ..core.models import Credential
 from .context import ApiContext
 from .schemas import CredentialInput
@@ -25,17 +24,14 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
 
     def _save(project_id: str, body: CredentialInput) -> dict:
         try:
-            if body.variables is not None:
-                if body.value is not None:
-                    raise ValueError("环境按变量填写,不能同时提交单个值")
-                credential, created = save_environment(
-                    store, project_id=project_id, name=body.name,
-                    description=body.description,
-                    variables=[item.model_dump() for item in body.variables])
-            else:
-                credential, created = save_credential(
-                    store, project_id=project_id, name=body.name,
-                    description=body.description, value=body.value)
+            credential, created = save_environment(
+                store, project_id=project_id, name=body.name,
+                description=body.description,
+                variables=[item.model_dump() for item in body.variables],
+                create=body.create)
+        except FileExistsError as exc:
+            raise HTTPException(
+                409, f"环境 {body.name} 已存在,请在列表里编辑它,或换一个名字") from exc
         except LookupError as exc:
             raise HTTPException(404, str(exc)) from exc
         except ValueError as exc:
@@ -73,7 +69,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         overridden = {item.name for item in own}
         return {
             "credentials": [credential_data(item) for item in own],
-            # 继承的全局凭据:overridden = 本项目有同名凭据,Agent 读到的是项目那份
+            # 继承的全局环境:overridden = 本项目有同名环境,Agent 读到的是项目那个
             "inherited": [credential_data(item, overridden=item.name in overridden)
                           for item in store.list_credentials("")],
         }

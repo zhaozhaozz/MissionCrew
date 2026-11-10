@@ -38,7 +38,8 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Callable, Optional
 
-from ..core.models import Automation, WebhookSource
+from ..core.models import (GITHUB_ENVIRONMENT, GITHUB_TOKEN_VARIABLE, Automation,
+                           WebhookSource)
 from ..core.store import Store
 from .github import (GitHubError, GitHubResponse, Transport, github_request,
                      github_token, token_kind)
@@ -78,7 +79,8 @@ def normalize_github_config(store: Store, raw: dict) -> dict:
     """校验并规整来源的轮询配置;不合法抛 ValueError。
 
     notifications 开启通知流,participating 让它只含直接参与或被 @ 的通知;
-    project_id 决定用哪份 GITHUB_TOKEN(空 = 全局凭据,否则是该项目生效的那份);
+    project_id 决定用哪份 GitHub 身份,即 GITHUB 环境的 TOKEN(空 = 全局环境,否则是
+    该项目生效的那个);
     interval_seconds 是轮询间隔。仓库不在这里:由订阅脚本声明。
     """
     if not isinstance(raw, dict):
@@ -359,9 +361,10 @@ class GitHubEventPoller:
             token, _scope = github_token(self.store, config.get("project_id", ""))
             token_error = ""
             if not token:
-                where = (f"项目 {config['project_id']}" if config.get("project_id")
-                         else "全局凭据")
-                token_error = f"{where}里没有 GITHUB_TOKEN"
+                where = (f"项目 {config['project_id']} 生效的" if config.get("project_id")
+                         else "全局的")
+                token_error = (f"{where} {GITHUB_ENVIRONMENT} 环境里没有 "
+                               f"{GITHUB_TOKEN_VARIABLE}")
             for key in wanted if token else []:
                 stream = streams[key]
                 if only_new and stream:
