@@ -162,6 +162,7 @@ class RoleTemplateInput(BaseModel):
     preference: str = ""           # 偏好:自由文本(风格/领域,如前端/后端)
     color: str = ""
     sort_order: Optional[int] = None   # None = 保留现值;新角色排到项目末尾
+    max_concurrency: int = Field(default=0, ge=0)  # 跨频道同时执行的轮数上限;0 = 不限
 
 
 class RoleInput(RoleTemplateInput):

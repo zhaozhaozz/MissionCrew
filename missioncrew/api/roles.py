@@ -94,6 +94,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
         role = Role(**data)
         store.put_role(role)
         ctx.role_usage_linkage.role_updated(role, previous=existing)
+        ctx.chat.reschedule()   # 并发上限调高后,等待中的频道立即按新上限派发
         store.audit("human", "role_saved", detail=f"project={role.project_id} role={role.id}")
         return store.get_role(role.project_id, role.id).to_dict()
 
@@ -151,6 +152,7 @@ def register(app: FastAPI, ctx: ApiContext) -> None:
             store.put_role(role)
             ctx.role_usage_linkage.role_updated(role, previous=previous)
             imported.append(role.id)
+        ctx.chat.reschedule()
         store.audit(
             "human", "roles_imported",
             detail=(f"project={project.id} imported={','.join(imported)} "

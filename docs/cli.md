@@ -8,7 +8,7 @@ MissionCrew 的日常操作在 Web 页面完成，频道、Task、文档、准�
 
 | 命令 | 说明 |
 |---|---|
-| `mc serve [--host H] [--port P] [--chat-workers N] [--webhook-host H] [--webhook-port P]` | 启动 Web 服务（REST API + 页面），默认只监听本机 `127.0.0.1:8321`；`--host 0.0.0.0` 或环境变量 `MISSIONCREW_HOST` 可开放局域网访问（平台无身份验证，只在可信网络中使用）。`--chat-workers` 设定聊天执行并发上限（默认 16，亦可用环境变量 `MISSIONCREW_CHAT_MAX_WORKERS`），同频道同角色仍按会话串行。同时另起一个只接收自动化脚本 webhook 投递的端口（默认 `8322`，`--webhook-port` 或 `MISSIONCREW_WEBHOOK_PORT` 修改，`0` 关闭；地址默认同 `--host`，`--webhook-host` 或 `MISSIONCREW_WEBHOOK_HOST` 单独指定），见 [automation.md](automation.md)。常驻运行请交给 pm2，见 README「用 pm2 常驻运行」。 |
+| `mc serve [--host H] [--port P] [--chat-workers N] [--webhook-host H] [--webhook-port P]` | 启动 Web 服务（REST API + 页面），默认只监听本机 `127.0.0.1:8321`；`--host 0.0.0.0` 或环境变量 `MISSIONCREW_HOST` 可开放局域网访问（平台无身份验证，只在可信网络中使用）。`--chat-workers` 设定全局同时执行的轮数上限（默认 16，亦可用环境变量 `MISSIONCREW_CHAT_MAX_WORKERS`）：只有正在执行的一轮占用，排队的不占；同频道同角色仍按会话串行，单个角色的跨频道上限在角色的「并发上限」里设，见 [resources.md](resources.md)。同时另起一个只接收自动化脚本 webhook 投递的端口（默认 `8322`，`--webhook-port` 或 `MISSIONCREW_WEBHOOK_PORT` 修改，`0` 关闭；地址默认同 `--host`，`--webhook-host` 或 `MISSIONCREW_WEBHOOK_HOST` 单独指定），见 [automation.md](automation.md)。常驻运行请交给 pm2，见 README「用 pm2 常驻运行」。 |
 | `mc audit [TASK_ID] [--limit N]` | 查看审计日志，平台每个决策都可追溯。可按 Task 过滤，默认最近 50 条。 |
 | `mc demo [--no-run]` | 向当前数据目录写入 mock 后端与示例项目 `webshop`，并演示一次 Task 经频道交给主控的流程。只用于开发调试：它会把演示数据写进真实数据目录，建议配合 `MISSIONCREW_HOME` 指向临时目录。 |
 

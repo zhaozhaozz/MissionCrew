@@ -360,15 +360,22 @@ class ChatEngine:
         self.store = store
         # 并发上限默认读全局配置(env MISSIONCREW_CHAT_MAX_WORKERS);
         # 显式传参供测试与特殊调用方使用。
+        self._max_workers = max(
+            1, chat_max_workers() if max_workers is None else max_workers)
         self._pool = ThreadPoolExecutor(
-            max_workers=chat_max_workers() if max_workers is None else max_workers,
-            thread_name_prefix="chat-run")
+            max_workers=self._max_workers, thread_name_prefix="chat-run")
         self._futures: list[Future] = []
         self._futures_lock = threading.Lock()
         self._history_lock = threading.Lock()
         self._chain_run_lock = threading.Lock()
-        self._agent_execution_locks_guard = threading.Lock()
-        self._agent_execution_locks: dict[tuple[str, str], threading.Lock] = {}
+        # 执行位调度:排队运行只登记在 _waiting,不占执行池线程;拿到执行位的
+        # channel×role 才提交到池里。执行位同时受全局上限(_max_workers)与角色
+        # 并发上限(Role.max_concurrency,同项目同角色跨频道计数)约束。
+        # 锁顺序:_run_state_lock → _sched_lock,持有 _sched_lock 时不得再取前者。
+        self._sched_lock = threading.Lock()
+        self._waiting: dict[tuple[str, str], tuple[int, Channel]] = {}
+        self._executing: set[tuple[str, str]] = set()
+        self._role_slots: dict[tuple[str, str], int] = {}
         # 频道停止与运行发布共用同一把锁：停止先赢时禁止迟到回复和后续调度，
         # 回复先赢时停止操作会连同刚产生的后续运行一起捕获。
         self._run_state_lock = threading.RLock()
@@ -399,12 +406,10 @@ class ChatEngine:
             return f"{base}::context-{channel.context_start_message_id}"
         return base
 
-    def _agent_execution_lock(self, channel_id: str,
-                              role_id: str) -> threading.Lock:
-        """同一 channel×role 只允许一个 Run 装配并持有 Agent Tool capability。"""
-        key = (channel_id, role_id)
-        with self._agent_execution_locks_guard:
-            return self._agent_execution_locks.setdefault(key, threading.Lock())
+    def _slot_busy(self, channel_id: str, role_id: str) -> bool:
+        """channel×role 是否持有执行位(正在装配或执行一轮,持有 Agent Tool 令牌)。"""
+        with self._sched_lock:
+            return (channel_id, role_id) in self._executing
 
     def respond_interaction(self, run_id: int, request_id: str,
                             response: dict) -> None:
@@ -948,55 +953,134 @@ class ChatEngine:
                                    f"不再触发 @{role_id}。", [], msg_id, root_id, depth)
             self._write_channel_history(channel)
             return
-        try:
-            future = self._pool.submit(self._execute, run_id, channel, role_id)
-        except RuntimeError as e:   # 执行池已关闭:运行不能停留在 queued
-            self.store.update_chat_run(run_id, "failed", error=f"聊天引擎已关闭: {e}")
-            return
-        with self._futures_lock:
-            self._futures.append(future)
+        self._schedule(channel, role_id, run_id)
 
-    def _execute(self, run_id: int, channel: Channel, role_id: str) -> None:
-        """执行池里的一个工作线程:拿到 channel×role 的执行锁后,把该角色此刻
-        排队的运行合并成一轮执行。
+    # ---- 执行位调度 ----
+    def _schedule(self, channel: Channel, role_id: str, run_id: int) -> None:
+        """登记一条排队运行并尝试派发。拿不到执行位时只留在队列里、不占线程,
+        并在运行上记一条等待原因,运行卡片里可以看到它在等什么。"""
+        key = (channel.id, role_id)
+        with self._sched_lock:
+            first = self._waiting.get(key, (run_id, channel))[0]
+            self._waiting[key] = (min(first, run_id), channel)
+            self._dispatch_locked()
+            reason = (self._wait_reason_locked(channel, role_id)
+                      if key in self._waiting else "")
+        if reason:
+            self.store.append_run_event(run_id, "status", reason)
 
-        ``run_id`` 是提交这个线程的那次运行,只用来判断还有没有事可做:它可能
-        已经被先拿到锁的线程并入别的运行(或作为承接运行执行完),这时直接返回。
-        每条排队运行都有一个在它之后才拿锁的线程,所以不会有运行无人执行。
+    def reschedule(self) -> None:
+        """按当前配置重新派发等待中的工作;角色并发上限调高后立即生效,
+        不必等某个执行位空出来。"""
+        with self._sched_lock:
+            self._dispatch_locked()
+
+    def _role_limit(self, project_id: str, role_id: str) -> int:
+        role = self.store.get_role(project_id, role_id)
+        return max(0, role.max_concurrency) if role else 0
+
+    def _role_at_limit_locked(self, role_key: tuple[str, str]) -> bool:
+        limit = self._role_limit(*role_key)
+        return bool(limit) and self._role_slots.get(role_key, 0) >= limit
+
+    def _dispatch_locked(self) -> None:
+        """按最早排队的运行先后,把能拿到执行位的 channel×role 交给执行池。
+
+        调用方持有 ``_sched_lock``。同一 channel×role 同时只有一个执行位;角色
+        达到并发上限时跳过它、留在队列里,不挡其他角色;全局执行位满了就停。
         """
-        with self._run_state_lock:
-            if not self.store.chat_run_is_active(run_id):
+        for key, (_first, channel) in sorted(
+                self._waiting.items(), key=lambda item: item[1][0]):
+            if len(self._executing) >= self._max_workers:
                 return
-        with self._agent_execution_lock(channel.id, role_id):
-            claimed = self._claim_queued_runs(channel, role_id)
-            if claimed is None:
-                return
-            run, merged_ids = claimed
-            run_id, msg_id = int(run["id"]), int(run["trigger_message_id"])
-            root_id, depth = int(run["root_id"]), int(run["depth"])
+            role_key = (channel.project_id or "", key[1])
+            if key in self._executing or self._role_at_limit_locked(role_key):
+                continue
+            del self._waiting[key]
+            self._executing.add(key)
+            self._role_slots[role_key] = self._role_slots.get(role_key, 0) + 1
             try:
-                self._execute_inner_serialized(
-                    run_id, channel, role_id, msg_id, root_id, depth, merged_ids)
-            except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
-                error = str(e)
-                project = self.store.get_project(channel.project_id or "")
-                if project:
-                    error = normalize_document_resource_urls(
-                        error, project.id, [library_for(project.id).root])
-                with self._run_state_lock:
-                    if not self.store.chat_run_is_active(run_id):
-                        return
-                    try:
-                        self._post_failure(channel, role_id, msg_id, root_id, depth,
-                                           f"@{role_id} 执行出错: {error}")
-                    finally:
-                        self.store.update_chat_run(run_id, "failed", error=error)
-            finally:
-                if channel.project_id:
-                    self.agent_tools.deactivate_run_token(
-                        channel.project_id, channel.id, role_id,
-                        chat_workspace_dir(channel.project_id, channel.id, role_id),
-                        run_id)
+                future = self._pool.submit(self._run_slot, channel, key[1])
+            except RuntimeError as e:   # 执行池已关闭:运行不能停留在 queued
+                self._release_slot_locked(key, role_key)
+                for run in self.store.queued_chat_runs(*key):
+                    self.store.update_chat_run(
+                        int(run["id"]), "failed", error=f"聊天引擎已关闭: {e}")
+                continue
+            with self._futures_lock:
+                self._futures.append(future)
+
+    def _release_slot_locked(self, key: tuple[str, str],
+                             role_key: tuple[str, str]) -> None:
+        self._executing.discard(key)
+        remaining = self._role_slots.get(role_key, 0) - 1
+        if remaining > 0:
+            self._role_slots[role_key] = remaining
+        else:
+            self._role_slots.pop(role_key, None)
+
+    def _wait_reason_locked(self, channel: Channel, role_id: str) -> str:
+        if (channel.id, role_id) in self._executing:
+            return (f"排队等待:@{role_id} 在本频道的上一轮还在执行,"
+                    "结束后把排队消息合并成一轮处理")
+        role_key = (channel.project_id or "", role_id)
+        if self._role_at_limit_locked(role_key):
+            limit = self._role_limit(*role_key)
+            return (f"排队等待:@{role_id} 已在 {limit} 个频道执行,"
+                    f"达到角色并发上限 {limit},有频道结束后按排队顺序启动")
+        return (f"排队等待:全局执行位已满({self._max_workers}),"
+                "有执行结束后按排队顺序启动")
+
+    def _run_slot(self, channel: Channel, role_id: str) -> None:
+        """执行池里的一个工作线程:持有 channel×role 的执行位,把该角色此刻排队
+        的运行合并成一轮执行;结束后归还执行位,并按队列派发后续工作。
+
+        本轮执行期间到达的消息继续排队,归还执行位时按数据库里的排队运行重新
+        登记(排队时间取其中最早一条),与其他等待者按先后竞争下一个执行位。
+        """
+        key = (channel.id, role_id)
+        try:
+            claimed = self._claim_queued_runs(channel, role_id)
+            if claimed is not None:
+                self._execute_claimed(channel, role_id, *claimed)
+        finally:
+            with self._sched_lock:
+                self._release_slot_locked(key, (channel.project_id or "", role_id))
+                queued = self.store.queued_chat_runs(channel.id, role_id)
+                if queued:
+                    latest = self._waiting.get(key, (0, channel))[1]
+                    self._waiting[key] = (int(queued[0]["id"]), latest)
+                else:
+                    self._waiting.pop(key, None)
+                self._dispatch_locked()
+
+    def _execute_claimed(self, channel: Channel, role_id: str, run: dict,
+                         merged_ids: list[int]) -> None:
+        run_id, msg_id = int(run["id"]), int(run["trigger_message_id"])
+        root_id, depth = int(run["root_id"]), int(run["depth"])
+        try:
+            self._execute_inner_serialized(
+                run_id, channel, role_id, msg_id, root_id, depth, merged_ids)
+        except Exception as e:  # 后台线程的异常必须落到频道里,不能无声丢失
+            error = str(e)
+            project = self.store.get_project(channel.project_id or "")
+            if project:
+                error = normalize_document_resource_urls(
+                    error, project.id, [library_for(project.id).root])
+            with self._run_state_lock:
+                if not self.store.chat_run_is_active(run_id):
+                    return
+                try:
+                    self._post_failure(channel, role_id, msg_id, root_id, depth,
+                                       f"@{role_id} 执行出错: {error}")
+                finally:
+                    self.store.update_chat_run(run_id, "failed", error=error)
+        finally:
+            if channel.project_id:
+                self.agent_tools.deactivate_run_token(
+                    channel.project_id, channel.id, role_id,
+                    chat_workspace_dir(channel.project_id, channel.id, role_id),
+                    run_id)
 
     def _claim_queued_runs(self, channel: Channel,
                            role_id: str) -> Optional[tuple[dict, list[int]]]:
@@ -1213,7 +1297,7 @@ class ChatEngine:
         if resolved is None:
             return None
         channel, role, backend, backend_id = resolved
-        if self._agent_execution_lock(channel.id, role.id).locked():
+        if self._slot_busy(channel.id, role.id):
             # 同一 channel×role 的常规运行正在装配或执行,令牌归它:此时落成
             # 唤醒运行会撤销它刚签发的令牌。退回缓冲路径,常规 turn 开始时交付
             return None
@@ -1399,7 +1483,7 @@ class ChatEngine:
                                   role_id: str, msg_id: int,
                                   root_id: int, depth: int,
                                   merged_ids: Sequence[int] = ()) -> None:
-        """在 channel×role 执行锁内执行一轮;``merged_ids`` 是排队时并入本轮的
+        """持有 channel×role 的执行位执行一轮;``merged_ids`` 是排队时并入本轮的
         其他触发消息,与 ``msg_id`` 一起写进本轮输入。"""
         role = self.store.get_role(channel.project_id or "", role_id)
         if role is None:

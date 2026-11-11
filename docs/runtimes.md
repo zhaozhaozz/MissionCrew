@@ -218,7 +218,7 @@ ACP v1 把 `session/prompt` 响应定义为完整 prompt turn 的终止边界：
 
 公共区块并非每轮重发。完整注入只发生在：新会话或恢复降级（附最近对话）、版本变化（附替换旧版本提示）、重注入触发（附刷新提示）。其余复用轮次为增量回合，只发送版本引用头和本轮任务输入。重注入触发有两类：Claude 的 `compact_boundary`/`microcompact_boundary` 事件与 Codex app-server 的 `thread/compacted` 通知会立即持久化压缩标记；对没有压缩信号的 Runtime（ACP、其余打印模式），按增量回合的累计输入/输出字节数与轮数计数兜底，默认约 500k 字节或 20 轮后强制完整重注入，`MISSIONCREW_CONTEXT_REINJECT_BYTES` / `MISSIONCREW_CONTEXT_REINJECT_TURNS` 可覆盖（<=0 关闭对应触发）。每轮的注入模式（完整/增量及原因）作为状态事件上报，便于核对实际发送内容。
 
-Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。同一 `channel × role` 的 Run 串行获得执行锁；平台随后在稳定令牌路径原子写入绑定该 Run 的 capability，CLI 不提交 `run_id`，API 从已认证 token 确定归属。Run 结束即撤销令牌并删除该文件；Runtime 自发的一轮(Claude 后台命令汇报、ACP 客户端终端汇报或 Runtime 自带定时器触发)在起点经 `begin` 回调落成运行并重新签发令牌，turn 内的写操作与常规 Run 同等鉴权。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
+Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCREW_AGENT_TOOL_URL`、`MISSIONCREW_AGENT_TOKEN_FILE` 和 `MISSIONCREW_AGENT_TOOL_PYTHON`。同一 `channel × role` 的 Run 串行获得执行位；平台随后在稳定令牌路径原子写入绑定该 Run 的 capability，CLI 不提交 `run_id`，API 从已认证 token 确定归属。Run 结束即撤销令牌并删除该文件；Runtime 自发的一轮(Claude 后台命令汇报、ACP 客户端终端汇报或 Runtime 自带定时器触发)在起点经 `begin` 回调落成运行并重新签发令牌，turn 内的写操作与常规 Run 同等鉴权。工具的结构化错误可以在当前 Agent 回合内处理，而最终回复文本块只能在回合结束后解析，因此历史文本块只保留兼容读取。
 
 最近对话 JSON 只进入新建/恢复降级的首轮，正常 resume 不重复回放；完整频道历史、文档、准则、Skills 和 Task 分别位于 `MISSIONCREW_WORKSPACE` 下，并提供对应环境变量。聊天角色新建、修改、移动或删除文档、Task 时使用 `document.publish`、`document.rename`、`document.delete`、`task.create`、`task.update`、`task.brief` 或 `task.delete`；文档执行后扫描只作为迁移兼容，Task 快照不会反向同步。
 

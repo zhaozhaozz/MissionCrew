@@ -1582,17 +1582,25 @@ def test_runtime_wake_begin_skipped_while_channel_stopping(chat, seeded):
     assert seeded.list_messages("general") == []
 
 
-def test_runtime_wake_begin_skipped_while_regular_run_holds_capability(chat, seeded):
-    """同一 channel×role 的常规运行持有执行锁时,令牌归它:不落成唤醒运行,
+def test_runtime_wake_begin_skipped_while_regular_run_holds_capability(
+        seeded, monkeypatch):
+    """同一 channel×role 的常规运行持有执行位时,令牌归它:不落成唤醒运行,
     以免撤销它刚签发的令牌;provider 退回缓冲路径。"""
+    chat = ChatEngine(seeded, max_workers=2)
+    started, release, _turns = _blocking_first_start(monkeypatch)
     seeded.put_chat_session("general::dev", "general", "dev", "mock-claude",
                             "claude_code", "/tmp", "native-1", "v1")
-    with chat._agent_execution_lock("general", "dev"):
-        assert chat._begin_runtime_wake({
-            "session_key": "general::dev", "backend_id": "mock-claude",
-            "tasks": []}) is None
-    assert seeded.chat_runs_for_channel("general") == []
-    # 执行锁释放后照常落成
+    chat.post("general", "human", "@[dev] 先做这个")
+    assert started.wait(5)
+    assert chat._begin_runtime_wake({
+        "session_key": "general::dev", "backend_id": "mock-claude",
+        "tasks": []}) is None
+    assert len(seeded.chat_runs_for_channel("general")) == 1   # 只有常规运行
+    release.set()
+    chat.wait_idle()
+    # 执行位归还后照常落成(常规运行装配时清掉了这条测试会话,重新登记)
+    seeded.put_chat_session("general::dev", "general", "dev", "mock-claude",
+                            "claude_code", "/tmp", "native-1", "v1")
     assert chat._begin_runtime_wake({
         "session_key": "general::dev", "backend_id": "mock-claude",
         "tasks": []})["run_id"] > 0
@@ -1729,6 +1737,117 @@ def test_messages_queued_for_busy_role_run_as_one_merged_turn(seeded, monkeypatc
     assert [run["merged_count"] for run in runs] == [0, 0, 1]
     replies = [m for m in _log(seeded) if m["author_type"] == "agent"]
     assert [m["reply_to"] for m in replies] == [first, third]
+
+
+def _gated_start(monkeypatch, blocked_roles: set[str]):
+    """指定角色的每一轮都阻塞到 release;按开始顺序记录各轮的 session_key。"""
+    release = threading.Event()
+    started: list[str] = []
+    progress = threading.Condition()
+
+    def start(config):
+        with progress:
+            started.append(config.session_key)
+            progress.notify_all()
+        if config.role_id in blocked_roles:
+            assert release.wait(5)
+        return RunResult(True, "ok", output="完成")
+
+    def wait_started(count: int) -> None:
+        with progress:
+            assert progress.wait_for(lambda: len(started) >= count, timeout=5)
+
+    monkeypatch.setattr(runtime_manager, "start", start)
+    return started, release, wait_started
+
+
+def test_queued_runs_wait_without_holding_execution_pool_threads(seeded, monkeypatch):
+    """忙碌角色排队的消息不占执行池线程:执行位只给正在执行的角色。"""
+    chat = ChatEngine(seeded, max_workers=2)
+    started, release, wait_started = _gated_start(monkeypatch, {"dev"})
+
+    chat.post("general", "human", "@[dev] 第一件事")
+    wait_started(1)
+    queued = [chat.post("general", "human", f"@[dev] 第 {n} 件事") for n in (2, 3, 4)]
+    chat.post("general", "human", "@[reviewer] 看一下")
+    wait_started(2)          # 第二个执行位给了 reviewer,没被 dev 的三条排队消息占住
+    assert started == ["general::dev", "general::reviewer"]
+    [waiting] = seeded.chat_runs_for_trigger(queued[0])
+    assert any("上一轮还在执行" in event["content"]
+               for event in seeded.run_events(waiting["id"]))
+
+    release.set()
+    chat.wait_idle()
+    dev_runs = [run for run in seeded.chat_runs_for_channel("general")
+                if run["role_id"] == "dev"]
+    assert [run["status"] for run in dev_runs] == ["done", "merged", "merged", "done"]
+
+
+def test_role_concurrency_limit_queues_other_channels_despite_free_slots(
+        seeded, monkeypatch):
+    """角色达到并发上限后,其他频道的点名排队等待,即使全局还有空闲执行位;
+    其他角色不受影响,上一轮结束后排队的频道接着执行。"""
+    dev = seeded.get_role("webshop", "dev")
+    dev.max_concurrency = 1
+    seeded.put_role(dev)
+    seeded.put_channel(Channel(id="webshop:second", name="second", project_id="webshop"))
+    chat = ChatEngine(seeded, max_workers=4)
+    started, release, wait_started = _gated_start(monkeypatch, {"dev"})
+
+    chat.post("general", "human", "@[dev] 第一件事")
+    wait_started(1)
+    other_channel = chat.post("webshop:second", "human", "@[dev] 另一个频道的事")
+    chat.post("webshop:second", "human", "@[reviewer] 看一下")
+    wait_started(2)
+    assert started == ["general::dev", "webshop:second::reviewer"]
+    [waiting] = seeded.chat_runs_for_trigger(other_channel)
+    assert waiting["status"] == "queued"
+    assert any("达到角色并发上限 1" in event["content"]
+               for event in seeded.run_events(waiting["id"]))
+
+    release.set()
+    chat.wait_idle()
+    assert started[2:] == ["webshop:second::dev"]
+    assert seeded.get_chat_run(waiting["id"])["status"] == "done"
+
+
+def test_raising_role_concurrency_limit_dispatches_waiting_channels(seeded, monkeypatch):
+    dev = seeded.get_role("webshop", "dev")
+    dev.max_concurrency = 1
+    seeded.put_role(dev)
+    seeded.put_channel(Channel(id="webshop:second", name="second", project_id="webshop"))
+    chat = ChatEngine(seeded, max_workers=4)
+    started, release, wait_started = _gated_start(monkeypatch, {"dev"})
+
+    chat.post("general", "human", "@[dev] 第一件事")
+    wait_started(1)
+    chat.post("webshop:second", "human", "@[dev] 另一个频道的事")
+    dev.max_concurrency = 2
+    seeded.put_role(dev)
+    chat.reschedule()
+    wait_started(2)          # 不必等第一个频道结束
+    assert started == ["general::dev", "webshop:second::dev"]
+    release.set()
+    chat.wait_idle()
+
+
+def test_waiting_channels_take_freed_role_slots_in_queue_order(seeded, monkeypatch):
+    """执行位按最早排队的运行先后分配:先排队的频道先拿到角色空出来的执行位,
+    原频道本轮执行中新到的消息排在它后面。"""
+    dev = seeded.get_role("webshop", "dev")
+    dev.max_concurrency = 1
+    seeded.put_role(dev)
+    seeded.put_channel(Channel(id="webshop:second", name="second", project_id="webshop"))
+    chat = ChatEngine(seeded, max_workers=4)
+    started, release, wait_started = _gated_start(monkeypatch, {"dev"})
+
+    chat.post("general", "human", "@[dev] 第一件事")
+    wait_started(1)
+    chat.post("webshop:second", "human", "@[dev] 先排队的频道")
+    chat.post("general", "human", "@[dev] 原频道后到的消息")
+    release.set()
+    chat.wait_idle()
+    assert started == ["general::dev", "webshop:second::dev", "general::dev"]
 
 
 def test_merged_turn_returns_to_orchestrator_when_any_message_was_dispatched(

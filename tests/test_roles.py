@@ -88,6 +88,11 @@ def test_role_crud_api(client):
     assert roles["writer"]["description"] == "自由文本人格"
     assert roles["writer"]["enabled"] is True
     assert roles["writer"]["usage_linkage_enabled"] is False
+    assert roles["writer"]["max_concurrency"] == 0          # 默认不限
+    assert client.post("/api/roles", json={**body, "max_concurrency": 3}).status_code == 200
+    assert client.post("/api/roles", json={**body, "max_concurrency": -1}).status_code == 422
+    roles = {r["id"]: r for r in client.get("/api/roles").json()}
+    assert roles["writer"]["max_concurrency"] == 3
     assert client.delete("/api/roles/writer?project_id=webshop").status_code == 200
     assert "writer" not in {r["id"] for r in client.get("/api/roles").json()}
 
@@ -1111,6 +1116,7 @@ const context = {
   projObj: () => ({ orchestrator_role_id: "dev" }),
   traitMeta: { abilities: { coding: "代码执行", web_search: "联网检索" } },
   roleDisabledReason: () => "",
+  roleConcurrencyPill: () => "",
 };
 vm.createContext(context);
 vm.runInContext(fs.readFileSync(markdownJs, "utf8"), context);

@@ -814,6 +814,8 @@ class Role:
     preference: str = ""                   # 工作偏好:自由文本(如"前端"/"后端,偏好 React")
     color: str = ""                        # 看板/聊天中的标识色
     sort_order: int = 0                    # 项目内显示顺序(设置页/侧栏/名册),小的在前
+    max_concurrency: int = 0               # 同时执行的轮数上限(同项目跨频道计数);0 = 不限,
+                                           # 只受全局执行位约束;超出的运行排队,不占执行位
 
     def ability_labels(self) -> list[str]:
         return [ROLE_ABILITIES.get(c, c) for c in self.capabilities]

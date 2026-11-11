@@ -28,7 +28,8 @@ function renderGlobalRoleTable() {
           <b>@${esc(role.id)}</b> ${esc(role.name)}
           ${index === 0 ? `<span class="pill">新项目默认主控</span>` : ""}
           ${role.usage_linkage_enabled ? `<span class="pill">用量联动</span>` : ""}
-          ${role.manual_only ? `<span class="pill" title="只有人类能 @ 它,其他 Agent 看不到">仅人工</span>` : ""}</td>
+          ${role.manual_only ? `<span class="pill" title="只有人类能 @ 它,其他 Agent 看不到">仅人工</span>` : ""}
+          ${roleConcurrencyPill(role)}</td>
       <td class="muted">${esc(role.preference || "—")}</td>
       <td>${abilityPills(role) || "—"}</td>
       <td class="muted">${execution}</td>
@@ -88,7 +89,7 @@ function editGlobalRoleTemplate(id) {
   const role = globalRoleTemplates().find(item => item.id === id) || {
     id: "", name: "", description: "", capabilities: [], preference: "",
     runtime_id: "", model: "", effort: "", color: "#3564d7",
-    usage_linkage_enabled: false, manual_only: false,
+    usage_linkage_enabled: false, manual_only: false, max_concurrency: 0,
   };
   const abilityChips = Object.entries(traitMeta.abilities).map(([key, label]) =>
     `<span class="chip ${(role.capabilities || []).includes(key) ? "on" : ""}" data-cap="${key}"
@@ -115,6 +116,7 @@ function editGlobalRoleTemplate(id) {
     </div>
     ${roleUsageLinkageField(role)}
     ${roleManualOnlyField(role)}
+    ${roleConcurrencyField(role)}
     <label>角色定位/人格(给角色本人与主控看:写清"是谁、怎么工作"的专长画像;平台原样装配、不改写,任务由 @ 消息提供)</label>
     <textarea id="rf-desc" rows="3">${esc(role.description)}</textarea>
     <label>角色偏好(给主控选人看:何时该选它的领域/风格短标签,顿号分隔,如"前端"、"只审不改";名册中与能力并列展示)</label>
@@ -143,9 +145,11 @@ async function saveGlobalRoleTemplate() {
     effort: document.getElementById("rf-effort").value,
     usage_linkage_enabled: document.getElementById("rf-usage-linkage").classList.contains("on"),
     manual_only: document.getElementById("rf-manual-only").classList.contains("on"),
+    max_concurrency: readRoleConcurrency(),
   };
   if (!body.id) { uiAlert("角色 id 不能为空"); return; }
   if (!runtimeId) { uiAlert("请为角色选择 runtime"); return; }
+  if (body.max_concurrency === null) { uiAlert("并发上限必须是非负整数，留空或 0 表示不限"); return; }
   await api("POST", "/api/role-templates", body);
   await loadOverview();
   fdlg.close();

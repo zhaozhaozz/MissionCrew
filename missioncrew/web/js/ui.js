@@ -91,6 +91,30 @@ function roleUsageLinkageField(role) {
     role?.usage_linkage_enabled === true);
 }
 
+/* 角色并发上限:与开关行同一排版;0 或留空 = 不限,只受全局执行位约束 */
+function roleConcurrencyField(role) {
+  const value = Number(role?.max_concurrency) > 0 ? Number(role.max_concurrency) : "";
+  return `<label class="role-toggle-field role-number-field">
+    <span><b>并发上限</b><small>该角色最多同时在几个频道执行；超出的频道排队等待，即使全局还有空闲执行位。留空或 0 表示不限。</small></span>
+    <input type="number" id="rf-max-concurrency" min="0" step="1" placeholder="不限"
+      value="${value}" aria-label="并发上限">
+  </label>`;
+}
+
+function roleConcurrencyPill(role) {
+  const limit = Number(role?.max_concurrency) || 0;
+  return limit > 0
+    ? `<span class="pill" title="最多同时在 ${limit} 个频道执行,其余频道排队">并发 ≤${limit}</span>` : "";
+}
+
+/* 读表单里的并发上限:留空 = 0(不限);非数字、负数或小数返回 null,由调用方提示 */
+function readRoleConcurrency() {
+  const raw = document.getElementById("rf-max-concurrency").value.trim();
+  if (!raw) return 0;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
 function roleManualOnlyField(role) {
   return roleToggleField("rf-manual-only", "仅人工点名",
     "开启后只有人类能 @ 它：其他 Agent 的角色名册里没有它、不能派发给它，频道历史里对其他 Agent 匿名；它自己也不参与角色间派发，结果只留在频道。主控不能开启。",
