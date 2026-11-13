@@ -139,6 +139,7 @@ def main():
     session_dirs = None
     prompt_count = 0
     pending_terminal = ""
+    report_count = 0
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -162,6 +163,14 @@ def main():
                   "params": {"sessionId": "s-test",
                              "terminalId": pending_terminal}})
             pending_terminal = ""
+            if shape.startswith("silent-wake"):
+                # 模拟 kimi:自发的一轮只向客户端发终端请求,不推送任何
+                # session/update,正文只留在它自己的会话记录里
+                terminal = call(905, "terminal/create", {
+                    "command": "true"})["terminalId"]
+                call(906, "terminal/wait_for_exit", {"terminalId": terminal})
+                call(908, "terminal/release", {"terminalId": terminal})
+                continue
             if shape == "terminal-token":
                 # 模拟 Grok 自发的一轮里先思考、再起前台命令读令牌文件:
                 # 命令执行时平台必须已经签发令牌
@@ -258,7 +267,22 @@ def main():
             if shape == "slow":
                 time.sleep(1)
             text = msg["params"]["prompt"][0]["text"]
-            if shape in ("terminal", "terminal-token"):
+            if shape.startswith("silent-wake") and text.startswith(
+                    "MissionCrew wake report"):
+                # 平台补发的汇报 prompt。kimi 空闲时正常流式回复;还在自发
+                # turn 里时立刻应答空的 end_turn(busy 形态的第一次、mute
+                # 形态的每一次)
+                report_count += 1
+                busy = (shape == "silent-wake-mute"
+                        or (shape == "silent-wake-busy" and report_count == 1))
+                if not busy:
+                    thought("回顾自发的一轮")
+                    chunk(f"补发汇报:后台命令已完成(第 {report_count} 次请求)")
+                send({"jsonrpc": "2.0", "id": mid,
+                      "result": {"stopReason": "end_turn"}})
+                continue
+            if shape in ("terminal", "terminal-token") or shape.startswith(
+                    "silent-wake"):
                 # 模拟 Grok:后台命令交给客户端终端,turn 立即结束;终端退出
                 # 后(上方 mid==902 分支)在 turn 之外自发汇报
                 send({"jsonrpc": "2.0", "id": 901, "method": "terminal/create",

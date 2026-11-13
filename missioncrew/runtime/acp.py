@@ -53,6 +53,24 @@ _WAKE_DEBOUNCE_SECONDS = 3.0
 # 工具跑完后的平台写操作随之失败,还会多出一条"无输出"的失败消息
 _WAKE_THINK_SECONDS = 60.0
 _WAKE_TOOL_SECONDS = 1800.0
+# 已落成运行的自发 turn 静默后一个字的正文都没有时,在同一会话补发一轮
+# session/prompt 请 Runtime 把汇报说出来。实测 kimi 的自发 turn 只向客户端发
+# 终端与审批请求,不推送任何 session/update,正文只留在它自己的会话记录里。
+# Runtime 还在自发 turn 里时这条 prompt 拿不到正文(kimi 立刻应答空的
+# end_turn,把它排到自发 turn 之后静默执行),所以空回复后隔更久再试:
+# 第 n 次空回复后静默 n×_WAKE_REPORT_RETRY_SECONDS,最多 _WAKE_REPORT_LIMIT 次
+_WAKE_REPORT_LIMIT = 3
+_WAKE_REPORT_RETRY_SECONDS = 90.0
+_WAKE_REPORT_TIMEOUT = 1800.0
+_WAKE_REPORT_PROMPT = (
+    "MissionCrew wake report. Your latest self-started turn (one this Runtime "
+    "began on its own, for example after a background command finished) "
+    "delivered no reply text to the platform, so nothing from it has reached "
+    "the channel. Reply now with the report for that turn: what finished and "
+    "its result, what you already did in response, and what remains. This "
+    "reply is published to the channel. Do not repeat work or rerun commands "
+    "that the self-started turn already completed."
+)
 
 # ACP 用量(规范中仍标 unstable):session/prompt 响应的 usage 是该次 prompt
 # 的用量,inputTokens 含缓存读写;usage_update 通知给当前上下文占用 used、
@@ -243,6 +261,11 @@ class _AcpClient:
         self._wake_begin_tried = False       # 每个自发 turn 只请求一次 begin
         self._wake_open_tools: set[str] = set()   # 进行中的工具调用,决定何时收尾
         self._wake_last_kind = ""
+        # 无正文的自发 turn 补发汇报 prompt:已发次数,以及是否正在等它的应答
+        # (等待期间由应答判定结束,不走静默看门狗)
+        self._wake_report_tries = 0
+        self._wake_reporting = False
+        self.session_id = ""                 # 长驻会话的原生 id,补发汇报时用
         # turn 之外最近一次 Runtime 自发活动(自发更新或向客户端发起的请求):
         # 空闲回收据此判断会话是否真的闲置
         self._spontaneous_at = 0.0
@@ -399,7 +422,7 @@ class _AcpClient:
     def _touch_wake_locked(self) -> None:
         """记一次自发 turn 活动并确保有静默看门狗;调用方持有 _wake_lock。"""
         self._wake_last_at = self._spontaneous_at = time.time()
-        if not self._wake_timer_running:
+        if not self._wake_timer_running and not self._wake_reporting:
             self._wake_timer_running = True
             threading.Thread(target=self._wake_watchdog, daemon=True).start()
 
@@ -467,15 +490,79 @@ class _AcpClient:
                     return
                 quiet = time.time() - self._wake_last_at
                 limit = _WAKE_DEBOUNCE_SECONDS
+                silent = not "".join(self._wake_chunks).strip()
                 if self._wake_run_id:
                     if self._wake_open_tools:
                         limit = _WAKE_TOOL_SECONDS
+                    elif self._wake_report_tries and silent:
+                        # 上一次补发的汇报没有回音:Runtime 多半还在自发 turn 里
+                        limit = _WAKE_REPORT_RETRY_SECONDS * self._wake_report_tries
                     elif self._wake_last_kind != "text":
                         limit = _WAKE_THINK_SECONDS
                 if quiet >= limit:
                     self._wake_timer_running = False
+                    attempt = 0
+                    if (self._wake_run_id and silent and self.session_id
+                            and self.wake_meta.get("session_key")
+                            and self._wake_report_tries < _WAKE_REPORT_LIMIT):
+                        self._wake_report_tries += 1
+                        self._wake_reporting = True
+                        attempt = self._wake_report_tries
                     break
-        self._dispatch_wake()
+        if attempt:
+            self._request_wake_report(attempt)
+        else:
+            self._dispatch_wake()
+
+    def _request_wake_report(self, attempt: int) -> None:
+        """自发 turn 没有正文:在同一会话补发一轮 prompt,请 Runtime 说出汇报。
+
+        这一轮的 session/update 仍按自发 turn 归属(_turn_active 为 False),
+        正文与过程事件直接进已落成的运行;应答到达即结束,不靠静默判定。"""
+        lock = _session_lock(str(self.wake_meta.get("session_key") or ""))
+        error = ""
+        # 常规运行正在接管这个会话时不与它抢 turn:它的 turn 一开始就会收尾
+        # 本轮;它没开始成(被取消)则按下面的重试再补发
+        if lock.acquire(blocking=False):
+            try:
+                with self._wake_lock:
+                    emit = self._wake_emit
+                    bound = bool(self._wake_run_id) and not self._turn_active
+                if bound and emit is not None:
+                    self._emit_wake(
+                        emit, "status",
+                        "自发的一轮没有向平台回传正文,请 Runtime 补发汇报"
+                        f" ({attempt}/{_WAKE_REPORT_LIMIT})\n")
+                    try:
+                        response = self.request("session/prompt", {
+                            "sessionId": self.session_id,
+                            "prompt": [{"type": "text", "text": _WAKE_REPORT_PROMPT}],
+                        }, timeout=_WAKE_REPORT_TIMEOUT)
+                        usage = _turn_usage(
+                            [response], self.context_usage, self.parse_usage)
+                        if usage:
+                            self._emit_wake(emit, "usage",
+                                            json.dumps(usage, ensure_ascii=False))
+                    except AcpError as exc:
+                        error = str(exc)
+            finally:
+                lock.release()
+        with self._wake_lock:
+            self._wake_reporting = False
+            emit = self._wake_emit
+            retry = (bool(self._wake_run_id) and not self._turn_active and not error
+                     and not "".join(self._wake_chunks).strip()
+                     and self._wake_report_tries < _WAKE_REPORT_LIMIT)
+            if retry:
+                self._touch_wake_locked()   # 重新计静默,到点再补发一次
+        if retry:
+            if emit is not None:
+                self._emit_wake(emit, "status",
+                                "Runtime 没有回复汇报(可能仍在执行自发的一轮),稍后重试\n")
+            return
+        # 进程已退出时 _abort_wake 已收尾,这里的调用无事可做
+        self._dispatch_wake(success=not error,
+                            error=f"补发汇报失败: {error}" if error else "")
 
     def _dispatch_wake(self, success: bool = True, error: str = "") -> None:
         with self._wake_lock:
@@ -491,6 +578,7 @@ class _AcpClient:
             self._wake_begin_tried = False
             self._wake_open_tools.clear()
             self._wake_last_kind = ""
+            self._wake_report_tries = 0
             if not output and not run_id:
                 # 没有可交付正文(纯思考/工具残留):丢弃事件,保留任务
                 # 记录等待真正的汇报 turn
@@ -556,6 +644,8 @@ class _AcpClient:
                     "origin_trigger": terminal.origin_trigger,
                 })
                 del self._wake_tasks[:-10]
+            else:
+                self._touch_wake_locked()   # 命令刚结束,模型还要想下一步
         if emit is not None:
             self._emit_wake(emit, "status", line)
 
@@ -636,6 +726,9 @@ class _AcpClient:
             # turn 之外主动找客户端(审批、起/收终端)说明 Runtime 在自发工作;
             # terminal/output 是对存活终端的周期轮询,不算
             self._spontaneous_at = time.time()
+            with self._wake_lock:
+                if self._wake_run_id:
+                    self._touch_wake_locked()
         if method == "session/request_permission":
             option = _pick_permission_option(
                 params.get("options") or [], self.approval_mode)
@@ -745,7 +838,9 @@ class _AcpClient:
             self.proc.stdin.write(data + "\n")
             self.proc.stdin.flush()
 
-    def request(self, method: str, params: dict) -> dict:
+    def request(self, method: str, params: dict,
+                timeout: Optional[float] = None) -> dict:
+        """发请求并等应答;timeout 缺省时沿用本轮 begin_turn 定下的期限。"""
         self._next_id += 1
         rid = self._next_id
         q: queue.Queue = queue.Queue()
@@ -758,7 +853,8 @@ class _AcpClient:
                              "method": method, "params": params})
             except (OSError, ValueError) as exc:
                 raise AcpError(f"{method} 写入失败: {exc}") from exc
-            remaining = (self.deadline - time.time()
+            remaining = (timeout if timeout is not None
+                         else self.deadline - time.time()
                          if self.deadline is not None else None)
             if remaining is not None and remaining <= 0:
                 raise AcpError(f"{method} 超时")
@@ -1285,6 +1381,7 @@ def run_prompt(cmd: list[str], prompt: str, workdir: str, env: dict,
                 except Exception:
                     client.close()
                     raise
+                client.session_id = runtime_session_id
                 live = _LiveSession(
                     client, runtime_id, runtime_session_id, signature, time.time(),
                     task_id=task_id, stage_name=stage_name,

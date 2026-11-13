@@ -759,6 +759,74 @@ def test_acp_spontaneous_turn_command_sees_token_issued_at_begin(tmp_path, monke
         acp.close_sessions()
 
 
+def _silent_wake_run(tmp_path, monkeypatch, shape):
+    """跑一轮把后台命令交给客户端终端的常规 turn,等 kimi 式的静默自发轮收尾。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.1)
+    monkeypatch.setattr(acp, "_WAKE_THINK_SECONDS", 0.3)
+    monkeypatch.setattr(acp, "_WAKE_REPORT_RETRY_SECONDS", 0.2)
+    binding = _WakeBinding()
+    try:
+        with binding:
+            result = _adapter("kimi", shape).run(_chat_cfg(tmp_path, {}))
+            assert result.success, result.summary
+            assert _wait_for(lambda: binding.finished, timeout=10)
+    finally:
+        acp.close_sessions()
+    assert len(binding.begun) == 1 and len(binding.finished) == 1
+    return binding
+
+
+def test_acp_silent_spontaneous_turn_gets_report_prompt(tmp_path, monkeypatch):
+    """kimi 的自发轮只发终端请求、不推送 session/update:静默后平台在同一会话
+    补发汇报 prompt,回复作为这轮的输出,过程事件直接进已落成的运行。"""
+    binding = _silent_wake_run(tmp_path, monkeypatch, "silent-wake")
+    payload = binding.finished[0]
+    assert payload["run_id"] == 88 and payload["success"] is True
+    assert payload["output"] == "补发汇报:后台命令已完成(第 1 次请求)"
+    assert payload["tasks"][0]["origin_trigger"] == 77
+    assert ("thinking", "回顾自发的一轮") in binding.live
+    statuses = [text for kind, text in binding.live if kind == "status"]
+    assert sum("补发汇报 (1/3)" in text for text in statuses) == 1
+    assert not any("稍后重试" in text for text in statuses)
+
+
+def test_acp_report_prompt_retries_while_runtime_is_busy(tmp_path, monkeypatch):
+    """Runtime 还在自发轮里时补发的 prompt 只得到空应答:隔一段静默再试。"""
+    binding = _silent_wake_run(tmp_path, monkeypatch, "silent-wake-busy")
+    payload = binding.finished[0]
+    assert payload["output"] == "补发汇报:后台命令已完成(第 2 次请求)"
+    statuses = [text for kind, text in binding.live if kind == "status"]
+    assert any("补发汇报 (2/3)" in text for text in statuses)
+    assert sum("稍后重试" in text for text in statuses) == 1
+
+
+def test_acp_report_prompt_gives_up_after_limit(tmp_path, monkeypatch):
+    """始终拿不到正文:试满次数后按无输出收尾,由平台记失败,运行不悬挂。"""
+    binding = _silent_wake_run(tmp_path, monkeypatch, "silent-wake-mute")
+    payload = binding.finished[0]
+    assert payload["run_id"] == 88 and payload["success"] is True
+    assert payload["output"] == ""
+    statuses = [text for kind, text in binding.live if kind == "status"]
+    assert sum("补发汇报" in text and "/3)" in text for text in statuses) == 3
+
+
+def test_acp_wake_with_reply_text_needs_no_report_prompt(tmp_path, monkeypatch):
+    """自发轮自己推送了正文(Grok 形态)就按原路收尾,不补发 prompt。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.1)
+    client = _wake_client(tmp_path)
+    client.session_id = "s1"
+    sent = []
+    client._write = lambda obj: sent.append(obj)
+    try:
+        with _WakeBinding() as wake:
+            _update(client, _say("流水线已通过。"))
+            assert _wait_for(lambda: wake.finished)
+            assert wake.finished[0]["output"] == "流水线已通过。"
+            assert not any(obj.get("method") == "session/prompt" for obj in sent)
+    finally:
+        client.close()
+
+
 def test_wake_buffer_accepts_tool_call_list_content(tmp_path):
     """turn 之外的 tool_call 更新按 ACP 约定带 content 列表;唤醒缓冲不能把它当 dict
     (线上曾因此让读循环崩溃,之后该会话所有响应无人消费、运行永远 running)。"""
