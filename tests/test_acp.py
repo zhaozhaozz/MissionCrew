@@ -1035,6 +1035,47 @@ def test_idle_cleanup_spares_clients_with_live_terminals(tmp_path):
         client.close()
 
 
+def test_idle_cleanup_spares_spontaneous_turns(tmp_path, monkeypatch):
+    """后台命令结束后 Runtime 自发的汇报轮不经 run_prompt,不刷新 last_used:
+    已落成运行的自发 turn 不被回收;收尾后空闲时长从最近一次自发活动算起。"""
+    monkeypatch.setattr(acp, "_WAKE_DEBOUNCE_SECONDS", 0.1)
+    client = _wake_client(tmp_path)
+    key = "general::lead"
+    live = acp._LiveSession(client, "kimi", "s1", ("sig",),
+                            last_used=time.time() - 7200)
+    with acp._LIVE_SESSIONS_GUARD:
+        acp._LIVE_SESSIONS[key] = live
+
+    def _pooled():
+        with acp._LIVE_SESSIONS_GUARD:
+            return key in acp._LIVE_SESSIONS
+    try:
+        with _WakeBinding() as wake:
+            # 最后一个后台终端已退出,自发 turn 起了一条命令后还在想下一步
+            client._handle_agent_request({"id": 1, "method": "terminal/create",
+                                          "params": {"command": "true"}})
+            assert client.wake_run_bound()
+            assert _wait_for(lambda: client.live_terminal_count() == 0)
+            acp._cleanup_idle_sessions()
+            assert _pooled()
+
+            _update(client, _say("测试通过,PR 已创建。"))
+            assert _wait_for(lambda: wake.finished)
+            assert not client.wake_run_bound()
+            # 刚汇报完:不能按两小时前的 last_used 立刻回收
+            acp._cleanup_idle_sessions()
+            assert _pooled()
+            assert acp.active_instances("kimi")[0].last_activity > time.time() - 60
+
+            client._spontaneous_at = time.time() - 7200
+            acp._cleanup_idle_sessions()
+            assert not _pooled()
+    finally:
+        with acp._LIVE_SESSIONS_GUARD:
+            acp._LIVE_SESSIONS.pop(key, None)
+        client.close()
+
+
 def _usage_events(events):
     return [json.loads(text) for kind, text in events if kind == "usage"]
 

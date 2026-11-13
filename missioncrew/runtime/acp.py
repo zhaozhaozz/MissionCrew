@@ -243,6 +243,9 @@ class _AcpClient:
         self._wake_begin_tried = False       # 每个自发 turn 只请求一次 begin
         self._wake_open_tools: set[str] = set()   # 进行中的工具调用,决定何时收尾
         self._wake_last_kind = ""
+        # turn 之外最近一次 Runtime 自发活动(自发更新或向客户端发起的请求):
+        # 空闲回收据此判断会话是否真的闲置
+        self._spontaneous_at = 0.0
         self.wake_meta: dict = {}
         threading.Thread(target=self._read_loop, daemon=True).start()
         threading.Thread(target=self._stderr_loop, daemon=True).start()
@@ -395,7 +398,7 @@ class _AcpClient:
 
     def _touch_wake_locked(self) -> None:
         """记一次自发 turn 活动并确保有静默看门狗;调用方持有 _wake_lock。"""
-        self._wake_last_at = time.time()
+        self._wake_last_at = self._spontaneous_at = time.time()
         if not self._wake_timer_running:
             self._wake_timer_running = True
             threading.Thread(target=self._wake_watchdog, daemon=True).start()
@@ -560,6 +563,15 @@ class _AcpClient:
         with self._terminals_lock:
             return sum(1 for t in self._terminals.values() if t.running)
 
+    def wake_run_bound(self) -> bool:
+        """自发 turn 已落成运行且尚未收尾。"""
+        with self._wake_lock:
+            return bool(self._wake_run_id)
+
+    def spontaneous_activity_at(self) -> float:
+        """turn 之外最近一次自发活动的时间;从未有过为 0。"""
+        return self._spontaneous_at
+
     def _record_tool_update(self, update: dict) -> None:
         """跟踪 Runtime 通过 ACP 开放字段暴露的 detached task 生命周期。"""
         tool_call_id = str(update.get("toolCallId") or "")
@@ -620,6 +632,10 @@ class _AcpClient:
         """应答 agent -> client 方向的请求,平台是无头的,权限自动决策。"""
         method = msg["method"]
         params = msg.get("params") or {}
+        if not self._turn_active and method != "terminal/output":
+            # turn 之外主动找客户端(审批、起/收终端)说明 Runtime 在自发工作;
+            # terminal/output 是对存活终端的周期轮询,不算
+            self._spontaneous_at = time.time()
         if method == "session/request_permission":
             option = _pick_permission_option(
                 params.get("options") or [], self.approval_mode)
@@ -855,10 +871,16 @@ def _cleanup_idle_sessions() -> None:
     stale: list[_LiveSession] = []
     with _LIVE_SESSIONS_GUARD:
         for key, live in list(_LIVE_SESSIONS.items()):
+            client = live.client
             # 客户端终端里仍有存活的后台命令时不回收:关闭客户端会连带
-            # 杀掉这些命令,长任务必须等它们退出并完成自发汇报
-            if (not live.busy and live.last_used < cutoff
-                    and live.client.live_terminal_count() == 0):
+            # 杀掉这些命令,长任务必须等它们退出并完成自发汇报。汇报那一轮
+            # 不经 run_prompt,不刷新 last_used:已落成运行的自发 turn 不回收,
+            # 空闲时长也从最近一次自发活动算起,否则最后一个终端一退出,
+            # 正在汇报的会话就会被当成闲置关掉
+            if (not live.busy
+                    and max(live.last_used, client.spontaneous_activity_at()) < cutoff
+                    and client.live_terminal_count() == 0
+                    and not client.wake_run_bound()):
                 stale.append(_LIVE_SESSIONS.pop(key))
     for live in stale:
         live.client.close()
@@ -925,7 +947,8 @@ def active_instances(runtime_id: str = "") -> list[RuntimeInstance]:
             stage_name=live.stage_name, model=live.model,
             project_id=live.project_id, role_id=live.role_id,
             executable=Path(client.command[0]).name,
-            started_at=client.started_at, last_activity=live.last_used,
+            started_at=client.started_at,
+            last_activity=max(live.last_used, client.spontaneous_activity_at()),
             background_tasks=client.live_terminal_count(),
         ))
     for active in one_shots:
