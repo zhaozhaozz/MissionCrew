@@ -246,11 +246,11 @@ An orchestrator's turn:
 
 ## 8. Channels (channel.*)
 
-- `channel.list` (orchestrator only, scope=active by default / archived / all): returns id, name,
+- `channel.list` (scope=active by default / archived / all): returns id, name,
   purpose, workdir (and whether it no longer exists), archived, last_message_at,
   active_run_count and resource_url. The channel list is not preloaded into your context; check
   it before referencing, dispatching to, or creating another channel.
-- `channel.history` (orchestrator only, channel defaults to the current one / limit / before_id):
+- `channel.history` (channel defaults to the current one / limit / before_id):
   returns the latest messages of that channel in the same format as the workspace
   `channel-history.json` (including platform messages such as agent_tool receipts and
   agent_stop); `message_count` is the channel's total message count. Check it to see what happened
@@ -260,7 +260,7 @@ An orchestrator's turn:
   omitted and the project has exactly one repository, that repository is used. A new channel
   starts empty: post the task brief into it with `message.publish` and name the executor
   explicitly in `mentions` to start the work.
-- `channel.update` (orchestrator only, id defaults to the current channel) changes the name,
+- `channel.update` (id defaults to the current channel) changes the name,
   purpose or workdir; the workdir follows the same rule as `channel.create`, an empty string
   switches back to the platform's built-in workspace, and a new workdir takes effect from the
   next run in that channel. Archived and page-conversation channels cannot be changed.
@@ -364,7 +364,11 @@ An orchestrator's turn:
   text (run as an executable when it has a shebang, otherwise with bash), cron is a five-field
   crontab (empty string = no schedule), webhook_source subscribes it to a global webhook source
   so deliveries from external systems (GitHub, GitCode, ...) trigger it, and actions is the
-  allowlist of actions the script token may call. Scripts are triggered by cron, webhook
+  allowlist of actions the script token may call; it may only hold actions you can call
+  yourself (a new script saved without actions gets the default list minus the actions you
+  cannot call, and changing a script whose allowlist holds actions you lack is refused unless
+  you remove them); `automation.delete` (orchestrator only) removes a script with its run
+  records. Scripts are triggered by cron, webhook
   deliveries or manually, and can call platform actions through the `missioncrew.agent_tool` CLI
   at runtime (refreshing dashboard data on a schedule, syncing external systems into Tasks,
   posting inspection reports to channels, etc.).
@@ -591,9 +595,6 @@ _PEER_MESSAGES = """\
 _PEER_REPLACEMENTS = (
     (" (orchestrator only)", ""),
     (" (deletion is orchestrator only)", ""),
-    ("(orchestrator only, scope=", "(scope="),
-    ("(orchestrator only, channel defaults", "(channel defaults"),
-    ("(orchestrator only, id defaults", "(id defaults"),
     ("action's description, arguments and whether it is orchestrator-only.",
      "action's description and arguments (this project has no orchestrator, so every action is "
      "open to every role; `message.publish` cannot dispatch other roles)."),

@@ -144,12 +144,13 @@ def test_agent_tool_api_returns_structured_results_and_permission_errors(seeded)
     assert set(listed) == {
         "document.publish", "document.rename", "document.history",
         "task.brief", "task.create", "task.update", "message.publish", "channel.create",
+        "channel.list", "channel.history", "channel.update",
+        "automation.list", "automation.save", "automation.run",
         "credential.request", "callback.create", "callback.list", "callback.cancel",
         "webhook.history"}     # 执行角色登记事件回调前要对照历史,触发后要读事件全文
-    # 执行角色看到的说明写明 mentions 只能是主控;建频道不再提 channel.list
+    # 执行角色看到的说明写明 mentions 只能是主控
     assert "@lead" in listed["message.publish"]["description"]
     assert '"lead"' in listed["message.publish"]["arguments"]["mentions"]
-    assert "channel.list" not in listed["channel.create"]["description"]
 
     published = client.post("/api/agent/v1/actions", headers=headers, json={
         "action": "document.publish",
@@ -661,7 +662,7 @@ def test_channel_runs_list_can_peek_other_channel_but_stop_stays_local(
 
 def test_channel_history_reads_current_and_other_channels(seeded):
     """channel.history 按需读取频道最近消息:默认当前频道,可指定其他频道、
-    限制条数与向前翻页;记录格式与 channel-history.json 一致;执行角色无权。"""
+    限制条数与向前翻页;记录格式与 channel-history.json 一致,执行角色读脱敏视图。"""
     chat = ChatEngine(seeded)
     _config, lead_run, lead_token = _run_config(seeded, chat, "lead")
     identity = chat.agent_tools.authenticate(lead_token)
@@ -717,13 +718,17 @@ def test_channel_history_reads_current_and_other_channels(seeded):
     assert not [m for m in seeded.list_messages("general")
                 if m["kind"] == "agent_tool"]
 
-    _dev, dev_run, dev_token = _run_config(seeded, chat, "dev")
-    dev_identity = chat.agent_tools.authenticate(dev_token)
-    assert "channel.history" not in chat.agent_tools.capabilities(dev_identity)["actions"]
-    with pytest.raises(AgentToolError) as denied:
-        chat.agent_tools.execute(
-            dev_identity, "channel.history", {}, dev_run, "history-denied")
-    assert denied.value.code == "permission_denied"
+    # 执行角色也能查,但拿到的是自己的脱敏视图:其他执行角色被匿名
+    _reviewer, reviewer_run, reviewer_token = _run_config(seeded, chat, "reviewer")
+    reviewer = chat.agent_tools.authenticate(reviewer_token)
+    assert "channel.history" in chat.agent_tools.capabilities(reviewer)["actions"]
+    scoped = chat.agent_tools.execute(
+        reviewer, "channel.history", {"channel": "private"}, reviewer_run,
+        "history-executor")
+    assert scoped["messages"][0]["author"]["id"] == "lead"
+    assert scoped["messages"][0]["mentions"] == ["other executor"]
+    assert "@dev" not in scoped["messages"][0]["content"]
+    assert scoped["messages"][-1]["author"]["id"] == "executor"
 
 
 def test_non_orchestrator_cannot_query_or_stop_channel_runs(seeded):
@@ -989,8 +994,8 @@ def test_agent_tool_cli_encodes_file_and_preserves_structured_error(
     assert base64.b64decode(encoded) == b"evidence\x00"
 
 
-def test_channel_list_action_is_orchestrator_only_and_covers_archived(seeded):
-    """频道清单不再预先写进上下文:主控用 channel.list 按需查(含归档),执行角色无权。"""
+def test_channel_list_action_covers_archived_for_every_role(seeded):
+    """频道清单不预先写进上下文:角色用 channel.list 按需查(含归档),执行角色同样可用。"""
     chat = ChatEngine(seeded)
     seeded.put_channel(Channel(id="webshop:old-topic", name="old-topic", project_id="webshop",
                                purpose="已收尾", archived=True))
@@ -1019,10 +1024,8 @@ def test_channel_list_action_is_orchestrator_only_and_covers_archived(seeded):
 
     _dev, dev_run, dev_token = _run_config(seeded, chat, "dev")
     dev_identity = chat.agent_tools.authenticate(dev_token)
-    assert "channel.list" not in chat.agent_tools.capabilities(dev_identity)["actions"]
-    with pytest.raises(AgentToolError) as denied:
-        chat.agent_tools.execute(dev_identity, "channel.list", {}, dev_run, "list-denied")
-    assert denied.value.code == "permission_denied"
+    listed = chat.agent_tools.execute(dev_identity, "channel.list", {}, dev_run, "list-dev")
+    assert {"general", "hotfix"} <= {row["id"] for row in listed["channels"]}
 
 
 def test_message_publish_reports_chain_budget(seeded):

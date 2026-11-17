@@ -67,15 +67,18 @@ The current permission policy is:
 | `document.history` | Allowed | Allowed |
 | `document.delete` | Denied | Allowed |
 | `message.publish` | Allowed (`mentions` may only be the orchestrator, or the role itself in another channel) | Allowed |
-| `channel.runs.list` / `channel.run.stop` / `channel.history` | Denied | Allowed |
-| `channel.create` | Allowed | Allowed |
-| `channel.update` / `channel.archive` / `channel.restore` | Denied | Allowed |
+| `channel.list` / `channel.history` | Allowed (`channel.history` returns the role's own redacted view) | Allowed |
+| `channel.create` / `channel.update` | Allowed | Allowed |
+| `channel.runs.list` / `channel.run.stop` | Denied | Allowed |
+| `channel.archive` / `channel.restore` | Denied | Allowed |
 | `dashboard.list` / `dashboard.save` / `dashboard.delete` | Denied | Allowed |
 | `board_source.list` / `board_source.save` / `board_source.delete` | Denied | Allowed |
 | `guideline.list` / `guideline.history` / `guideline.save` / `guideline.delete` | Denied | Allowed |
 | `skill.list` / `skill.history` / `skill.save` / `skill.delete` | Denied | Allowed |
-| `automation.list` / `automation.save` / `automation.run` / `automation.delete` | Denied | Allowed |
+| `automation.list` / `automation.save` / `automation.run` | Allowed (a script's `actions` may only hold actions the role can call itself) | Allowed |
+| `automation.delete` | Denied | Allowed |
 | `webhook.history` | Allowed | Allowed |
+| `credential.request` | Allowed | Allowed |
 | `recycle.list` / `recycle.restore` / `recycle.purge` | Denied | Allowed |
 | `callback.create` / `callback.list` / `callback.cancel` | Allowed (can cancel only its own callbacks) | Allowed (can cancel any callback in the project) |
 
@@ -93,7 +96,7 @@ After a write operation succeeds, the platform appends a platform receipt of typ
 
 ### Automation script identity (`kind=automation`)
 
-Besides the per-run role tokens, there is another kind, the **automation script token**: when a project script defined by `automation.save` is triggered by cron, a webhook delivery or manually, the platform issues a one-time token for that run (`kind=automation`, not bound to a run), writes it to `.agent-tool-token` in the script's working directory, and revokes it immediately after the run ends. The script's own `actions` allowlist is the source of truth for the actions available to the script identity (default `task.create`, `task.update`, `task.brief`, `message.publish`, `document.publish`, `dashboard.save`, `board_source.save`), independent of the orchestrator permission bit; the allowlist may contain only actions other than `channel.runs.list`, `channel.run.stop`, `channel.history` and `automation.run` (so scripts cannot trigger each other), and passing these actions to `automation.save` returns `invalid_arguments`. The audit actor is recorded as `automation:<project-id>:<script-short-id>`, which distinguishes it from role-triggered calls.
+Besides the per-run role tokens, there is another kind, the **automation script token**: when a project script defined by `automation.save` is triggered by cron, a webhook delivery or manually, the platform issues a one-time token for that run (`kind=automation`, not bound to a run), writes it to `.agent-tool-token` in the script's working directory, and revokes it immediately after the run ends. The script's own `actions` allowlist is the source of truth for the actions available to the script identity (default `task.create`, `task.update`, `task.brief`, `message.publish`, `document.publish`, `dashboard.save`, `board_source.save`), independent of the orchestrator permission bit. The allowlist cannot exceed the actions the saver can call itself: when the allowlist a role or script saves through `automation.save` (passed explicitly, or kept from the existing script) contains an action the saver cannot call, the call returns `permission_denied`, and a new script saved without `actions` gets the default allowlist minus the actions the saver cannot call. An executor's script therefore never gets orchestrator-level actions, and an executor cannot change a script whose allowlist is wider than its own unless it narrows the allowlist in the same call. The allowlist may contain only actions other than `channel.runs.list`, `channel.run.stop`, `channel.history` and `automation.run` (so scripts cannot trigger each other), and passing these actions to `automation.save` returns `invalid_arguments`. The audit actor is recorded as `automation:<project-id>:<script-short-id>`, which distinguishes it from role-triggered calls.
 
 `message.publish` from the script identity is published with `author_type=automation`: without `mentions` it only posts the message and does not trigger any role; explicitly mentioning a single role dispatches that role directly (the result is not handed back to the orchestrator automatically); mentioning multiple roles converges, as with human messages, to starting only the orchestrator. When any identity calls `task.create` and one of the project's configured automatic task-handling rules matches the labels, the task is dispatched immediately according to the rule's handling instructions and handling role (except tasks whose status is already `已完成` (done)), and the result includes `auto_dispatch` (`rule_query`, `sent`); scripts syncing external tasks are the most common case. Rules can only be configured by a human through the ⚡ in a task board column header, and there is no corresponding Agent Tool action; see [automation.md](automation.md) for details.
 

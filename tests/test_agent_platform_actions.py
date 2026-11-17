@@ -128,15 +128,67 @@ def test_channel_archive_and_restore_lifecycle(seeded):
 
 
 def test_channel_management_is_orchestrator_only(seeded):
+    """执行角色能查看/改频道、维护自动化脚本;归档、删除等仍只归主控。"""
     chat = ChatEngine(seeded)
     identity, run_id = _identity(seeded, chat, "dev")
     actions = chat.agent_tools.capabilities(identity)["actions"]
-    for action in ("channel.update", "channel.archive", "channel.restore",
-                   "task.archive", "dashboard.list", "automation.run", "guideline.list"):
+    for action in ("channel.list", "channel.history", "channel.update",
+                   "automation.list", "automation.save", "automation.run"):
+        assert action in actions
+    for action in ("channel.archive", "channel.restore", "channel.runs.list",
+                   "channel.run.stop", "task.archive", "dashboard.list",
+                   "automation.delete", "guideline.list"):
         assert action not in actions
+    renamed = _call(chat, identity, run_id, "channel.update", {"name": "执行大厅"})
+    assert renamed["changed"] == ["name"]
     with pytest.raises(AgentToolError) as denied:
-        _call(chat, identity, run_id, "channel.update", {"name": "x"})
+        _call(chat, identity, run_id, "channel.archive", {"id": "general"})
     assert denied.value.code == "permission_denied"
+
+
+def test_automation_save_cannot_grant_actions_beyond_caller(seeded):
+    """脚本令牌按 actions 授权:执行角色借 automation.save 不能拿到主控级动作,
+    脚本身份同样只能授出自己白名单里的动作。"""
+    chat = ChatEngine(seeded)
+    identity, run_id = _identity(seeded, chat, "dev")
+
+    # 新脚本不传 actions:默认白名单去掉执行角色无权的 dashboard/board_source
+    created = _call(chat, identity, run_id, "automation.save",
+                    {"id": "report", "script": "echo ok"})
+    assert created["automation"]["actions"] == [
+        "task.create", "task.update", "task.brief", "message.publish",
+        "document.publish"]
+    with pytest.raises(AgentToolError) as beyond:
+        _call(chat, identity, run_id, "automation.save",
+              {"id": "report", "actions": ["task.create", "task.delete"]})
+    assert beyond.value.code == "permission_denied"
+    assert "task.delete" in beyond.value.message
+
+    # 主控建的脚本白名单更宽:执行角色不改 actions 就不能动它,收窄后可以
+    save_automation(seeded, "webshop", id="board", script="echo board",
+                    actions=["dashboard.save", "task.create"])
+    with pytest.raises(AgentToolError) as inherited:
+        _call(chat, identity, run_id, "automation.save",
+              {"id": "board", "script": "echo hacked"})
+    assert inherited.value.code == "permission_denied"
+    assert seeded.get_automation("webshop:board").script == "echo board"
+    narrowed = _call(chat, identity, run_id, "automation.save",
+                     {"id": "board", "script": "echo mine", "actions": ["task.create"]})
+    assert narrowed["automation"]["actions"] == ["task.create"]
+
+    # 脚本身份:白名单里有 automation.save 也只能授出自己有的动作
+    lead, lead_run = _identity(seeded, chat, "lead")
+    _call(chat, lead, lead_run, "automation.save",
+          {"id": "maker", "script": "echo", "actions": ["automation.save", "task.create"]})
+    maker = seeded.get_automation("webshop:maker")
+    token = chat.agent_tools.issue_automation_token(maker, 60)
+    script_identity = chat.agent_tools.authenticate(token)
+    with pytest.raises(AgentToolError) as escalated:
+        chat.agent_tools.execute(
+            script_identity, "automation.save",
+            {"id": "child", "script": "echo", "actions": ["recycle.purge"]}, None,
+            "script-save-child")
+    assert escalated.value.code == "permission_denied"
 
 
 def test_executor_creates_channel_and_can_mention_only_orchestrator(seeded):

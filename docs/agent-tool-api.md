@@ -67,15 +67,18 @@ CLI 共四个子命令：`actions`、`call <action> --arguments '<JSON>'`（参�
 | `document.history` | 允许 | 允许 |
 | `document.delete` | 禁止 | 允许 |
 | `message.publish` | 允许（`mentions` 只能是主控，或在其他频道提及自己） | 允许 |
-| `channel.runs.list` / `channel.run.stop` / `channel.history` | 禁止 | 允许 |
-| `channel.create` | 允许 | 允许 |
-| `channel.update` / `channel.archive` / `channel.restore` | 禁止 | 允许 |
+| `channel.list` / `channel.history` | 允许（`channel.history` 返回自己的脱敏视图） | 允许 |
+| `channel.create` / `channel.update` | 允许 | 允许 |
+| `channel.runs.list` / `channel.run.stop` | 禁止 | 允许 |
+| `channel.archive` / `channel.restore` | 禁止 | 允许 |
 | `dashboard.list` / `dashboard.save` / `dashboard.delete` | 禁止 | 允许 |
 | `board_source.list` / `board_source.save` / `board_source.delete` | 禁止 | 允许 |
 | `guideline.list` / `guideline.history` / `guideline.save` / `guideline.delete` | 禁止 | 允许 |
 | `skill.list` / `skill.history` / `skill.save` / `skill.delete` | 禁止 | 允许 |
-| `automation.list` / `automation.save` / `automation.run` / `automation.delete` | 禁止 | 允许 |
+| `automation.list` / `automation.save` / `automation.run` | 允许（脚本 `actions` 只能含自己可调用的动作） | 允许 |
+| `automation.delete` | 禁止 | 允许 |
 | `webhook.history` | 允许 | 允许 |
+| `credential.request` | 允许 | 允许 |
 | `recycle.list` / `recycle.restore` / `recycle.purge` | 禁止 | 允许 |
 | `callback.create` / `callback.list` / `callback.cancel` | 允许（只能取消自己的回调） | 允许（可取消项目内任何回调） |
 
@@ -93,7 +96,7 @@ CLI 共四个子命令：`actions`、`call <action> --arguments '<JSON>'`（参�
 
 ### 自动化脚本身份（`kind=automation`）
 
-除逐 Run 绑定的角色令牌外，还有一类**自动化脚本令牌**：`automation.save` 定义的项目脚本经 cron、webhook 投递或手动触发时，平台为该次运行签发一次性令牌（`kind=automation`，不绑定 Run），写入脚本工作目录的 `.agent-tool-token` 并在运行结束后立即撤销。脚本身份的可用动作以脚本自身的 `actions` 白名单为事实源（默认 `task.create`、`task.update`、`task.brief`、`message.publish`、`document.publish`、`dashboard.save`、`board_source.save`），与主控权限位无关；白名单只能包含除 `channel.runs.list`、`channel.run.stop`、`channel.history`、`automation.run`（避免脚本互相触发）之外的动作，`automation.save` 传入这些动作会返回 `invalid_arguments`。审计 actor 记为 `automation:<项目id>:<脚本短id>`，可与角色触发区分。
+除逐 Run 绑定的角色令牌外，还有一类**自动化脚本令牌**：`automation.save` 定义的项目脚本经 cron、webhook 投递或手动触发时，平台为该次运行签发一次性令牌（`kind=automation`，不绑定 Run），写入脚本工作目录的 `.agent-tool-token` 并在运行结束后立即撤销。脚本身份的可用动作以脚本自身的 `actions` 白名单为事实源（默认 `task.create`、`task.update`、`task.brief`、`message.publish`、`document.publish`、`dashboard.save`、`board_source.save`），与主控权限位无关。白名单不能超出保存者自己可调用的动作：角色或脚本经 `automation.save` 保存后的白名单（显式传入的，或沿用现有脚本的）含自己无权调用的动作时返回 `permission_denied`，新脚本不传 `actions` 时默认白名单只保留保存者可调用的那部分，因此执行角色建的脚本拿不到主控级动作，也改不了白名单比自己宽的脚本（除非同时把白名单收窄）。白名单只能包含除 `channel.runs.list`、`channel.run.stop`、`channel.history`、`automation.run`（避免脚本互相触发）之外的动作，`automation.save` 传入这些动作会返回 `invalid_arguments`。审计 actor 记为 `automation:<项目id>:<脚本短id>`，可与角色触发区分。
 
 脚本身份的 `message.publish` 以 `author_type=automation` 发布：不传 `mentions` 时只发消息、不触发任何角色；显式提及单个角色时直接派发该角色（结果不自动交回主控），提及多个角色时与人类消息一致收敛为只启动主控。任何身份调用 `task.create` 时，若项目配置的 Task 自动处理规则命中 label，都会按规则的处理要求和处理角色立即派发（状态已是 `已完成` 的任务除外），结果附带 `auto_dispatch`（`rule_query`、`sent`）；脚本同步外部 Task 是最常见的场景。规则只能由人在任务看板列头的 ⚡ 配置，没有对应的 Agent Tool 动作，详见 [automation.md](automation.md)。
 

@@ -43,8 +43,8 @@ from .skills import (read_skill_version, save_project_skill, save_project_skill_
                      skill_history, skill_package, sync_project_skill_library)
 from .webhooks import webhook_path
 from .workspace import chat_workspace_dir, write_task_files
-from ..core.models import (BOARD_KINDS, BOARD_WIDGET_TYPES, Board,
-                           BoardDataSource, BoardWidget,
+from ..core.models import (AUTOMATION_DEFAULT_ACTIONS, BOARD_KINDS,
+                           BOARD_WIDGET_TYPES, Board, BoardDataSource, BoardWidget,
                            Channel, Project, ProjectSkill,
                            Task)
 from ..core.store import Store
@@ -301,7 +301,7 @@ ACTION_DEFINITIONS = {
             "channel for another project channel); records use the channel-history.json format, "
             "for checking dispatches, progress and reports; do not call it repeatedly as a wait loop"
         ),
-        "orchestrator_only": True,
+        "orchestrator_only": False,
         "automation_allowed": False,
         "arguments": {
             "channel": "short channel id within the project; defaults to the current channel",
@@ -315,7 +315,7 @@ ACTION_DEFINITIONS = {
             "message time, active run count); the channel list is not preloaded into the chat "
             "context, so check it before creating a channel to avoid duplicates"
         ),
-        "orchestrator_only": True,
+        "orchestrator_only": False,
         "arguments": {"scope": "active (default)/archived/all"},
     },
     "channel.create": {
@@ -330,7 +330,7 @@ ACTION_DEFINITIONS = {
         "description": ("Change a project channel's name, purpose or workdir; archived and "
                         "page-conversation channels cannot be changed, and a new workdir takes "
                         "effect from the next run in that channel"),
-        "orchestrator_only": True,
+        "orchestrator_only": False,
         "arguments": {
             "id": "short channel id; defaults to the current channel",
             "name": "new name", "purpose": "new purpose",
@@ -499,7 +499,7 @@ ACTION_DEFINITIONS = {
             "deliveries to the global webhook source it subscribes to, or manually, and it "
             "calls platform actions with its own token"
         ),
-        "orchestrator_only": True,
+        "orchestrator_only": False,
         "arguments": {
             "id": "short script id", "name": "name", "description": "purpose",
             "script": ("full script text (run as an executable when it has a shebang, "
@@ -521,7 +521,9 @@ ACTION_DEFINITIONS = {
                               "script receives (issues, pull_request, issue_comment, push, "
                               "release, ..., and notification for the account inbox when "
                               "the source has it on); [] means all"),
-            "actions": "allowlist array of actions it may call; omit it to keep the current value",
+            "actions": ("allowlist array of actions it may call, limited to actions you can "
+                        "call yourself; omit it to keep the current value (a new script gets "
+                        "the default list minus actions you cannot call)"),
             "timeout_seconds": "timeout of a single run in seconds",
         },
     },
@@ -539,7 +541,7 @@ ACTION_DEFINITIONS = {
                         "not poll); pass id to get the full script and its recent "
                         "runs with the tail of their output, e.g. to fix a failing script; "
                         "page back with before_id through all kept runs (run_count)"),
-        "orchestrator_only": True,
+        "orchestrator_only": False,
         "arguments": {
             "id": "optional short script id",
             "runs": "with id: how many recent runs to return; default 5, at most 20",
@@ -571,7 +573,7 @@ ACTION_DEFINITIONS = {
         "description": ("Trigger a manual run of an automation script now (also when scheduling "
                         "is disabled); it runs in the background, so check the result later "
                         "with automation.list and the id instead of waiting in a loop"),
-        "orchestrator_only": True,
+        "orchestrator_only": False,
         "automation_allowed": False,
         "arguments": {"id": "short script id"},
     },
@@ -749,13 +751,6 @@ def _executor_message_publish(orchestrator_id: str) -> dict:
         },
     }
 
-
-# 有主控项目的执行角色没有 channel.list,去掉"先查重"的指引
-EXECUTOR_CHANNEL_CREATE = {
-    "description": ("Create a project channel; an id that is already in use returns "
-                    "already_exists"),
-    "arguments": ACTION_DEFINITIONS["channel.create"]["arguments"],
-}
 
 ACTION_ARGUMENTS = {
     "task.create": {
@@ -1026,12 +1021,10 @@ class AgentActionService:
                    if key not in {"orchestrator_only", "automation_allowed"}}
             for name in allowed
         }
-        if not identity.is_automation and not project.can_dispatch(identity.role_id):
-            if "message.publish" in actions:
-                actions["message.publish"] = self._restricted_message_publish(
-                    project, identity.role_id)
-            if "channel.create" in actions and not project.controls_platform(identity.role_id):
-                actions["channel.create"] = EXECUTOR_CHANNEL_CREATE
+        if (not identity.is_automation and not project.can_dispatch(identity.role_id)
+                and "message.publish" in actions):
+            actions["message.publish"] = self._restricted_message_publish(
+                project, identity.role_id)
         return {
             "project_id": identity.project_id,
             "channel_id": identity.channel_id,
@@ -2165,6 +2158,7 @@ class AgentActionService:
                          arguments: dict, _context: AgentRunContext) -> dict:
         from .automations import save_automation
 
+        actions = self._automation_actions_within_caller(project, identity, arguments)
         try:
             automation, created = save_automation(
                 self.store, project.id,
@@ -2177,7 +2171,7 @@ class AgentActionService:
                 webhook_source=arguments.get("webhook_source"),
                 github_repos=arguments.get("github_repos"),
                 github_events=arguments.get("github_events"),
-                actions=arguments.get("actions"),
+                actions=actions,
                 timeout_seconds=arguments.get("timeout_seconds"),
                 actor=identity.actor,
                 created_by_role_id=identity.role_id,
@@ -2196,6 +2190,42 @@ class AgentActionService:
                            "webhook_path": self._automation_webhook_path(automation)},
             "resource_url": automation_resource_url(project.id, automation.id),
         }
+
+    def _automation_actions_within_caller(self, project: Project,
+                                          identity: AgentIdentity,
+                                          arguments: dict) -> Optional[list]:
+        """脚本令牌按 actions 白名单授权,调用方不能借脚本拿到自己没有的动作:
+        保存后的白名单(显式传入的,或沿用现有脚本的)必须是调用方可用动作的子集。
+        新脚本不传 actions 时,默认白名单只保留调用方可用的那部分。返回交给
+        save_automation 的 actions(None = 不改)。"""
+        from .automations import normalize_automation_id
+
+        own = set(self._identity_actions(project, identity))
+        requested = arguments.get("actions")
+        if requested is None:
+            try:
+                existing = self.store.get_automation(normalize_automation_id(
+                    project.id, str(arguments.get("id", ""))))
+            except ValueError:
+                return None   # id 非法,交给 save_automation 报错
+            if existing is None or existing.project_id != project.id:
+                return [action for action in AUTOMATION_DEFAULT_ACTIONS
+                        if action in own]
+            effective = existing.actions
+        elif isinstance(requested, list) and all(isinstance(a, str) for a in requested):
+            effective = requested
+        else:
+            return requested  # 类型不对,交给 save_automation 报错
+        beyond = sorted(set(effective) - own)
+        if beyond:
+            names = "、".join(beyond)
+            raise AgentToolError(
+                "permission_denied",
+                (f"actions 含你无权调用的动作：{names}；脚本的 actions 只能是你自己"
+                 "可调用的动作" + ("" if requested is not None else
+                                  "。现有脚本的白名单含这些动作，请在 actions 里去掉它们，"
+                                  "或交给有权限的角色或人类修改")), 403)
+        return requested
 
     def _delete_automation(self, project: Project, identity: AgentIdentity,
                            arguments: dict, _context: AgentRunContext) -> dict:
