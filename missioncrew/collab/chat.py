@@ -1269,13 +1269,13 @@ class ChatEngine:
         )
 
     def _run_event_emitter(self, run_id: int, project, document_roots: list):
-        """运行过程事件的落库入口:运行结束后丢弃迟到事件,含文档路径的
-        文本改写成平台资源 URL。"""
+        """运行过程事件的落库入口:含文档路径的文本改写成平台资源 URL。
+
+        Runtime 在管道读线程里逐个增量调用它,所以这里只做字符串处理并交给
+        Store 的写缓冲,不查库、不等锁;运行结束后的迟到事件由 Store 落库时丢弃。"""
         markers = [str(root) for root in document_roots if str(root)]
 
-        def _emit(kind: str, text: str):
-            if not self.store.chat_run_is_active(run_id):
-                return None
+        def _emit(kind: str, text: str) -> None:
             may_contain_document_path = (
                 ".missioncrew" in text
                 or any(marker in text for marker in markers))
@@ -1283,7 +1283,7 @@ class ChatEngine:
                     and kind in {"text", "stdout", "stderr", "tool", "tool_result"}):
                 text = normalize_document_resource_urls(
                     text, project.id, document_roots)
-            return self.store.append_run_event(run_id, kind, text)
+            self.store.stream_run_event(run_id, kind, text)
         return _emit
 
     def _begin_runtime_wake(self, payload: dict) -> Optional[dict]:

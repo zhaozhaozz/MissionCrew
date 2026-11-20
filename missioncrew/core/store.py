@@ -1,11 +1,13 @@
 """SQLite 持久化层：领域对象用 JSON，消息、简报和审计用查询友好的记录表。"""
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import sqlite3
 import threading
 import time
+import weakref
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -14,6 +16,7 @@ from .models import (GITHUB_ENVIRONMENT, GITHUB_TOKEN_VARIABLE, LEGACY_GITHUB_TO
                      Channel, Credential, Project, Role, Task, WebhookSource,
                      credential_id, new_id, normalize_labels, with_status)
 from .redaction import redact_text, redaction_pairs
+from .run_event_buffer import RunEventBuffer
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects  (id TEXT PRIMARY KEY, data TEXT NOT NULL);
@@ -68,6 +71,10 @@ CREATE TABLE IF NOT EXISTS chat_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_chat_runs_finished ON chat_runs(finished_at);
 CREATE INDEX IF NOT EXISTS idx_chat_runs_chain ON chat_runs(root_id, channel);
+-- 聊天轮询(频道最近运行、活动运行)与调度(排队运行、活动计数)都按频道或
+-- 状态筛选,没有索引时每次全表扫描,且都在 Store 的全局锁里
+CREATE INDEX IF NOT EXISTS idx_chat_runs_channel ON chat_runs(channel, id);
+CREATE INDEX IF NOT EXISTS idx_chat_runs_status ON chat_runs(status, channel);
 -- 角色登记的一次性回调:到点(fire_at)或所盯的频道/Task 有更新时,在登记的
 -- 频道(channel)以平台消息重新启动该角色。watch_kind 为空只看时间;只盯更新、
 -- 没给时间的回调到 expires_at 仍无更新就过期。baseline 是登记时的对照基线:
@@ -178,6 +185,19 @@ def _environment_secrets(raw) -> dict[str, str]:
             if isinstance(data, dict) else {})
 
 
+# 后台刷写线程是 daemon,进程正常退出时在这里把各 Store 写缓冲里剩下的事件落库
+_LIVE_STORES: "weakref.WeakSet[Store]" = weakref.WeakSet()
+
+
+@atexit.register
+def _flush_live_stores() -> None:
+    for store in list(_LIVE_STORES):
+        try:
+            store._flush_run_events()
+        except Exception:
+            pass
+
+
 class Store:
     """线程安全:聊天引擎在后台线程池中并发读写,所有访问都过同一把锁。"""
 
@@ -188,6 +208,13 @@ class Store:
         self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL 下 NORMAL 只在检查点刷盘,不再每次提交都 fsync;断电最多丢最后几次
+        # 提交,不会损坏数据库。默认 FULL 让每条小写入都等一次刷盘。
+        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._run_event_buffer = RunEventBuffer(
+            self._flush_run_events,
+            mergeable=lambda kind: kind not in self.RUN_EVENT_STRUCTURED_KINDS)
+        _LIVE_STORES.add(self)
         self._conn.executescript(_SCHEMA)
         # 旧阶段式受控资源表从未接入执行链,已由 credentials 取代
         self._conn.execute("DROP TABLE IF EXISTS resources")
@@ -721,6 +748,7 @@ class Store:
                 "tokens": 0, "runtime_usage": 0, "channels": 0,
             }
         with self._lock:
+            self._flush_run_events()
             self._conn.execute("BEGIN IMMEDIATE")
             try:
                 active = self._conn.execute(
@@ -1620,6 +1648,7 @@ class Store:
         """
         finished = time.time() if status in ("done", "failed", "stopped") else None
         with self._lock:
+            self._flush_run_events()
             cursor = self._conn.execute(
                 "UPDATE chat_runs SET status=?, backend_id=?, error=?, finished_at=?, "
                 "model=CASE WHEN ?='' THEN model ELSE ? END, "
@@ -1667,6 +1696,7 @@ class Store:
     def stop_active_chat_runs(self, channel: str) -> list[dict]:
         """原子地把频道内全部活动运行改为终态，并返回停止前的快照。"""
         with self._lock:
+            self._flush_run_events()
             rows = self._conn.execute(
                 "SELECT * FROM chat_runs WHERE channel=? "
                 "AND status IN ('queued','running','waiting_user') ORDER BY id",
@@ -1686,6 +1716,7 @@ class Store:
     def stop_chat_run(self, run_id: int) -> Optional[dict]:
         """原子地停止单个活动运行，返回停止前的快照;已结束返回 None。"""
         with self._lock:
+            self._flush_run_events()
             row = self._conn.execute(
                 "SELECT * FROM chat_runs WHERE id=? "
                 "AND status IN ('queued','running','waiting_user')",
@@ -1712,10 +1743,12 @@ class Store:
         if not absorbed_ids:
             return
         marks = ",".join("?" * len(absorbed_ids))
-        self._execute(
-            "UPDATE chat_runs SET status='merged', merged_into=?, finished_at=? "
-            f"WHERE id IN ({marks}) AND status='queued'",
-            (run_id, time.time(), *absorbed_ids))
+        with self._lock:
+            self._flush_run_events()
+            self._execute(
+                "UPDATE chat_runs SET status='merged', merged_into=?, finished_at=? "
+                f"WHERE id IN ({marks}) AND status='queued'",
+                (run_id, time.time(), *absorbed_ids))
 
     def active_chat_runs(self, channel: str) -> list[dict]:
         return [dict(r) for r in self._query(
@@ -1958,61 +1991,91 @@ class Store:
     # ---- 聊天:执行过程事件(实时运行输出) ----
     # 同类连续事件合并进同一行(追加文本),避免逐 chunk/逐行插入把表撑爆;
     # 换 kind 或单行超过上限时另起物理行,读取时再恢复为逻辑事件。
+    # Runtime 的流式事件经 stream_run_event 进写缓冲(见 run_event_buffer),
+    # 读 run_events 或改运行状态的方法开头都先 _flush_run_events,新增同类方法照做。
     RUN_EVENT_MAX = 8000
     RUN_EVENT_STRUCTURED_KINDS = frozenset({
         "permission_request", "user_input_request", "usage", "backend_agent",
     })
+    def stream_run_event(self, run_id: int, kind: str, text: str) -> None:
+        """Runtime 运行中的过程事件:只追加进写缓冲,不碰数据库锁,管道读线程不会
+        被落库拖慢。落库时运行已不在活动态的迟到事件丢弃;运行转入终态前会先排空
+        缓冲,所以结束前产生的事件都会写入。"""
+        if text:
+            self._run_event_buffer.add(run_id, kind, text)
 
-    def append_run_event(self, run_id: int, kind: str, text: str) -> Optional[int]:
+    def append_run_event(self, run_id: int, kind: str, text: str) -> None:
+        """平台自己的过程事件(状态、等待原因等)同步落库,不论运行是否活动。
+        先排空缓冲,与同一运行的流式事件保持先后顺序。"""
         if not text:
-            return None
+            return
+        with self._lock:
+            self._flush_run_events()
+            self._write_run_event(run_id, kind, text, time.time())
+            self._conn.commit()
+
+    def _flush_run_events(self) -> None:
+        """把写缓冲里的流式事件一次事务写完。取批与写入同在数据库锁内,
+        后台线程与读方触发的刷写不会互相打乱顺序。"""
+        with self._lock:
+            batch = self._run_event_buffer.take()
+            if not batch:
+                return
+            run_ids = sorted({entry.run_id for entry in batch})
+            active = {row["id"] for row in self._conn.execute(
+                f"SELECT id FROM chat_runs WHERE id IN ({','.join('?' * len(run_ids))}) "
+                "AND status IN ('queued','running','waiting_user')", run_ids).fetchall()}
+            for entry in batch:
+                if entry.run_id in active:
+                    self._write_run_event(
+                        entry.run_id, entry.kind, entry.text, entry.created_at)
+            self._conn.commit()
+
+    def _write_run_event(self, run_id: int, kind: str, text: str,
+                         created_at: float) -> None:
+        """写一条逻辑事件,不提交;调用方持锁并负责 commit。"""
         text = self.redact_credentials(text)
         # JSON 事件必须保持一行一个对象；相邻权限/用量事件不能字符串拼接。
         if kind in self.RUN_EVENT_STRUCTURED_KINDS:
-            return self._execute(
+            self._conn.execute(
                 "INSERT INTO run_events(run_id, kind, content, created_at) "
-                "VALUES(?,?,?,?)", (run_id, kind, text, time.time()))
-        event_id: Optional[int] = None
-        with self._lock:
-            remaining = text
-            while remaining:
-                rows = self._query(
-                    "SELECT id, kind, LENGTH(content) AS n FROM run_events "
-                    "WHERE run_id=? ORDER BY id DESC LIMIT 1", (run_id,))
-                last = rows[0] if rows else None
-                if last and last["kind"] == kind and last["n"] < self.RUN_EVENT_MAX:
-                    capacity = self.RUN_EVENT_MAX - last["n"]
-                    chunk, remaining = remaining[:capacity], remaining[capacity:]
-                    if not self._append_redacted_across_boundary(int(last["id"]), chunk):
-                        self._execute(
-                            "UPDATE run_events SET content = content || ? WHERE id=?",
-                            (chunk, last["id"]))
-                    event_id = int(last["id"])
-                else:
-                    chunk, remaining = (remaining[: self.RUN_EVENT_MAX],
-                                        remaining[self.RUN_EVENT_MAX:])
-                    event_id = self._execute(
-                        "INSERT INTO run_events(run_id, kind, content, created_at) "
-                        "VALUES(?,?,?,?)",
-                        (run_id, kind, chunk, time.time()))
-        return event_id
+                "VALUES(?,?,?,?)", (run_id, kind, text, created_at))
+            return
+        remaining = text
+        while remaining:
+            last = self._conn.execute(
+                "SELECT id, kind, LENGTH(content) AS n FROM run_events "
+                "WHERE run_id=? ORDER BY id DESC LIMIT 1", (run_id,)).fetchone()
+            if last and last["kind"] == kind and last["n"] < self.RUN_EVENT_MAX:
+                capacity = self.RUN_EVENT_MAX - last["n"]
+                chunk, remaining = remaining[:capacity], remaining[capacity:]
+                if not self._append_redacted_across_boundary(int(last["id"]), chunk):
+                    self._conn.execute(
+                        "UPDATE run_events SET content = content || ? WHERE id=?",
+                        (chunk, last["id"]))
+            else:
+                chunk, remaining = (remaining[: self.RUN_EVENT_MAX],
+                                    remaining[self.RUN_EVENT_MAX:])
+                self._conn.execute(
+                    "INSERT INTO run_events(run_id, kind, content, created_at) "
+                    "VALUES(?,?,?,?)", (run_id, kind, chunk, created_at))
 
     def _append_redacted_across_boundary(self, event_id: int, chunk: str) -> bool:
         """流式文本按增量追加,一个凭据值可能被拆在相邻几次追加里,单看新片段认不出。
         把行尾最多 (最长原文 - 1) 个字符与新片段拼起来再查;命中时连同行尾一起
-        改写并返回 True,否则返回 False 交给调用方普通追加。"""
+        改写并返回 True,否则返回 False 交给调用方普通追加。不提交。"""
         pairs = self._redaction_pairs()
         if not pairs:
             return False
         overlap = max(len(secret) for secret, _ in pairs) - 1
-        tail = str(self._query(
+        tail = str(self._conn.execute(
             "SELECT substr(content, -?) AS tail FROM run_events WHERE id=?",
-            (overlap, event_id))[0]["tail"] or "")
+            (overlap, event_id)).fetchone()["tail"] or "")
         merged = tail + chunk
         redacted = redact_text(merged, pairs)
         if redacted == merged:
             return False
-        self._execute(
+        self._conn.execute(
             "UPDATE run_events SET content = substr(content, 1, length(content) - ?) || ? "
             "WHERE id=?", (len(tail), redacted, event_id))
         return True
@@ -2020,11 +2083,13 @@ class Store:
     def append_interaction_event(self, run_id: int, kind: str,
                                  payload: dict) -> int:
         """交互请求必须独占一行，不能与相邻 JSON 事件拼接。"""
-        return self._execute(
-            "INSERT INTO run_events(run_id, kind, content, created_at) "
-            "VALUES(?,?,?,?)",
-            (run_id, kind, json.dumps(payload, ensure_ascii=False), time.time()),
-        )
+        with self._lock:
+            self._flush_run_events()
+            return self._execute(
+                "INSERT INTO run_events(run_id, kind, content, created_at) "
+                "VALUES(?,?,?,?)",
+                (run_id, kind, json.dumps(payload, ensure_ascii=False), time.time()),
+            )
 
     def update_interaction_event(self, event_id: int, run_id: int,
                                  payload: dict) -> bool:
@@ -2038,6 +2103,7 @@ class Store:
             return cursor.rowcount == 1
 
     def run_events(self, run_id: int, limit: int = 200) -> list[dict]:
+        self._flush_run_events()
         rows = self._query(
             "SELECT id, kind, content, created_at FROM run_events "
             "WHERE run_id=? ORDER BY id DESC LIMIT ?", (run_id, limit))
@@ -2061,6 +2127,7 @@ class Store:
         过程事件读取有最近 N 行的窗口限制,思考/工具事件交替会把最早的
         输出段挤出窗口;实时输出框必须拿到完整正文,所以单独全量拼接。
         """
+        self._flush_run_events()
         rows = self._query(
             "SELECT content FROM run_events WHERE run_id=? AND kind='text' "
             "ORDER BY id", (run_id,))
@@ -2070,6 +2137,7 @@ class Store:
                            kinds: set[str]) -> int:
         """在最终发布前改写已合并的文本事件，覆盖跨 chunk 的敏感路径。"""
         with self._lock:
+            self._flush_run_events()
             rows = self._conn.execute(
                 "SELECT id, kind, content FROM run_events WHERE run_id=?",
                 (run_id,),
@@ -2092,6 +2160,7 @@ class Store:
             return 0
         removed = 0
         with self._lock:
+            self._flush_run_events()
             rows = self._query(
                 "SELECT kind, content FROM run_events WHERE run_id=? ORDER BY id",
                 (run_id,))
@@ -2113,6 +2182,7 @@ class Store:
         过程输出是否有增量、要不要重新拉取事件。merged_count 是排队时并入
         这次运行的其他运行数,运行卡片据此标出"合并处理了几条消息"。
         """
+        self._flush_run_events()
         rows = self._query(
             "SELECT r.*, (SELECT COALESCE(SUM(LENGTH(e.content)), 0) "
             "FROM run_events e WHERE e.run_id = r.id) AS events_size, "

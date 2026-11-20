@@ -181,9 +181,11 @@ class AntigravityRuntimeProvider(RuntimeProvider):
         except OSError as exc:
             return RunResult(False, f"Antigravity 启动失败: {exc}")
         adapters._track_process(config, proc, command)
+        progress = adapters._ReadProgress()
 
         def read_stdout():
             for line in proc.stdout:
+                progress.tick()
                 logs.append(line.rstrip())
                 try:
                     message = json.loads(line)
@@ -201,11 +203,20 @@ class AntigravityRuntimeProvider(RuntimeProvider):
 
         def read_stderr():
             for line in proc.stderr:
+                progress.tick()
                 errors.append(line.rstrip())
                 safe_emit(config.emit, "stderr", line)
 
-        readers = [threading.Thread(target=read_stdout, daemon=True),
-                   threading.Thread(target=read_stderr, daemon=True)]
+        def guarded(read):
+            def run():
+                try:
+                    read()
+                except (ValueError, OSError):
+                    pass   # 管道被握住读不到 EOF 时由下方关闭,读线程随之结束
+            return run
+
+        readers = [threading.Thread(target=guarded(read_stdout), daemon=True),
+                   threading.Thread(target=guarded(read_stderr), daemon=True)]
         for reader in readers:
             reader.start()
         failure = ""
@@ -218,9 +229,9 @@ class AntigravityRuntimeProvider(RuntimeProvider):
             failure = f"执行超时({config.timeout}s)"
         finally:
             # 一轮一个进程;连同继承 stdout 的子进程一起回收,避免管道永不 EOF。
+            # result 事件是 stdout 的最后一行,必须读到 EOF 才能判定本轮结果。
             adapters._kill_process_group(proc)
-            for reader in readers:
-                reader.join(timeout=5)
+            drained = adapters._await_pipe_readers(readers, progress)
             adapters._untrack_process(proc)
             for pipe in (proc.stdout, proc.stderr):
                 pipe.close()
@@ -241,8 +252,15 @@ class AntigravityRuntimeProvider(RuntimeProvider):
         if not failure and any("print timeout" in line.lower() for line in errors):
             failure = "Antigravity print timeout;本轮仅返回部分输出。"
         if not failure and (turn_error or proc.returncode != 0 or turn.result is None):
-            failure = str(result.get("error") or turn_error or "\n".join(errors) or
-                          f"Antigravity 未成功完成(status={result.get('status', 'missing result')}, exit={proc.returncode})")
+            failure = str(result.get("error") or turn_error or "")
+            if not failure:
+                # 没有明确错误时先写清本轮缺了什么。stderr 里常是"root agent idle;
+                # waiting ... for background task(s)"这类过程提示,只能附作上下文。
+                missing = "未返回 result 事件" if turn.result is None else "异常退出"
+                unread = "" if drained else ",stdout 未读完"
+                failure = f"Antigravity {missing}(exit={proc.returncode}{unread})"
+                if errors:
+                    failure += "\nstderr:\n" + "\n".join(list(errors)[-5:])
         if not failure and result.get("denied_actions"):
             failure = "Antigravity 有工具操作被拒绝: " + json.dumps(result["denied_actions"], ensure_ascii=False)
         if not failure and not output:

@@ -168,7 +168,7 @@ pi 用于把**裸 OpenAI / Anthropic 兼容 API** 接成可协作的 Agent:平�
 
 Codex 的 workspace-write 沙箱还会把每个可写根下的 `.git`、`.agents`、`.codex` 以及 worktree 解析出的主仓 `.git/worktrees/<名字>` 挂成只读，git 写操作与仓内 Skill 编辑在沙箱内会报 `Read-only file system`。平台不改写这些根：把 `.git` 的子目录列为额外可写根会让沙箱因建占位挂载点失败而起不来，整个 `.git` 放开则暴露 hooks/config。取而代之的是公共上下文「必须遵守」与 manual 第 3 节引导 Agent 对清单内路径的这类失败申请升级重跑，而不是判定环境只读后放弃。
 
-聊天中的每条 Runtime 过程事件都渲染为可折叠项，包括输入、思考、命令、工具结果、日志、用量和交互请求。每个运行卡采用单项展开：首次载入时只展开最新事件；收到新的事件 id 时自动收起上一项并展开新项；用户手动展开任一旧项时会收起同卡片中的其他项。相同事件的流式内容追加不会被误判为新项。普通文本事件在 SQLite 中按 8000 字符物理分段，读取 API 会重组相邻同类分段后再展示，避免长 diff、路径或日志行从任意字符中间形成新的折叠项；权限、提问、用量和后端 Agent 等结构化 JSON 事件始终逐条保留。
+聊天中的每条 Runtime 过程事件都渲染为可折叠项，包括输入、思考、命令、工具结果、日志、用量和交互请求。每个运行卡采用单项展开：首次载入时只展开最新事件；收到新的事件 id 时自动收起上一项并展开新项；用户手动展开任一旧项时会收起同卡片中的其他项。相同事件的流式内容追加不会被误判为新项。普通文本事件在 SQLite 中按 8000 字符物理分段，读取 API 会重组相邻同类分段后再展示，避免长 diff、路径或日志行从任意字符中间形成新的折叠项；权限、提问、用量和后端 Agent 等结构化 JSON 事件始终逐条保留。运行中的流式事件先进 Store 的写缓冲:同一运行连续的同类文本在内存里合并,后台线程约每 0.25 秒一次事务批量落库;读事件、运行转入终态之前先排空缓冲,所以接口与收尾逻辑读到的总是完整内容,运行结束后才到的迟到事件在落库时丢弃。
 
 用量事件在 Runtime 层就统一成 `usage/v1` 结构：provider 用各自的字段表把上报映射为 `turn`（本轮）与 `total`（累计）两个区段，区段内固定字段 `input`/`cache_read`/`cache_write`/`output`/`reasoning`/`total`，另可带 `context_window`、`context_used`（当前上下文占用；一轮多次模型请求时本轮合计会远大于实际占用，前端上下文条优先用它）、`cost_usd`、`tool_uses`、`duration_ms`，`raw` 原样保留上报内容。Codex 取自 `thread/tokenUsage/updated`（last→turn、total→total、modelContextWindow→context_window），pi 取自 `message_end` 的 assistant usage（含 cost.total），Claude 主回合取自 `result`（Anthropic 字段加 total_cost_usd/duration_ms，raw 只留用量相关键），Claude 后台 Agent 的 total_tokens/tool_uses/duration_ms 随 `backend_agent` 事件携带；ACP 工具由协议层在回合结束时发一条，标准字段取自 `session/prompt` 响应的 `usage`（本轮，同一轮的续接 prompt 逐项相加）与最近一次 `usage_update`（used→context_used、size→context_window、USD 的会话累计 cost→cost_usd），厂商私有扩展经 `parse_prompt_usage` 钩子只补缺：grok 的 `_meta.usage`（本轮用量、`costUsdTicks` 按每美元 10¹⁰ ticks 换算、`apiDurationMs`，`_meta.totalTokens` 为上下文占用），trae 的 `_meta._trae/tokenUsage.sessionTotal`（累计）；kimi 不上报用量，不发事件。前端只按这一种结构排版（区段分行、k/M 压缩、上下文占用条、原始上报折叠），没有 `schema` 标记的历史事件原样显示 JSON；新增 Runtime 只需在其 provider 内给出字段表。
 
@@ -324,6 +324,6 @@ grok/copilot 的 effort 进的是 ACP serve 命令，改档位会改变 `acp.py`
 1. 实现 `RuntimeProvider` 的 `start`、`stop`、`capabilities` 和 `list_models`，通过 `runtime_manager.register(adapter, provider)` 注册。长驻 provider 还应实现 `shutdown`。若支持账户限额，令 `capabilities().account_usage=true` 并实现 `account_usage()`；provider 必须返回统一快照，不得把凭据、用户身份或上游错误正文放进 `message`。业务层不增加 adapter 条件分支。
 2. 如果复用内置打印模式或 ACP executor，只在 Runtime 包内部补充命令模板、会话参数和权限翻译；原始 executor 不对主程序导出。
 3. 在 Runtime manager 内补充二进制发现、模型目录和升级策略；模型、effort 与 capability 均通过统一查询接口暴露。
-4. 双向协议统一通过 `ExecutionConfig.emit` 输出过程事件，通过 `ExecutionConfig.interact` 请求权限或用户输入；provider 不得直接依赖 Store、FastAPI 或 Web 数据结构。
+4. 双向协议统一通过 `ExecutionConfig.emit` 输出过程事件，通过 `ExecutionConfig.interact` 请求权限或用户输入；provider 不得直接依赖 Store、FastAPI 或 Web 数据结构。`emit` 只做内存追加，可以在管道读线程里逐个增量直接调用。一轮一进程的 provider 在进程退出后要等管道读线程读到 EOF 再判定结果(`adapters._await_pipe_readers`：仍有新行就继续等，只在长时间无新行或握管道的进程不停写时放弃),最终回复和结果事件往往就在最后几行。
 5. 为 provider 增加契约测试，并保留“`missioncrew/runtime` 之外不得导入原始执行器”的架构边界测试。账户限额测试使用脱敏 fixture 和确定性协议进程，不能依赖真实账号或实时额度。
 6. Runtime 启动命令属于 provider 实现，不进入 Backend 数据模型；新增工具时同时实现固定命令、权限翻译、会话复用和对应测试。

@@ -795,6 +795,41 @@ def _kill_process_group(proc: subprocess.Popen) -> None:
         pass
 
 
+class _ReadProgress:
+    """管道读线程每处理一行就加一,供 _await_pipe_readers 判断是否仍在读。"""
+
+    def __init__(self) -> None:
+        self.lines = 0
+
+    def tick(self) -> None:
+        self.lines += 1
+
+
+def _await_pipe_readers(readers: list[threading.Thread], progress: _ReadProgress,
+                        idle: float = 5.0, limit: float = 60.0) -> bool:
+    """进程退出后等管道读线程读到 EOF,返回是否全部读完。
+
+    最终回复和结果事件往往在输出的最后几行,读线程还在消化积压时必须继续等,
+    不能按固定时限截断。放弃只有两种情况:连续 ``idle`` 秒读不到新行(管道被
+    别的进程握着、等不到 EOF),或总共等满 ``limit`` 秒(握管道的进程还在不停
+    写,调用方应先结束进程组再等)。
+    """
+    started = seen_at = time.monotonic()
+    seen = progress.lines
+    while True:
+        for reader in readers:
+            reader.join(timeout=0.1)
+        if not any(reader.is_alive() for reader in readers):
+            return True
+        now = time.monotonic()
+        if progress.lines != seen:
+            seen, seen_at = progress.lines, now
+        elif now - seen_at >= idle:
+            return False
+        if now - started >= limit:
+            return False
+
+
 def _summarize_tool_result(content) -> str:
     """tool_result 的 content 可能是字符串或内容块列表,压成一行摘要。"""
     if isinstance(content, list):
@@ -1220,8 +1255,11 @@ class CliAdapter:
         # codex 的 stderr 是分节的过程日志,解析后再上报;其余 CLI 原样透传
         codex_err = _CodexStderrParser(emit) if self.adapter_name == "codex" else None
 
+        progress = _ReadProgress()
+
         def _drain(pipe, kind):
             for raw in pipe:
+                progress.tick()
                 line = raw.rstrip("\n")
                 if not line.strip():
                     continue
@@ -1270,14 +1308,11 @@ class CliAdapter:
                 r.join(timeout=3)
             _write_log()
             return RunResult(False, f"执行超时({cfg.timeout}s)")
-        for r in readers:
-            r.join(timeout=5)
-        if any(r.is_alive() for r in readers):
-            # 子进程已退出但孙进程仍握着管道:结束进程组促成 EOF,
-            # 避免回复被后续输出污染、事件在 run 结束后继续增长
+        if not _await_pipe_readers(readers, progress, limit=5):
+            # 子进程已退出但孙进程仍握着管道:结束进程组促成 EOF,再把管道里
+            # 剩下的积压读完;避免回复被后续输出污染、事件在 run 结束后继续增长
             _kill_process_group(proc)
-            for r in readers:
-                r.join(timeout=3)
+            _await_pipe_readers(readers, progress, idle=3)
         raw_out = "\n".join(out_full).strip() or "\n".join(err_full).strip()
         _write_log()
         # stream-json:回复取 result 事件;异常中断没等到 result 时退回已解析

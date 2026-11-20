@@ -48,6 +48,12 @@ if scenario == "missing":
     raise SystemExit(1)
 if scenario == "truncated":
     raise SystemExit(0)
+if scenario == "flood":
+    for i in range(400):
+        emit("step_update", {"step_index": 2, "step_type": "agent_response", "state": "ACTIVE", "text_delta": f"{i} "})
+    print("root agent idle; waiting up to 2562047h0m0s for 1 background task(s)", file=sys.stderr, flush=True)
+    emit("result", {"conversation_id": sid, "status": "SUCCESS", "response": "flood complete"})
+    raise SystemExit(0)
 print("startup diagnostic", flush=True)
 print("[]", flush=True)
 emit("step_update", {"step_index": 1, "step_type": "tool", "state": "ACTIVE", "tool_name": "run_command"})
@@ -135,7 +141,7 @@ def test_resume_context_events_and_cumulative_usage(runtime, tmp_path):
 
 
 @pytest.mark.parametrize("scenario,detail", [
-    ("error", "invalid model"), ("truncated", "missing result"),
+    ("error", "invalid model"), ("truncated", "未返回 result 事件"),
     ("denied", "被拒绝"), ("empty", "未产生"),
     ("timeout_result", "print timeout"),
 ])
@@ -144,6 +150,26 @@ def test_failures_never_publish_partial_success(runtime, scenario, detail):
     config.env["SCENARIO"] = scenario
     result = provider.start(config)
     assert not result.success and detail in result.summary and detail in result.output
+
+
+def test_slow_event_consumer_still_reads_final_result(runtime, monkeypatch):
+    """读线程消化积压的时间超过空闲窗口也要读到 EOF:result 在最后一行。"""
+    provider, config, _, events = runtime
+    config.env["SCENARIO"] = "flood"
+    original = adapters._await_pipe_readers
+    monkeypatch.setattr(adapters, "_await_pipe_readers",
+                        lambda readers, progress, idle=5.0: original(readers, progress, idle=0.3))
+    config.emit = lambda kind, text: (time.sleep(0.003), events.append((kind, text)))
+    result = provider.start(config)
+    assert result.success and result.output == "flood complete"
+    assert sum(1 for kind, _ in events if kind == "text") == 400
+
+
+def test_missing_result_names_the_signal_not_the_stderr_notice(runtime):
+    provider, config, _, _ = runtime
+    config.env["SCENARIO"] = "truncated"
+    summary = provider.start(config).summary
+    assert summary.startswith("Antigravity 未返回 result 事件(exit=0)")
 
 
 def test_resumed_turn_ignores_stale_conversation_error(runtime):
