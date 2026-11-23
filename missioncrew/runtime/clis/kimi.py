@@ -7,6 +7,14 @@ def account_usage_probe(backend, timeout: int = 15):
     return probe_kimi_usage(backend, timeout)
 
 
+def private_dirs() -> list[str]:
+    """Kimi CLI 的用户级目录(配置、skills、会话等)。"""
+    import os
+    from pathlib import Path
+    home = os.environ.get("KIMI_CODE_HOME") or str(Path.home() / ".kimi-code")
+    return [home, str(Path.home() / ".kimi")]
+
+
 SPEC = CliSpec(
     adapter="kimi",
     binary="kimi",
@@ -27,4 +35,5 @@ SPEC = CliSpec(
     update={"npm": "@moonshot-ai/kimi-code",
             "self_update": ["kimi", "upgrade", "--yes"]},
     account_usage_probe=account_usage_probe,
+    private_dirs=private_dirs,
 )

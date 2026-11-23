@@ -27,6 +27,17 @@ def discover_models(backend, timeout: int = 25):
     return models, {}
 
 
+def private_dirs() -> list[str]:
+    """Antigravity / Gemini CLI 的用户级目录(配置、skills、记忆等)。"""
+    import os
+    from pathlib import Path
+    dirs = []
+    if os.environ.get("GEMINI_CLI_HOME"):
+        dirs.append(os.environ["GEMINI_CLI_HOME"])
+    dirs.append(str(Path.home() / ".gemini"))
+    return dirs
+
+
 SPEC = CliSpec(
     adapter="antigravity",
     binary="agy",
@@ -34,4 +45,5 @@ SPEC = CliSpec(
     cost_per_run=4.0,
     update={"self_update": ["agy", "update"]},
     discover_models=discover_models,
+    private_dirs=private_dirs,
 )

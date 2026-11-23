@@ -334,6 +334,58 @@ def test_prepare_keeps_read_only_policy_untouched(tmp_path, monkeypatch):
     assert json.loads(config.env["MISSIONCREW_READABLE_DIRS"]) == [str(tmp_path)]
 
 
+def test_prepare_includes_private_dirs_for_full_access_and_copilot_allows_all_paths(
+        tmp_path, monkeypatch):
+    gemini_home = tmp_path / "gemini-home"
+    gemini_home.mkdir()
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(gemini_home))
+    manager = RuntimeManager()
+    manager.register("antigravity", _RecordingProvider())
+    backend = Backend(id="agy", name="Antigravity", adapter="antigravity")
+    config = ExecutionConfig(
+        task_id="task", stage_name="chat", backend=backend, prompt="work",
+        workdir=str(tmp_path),
+        runtime_policy=RuntimePolicy(
+            readable_paths=[str(tmp_path)], writable_paths=[str(tmp_path)],
+            permissions=RuntimePermissions(filesystem="full-access")),
+    )
+    manager.start(config)
+    assert str(gemini_home) in config.allowed_dirs
+    assert str(gemini_home) in manager.private_dirs(backend)
+
+    copilot_backend = Backend(id="cp", name="Copilot", adapter="copilot")
+    copilot_full = ExecutionConfig(
+        task_id="task", stage_name="chat", backend=copilot_backend, prompt="work",
+        workdir=str(tmp_path),
+        runtime_policy=RuntimePolicy(
+            permissions=RuntimePermissions(filesystem="full-access")),
+    )
+    rendered = adapters.render_command(
+        adapters.ACP_SERVE_COMMANDS["copilot"], "", "", allowed_dirs=[])
+    assert "--allow-all-paths" in adapters._apply_permission_policy(
+        rendered, "copilot", copilot_full)
+    copilot_scoped = ExecutionConfig(
+        task_id="task", stage_name="chat", backend=copilot_backend, prompt="work",
+        workdir=str(tmp_path),
+        runtime_policy=RuntimePolicy(
+            permissions=RuntimePermissions(filesystem="workspace-write")),
+    )
+    assert "--allow-all-paths" not in adapters._apply_permission_policy(
+        rendered, "copilot", copilot_scoped)
+
+
+def test_runtime_filesystem_mode_env_override(monkeypatch):
+    from missioncrew.core.config import runtime_filesystem_mode
+    monkeypatch.delenv("MISSIONCREW_FILESYSTEM", raising=False)
+    assert runtime_filesystem_mode() == "full-access"
+    monkeypatch.setenv("MISSIONCREW_FILESYSTEM", "workspace-write")
+    assert runtime_filesystem_mode() == "workspace-write"
+    monkeypatch.setenv("MISSIONCREW_FILESYSTEM", "read-only")
+    assert runtime_filesystem_mode() == "read-only"
+    monkeypatch.setenv("MISSIONCREW_FILESYSTEM", "invalid-mode")
+    assert runtime_filesystem_mode() == "full-access"
+
+
 def test_application_layers_do_not_import_raw_runtime_executors():
     root = Path(__file__).parents[1] / "missioncrew"
     violations = []

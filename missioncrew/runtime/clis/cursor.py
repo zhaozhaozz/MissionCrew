@@ -13,6 +13,12 @@ def session_args(cmd: list[str], session_id: str,
     return [*cmd, *args], True
 
 
+def private_dirs() -> list[str]:
+    """Cursor CLI 的用户级配置目录。"""
+    from pathlib import Path
+    return [str(Path.home() / ".cursor")]
+
+
 SPEC = CliSpec(
     adapter="cursor",
     binary="cursor-agent",
@@ -23,4 +29,5 @@ SPEC = CliSpec(
     session_id="captured",
     update={"self_update": ["cursor-agent", "update"]},
     session_args=session_args,
+    private_dirs=private_dirs,
 )

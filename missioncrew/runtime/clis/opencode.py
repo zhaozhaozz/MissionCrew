@@ -56,6 +56,16 @@ def prepare_env(env: dict, external_dirs: list[str]) -> dict:
         rules = {"*": current}
     else:
         rules = {}
+    filesystem = ""
+    try:
+        perms = json.loads(env.get("MISSIONCREW_RUNTIME_PERMISSIONS", "{}"))
+        if isinstance(perms, dict):
+            filesystem = str(perms.get("filesystem") or "")
+    except json.JSONDecodeError:
+        pass
+    # full-access 放开外部目录(仍尊重用户已有显式配置);受限模式只放行精确白名单。
+    if filesystem == "full-access":
+        rules.setdefault("*", "allow")
     for path in external_dirs:
         rules[f"{path.rstrip('/')}/**"] = "allow"
     permission["external_directory"] = rules

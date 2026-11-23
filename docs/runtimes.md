@@ -44,7 +44,7 @@ Runtime 指本机安装的 Agent CLI(代码中的 `Backend`)。它是**全局资
 
 `start()` 的 provider 若在内部用 session lock 串行化同一会话，必须在取得该锁后、启动新 turn 或子进程前调用 `ExecutionConfig.cancellation_requested()`。频道停止可能发生在调用进入 provider 之后、真正取得会话锁之前；只在 `RuntimeManager.start()` 入口检查会让排队轮次在当前进程终止后继续启动。内置 Claude、Codex、ACP、打印模式和 Mock provider 都遵守这条契约。
 
-`ExecutionConfig.runtime_policy` 是后端无关的执行策略，包含 `readable_paths`、`writable_paths`、`skill_paths` 和 `RuntimePermissions`。权限目前统一表达为审批模式 `auto|prompt|deny`、文件系统模式 `read-only|workspace-write|full-access`、网络模式 `inherit|allow|deny`。Runtime manager 会生成 `MISSIONCREW_READABLE_DIRS`、`MISSIONCREW_WRITABLE_DIRS`、`MISSIONCREW_SKILL_DIRS`、`MISSIONCREW_RUNTIME_PERMISSIONS`，provider 再把可支持的策略翻译为命令参数或 ACP 权限响应。`allowed_dirs` 仅作为旧构造入口的兼容字段。
+`ExecutionConfig.runtime_policy` 是后端无关的执行策略，包含 `readable_paths`、`writable_paths`、`skill_paths` 和 `RuntimePermissions`。权限目前统一表达为审批模式 `auto|prompt|deny`、文件系统模式 `read-only|workspace-write|full-access`、网络模式 `inherit|allow|deny`。聊天执行默认使用 `full-access`（效率优先，不限制 Agent 读写自有目录和全局提示词引用的路径），可通过环境变量 `MISSIONCREW_FILESYSTEM=workspace-write|read-only` 切回受限模式。Runtime manager 会生成 `MISSIONCREW_READABLE_DIRS`、`MISSIONCREW_WRITABLE_DIRS`、`MISSIONCREW_SKILL_DIRS`、`MISSIONCREW_RUNTIME_PERMISSIONS`，provider 再把可支持的策略翻译为命令参数或 ACP 权限响应。`allowed_dirs` 仅作为旧构造入口的兼容字段。
 
 项目 Skill 的摘要和适用性判断仍属于项目上下文；Runtime 层负责把已选 Skill 目录作为统一策略注入所有后端。聊天角色对 MissionCrew 的写操作同样不进入原始执行器：统一注入 Agent Tool URL 和路径稳定的逐 Run capability 文件，Claude、Codex、ACP 与打印模式都调用相同 HTTP/CLI 契约。删除动作进入项目统一回收站，主控通过 `recycle.list`、`recycle.restore` 和 `recycle.purge` 管理回收项，Runtime 不直接读写其内部存储。这样项目语义不会进入原始执行器，后端差异也不会反向泄漏到主程序。具体动作、权限与错误结构见 [MissionCrew Agent Tool API](agent-tool-api.md)。
 
@@ -130,7 +130,7 @@ Claude 原生后台 Agent 不会被禁用。provider 直接消费 stream-json �
 
 默认 Codex provider 不再执行 `codex exec`，而是为每个 `channel::role` 启动官方 `codex app-server`，使用省略 `jsonrpc` 字段的 JSONL 双向协议。连接先完成 `initialize/initialized`，再调用 `thread/start|thread/resume` 和 `turn/start`；agent message delta、reasoning delta、command、file change、plan、usage 和 turn completion 通知分别映射到聊天过程事件。
 
-每轮结构化传入 `cwd`、`model`、`effort`、`runtimeWorkspaceRoots`、`approvalPolicy` 和 `sandboxPolicy`。`workspaceWrite` 的 `writableRoots` 来自统一 `RuntimePolicy.writable_paths`；网络默认放行（Agent Tool 的回环 API 与 git 操作都依赖网络，禁网只会把每次访问变成沙箱失败加审批升级重试），仅 `RuntimePermissions.network=deny` 时关闭。统一策略在 manager `_prepare` 阶段对 `workspace-write` 模式追加系统临时目录（`/tmp` 等，救隐式使用它们的工具链）和 Runtime 工具自有目录（`CliSpec.private_dirs` 声明的配置/Skill/记忆位置，如 `~/.codex`、`~/.claude`）进入可写根；`read-only` 与 `full-access` 不改写。工具自有目录同时经 `runtime_manager.private_dirs` 进入聊天上下文的授权目录清单。模型目录直接调用 app-server `model/list`，失败时才退回旧的 CLI 发现路径。
+每轮结构化传入 `cwd`、`model`、`effort`、`runtimeWorkspaceRoots`、`approvalPolicy` 和 `sandboxPolicy`。默认 `full-access` 下使用 `dangerFullAccess`；切到 `workspace-write` 时，`workspaceWrite` 的 `writableRoots` 来自统一 `RuntimePolicy.writable_paths`，网络默认放行（Agent Tool 的回环 API 与 git 操作都依赖网络，禁网只会把每次访问变成沙箱失败加审批升级重试），仅 `RuntimePermissions.network=deny` 时关闭。统一策略在 manager `_prepare` 阶段对非 `read-only` 模式追加 Runtime 工具自有目录（`CliSpec.private_dirs` 声明的配置/Skill/记忆位置，如 `~/.codex`、`~/.claude`、`~/.gemini` 等），对 `workspace-write` 模式额外追加系统临时目录（`/tmp` 等，救隐式使用它们的工具链）；`read-only` 不改写。工具自有目录同时经 `runtime_manager.private_dirs` 进入聊天上下文的目录清单。模型目录直接调用 app-server `model/list`，失败时才退回旧的 CLI 发现路径。
 
 ### Antigravity headless stream-json
 

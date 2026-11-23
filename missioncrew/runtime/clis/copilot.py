@@ -9,6 +9,19 @@ _meta,但协议层在 load 之后才 begin_turn,回放不会混入本轮回复�
 from .spec import CliSpec
 
 
+def apply_permissions(command: list[str], filesystem: str) -> list[str]:
+    """full-access 时关闭 Copilot 的路径校验,允许访问项目目录之外的路径。"""
+    if filesystem == "full-access" and "--allow-all-paths" not in command:
+        return [*command, "--allow-all-paths"]
+    return command
+
+
+def private_dirs() -> list[str]:
+    """Copilot 的用户级配置与状态目录。"""
+    from pathlib import Path
+    return [str(Path.home() / ".copilot")]
+
+
 SPEC = CliSpec(
     adapter="copilot",
     binary="copilot",
@@ -27,4 +40,6 @@ SPEC = CliSpec(
     # copilot 常由 VS Code 扩展托管;仅当二进制确实由 npm 管理时才允许
     # `npm install -g` 更新,update_plan 会先做归属判断
     update={"npm": "@github/copilot"},
+    apply_permissions=apply_permissions,
+    private_dirs=private_dirs,
 )

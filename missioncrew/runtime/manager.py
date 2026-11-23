@@ -158,13 +158,14 @@ class RuntimeManager:
     def _prepare(config: ExecutionConfig) -> ExecutionConfig:
         """把统一策略规范化为所有 provider 都能消费的环境和路径边界。"""
         policy = config.runtime_policy
-        # workspace-write(常规模式)额外放行系统临时目录与工具自有目录:
-        # 前者救隐式使用 /tmp 的工具链,后者让 Agent 能用工具自带的
-        # skill/记忆能力。read-only/full-access 不改写,保持策略原义。
+        # 非 read-only 模式统一补入工具自有目录,让 --add-dir / additionalDirectories
+        # 与沙箱可写根始终覆盖 Agent 自己的配置/Skill/记忆位置;workspace-write 另补
+        # 系统临时目录救隐式使用 /tmp 的工具链。read-only 不改写,保持策略原义。
         if policy.permissions.filesystem == "workspace-write":
             for path in system_temp_dirs():
                 if path not in policy.writable_paths:
                     policy.writable_paths.append(path)
+        if policy.permissions.filesystem != "read-only":
             for path in _clis.private_dirs_for(config.backend.adapter):
                 if path not in policy.readable_paths:
                     policy.readable_paths.append(path)

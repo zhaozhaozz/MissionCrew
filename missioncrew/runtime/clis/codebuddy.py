@@ -16,6 +16,12 @@ def session_args(cmd: list[str], session_id: str,
     return [*cmd, "--resume" if reused else "--session-id", session_id], False
 
 
+def private_dirs() -> list[str]:
+    """CodeBuddy CLI 的用户级配置目录。"""
+    from pathlib import Path
+    return [str(Path.home() / ".codebuddy")]
+
+
 SPEC = CliSpec(
     adapter="codebuddy",
     binary="codebuddy",
@@ -28,4 +34,5 @@ SPEC = CliSpec(
     update={"npm": "@tencent-ai/codebuddy-code"},
     apply_permissions=apply_permissions,
     session_args=session_args,
+    private_dirs=private_dirs,
 )

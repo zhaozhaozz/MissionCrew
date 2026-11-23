@@ -32,7 +32,8 @@ from typing import Optional, Sequence
 
 from ..runtime import runtime_manager
 from ..core.config import (chat_max_workers, context_reinject_bytes,
-                           context_reinject_turns, mc_home)
+                           context_reinject_turns, mc_home,
+                           runtime_filesystem_mode)
 from .agent_tools import (AgentActionService, AgentIdentity, AgentToolError,
                           DispatchInactiveError, default_agent_tool_url)
 from .callbacks import CallbackService
@@ -49,7 +50,7 @@ from .workspace import (channel_page_context_dir, channel_uploads_dir,
 from ..core.models import (DEFAULT_MAX_CHAIN_RUNS, GITHUB_ENVIRONMENT,
                            GITHUB_TOKEN_VARIABLE, INJECTION_FULL_MODES,
                            Backend, Channel, ExecutionConfig, Role,
-                           RuntimePolicy)
+                           RuntimePermissions, RuntimePolicy)
 from .project_context import (project_allowed_dirs, project_resource_versions,
                               render_project_context)
 from .tasks import TASK_RULE_AUTHOR
@@ -129,7 +130,7 @@ Language: write everything MissionCrew shows to humans (final replies, messages,
 _EXECUTOR_STEPS = """\
 1. Read the task: the task comes only from the brief in the "Trigger Message" at the bottom; your role profile is not a task. If the brief is missing information, raise it in your reply instead of guessing or widening the scope.
 2. Gather context only when needed; do not preload. Channel history is `channel-history.json` under "Workspace Overview"; for guidelines and skills, check their descriptions under "Project Materials" first and read the full text only if relevant; project documents are in `{documents_dir}`.
-3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (see "Must Follow"); touch only the read/write directories listed under "Must Follow". Put temporary files in a task directory the repository already uses (such as the project's `.tmp/` or `.e2e/`); without such a convention use `{temp_dir}`, and clean up when the task is done.
+3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (see "Must Follow"). Put temporary files in a task directory the repository already uses (such as the project's `.tmp/` or `.e2e/`); without such a convention use `{temp_dir}`, and clean up when the task is done.
 4. Write back to the platform: publish documents, create or update Tasks and append status briefs only through the Agent Tool below; do not edit files under `documents/` or `tasks/` directly.
 5. Reply: your final reply is published to the chat channel in full and verbatim, where humans see it. Lead with the conclusion, then briefly say what you did; do not paste long logs; reference platform resources with `/resources/...` links, never internal paths."""
 
@@ -154,7 +155,7 @@ ORCHESTRATOR_WORKFLOW = """\
 PEER_WORKFLOW = """\
 1. Read the task: this turn's input is the human request (or automation script message) in the "Trigger Message" at the bottom; its type is on the "This Turn's Trigger" line. Your role profile is not a task. If the request is missing information, raise it in your reply instead of guessing or widening the scope.
 2. Gather context only when needed; do not preload. Channel history is `channel-history.json` under "Workspace Overview"; for guidelines and skills, check their descriptions under "Project Materials" first and read the full text only if relevant; project documents are in `{documents_dir}`.
-3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (see "Must Follow"); touch only the read/write directories listed under "Must Follow". Put temporary files in a task directory the repository already uses; without such a convention use `{temp_dir}`, and clean up when the task is done. You cannot dispatch other roles: when part of the work needs another role, finish what you can and name that role in your reply (see the "Role Roster" below) so a human can mention it.
+3. Do the work: read code and run commands in the working directory, and make code changes in your own git worktree (see "Must Follow"). Put temporary files in a task directory the repository already uses; without such a convention use `{temp_dir}`, and clean up when the task is done. You cannot dispatch other roles: when part of the work needs another role, finish what you can and name that role in your reply (see the "Role Roster" below) so a human can mention it.
 4. Write back to the platform: publish documents, create or update Tasks and append status briefs only through the Agent Tool below; do not edit files under `documents/` or `tasks/` directly.
 5. Reply: your final reply is published to the chat channel in full and verbatim. Lead with the conclusion, then briefly say what you did; do not paste long logs; reference platform resources with `/resources/...` links, never internal paths.
 - This project has no orchestrator: every role holds the orchestrator-level management permissions but cannot dispatch other roles. Your result is only published to the channel and triggers no other role; when a human mentions several roles at once, each one starts on its own without waiting for the others.
@@ -1717,6 +1718,19 @@ class ChatEngine:
         repos_line = ""
         documents_dir = "(no workspace for this run)"
         temp_dir = "a location in the current working directory that follows project conventions"
+        # 频道当前工作目录(含平台默认目录)以及存在的频道级共享目录都一并纳入目录清单
+        channel_extra_dirs: list[str] = []
+        resolved_workdir = str(workdir.resolve())
+        if resolved_workdir:
+            channel_extra_dirs.append(resolved_workdir)
+        for shared_dir in (channel_uploads_dir(channel.project_id or "", channel.id),
+                           channel_page_context_dir(channel.project_id or "",
+                                                    channel.id)):
+            if shared_dir.is_dir():
+                resolved = str(shared_dir)
+                if resolved not in channel_extra_dirs:
+                    channel_extra_dirs.append(resolved)
+
         if channel.project_id:
             project = self.store.get_project(channel.project_id)
             if project:
@@ -1727,7 +1741,8 @@ class ChatEngine:
                     has_history=True)
                 project_section = render_project_context(
                     project, library, workspace.root,
-                    extra_dirs=runtime_manager.private_dirs(backend))
+                    extra_dirs=[*channel_extra_dirs,
+                                *runtime_manager.private_dirs(backend)])
                 env["MISSIONCREW_WORKSPACE"] = str(workspace.root)
                 env["MISSIONCREW_DOCUMENTS_DIR"] = str(workspace.documents)
                 env["MISSIONCREW_DOCUMENTS_URL"] = document_resource_url(project.id)
@@ -1825,13 +1840,10 @@ class ChatEngine:
             allowed_dirs.append(history_parent)
         env["MISSIONCREW_CHANNEL_HISTORY"] = str(channel_history_path)
 
-        # 人类经输入框上传的频道附件与页面对话的正文快照:都是频道级目录,
-        # 存在才授权;消息正文/上下文已含具体路径
-        for shared_dir in (channel_uploads_dir(channel.project_id or "", channel.id),
-                           channel_page_context_dir(channel.project_id or "",
-                                                    channel.id)):
-            if shared_dir.is_dir() and str(shared_dir) not in allowed_dirs:
-                allowed_dirs.append(str(shared_dir))
+        # 频道工作目录、附件与页面正文快照目录一并加入授权目录
+        for extra_dir in channel_extra_dirs:
+            if extra_dir not in allowed_dirs:
+                allowed_dirs.append(extra_dir)
 
         # 只有主控拿到项目角色名册;执行角色只接收当前任务简报,不知道也
         # 不能横向调度其他执行角色。仅人工点名的角色在无主控项目里同样只执行。
@@ -1978,6 +1990,8 @@ class ChatEngine:
             readable_paths=list(allowed_dirs),
             writable_paths=list(allowed_dirs),
             skill_paths=[str(workspace.skills)] if workspace is not None else [],
+            permissions=RuntimePermissions(
+                filesystem=runtime_filesystem_mode()),
         )
         return ExecutionConfig(
             task_id=f"chat_{channel.id}", stage_name="chat", backend=backend,

@@ -18,13 +18,13 @@ Each run involves two locations at the same time:
 
 Chat workspaces are isolated and reused per `project × channel × role`. Different roles do not share the same `channel-history.json` or Agent Tool token, but `.missioncrew/documents/` links to the same project document library, so project documents are shared among the roles permitted to run.
 
-## File system boundaries
+## File system access policy
 
-The prompt requires the agent to read and write only the paths listed as "Read/write directories" for this run and their subdirectories, and not to proactively use `/tmp`, `/var/tmp`, other project directories, unauthorized user files, or the MissionCrew source directory; shell redirections, pipes, background logs, and files generated automatically by tools must respect the same boundary. Note that this is a prompt-level constraint: the default `workspace-write` policy adds the system temp directory and runtime-owned directories (such as `~/.codex` and the platform's pi home directory) to the sandbox's writable roots (`_prepare` in `runtime/manager.py`), so that toolchains that implicitly use `/tmp` do not fail inside the sandbox; `read-only` / `full-access` add no such directories.
+Chat runs default to `full-access` (a local trusted environment, efficiency first): MissionCrew does not block roles from reading or writing their own runtime/agent directories or paths referenced by global user prompts. Under `full-access`, Codex uses `dangerFullAccess`, Antigravity disables `--sandbox`, Claude skips application-layer write-path blocking, Copilot appends `--allow-all-paths`, and OpenCode allows `external_directory` by default. When directory sandboxing is desired, set `MISSIONCREW_FILESYSTEM=workspace-write` (or `read-only`) before starting `mc serve`.
 
-When a command would normally use an external temp path, rewrite it before running to a task directory the business repository already uses (for example the project's conventional
-`.tmp/` or `.e2e/`); when the project has no such convention, use `$MISSIONCREW_WORKSPACE/temp`, and clean it up when the
-task ends. Do not access the external path first and then wait for permission approval.
+The prompt and environment variables still list the current project's repositories, `.missioncrew` workspace, channel working directory, and each runtime's own directories (`CliSpec.private_dirs`), so agents can locate project materials directly and runtimes that rely on `--add-dir` / `additionalDirectories` recognize both the working directory and their own directories. In `workspace-write` mode, `_prepare` in `runtime/manager.py` additionally adds system temp directories (`/tmp`, etc.) to the sandbox's writable roots so that toolchains that implicitly use `/tmp` do not fail inside the sandbox; `read-only` adds no such directories.
+
+Put task-specific temporary files in a task directory the business repository already uses (for example the project's conventional `.tmp/` or `.e2e/`); when the project has no such convention, use `$MISSIONCREW_WORKSPACE/temp` and clean it up when the task ends.
 
 A typical layout:
 

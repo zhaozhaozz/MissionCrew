@@ -126,3 +126,18 @@ def context_reinject_turns() -> int:
     """
     return _int_env("MISSIONCREW_CONTEXT_REINJECT_TURNS",
                     DEFAULT_CONTEXT_REINJECT_TURNS)
+
+
+DEFAULT_RUNTIME_FILESYSTEM = "full-access"
+_VALID_RUNTIME_FILESYSTEMS = frozenset({"read-only", "workspace-write", "full-access"})
+
+
+def runtime_filesystem_mode() -> str:
+    """聊天执行的默认文件系统权限模式。
+
+    默认 ``full-access``(本机受信环境、效率优先,不拦截 Agent 自有目录与全局
+    提示词引用的路径);需要目录沙箱隔离时设环境变量 ``MISSIONCREW_FILESYSTEM``
+    为 ``workspace-write`` 或 ``read-only``。非法值回落默认。
+    """
+    raw = os.environ.get("MISSIONCREW_FILESYSTEM", "").strip().lower()
+    return raw if raw in _VALID_RUNTIME_FILESYSTEMS else DEFAULT_RUNTIME_FILESYSTEM

@@ -18,13 +18,13 @@ MissionCrew 是本地多 Agent harness：它负责装配角色、Runtime/模型�
 
 聊天工作区按 `project × channel × role` 隔离并复用。不同角色不会共享同一个 `channel-history.json` 或 Agent Tool 令牌，但 `.missioncrew/documents/` 链接到同一项目文档库，所以项目文档对获准执行的角色共享。
 
-## 文件系统边界
+## 文件系统访问策略
 
-Prompt 要求 Agent 只读写“本次可读写目录”列出的路径及其子目录，不要主动使用 `/tmp`、`/var/tmp`、其他项目目录、未授权的用户文件和 MissionCrew 源码目录；Shell 重定向、管道、后台日志和工具自动生成文件同样必须遵守这个边界。注意这是提示词层面的约束：默认的 `workspace-write` 策略会把系统临时目录和 Runtime 自有目录（如 `~/.codex`、平台内的 pi 主目录）并入沙箱可写根（`runtime/manager.py` 的 `_prepare`），以免隐式使用 `/tmp` 的工具链在沙箱内失败；`read-only` / `full-access` 不做这类追加。
+聊天执行默认使用 `full-access`（本机受信环境、效率优先）：MissionCrew 不阻止角色读写自己的 Runtime/Agent 工作目录，也不阻止访问用户全局提示词中引用的路径；Codex 使用 `dangerFullAccess`、Antigravity 关闭 `--sandbox`、Claude 不做写路径应用层拦截、Copilot 附加 `--allow-all-paths`、OpenCode 默认放行 `external_directory`。需要目录沙箱隔离时，可在启动 `mc serve` 前设置环境变量 `MISSIONCREW_FILESYSTEM=workspace-write`（或 `read-only`）。
 
-命令原本使用外部临时路径时，应在执行前改写到业务仓已有的任务目录（例如项目约定的
-`.tmp/`、`.e2e/`）；没有项目约定时使用 `$MISSIONCREW_WORKSPACE/temp`，并在任务
-结束后清理。不要先访问外部路径再等待权限批准。
+提示词与环境变量仍会列出当前项目的仓库、`.missioncrew` 工作区、频道工作目录及各 Runtime 自有目录（`CliSpec.private_dirs`），方便 Agent 直接定位项目资料，同时确保使用 `--add-dir` / `additionalDirectories` 的 Runtime 能完整识别工作目录与工具自有目录。在 `workspace-write` 模式下，`runtime/manager.py` 的 `_prepare` 还会把系统临时目录（`/tmp` 等）并入沙箱可写根，以免隐式使用 `/tmp` 的工具链在沙箱内失败；`read-only` 不做这类追加。
+
+任务产生的临时文件建议放在业务仓已有的任务目录（例如项目约定的 `.tmp/`、`.e2e/`）；没有项目约定时使用 `$MISSIONCREW_WORKSPACE/temp`，并在任务结束后清理。
 
 典型目录如下：
 

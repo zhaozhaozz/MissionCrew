@@ -30,6 +30,12 @@ def parse_prompt_usage(response: dict) -> dict:
     return {"total": usage_section(info.get("sessionTotal"), ACP_USAGE_FIELDS)}
 
 
+def private_dirs() -> list[str]:
+    """Trae CLI 的用户级配置目录。"""
+    from pathlib import Path
+    return [str(Path.home() / ".trae")]
+
+
 SPEC = CliSpec(
     adapter="trae",
     binary="traecli",
@@ -50,4 +56,5 @@ SPEC = CliSpec(
     update={"self_update": ["traecli", "update"]},
     latest_version=latest_version,
     parse_prompt_usage=parse_prompt_usage,
+    private_dirs=private_dirs,
 )

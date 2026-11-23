@@ -88,6 +88,12 @@ def discover_models(backend, timeout: int = 25):
         backend, timeout, parse_efforts=parse_model_efforts)
 
 
+def private_dirs() -> list[str]:
+    """Grok CLI 的用户级配置目录。"""
+    from pathlib import Path
+    return [str(Path.home() / ".grok")]
+
+
 SPEC = CliSpec(
     adapter="grok_build",
     binary="grok",
@@ -112,4 +118,5 @@ SPEC = CliSpec(
     parse_model_efforts=parse_model_efforts,
     parse_prompt_usage=parse_prompt_usage,
     account_usage_probe=account_usage_probe,
+    private_dirs=private_dirs,
 )
