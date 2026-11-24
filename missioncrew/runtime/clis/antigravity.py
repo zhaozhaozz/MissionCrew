@@ -4,6 +4,19 @@ import subprocess
 
 from .spec import CliSpec
 
+EFFORT_LEVELS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
+
+
+def embedded_effort(model: str) -> str:
+    """识别模型 slug 尾部已内嵌的推理力度(如 gemini-4-neon-xhigh -> xhigh)。
+
+    agy 对带力度后缀的 --model 同时传不同的 --effort 会直接报错冲突。
+    """
+    base, separator, tail = (model or "").strip().lower().rpartition("-")
+    if separator and base and tail in EFFORT_LEVELS:
+        return tail
+    return ""
+
 
 def discover_models(backend, timeout: int = 25):
     from ..base import host_isolated_environ
@@ -19,12 +32,16 @@ def discover_models(backend, timeout: int = 25):
         return [], {}
     # agy models 输出 slug<TAB>显示名称;不把进度提示或报错当成模型。
     models = []
+    efforts: dict[str, list[str]] = {}
     for line in proc.stdout.splitlines():
         slug, separator, label = line.strip().partition("\t")
         if separator and label.strip() and re.fullmatch(r"[\w./:-]+", slug):
             if slug not in models:
                 models.append(slug)
-    return models, {}
+            level = embedded_effort(slug)
+            if level:
+                efforts[slug] = [level]
+    return models, efforts
 
 
 def private_dirs() -> list[str]:

@@ -277,7 +277,7 @@ Agent Tool 公共区块列出当前角色的动作 scope，并注入 `MISSIONCRE
 - copilot:ACP serve 命令上的 `--effort`,档位 none/minimal/low/medium/high/xhigh/max(模型目录不自报按模型档位,不支持的模型由 copilot 自行忽略);
 - kimi:没有命令行档位,走 ACP 标准的会话配置项——`session/new`/`session/load` 应答的 `configOptions` 里 category=`thought_level` 的 `thinking` 选项,每轮 prompt 前经 `session/set_config_option` 在存活会话内切换,改档位不重启长驻进程;静态兜底档位 low/high/max(K3),实际档位按模型动态发现(K2.7 系列只有 on/high,见下);越界档位 kimi 报错(`-32602 Unknown thinking value`)并作为本轮失败回流到频道;
 - trae:同 kimi 走会话配置项,选项 id 为 `reasoning_effort`;不声明静态兜底档位,档位全部按模型发现(多数模型 low/high/xhigh,GLM-5.2 只有 high/xhigh;Doubao-Seed-Code、MiniMax、MiMo 等模型没有该选项,下拉禁用),模型留空(CLI 默认)时不提供 effort;越界档位 trae 报 `-32602 Unsupported reasoning effort for selected model`,作为本轮失败回流到频道;
-- antigravity:原生 `--effort`，档位 low/medium/high；
+- antigravity:原生 `--effort`，档位 low/medium/high/xhigh/max；`agy models` 返回的多数模型 slug 已内嵌力度后缀（如 `gemini-4-neon-xhigh`），模型目录将其按模型档位收敛为该后缀本身，且启动时不再重复传 `--effort`，避免与 `--model` 冲突；
 - pi:映射为 thinking level(`--thinking`/`set_thinking_level`),档位 off/minimal/low/medium/high/xhigh;
 - mock:low/medium/high,仅供测试/演示走通链路;
 - 其余工具不支持:角色编辑器的 effort 下拉禁用,API 对非空 effort 直接 400。

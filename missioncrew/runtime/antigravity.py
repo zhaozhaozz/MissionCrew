@@ -11,7 +11,7 @@ from pathlib import Path
 from ..core.models import Backend, ExecutionConfig, RunResult
 from . import adapters
 from .base import RuntimeCapabilities, RuntimeExecutionInfo, RuntimeProvider, RuntimeUsageSnapshot
-from .clis.antigravity import discover_models
+from .clis.antigravity import EFFORT_LEVELS, discover_models, embedded_effort
 from .native import OutputAssembler, build_usage, emit_json, safe_emit, usage_section
 from .usage import probe_antigravity_usage
 
@@ -101,10 +101,15 @@ class AntigravityRuntimeProvider(RuntimeProvider):
         return probe_antigravity_usage(backend, timeout)
 
     def effort_catalog(self) -> dict[str, list[str]]:
-        return {"antigravity": ["low", "medium", "high"]}
+        return {"antigravity": list(EFFORT_LEVELS)}
 
     def list_models(self, backend: Backend, timeout: int = 25) -> list[str]:
         return discover_models(backend, timeout)[0]
+
+    def list_model_catalog(
+            self, backend: Backend,
+            timeout: int = 25) -> tuple[list[str], dict[str, list[str]]]:
+        return discover_models(backend, timeout)
 
     def execution_info(self, config: ExecutionConfig) -> RuntimeExecutionInfo:
         return RuntimeExecutionInfo(mode="one_shot", transport="antigravity-stream-json")
@@ -143,7 +148,9 @@ class AntigravityRuntimeProvider(RuntimeProvider):
             cmd.append("--sandbox=false")
         if config.backend.model:
             cmd += ["--model", config.backend.model]
-        if config.effort:
+        # agy 的多数模型 slug 已内嵌力度后缀(如 gemini-4-neon-xhigh),再传
+        # 不同的 --effort 会报 conflicts with --effort;此类模型不再重复传该参数。
+        if config.effort and not embedded_effort(config.backend.model):
             cmd += ["--effort", config.effort]
         # cwd 不足以让 agy 的语言服务选中工作区;主目录也必须显式注册。
         workdir = str(Path(config.workdir).expanduser().resolve())

@@ -24,6 +24,7 @@ args = sys.argv[1:]
 if args == ["models"]:
     print("Fetching available models...")
     print("gemini-test\tGemini Test")
+    print("gemini-4-neon-xhigh\tGemini 4 Neon (XHigh)")
     print("custom/model\tCustom Model")
     print("gemini-test\tGemini Test")
     raise SystemExit(0)
@@ -108,8 +109,13 @@ def test_detection_models_and_provider_registration(runtime, monkeypatch):
     assert backend.adapter == "antigravity" and backend.binary_path == config.backend.binary_path
     manager = RuntimeManager()
     assert isinstance(manager.provider_for(backend), AntigravityRuntimeProvider)
-    assert manager.list_models(backend) == ["gemini-test", "custom/model"]
-    assert provider.effort_support(backend) == ["low", "medium", "high"]
+    assert manager.list_models(backend) == [
+        "gemini-test", "gemini-4-neon-xhigh", "custom/model"]
+    assert manager.list_model_catalog(backend) == (
+        ["gemini-test", "gemini-4-neon-xhigh", "custom/model"],
+        {"gemini-4-neon-xhigh": ["xhigh"]},
+    )
+    assert provider.effort_support(backend) == ["low", "medium", "high", "xhigh", "max"]
     assert adapters.update_plan(backend) == ("self", ["agy", "update"])
     caps = provider.capabilities(backend)
     assert caps.session_reuse and caps.structured_events
@@ -215,6 +221,28 @@ def test_command_defaults_and_optional_parameters(runtime):
     assert "--sandbox" in command
     config.runtime_policy.permissions.filesystem = "full-access"
     assert "--sandbox=false" in provider._command(config, "hello")
+
+
+def test_command_omits_effort_when_model_embeds_effort_suffix(runtime):
+    """带力度后缀的模型(如 gemini-4-neon-xhigh)不再附带 --effort,避免 agy 报冲突。"""
+    provider, config, _, _ = runtime
+    config.backend.model = "gemini-4-neon-xhigh"
+    config.effort = "high"
+    command = provider._command(config, "hello")
+    assert command[command.index("--model") + 1] == "gemini-4-neon-xhigh"
+    assert "--effort" not in command
+
+    # 不带力度后缀的模型(如 orchestrator 或空模型)仍正常透传 --effort
+    config.backend.model = "gemini-pro-orchestrator-neon"
+    config.effort = "high"
+    orch_cmd = provider._command(config, "hello")
+    assert orch_cmd[orch_cmd.index("--effort") + 1] == "high"
+
+    config.backend.model = ""
+    config.effort = "xhigh"
+    default_cmd = provider._command(config, "hello")
+    assert "--model" not in default_cmd
+    assert default_cmd[default_cmd.index("--effort") + 1] == "xhigh"
 
 
 def test_stop_preserves_conversation_saved_before_completion(runtime):
