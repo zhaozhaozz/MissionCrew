@@ -236,8 +236,400 @@ def test_diagram_renderer_and_vendored_mermaid_are_served():
     client = TestClient(create_app())
     html = client.get("/").text
     diagrams = client.get("/assets/js/diagrams.js").text
+    css = client.get("/assets/css/app.css").text
     vendor = client.get("/assets/vendor/mermaid.min.js")
     assert "/assets/js/diagrams.js" in html
     assert 'const LIBRARY_URL = "/assets/vendor/mermaid.min.js"' in diagrams
     assert 'securityLevel: "strict"' in diagrams
     assert vendor.status_code == 200 and 'globalThis["mermaid"]' in vendor.text
+    assert ".markdown-diagram-canvas" in css and "cursor: zoom-in" in css
+    assert ".markdown-diagram-zoom" in css
+    assert "dialog.diagram-lightbox[open] { display: flex" in css
+
+
+def test_diagram_click_opens_zoomable_lightbox_and_namespaces_svg_ids():
+    """渲染成功的 Mermaid 图表支持点击画布或放大按钮在弹窗中放大查看,
+    支持缩放/复原/复制源码/拖动平移/点击遮罩关闭,且克隆 SVG 会重命名内部 id 避免与正文冲突。"""
+    if NODE is None:
+        pytest.skip("node is required to execute diagrams.js")
+    diagrams_js = ROOT / "missioncrew" / "web" / "js" / "diagrams.js"
+    script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const assert = require("assert");
+const source = fs.readFileSync(process.argv[1], "utf8");
+
+// 轻量 DOM 桩:支持 diagrams.js 用到的节点遍历、选择器、克隆、事件与 dialog 生命周期
+class FakeClassList {
+  constructor(el) { this.el = el; this.set = new Set(); }
+  add(...names) { names.forEach(n => n && this.set.add(n)); this.sync(); }
+  remove(...names) { names.forEach(n => this.set.delete(n)); this.sync(); }
+  contains(name) { return this.set.has(name); }
+  sync() { this.el._attrs.set("class", [...this.set].join(" ")); }
+}
+
+class FakeElement {
+  constructor(tagName) {
+    this.tagName = tagName.toUpperCase();
+    this._attrs = new Map();
+    this.classList = new FakeClassList(this);
+    this.children = [];
+    this.parentElement = null;
+    this.style = {};
+    this.dataset = {};
+    this.hidden = false;
+    this.open = false;
+    this.scrollLeft = 0;
+    this.scrollTop = 0;
+    this.clientWidth = 1000;
+    this.clientHeight = 700;
+    this._textContent = "";
+    this._listeners = new Map();
+    this._captured = new Set();
+  }
+  get isConnected() {
+    let cur = this;
+    while (cur) { if (cur === document.body || cur === document.documentElement) return true; cur = cur.parentElement; }
+    return false;
+  }
+  get className() { return this._attrs.get("class") || ""; }
+  set className(val) {
+    this.classList.set = new Set(String(val || "").split(/\s+/).filter(Boolean));
+    this.classList.sync();
+  }
+  get id() { return this._attrs.get("id") || ""; }
+  set id(val) { this.setAttribute("id", val); }
+  get title() { return this._attrs.get("title") || ""; }
+  set title(val) { this.setAttribute("title", val); }
+  get attributes() {
+    return [...this._attrs.entries()].map(([name, value]) => ({ name, value }));
+  }
+  get textContent() {
+    if (this.children.length) return this.children.map(c => c.textContent).join("");
+    return this._textContent;
+  }
+  set textContent(val) { this.children = []; this._textContent = String(val ?? ""); }
+  setAttribute(name, value) {
+    const str = String(value);
+    this._attrs.set(name, str);
+    if (name === "class") this.classList.set = new Set(str.split(/\s+/).filter(Boolean));
+    if (name.startsWith("data-")) {
+      const key = name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+      this.dataset[key] = str;
+    }
+  }
+  getAttribute(name) { return this._attrs.has(name) ? this._attrs.get(name) : null; }
+  removeAttribute(name) { this._attrs.delete(name); }
+  appendChild(child) {
+    if (child.parentElement) child.remove();
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+  prepend(child) {
+    if (child.parentElement) child.remove();
+    child.parentElement = this;
+    this.children.unshift(child);
+  }
+  remove() {
+    if (!this.parentElement) return;
+    const siblings = this.parentElement.children;
+    const idx = siblings.indexOf(this);
+    if (idx >= 0) siblings.splice(idx, 1);
+    this.parentElement = null;
+  }
+  cloneNode(deep = false) {
+    const copy = new FakeElement(this.tagName);
+    for (const [k, v] of this._attrs.entries()) copy.setAttribute(k, v);
+    Object.assign(copy.style, this.style);
+    copy._textContent = this._textContent;
+    if (deep) {
+      for (const ch of this.children) copy.appendChild(ch.cloneNode(true));
+    }
+    return copy;
+  }
+  addEventListener(type, fn) {
+    if (!this._listeners.has(type)) this._listeners.set(type, []);
+    this._listeners.get(type).push(fn);
+  }
+  dispatchEvent(event) {
+    event.target = event.target || this;
+    event.preventDefault = event.preventDefault || (() => { event.defaultPrevented = true; });
+    let cur = this;
+    while (cur) {
+      for (const fn of (cur._listeners.get(event.type) || [])) fn(event);
+      cur = event.bubbles === false ? null : cur.parentElement;
+    }
+    if (event.bubbles !== false) {
+      for (const fn of (document._listeners.get(event.type) || [])) fn(event);
+    }
+  }
+  setPointerCapture(id) { this._captured.add(id); }
+  hasPointerCapture(id) { return this._captured.has(id); }
+  releasePointerCapture(id) { this._captured.delete(id); }
+  getBoundingClientRect() {
+    const w = parseFloat(this.style.width) || this.clientWidth || 400;
+    const h = parseFloat(this.style.height) || this.clientHeight || 200;
+    return { left: 20 - this.scrollLeft, top: 60 - this.scrollTop, width: w, height: h };
+  }
+  showModal() { this.open = true; }
+  close() {
+    if (!this.open) return;
+    this.open = false;
+    this.dispatchEvent({ type: "close", bubbles: false });
+  }
+  matches(selector) {
+    return selector.split(",").some(part => matchSimple(this, part.trim()));
+  }
+  closest(selector) {
+    let cur = this;
+    while (cur) {
+      if (cur.matches(selector)) return cur;
+      cur = cur.parentElement;
+    }
+    return null;
+  }
+  querySelectorAll(selector) {
+    const out = [];
+    if (selector === "*") {
+      const walk = node => { for (const c of node.children) { out.push(c); walk(c); } };
+      walk(this);
+      return out;
+    }
+    if (selector.startsWith(":scope > ")) {
+      const rest = selector.slice(9).trim();
+      const parts = rest.split(/\s+/);
+      for (const c of this.children) {
+        if (matchSimple(c, parts[0])) {
+          if (parts.length === 1) out.push(c);
+          else out.push(...c.querySelectorAll(parts.slice(1).join(" ")));
+        }
+      }
+      return out;
+    }
+    const walk = node => {
+      for (const c of node.children) {
+        if (c.matches(selector)) out.push(c);
+        walk(c);
+      }
+    };
+    walk(this);
+    return out;
+  }
+  querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+  set innerHTML(html) {
+    this.children = [];
+    this._textContent = "";
+    const text = String(html || "").trim();
+    if (!text) return;
+    parseFragment(text, this);
+  }
+}
+
+function matchSimple(el, sel) {
+  if (!sel || sel === "*") return true;
+  let rest = sel;
+  const tagMatch = rest.match(/^[a-zA-Z][\w-]*/);
+  if (tagMatch) {
+    if (el.tagName !== tagMatch[0].toUpperCase()) return false;
+    rest = rest.slice(tagMatch[0].length);
+  }
+  const idMatch = rest.match(/#([a-zA-Z0-9_-]+)/);
+  if (idMatch) {
+    if (el.id !== idMatch[1]) return false;
+    rest = rest.replace(idMatch[0], "");
+  }
+  const attrRe = /\[([^\]=]+)(?:="([^"]*)")?\]/g;
+  let m;
+  while ((m = attrRe.exec(rest))) {
+    const val = el.getAttribute(m[1]);
+    if (m[2] === undefined ? val === null : val !== m[2]) return false;
+  }
+  rest = rest.replace(attrRe, "");
+  const clsRe = /\.([a-zA-Z0-9_-]+)/g;
+  while ((m = clsRe.exec(rest))) {
+    if (!el.classList.contains(m[1])) return false;
+  }
+  return true;
+}
+
+// 极简 HTML/SVG 片段解析器,足以解析测试中 Mermaid 输出的 SVG 与弹窗模板
+function parseFragment(html, root) {
+  const stack = [root];
+  const tokenRe = /<(\/?)([a-zA-Z][\w:-]*)([^>]*?)(\/?)>|([^<]+)/g;
+  let match;
+  while ((match = tokenRe.exec(html))) {
+    const parent = stack[stack.length - 1];
+    if (match[5] !== undefined) {
+      if (parent.children.length === 0) parent._textContent += match[5];
+      continue;
+    }
+    const [, closing, tag, attrStr, selfClose] = match;
+    if (closing) {
+      if (stack.length > 1) stack.pop();
+      continue;
+    }
+    const el = new FakeElement(tag);
+    const attrRe = /([a-zA-Z_:][\w:.-]*)(?:\s*=\s*"([^"]*)")?/g;
+    let am;
+    while ((am = attrRe.exec(attrStr))) {
+      el.setAttribute(am[1], am[2] ?? "");
+      if (am[1] === "style" && am[2]) {
+        for (const decl of am[2].split(";")) {
+          const [k, v] = decl.split(":").map(s => s && s.trim());
+          if (k && v) {
+            const camel = k.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+            el.style[camel] = v;
+          }
+        }
+      }
+    }
+    parent.appendChild(el);
+    if (!selfClose && !/^(img|br|hr|input)$/i.test(tag)) stack.push(el);
+  }
+}
+
+const document = {
+  documentElement: new FakeElement("html"),
+  head: new FakeElement("head"),
+  body: new FakeElement("body"),
+  _listeners: new Map(),
+  createElement: tag => new FakeElement(tag),
+  addEventListener(type, fn) {
+    if (!this._listeners.has(type)) this._listeners.set(type, []);
+    this._listeners.get(type).push(fn);
+  },
+  querySelectorAll: sel => document.body.querySelectorAll(sel),
+  querySelector: sel => document.body.querySelector(sel),
+};
+document.documentElement.appendChild(document.body);
+
+let copiedText = "";
+let selectionState = { isCollapsed: true };
+const diagramNode = document.createElement("div");
+diagramNode.className = "markdown-diagram";
+diagramNode.setAttribute("data-diagram", "mermaid");
+const pre = document.createElement("pre");
+pre.className = "markdown-diagram-source";
+pre.textContent = "flowchart LR\n  A --> B";
+diagramNode.appendChild(pre);
+document.body.appendChild(diagramNode);
+
+const context = {
+  Element: FakeElement,
+  document,
+  isDarkTheme: () => false,
+  matchMedia: () => ({ addEventListener: () => {} }),
+  MutationObserver: class { observe() {} },
+  getSelection: () => selectionState,
+  copyTextToClipboard: async text => { copiedText = text; return true; },
+  toast: () => {},
+  setTimeout,
+  clearTimeout,
+  mermaid: {
+    initialize: () => {},
+    render: async (id, src) => {
+      if (src.includes("BROKEN")) throw new Error("Parse error");
+      return {
+        svg: `<svg id="${id}" width="100%" viewBox="0 0 800 400" style="max-width: 800px">` +
+          `<style>#${id}{color:#fff}#${id} .edge{marker-end:url(#${id}_arrow)}</style>` +
+          `<defs><marker id="${id}_arrow"><path d="M0,0 L10,5 L0,10"/></marker></defs>` +
+          `<path class="edge" marker-end="url(#${id}_arrow)" d="M0,0 L100,0"/></svg>`,
+      };
+    },
+  },
+};
+context.globalThis = context;
+vm.createContext(context);
+vm.runInContext(source, context);
+
+(async () => {
+  await new Promise(r => setTimeout(r, 20));
+  assert.strictEqual(diagramNode.dataset.state, "done");
+  const canvas = diagramNode.querySelector(":scope > .markdown-diagram-canvas");
+  const zoomBtn = diagramNode.querySelector(":scope > .markdown-diagram-zoom");
+  assert(canvas && canvas.title === "点击放大查看");
+  assert(zoomBtn && zoomBtn.title === "放大查看");
+
+  // 划词选区未折叠时不弹出放大预览
+  selectionState = { isCollapsed: false };
+  canvas.dispatchEvent({ type: "click" });
+  assert.strictEqual(document.querySelector("#diagram-dlg"), null);
+
+  // 正常点击画布打开放大弹窗
+  selectionState = { isCollapsed: true };
+  canvas.dispatchEvent({ type: "click" });
+  const dialog = document.querySelector("dialog");
+  assert(dialog && dialog.id === "diagram-dlg" && dialog.open === true);
+
+  // 克隆的 SVG 去掉 max-width 并重命名 id 与全部引用,避免与正文原图冲突,同时保留十六进制颜色
+  const inlineSvg = canvas.querySelector("svg");
+  const modalSvg = dialog.querySelector(".diagram-lightbox-canvas").querySelector("svg");
+  assert(modalSvg);
+  assert.notStrictEqual(modalSvg.getAttribute("id"), inlineSvg.getAttribute("id"));
+  assert.strictEqual(modalSvg.style.maxWidth, "none");
+  const modalMarker = modalSvg.querySelector("marker");
+  assert(modalMarker.getAttribute("id").startsWith("diagram-preview-"));
+  const modalStyle = modalSvg.querySelector("style").textContent;
+  assert(modalStyle.includes(`#${modalSvg.getAttribute("id")}{color:#fff}`));
+  assert(modalStyle.includes(`url(#${modalMarker.getAttribute("id")})`));
+  const modalEdge = modalSvg.querySelector(".edge");
+  assert.strictEqual(modalEdge.getAttribute("marker-end"), `url(#${modalMarker.getAttribute("id")})`);
+
+  // 初始缩放适应窗口(stage 1000x700 减去 padding 56 => 944x644, 800x400 适应比例 944/800 = 118%)
+  const scaleLabel = dialog.querySelector(".diagram-lightbox-scale");
+  assert.strictEqual(scaleLabel.textContent, "118%");
+
+  // 放大、1:1、适应按钮生效
+  dialog.querySelector('[data-action="zoom-in"]').dispatchEvent({ type: "click" });
+  assert.strictEqual(scaleLabel.textContent, "148%");
+  dialog.querySelector('[data-action="reset"]').dispatchEvent({ type: "click" });
+  assert.strictEqual(scaleLabel.textContent, "100%");
+  assert.strictEqual(modalSvg.style.width, "800px");
+  assert.strictEqual(modalSvg.style.height, "400px");
+
+  // 滚轮缩放生效
+  const stage = dialog.querySelector(".diagram-lightbox-stage");
+  stage.dispatchEvent({ type: "wheel", deltaY: -100, clientX: 500, clientY: 300 });
+  assert.strictEqual(scaleLabel.textContent, "115%");
+
+  // 快捷键 0 恢复适应窗口, + 放大
+  dialog.dispatchEvent({ type: "keydown", key: "0" });
+  assert.strictEqual(scaleLabel.textContent, "118%");
+  dialog.dispatchEvent({ type: "keydown", key: "+" });
+  assert.strictEqual(scaleLabel.textContent, "148%");
+
+  // 复制源码按钮复制原始 Mermaid 源码
+  dialog.querySelector('[data-action="copy"]').dispatchEvent({ type: "click" });
+  await new Promise(r => setTimeout(r, 10));
+  assert.strictEqual(copiedText, "flowchart LR\n  A --> B");
+
+  // 拖动平移后若浏览器把 click 落到 dialog 自身,不应误关弹窗
+  const startLeft = stage.scrollLeft;
+  const startTop = stage.scrollTop;
+  stage.dispatchEvent({ type: "pointerdown", button: 0, pointerId: 1, clientX: 200, clientY: 200 });
+  stage.dispatchEvent({ type: "pointermove", pointerId: 1, clientX: 150, clientY: 160 });
+  assert.strictEqual(stage.scrollLeft, startLeft + 50);
+  assert.strictEqual(stage.scrollTop, startTop + 40);
+  stage.dispatchEvent({ type: "pointerup", pointerId: 1 });
+  dialog.dispatchEvent({ type: "click", target: dialog, bubbles: false });
+  assert.strictEqual(dialog.open, true);
+
+  // 等待拖动抑制解除后,点击遮罩(dialog 自身)可关闭弹窗
+  await new Promise(r => setTimeout(r, 10));
+  dialog.dispatchEvent({ type: "click", target: dialog, bubbles: false });
+  assert.strictEqual(dialog.open, false);
+
+  // 点击角上放大按钮同样打开弹窗,点击关闭按钮关闭
+  zoomBtn.dispatchEvent({ type: "click" });
+  assert.strictEqual(dialog.open, true);
+  dialog.querySelector('[data-action="close"]').dispatchEvent({ type: "click" });
+  assert.strictEqual(dialog.open, false);
+})().catch(err => { console.error(err); process.exit(1); });
+"""
+    result = subprocess.run(
+        [NODE, "-e", script, str(diagrams_js)],
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr

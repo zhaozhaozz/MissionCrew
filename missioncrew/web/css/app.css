@@ -380,7 +380,7 @@
   .run-live-output .body { border-style: dashed; border-left: 3px solid var(--line); }
   .run-live-output .via::after { content: "●"; color: var(--accent); font-size: 8px;
                                  margin-left: 6px; animation: blink 1.2s infinite; }
-  .run-live-output .rc-elapsed { font-variant-numeric: tabular-nums; }
+  .run-card .rc-elapsed, .run-live-output .rc-elapsed { font-variant-numeric: tabular-nums; }
   /* 实时框里的待处理提问/权限请求:正文之后另起一块,沿用过程卡片的交互样式 */
   .run-live-output .live-text:not([hidden]) + .live-ask:not(:empty) { margin-top: 10px; }
   .run-live-output .live-ask .re-interaction + .re-interaction { margin-top: 8px; }
@@ -1680,9 +1680,49 @@
   .markdown-diagram { position: relative; margin: .9em 0; }
   .markdown-diagram > pre { margin: 0; }
   .markdown-diagram-canvas { overflow-x: auto; padding: 14px 12px; border: 1px solid var(--line);
-                             border-radius: 9px; background: var(--card); text-align: center; }
+                             border-radius: 9px; background: var(--card); text-align: center;
+                             cursor: zoom-in; transition: border-color .15s, box-shadow .15s; }
+  .markdown-diagram-canvas:hover { border-color: var(--line-strong); box-shadow: var(--shadow-sm); }
   .markdown-diagram-canvas svg { max-width: 100%; height: auto; }
   .markdown-diagram-error { margin-bottom: 6px; color: var(--bad); font-size: 12.5px; }
+  /* 放大预览按钮与 .markdown-copy 同尺寸并排在右上角,仅渲染成功后出现 */
+  .markdown-diagram-zoom { --icon-expand: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='15 3 21 3 21 9'/%3E%3Cpolyline points='9 21 3 21 3 15'/%3E%3Cline x1='21' y1='3' x2='14' y2='10'/%3E%3Cline x1='3' y1='21' x2='10' y2='14'/%3E%3C/svg%3E");
+                           position: absolute; z-index: 2; top: 7px; right: 37px;
+                           display: flex; align-items: center; justify-content: center;
+                           box-sizing: border-box; width: 24px; height: 24px; padding: 0;
+                           border: 1px solid var(--line); border-radius: 6px;
+                           background: var(--card); color: var(--muted); cursor: pointer;
+                           opacity: .6; box-shadow: var(--shadow-sm); user-select: none;
+                           transition: opacity .15s, color .15s; }
+  .markdown-diagram-zoom::before { content: ""; width: 14px; height: 14px; background: currentColor;
+                                   -webkit-mask: var(--icon-expand) center / contain no-repeat;
+                                   mask: var(--icon-expand) center / contain no-repeat; }
+  .markdown-diagram-zoom:hover, .markdown-diagram-zoom:focus-visible { opacity: 1; color: var(--text); }
+  /* 图表放大预览弹窗:94vw×90vh,支持滚轮缩放与拖动平移;仅 [open] 时设 flex 避免破坏原生隐藏 */
+  dialog.diagram-lightbox { width: 94vw; height: 90vh; max-width: 94vw; max-height: 90vh;
+                            padding: 0; overflow: hidden; }
+  dialog.diagram-lightbox[open] { display: flex; flex-direction: column; }
+  dialog.diagram-lightbox::backdrop { background: rgba(8, 11, 18, .72); backdrop-filter: blur(3px); }
+  .diagram-lightbox-bar { flex: none; display: flex; align-items: center;
+                          justify-content: space-between; flex-wrap: wrap; gap: 8px 12px;
+                          padding: 10px 16px; border-bottom: 1px solid var(--line);
+                          background: var(--card); }
+  .diagram-lightbox-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+  .diagram-lightbox-hint { font-size: 12px; }
+  .diagram-lightbox-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .diagram-lightbox-scale { min-width: 44px; text-align: center; font-size: 12.5px;
+                            color: var(--muted); font-variant-numeric: tabular-nums; }
+  .diagram-lightbox-stage { flex: 1; min-height: 0; overflow: auto; display: flex;
+                            background: var(--card); cursor: grab; }
+  .diagram-lightbox-stage.dragging { cursor: grabbing; user-select: none; }
+  .diagram-lightbox-canvas { margin: auto; padding: 28px; flex: none;
+                             display: flex; align-items: center; justify-content: center; }
+  .diagram-lightbox-canvas svg { display: block; }
+  @media (max-width: 640px) {
+    dialog.diagram-lightbox { width: 96vw; height: 92vh; max-width: 96vw; max-height: 92vh; }
+    .diagram-lightbox-hint { display: none; }
+    .diagram-lightbox-canvas { padding: 16px; }
+  }
 
   /* ---- 项目统一回收站 ---- */
   .recycle-bin-head { display: flex; align-items: flex-start; justify-content: space-between;

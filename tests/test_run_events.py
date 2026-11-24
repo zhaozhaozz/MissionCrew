@@ -1,5 +1,8 @@
 """运行过程事件:适配器实时上报 -> 落库 -> 聊天接口内联展示。"""
+import json
+import shutil
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -424,14 +427,54 @@ def test_chat_ui_renders_usage_events_from_unified_schema(seeded):
 
 
 def test_chat_ui_live_output_shows_elapsed_time(seeded):
-    """实时输出框头部按 created_at 起算并每秒刷新已用时长。"""
+    """运行中的过程卡片与实时输出框头部均按 created_at 起算并每秒刷新已用时长。"""
     client = TestClient(create_app())
     run_js = client.get("/assets/js/run-events.js").text
     css = client.get("/assets/css/app.css").text
     assert "function fmtElapsed(seconds)" in run_js and "function tickRunElapsed()" in run_js
+    assert "function runElapsedHtml(run)" in run_js
     assert "setInterval(tickRunElapsed, 1000)" in run_js
     assert 'class="rc-elapsed" data-since="${esc(run.created_at)}"' in run_js
-    assert ".run-live-output .rc-elapsed" in css
+    assert "live && run.created_at ? ` · 已用 ${runElapsedHtml(run)}`" in run_js
+    assert ".run-card .rc-elapsed" in css and ".run-live-output .rc-elapsed" in css
+    node = shutil.which("node")
+    if node:
+        script = "\n".join([
+            "const roleColor = { dev: '#123456' };",
+            "const esc = s => String(s ?? '');",
+            "const setInterval = () => 0;",
+            "const els = [];",
+            "const document = { querySelectorAll: () => els };",
+            "let fakeNow = 1065_000;",
+            "Date.now = () => fakeNow;",
+            run_js,
+            """
+            const runningHtml = runSummary({
+              id: 7, role_id: "dev", backend_id: "claude", model: "sonnet", effort: "high",
+              status: "running", created_at: 1000,
+            });
+            const queuedHtml = runSummary({
+              id: 8, role_id: "dev", backend_id: "", status: "queued", created_at: 1060,
+            });
+            const doneHtml = runSummary({
+              id: 9, role_id: "dev", backend_id: "claude", model: "sonnet",
+              status: "done", created_at: 1000, finished_at: 1125,
+            });
+            const el = { dataset: { since: "1000" }, textContent: "" };
+            els.push(el);
+            fakeNow = 1090_000;
+            tickRunElapsed();
+            process.stdout.write(JSON.stringify({
+              runningHtml, queuedHtml, doneHtml, ticked: el.textContent,
+            }));
+            """,
+        ])
+        out = json.loads(subprocess.run(
+            [node, "-e", script], text=True, capture_output=True, check=True).stdout)
+        assert '· 运行中 · 已用 <span class="rc-elapsed" data-since="1000">1m05s</span>' in out["runningHtml"]
+        assert '· 排队中 · 已用 <span class="rc-elapsed" data-since="1060">5s</span>' in out["queuedHtml"]
+        assert "rc-elapsed" not in out["doneHtml"] and "· 已完成 · 2m05s" in out["doneHtml"]
+        assert out["ticked"] == "1m30s"
 
 
 def test_chat_ui_shows_execution_combo_and_folds_long_replies(seeded):

@@ -32,7 +32,8 @@ function runSummary(run) {
   const st = { queued: "排队中", running: "运行中", waiting_user: "等待用户",
                done: "已完成", failed: "失败", stopped: "已停止" }[run.status] || run.status;
   const live = ["queued", "running", "waiting_user"].includes(run.status);
-  const secs = run.finished_at ? ` · ${Math.max(1, Math.round(run.finished_at - run.created_at))}s` : "";
+  const secs = live && run.created_at ? ` · 已用 ${runElapsedHtml(run)}`
+    : run.finished_at ? ` · ${fmtElapsed(Math.max(1, Math.round(run.finished_at - run.created_at)))}` : "";
   // 执行组合:runtime · model(/effort);旧记录没盖章时只显示 runtime
   const combo = [
     run.backend_id ? esc(run.backend_id) : "…",
@@ -373,7 +374,7 @@ function submitRuntimeAnswers(runId, requestId, button) {
   sendRuntimeInteraction(runId, requestId, "submit", answers);
 }
 
-/* 实时输出框头部的已用时长:按运行入队时间(created_at)起算,与运行卡片
+/* 运行卡片与实时输出框头部的已用时长:按运行入队时间(created_at)起算,与运行卡片
    结束后显示的总耗时同一口径;秒位补零避免跳动时宽度抖动 */
 function fmtElapsed(seconds) {
   const s = Math.max(0, Math.floor(Number(seconds) || 0));
@@ -383,13 +384,17 @@ function fmtElapsed(seconds) {
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
 }
 
+function runElapsedHtml(run) {
+  return `<span class="rc-elapsed" data-since="${esc(run.created_at)}">${fmtElapsed(Date.now() / 1000 - run.created_at)}</span>`;
+}
+
 function tickRunElapsed() {
   const now = Date.now() / 1000;
   document.querySelectorAll(".rc-elapsed[data-since]").forEach(el => {
     el.textContent = fmtElapsed(now - Number(el.dataset.since));
   });
 }
-// 实时框随运行结束移除,平时无匹配元素,每秒一次的扫描开销可忽略
+// 运行结束后卡片切为固定耗时、实时框移除,平时无匹配元素,每秒一次的扫描开销可忽略
 setInterval(tickRunElapsed, 1000);
 
 /* 运行期间的实时输出:把 text 过程事件聚合成一个跟随更新的输出框,
@@ -419,7 +424,7 @@ function syncRunLiveOutput(run, card, pane, events, liveOutput) {
     bubble.innerHTML = `<span class="avatar" style="background:${esc(color)}">${esc((run.role_id[0] || "?").toUpperCase())}</span>
       <div class="msg-main">
         <div class="head"><span class="author" style="color:${esc(color)}">@${esc(run.role_id)}</span>
-          <span class="via"><span class="rc-live-state">运行中</span> · 已用 <span class="rc-elapsed" data-since="${esc(run.created_at)}">${fmtElapsed(Date.now() / 1000 - run.created_at)}</span> · 过程输出实时更新</span></div>
+          <span class="via"><span class="rc-live-state">运行中</span> · 已用 ${runElapsedHtml(run)} · 过程输出实时更新</span></div>
         <div class="body markdown-body"><div class="live-text markdown-body"></div><div class="live-ask"></div></div>
       </div>`;
     // 多个 Agent 并行时各自的输出框以角色色左描边区分归属
@@ -498,7 +503,7 @@ function syncRuns(runs, surface = null) {
       el.dataset.trigger = run.trigger_message_id;
       el.dataset.runId = run.id;
       el.innerHTML = `<summary></summary><div class="rc-events"></div>`;
-      card = { el, key: null, userToggled: false, fetching: false,
+      card = { el, key: null, summaryKey: null, userToggled: false, fetching: false,
                latestEventId: "", openEventId: undefined,
                runStatus: run.status };
       el.querySelector("summary").addEventListener("click", () => { card.userToggled = true; });
@@ -519,10 +524,17 @@ function syncRuns(runs, surface = null) {
     // 正式消息同一渲染周期完成交接,不闪重复,也不依赖事件请求成功
     if (!live)
       pane.querySelector(`.run-live-output[data-run-id="${run.id}"]`)?.remove();
-    const key = `${run.status}:${run.events_size}:${run.merged_count || 0}`;
-    if (card.key !== key && !card.fetching) {
+    // 卡片头部只在状态/元信息变化时重绘:事件流增量期间保留 DOM(计时与停止按钮不抖动),
+    // 运行结束则不等在途请求立即切换为固定耗时并收起
+    const summaryKey = `${run.status}:${run.backend_id || ""}:${run.model || ""}:${
+      run.effort || ""}:${run.finished_at || ""}:${run.merged_count || 0}:${run.error || ""}`;
+    if (card.summaryKey !== summaryKey) {
       card.el.querySelector("summary").innerHTML = runSummary(run);
       if (!card.userToggled) card.el.open = live;   // 运行中自动展开,结束自动收起
+      card.summaryKey = summaryKey;
+    }
+    const key = `${run.status}:${run.events_size}:${run.merged_count || 0}`;
+    if (card.key !== key && !card.fetching) {
       if (run.status === "merged") {
         // 并入的运行没有过程事件,不必请求
         card.el.querySelector(".rc-events").innerHTML = `<div class="re re-status">这条消息到达时 @${
